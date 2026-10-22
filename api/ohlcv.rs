@@ -15,7 +15,7 @@
 // accordingly. coverage.complete=false is honest: the free tier only carries
 // ~365 daily bars for the best SOL/USDC pool (verified 2026-10-22); coverage
 // grows ~1 bar/day and the envelope always reports the real range.
-#[path = "../../src/raydium_common.rs"] mod common;
+#[path = "../src/raydium_common.rs"] mod common;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
