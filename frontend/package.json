@@ -1,1 +1,27 @@
-{"name":"gecko-raydium-wallet-client","private":true,"version":"0.2.0","type":"module","scripts":{"build":"tsc -b && vite build"},"dependencies":{"@solana/wallet-adapter-react":"^0.15.40","@solana/wallet-adapter-react-ui":"^0.9.39","@solana/web3.js":"^1.98.4","react":"^18.3.1","react-dom":"^18.3.1"},"devDependencies":{"@types/react":"^18.3.18","@types/react-dom":"^18.3.5","@vitejs/plugin-react":"^4.7.0","typescript":"~5.8.3","vite":"^6.3.5"},"overrides":{"@types/react":"$@types/react","@types/react-dom":"$@types/react-dom"}}
+{
+  "name": "gecko-raydium-wallet-client",
+  "private": true,
+  "version": "0.2.0",
+  "type": "module",
+  "scripts": {
+    "build": "tsc -b && vite build"
+  },
+  "dependencies": {
+    "@solana/wallet-adapter-react": "^0.15.40",
+    "@solana/wallet-adapter-react-ui": "^0.9.39",
+    "@solana/web3.js": "^1.98.4",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.18",
+    "@types/react-dom": "^18.3.5",
+    "@vitejs/plugin-react": "^4.7.0",
+    "typescript": "~5.8.3",
+    "vite": "^6.3.5"
+  },
+  "overrides": {
+    "@types/react": "^18.3.18",
+    "@types/react-dom": "^18.3.5"
+  }
+}
