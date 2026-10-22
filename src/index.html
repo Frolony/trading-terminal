@@ -2,6 +2,20 @@
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#0b0d12"><meta name="description" content="Gecko Terminal is a Solana market watch desk with live pair discovery, token search and paper trading. Raydium swaps are provided separately."><meta name="color-scheme" content="dark"><title>Gecko Terminal — Solana Trading</title>
 <style>
 :root{--bg:#0b0d12;--panel:#11151d;--panel2:#151b25;--line:#242c39;--muted:#8591a5;--text:#e8edf5;--green:#42d6a0;--red:#ff6e7c;--lime:#b8f36b;--blue:#8aa9ff}*{box-sizing:border-box}body{margin:0;background:radial-gradient(ellipse at 15% -20%,#1b2b36 0,transparent 40%),var(--bg);color:var(--text);font:14px/1.45 Inter,ui-sans-serif,system-ui,-apple-system,Segoe UI,sans-serif}button,input,select{font:inherit}button{cursor:pointer}.app{max-width:1600px;margin:auto;padding:20px 24px 36px}.top{display:flex;align-items:center;justify-content:space-between;gap:20px;border-bottom:1px solid var(--line);padding:4px 0 20px}.brand{display:flex;align-items:center;gap:12px}.mark{width:42px;height:42px;border-radius:13px;background:linear-gradient(135deg,#b9f56d,#44d6a2);display:grid;place-items:center;color:#102017;font-size:23px;font-weight:900;box-shadow:0 0 32px #6be0a022}.brand h1{font-size:18px;margin:0;letter-spacing:.4px}.brand small{color:var(--muted);display:block;font-size:11px;margin-top:2px;letter-spacing:1.4px;text-transform:uppercase}.topright{display:flex;align-items:center;gap:12px;flex-wrap:wrap}.status{color:var(--green);font-size:12px;display:flex;gap:7px;align-items:center}.dot{height:7px;width:7px;border-radius:50%;background:currentColor;box-shadow:0 0 12px currentColor}.pill{border:1px solid var(--line);border-radius:8px;padding:7px 10px;color:#bac5d5;background:#11151d;font-size:12px}.layout{display:grid;grid-template-columns:minmax(0,1.8fr) minmax(290px,.8fr);gap:16px;margin-top:18px}.maincol,.sidecol{display:flex;flex-direction:column;gap:16px;min-width:0}.stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}.panel,.stat{background:linear-gradient(145deg,#131923,#10141b);border:1px solid var(--line);border-radius:14px;min-width:0}.stat{padding:16px}.eyebrow{font-size:10px;letter-spacing:1.4px;text-transform:uppercase;color:var(--muted)}.big{font-size:24px;font-weight:700;letter-spacing:-.8px;margin:8px 0 4px}.sub{font-size:11px;color:var(--muted)}.positive{color:var(--green)}.negative{color:var(--red)}.panelhead{padding:16px 18px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;gap:12px}.panelhead h2{font-size:14px;margin:0;font-weight:650}.panelbody{padding:16px 18px}.charthead{display:flex;justify-content:space-between;align-items:flex-start;gap:14px}.coinname{display:flex;align-items:center;gap:11px}.coinicon{width:35px;height:35px;border-radius:50%;background:#5541b6;display:grid;place-items:center;font-weight:800}.coinname strong{font-size:17px}.coinname small{display:block;color:var(--muted);font-size:11px}.price{font-size:25px;font-weight:750;letter-spacing:-.8px}.range{display:flex;gap:4px;margin:18px 0 10px}.range button{background:transparent;color:var(--muted);border:1px solid transparent;border-radius:6px;padding:5px 10px;font-size:11px}.range button.active{color:var(--lime);background:#b8f36b12;border-color:#b8f36b2a}.chart{height:220px;position:relative;overflow:hidden;border-radius:8px;background:linear-gradient(180deg,#42d6a00c,transparent)}.chart svg{width:100%;height:100%;display:block}.chartfoot{display:flex;justify-content:space-between;color:var(--muted);font-size:10px;margin-top:10px}.chart .yaxis{position:absolute;top:6px;right:8px;bottom:6px;width:84px;pointer-events:none;z-index:2}.chart .yaxis span{position:absolute;right:0;transform:translateY(-50%);font-size:10px;color:var(--muted);background:#0b0d12cc;padding:1px 5px;border-radius:4px;white-space:nowrap}.chart .readout{position:absolute;top:8px;left:10px;font-size:10px;color:var(--muted);background:#0b0d12d9;border:1px solid var(--line);border-radius:6px;padding:5px 8px;display:none;pointer-events:none;line-height:1.65;z-index:3}.chart .readout b{color:var(--text);font-weight:600}.chart .crosshair{position:absolute;top:0;bottom:0;width:1px;background:#8591a566;display:none;pointer-events:none;z-index:2}.chart .chartmsg{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;color:var(--muted);font-size:12px;background:#0b0d12b8;z-index:4;text-align:center;padding:0 20px}.chart .chartmsg[hidden]{display:none}.sectiontitle{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}.sectiontitle h3{font-size:13px;margin:0}.tablewrap{overflow:auto}table{border-collapse:collapse;width:100%;white-space:nowrap}th{text-align:left;font-size:10px;text-transform:uppercase;letter-spacing:.9px;color:var(--muted);font-weight:600;padding:12px 14px;border-bottom:1px solid var(--line)}td{padding:13px 14px;border-bottom:1px solid #202733;font-size:12px}tbody tr:last-child td{border-bottom:0}tbody tr:hover{background:#ffffff04}.token{display:flex;align-items:center;gap:9px}.tokenbadge{width:28px;height:28px;border-radius:50%;background:#1d2b36;color:var(--lime);display:grid;place-items:center;font-weight:700;font-size:10px}.token small{display:block;color:var(--muted);font-size:10px}.action{border:1px solid #334335;background:#16231c;color:var(--green);border-radius:6px;padding:5px 9px;font-size:11px}.action.sell{border-color:#472a35;background:#281820;color:var(--red)}.tradeform{display:grid;gap:13px}.switchrow{display:grid;grid-template-columns:1fr 1fr;background:#0b0e13;border:1px solid var(--line);border-radius:9px;padding:4px;gap:4px}.switchrow button{padding:9px;border:0;background:transparent;color:var(--muted);border-radius:6px;font-weight:650}.switchrow button.active.buy{background:#183327;color:var(--green)}.switchrow button.active.sell{background:#351d28;color:var(--red)}.field label{display:block;font-size:11px;color:var(--muted);margin-bottom:7px}.inputwrap{display:flex;border:1px solid #303949;border-radius:8px;overflow:hidden;background:#0b0e13}.inputwrap input,.field input,.field select{width:100%;background:transparent;color:var(--text);border:0;outline:0;padding:12px}.inputwrap span{padding:12px;color:var(--muted);font-size:11px}.field select{border:1px solid #303949;border-radius:8px;background:#0b0e13}.amounts{display:flex;gap:6px}.amounts button{flex:1;border:1px solid var(--line);background:#141923;color:#aeb9ca;border-radius:6px;padding:6px;font-size:11px}.primary{width:100%;padding:12px;border:0;border-radius:8px;background:linear-gradient(90deg,#b8f36b,#4cdda3);color:#0b1a13;font-weight:800}.note{font-size:10px;color:var(--muted);text-align:center}.walletrow{display:flex;justify-content:space-between;padding:8px 0;font-size:12px;border-bottom:1px solid #202733}.walletrow:last-child{border:0}.walletrow span{color:var(--muted)}.empty{padding:25px;text-align:center;color:var(--muted);font-size:12px}.searchrow{display:flex;gap:8px}.searchrow input{flex:1;min-width:0;border:1px solid #303949;border-radius:8px;background:#0b0e13;color:var(--text);padding:10px}.searchrow button{border:1px solid #36433a;background:#18251e;color:var(--lime);border-radius:8px;padding:0 13px}.results{display:grid;gap:8px;margin-top:12px}.result{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:11px;border:1px solid var(--line);border-radius:8px}.result strong{font-size:12px}.result small{display:block;color:var(--muted);font-size:10px}.rust{font:11px/1.65 ui-monospace,SFMono-Regular,Menlo,monospace;background:#0a0d12;border:1px solid var(--line);border-radius:8px;padding:13px;color:#a9c5b5;overflow:auto}.rust .kw{color:#c5a7ff}.rust .fn{color:#8db6ff}.foot{margin-top:18px;display:flex;justify-content:space-between;gap:12px;color:#667387;font-size:10px;flex-wrap:wrap}.toast{position:fixed;bottom:22px;right:22px;background:#19241f;border:1px solid #385543;padding:12px 16px;border-radius:9px;color:var(--green);display:none;z-index:5;box-shadow:0 12px 40px #0008}.toast.show{display:block}.loading{color:var(--muted)}@media(max-width:980px){.layout{grid-template-columns:1fr}.sidecol{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));align-items:start}.sidecol .tradepanel{grid-row:span 2}}@media(max-width:640px){.app{padding:12px}.top{align-items:flex-start}.topright{justify-content:flex-end}.stats{grid-template-columns:repeat(2,minmax(0,1fr))}.big{font-size:21px}.sidecol{display:flex}.panelhead,.panelbody{padding:14px}.chart{height:180px}.foot{display:block}.foot span{display:block;margin-top:5px}}
+.labintro{font-size:12px;color:var(--muted);margin:0 0 6px}
+.bthead{font-size:11px;color:var(--muted);margin:16px 0 8px;text-transform:uppercase;letter-spacing:1px}
+.btscheme{font-size:12px;color:var(--muted);margin-top:8px}
+.btparams{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-top:8px}
+.btstats{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin:14px 0}
+.btstat{background:#0b0e13;border:1px solid var(--line);border-radius:8px;padding:10px 12px}
+.btstat small{display:block;font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.8px}
+.btstat strong{font-size:17px}
+.btcurve{height:200px;position:relative;overflow:hidden;border-radius:8px;background:linear-gradient(180deg,#42d6a008,transparent)}
+.btcurve svg{width:100%;height:100%;display:block}
+.bttable{overflow:auto;margin-top:10px}
+.btcfg{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 0;border-bottom:1px solid #202733;font-size:12px}
+.btcfg:last-child{border-bottom:0}
+.btlegend{font-size:10px;color:var(--muted);margin-top:8px}
 </style></head><body><div class="app">
 <header class="top"><div class="brand"><div class="mark">ɢ</div><div><h1>GECKO TERMINAL</h1><small>Solana market intelligence</small></div></div><div class="topright"><span class="pill">NETWORK&nbsp; / &nbsp;SOLANA</span><span class="status"><i class="dot"></i><span id="feedStatus">CONNECTING DATA</span></span><span class="pill">PAPER MODE</span></div></header>
 <div class="stats">
@@ -12,6 +26,24 @@
 </div>
 <div class="layout"><main class="maincol">
 <section class="panel"><div class="panelbody"><div class="charthead"><div class="coinname"><div class="coinicon">◎</div><div><strong>Solana <span id="chartCoinPair" style="color:var(--muted);font-weight:500">SOL</span></strong><small id="chartCoinSub">Native asset · Solana mainnet</small></div></div><div style="text-align:right"><div class="price" id="heroPrice">$—</div><div id="heroChange" class="positive" style="font-size:12px">Fetching market data…</div></div></div><div class="range"><span class="pill" id="chartFeedStatus" style="font-size:11px;align-self:center;cursor:default" title="Chart feed status — click to retry when stale">CHART —</span><button class="active" data-range="1H">1H</button><button data-range="24H">24H</button><button data-range="7D">7D</button><button data-range="30D">30D</button></div><div class="chart" id="chartBox"><svg id="priceChart" viewBox="0 0 900 220" preserveAspectRatio="none" aria-label="SOL price chart"><defs><linearGradient id="fill" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="#42d6a0" stop-opacity=".25"/><stop offset="1" stop-color="#42d6a0" stop-opacity="0"/></linearGradient></defs><g stroke="#26303c" stroke-width="1"><path d="M0 35H900M0 85H900M0 135H900M0 185H900"/></g><path id="area" d="" fill="url(#fill)"/><path id="line" d="" fill="none" stroke="#42d6a0" stroke-width="2.5" vector-effect="non-scaling-stroke"/><g id="candles"></g><line id="lastPriceLine" x1="0" x2="900" y1="0" y2="0" stroke="#8591a5" stroke-width="1" stroke-dasharray="5 4" vector-effect="non-scaling-stroke" visibility="hidden"/></svg><div class="yaxis" id="chartYAxis"></div><div class="readout" id="chartReadout"></div><div class="crosshair" id="chartCross"></div><div class="chartmsg" id="chartMsg" hidden></div></div><div class="chartfoot"><span id="chartCaption">Loading real candles…</span><span id="updatedAt">Waiting for feed</span></div></div></section>
+<section class="panel"><div class="panelhead"><h2>Strategy Lab</h2><span class="eyebrow">BACKTEST BEFORE YOU DEPLOY</span></div><div class="panelbody">
+<p class="labintro">Run one of the Playbook's top-10 schemes over real historical daily bars with the same house-rule accounting the Playbook used (fill-at-close, long-only, 0.26%/side fees, 95% deploy). <strong style="color:var(--text)">Playbook edges are historical measurements — never promises.</strong> Every scheme is a fresh experiment on the data you select.</p>
+<div class="bthead">Scheme</div>
+<div class="field"><select id="btScheme" aria-label="Backtest scheme"></select></div>
+<div class="btscheme" id="btSchemeCtx"></div>
+<div class="bthead">Parameters</div>
+<div class="btparams" id="btParams"></div>
+<div class="bthead">Data</div>
+<div class="labgrid"><div class="field"><label>Pair</label><select id="btPair" aria-label="Backtest pair"></select></div></div>
+<div class="amounts" id="btRangeBtns"><button type="button" data-btrange="full" class="active">Full history</button><button type="button" data-btrange="1y">1 year</button><button type="button" data-btrange="6m">6 months</button><button type="button" data-btrange="custom">Custom</button></div>
+<div id="btCustomRange" class="labgrid" style="display:none;margin-top:10px"><div class="field"><label>From</label><input id="btFrom" type="date"></div><div class="field"><label>To</label><input id="btTo" type="date"></div></div>
+<button class="primary" id="btRun" type="button" style="margin-top:14px">Run backtest</button>
+<div class="sub" id="btStatus" style="margin-top:8px;text-align:center">Idle — no backtest run yet.</div>
+<div id="btResults" style="margin-top:10px"></div>
+<div class="bthead">Saved configurations <span class="sub" style="text-transform:none;letter-spacing:0">· on this device</span></div>
+<div class="searchrow"><input id="btCfgName" placeholder="Name this configuration" maxlength="60"><button id="btSaveCfg" type="button">Save</button></div>
+<div id="btCfgList" style="margin-top:10px"></div>
+</div></section>
 <section class="panel"><div class="panelhead"><h2>Solana market pairs</h2><div style="display:flex;align-items:center;gap:8px"><button type="button" class="action" id="retryFeed">Retry feed</button><span class="pill" id="pairCount">DISCOVERING</span></div></div><div class="tablewrap"><table><thead><tr><th>Pair / DEX</th><th>Price USD</th><th>24H</th><th>Liquidity</th><th>24H volume</th><th>Trade</th></tr></thead><tbody id="pairs"><tr><td colspan="6" class="empty">Loading live pairs from DexScreener…</td></tr></tbody></table></div></section>
 <section class="panel"><div class="panelhead"><h2>Token discovery</h2><span class="eyebrow">DEXSCREENER SEARCH</span></div><div class="panelbody"><div class="searchrow"><input id="tokenSearch" placeholder="Search token, ticker or mint address" value="SOL"><button id="searchBtn">Search</button></div><div id="searchResults" class="results"><div class="empty">Search live Solana pairs and add candidates to your watchlist.</div></div></div></section>
 </main><aside class="sidecol">
@@ -71,4 +103,186 @@ let resetArmUntil=0,resetLabel=null;$('resetPaper').onclick=()=>{const b=$('rese
 async function searchTokens(){const q=$('tokenSearch').value.trim();saveState();if(!q)return;const box=$('searchResults');box.innerHTML='<div class="empty">Searching DexScreener…</div>';try{const controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),10000);let j;try{const r=await fetch('https://api.dexscreener.com/latest/dex/search?q='+encodeURIComponent(q),{signal:controller.signal});if(!r.ok)throw Error('Search HTTP '+r.status);j=await r.json()}finally{clearTimeout(timeout)}const ps=(j.pairs||[]).filter(p=>p.chainId==='solana'&&p.baseToken?.address&&p.priceUsd).sort((a,b)=>(Number(b.liquidity?.usd)||0)-(Number(a.liquidity?.usd)||0)).slice(0,8);if(!ps.length){box.innerHTML='<div class="empty">No Solana pairs found for this search.</div>';return}box.innerHTML=ps.map(p=>{const address=p.baseToken.address,added=watchlist.some(w=>w.address===address),change=p.priceChange?.h24==null||!Number.isFinite(Number(p.priceChange.h24))?null:Number(p.priceChange.h24);return '<div class="result"><div><strong>'+esc(p.baseToken.symbol)+' / '+esc(p.quoteToken.symbol)+'</strong><small>'+esc(p.baseToken.name)+' · '+esc(p.dexId||'DEX')+' · liq '+(p.liquidity?.usd?usd(p.liquidity.usd):'—')+'</small><small>'+esc(address.slice(0,6)+'…'+address.slice(-5))+'</small></div><div style="text-align:right"><strong>'+formatPriceUsd(p.priceUsd)+'</strong><small class="'+(change===null?'':change>=0?'positive':'negative')+'">'+(change===null?'—':(change>=0?'+':'')+fmt(change,2)+'%')+' 24h</small><button class="action" style="margin-top:5px" data-watch="'+esc(address)+'">'+(added?'Added ✓':'Watch')+'</button></div></div>'}).join('');box.querySelectorAll('[data-watch]').forEach(b=>b.onclick=()=>{const address=b.dataset.watch,index=watchlist.findIndex(w=>w.address===address);if(index>=0){const removed=watchlist.splice(index,1)[0];b.textContent='Watch';toast('Removed '+(removed.symbol||'token')+' from watchlist.')}else{if(watchlist.length>=50){toast('Watchlist limit reached (50 tokens).');return}const p=ps.find(row=>row.baseToken.address===address);if(!p)return;watchlist.push({address,symbol:p.baseToken.symbol||'TOKEN',name:p.baseToken.name||'Saved token',priceUsd:Number(p.priceUsd)||0,change24h:p.priceChange?.h24==null?null:Number(p.priceChange.h24),addedAt:new Date().toISOString()});b.textContent='Added ✓';toast('Added '+(p.baseToken.symbol||'token')+' to watchlist.')}renderWatchlist();saveState()})}catch(e){box.innerHTML='<div class="empty">Search timed out or failed. Check your connection and try again.</div>'}}
 $('searchBtn').onclick=searchTokens;$('tokenSearch').onkeydown=e=>{if(e.key==='Enter')searchTokens()};document.querySelectorAll('[data-range]').forEach(b=>{b.classList.toggle('active',b.dataset.range===chartRange);b.onclick=()=>{document.querySelectorAll('[data-range]').forEach(x=>x.classList.remove('active'));b.classList.add('active');chartRange=b.dataset.range||'1H';tickFails=0;tickSkipUntil=0;saveState();toast('Chart range saved. Loading real candles…');loadCandles('range')}});
 wireChartHover();renderOrders();renderWatchlist();document.querySelectorAll('[data-range]').forEach(b=>b.classList.toggle('active',b.dataset.range===chartRange));$('retryFeed').onclick=fetchMarket;$('chartFeedStatus').onclick=()=>{if(candleStatus==='stale'||candleStatus==='error'){tickFails=0;tickSkipUntil=0;loadCandles('retry')}};document.addEventListener('visibilitychange',()=>{if(!document.hidden&&price>0)fetchMarket()});$('tokenSearch').oninput=saveState;setPrice(0,0);fetchMarket();searchTokens();setInterval(fetchMarket,30000);
+
+// N7.3 Strategy Lab backtest UI (2026-10-22). Client for the N7.2 /api/backtest
+// engine. Scheme metadata (ids, Playbook #, asset, measured edges, tunable
+// ranges) is derived from api/backtest.rs — the picker shows Playbook edges
+// only where the engine stamps them (playbook_edge_pp); everything else is
+// shown as Playbook top-10 context, never as a promise.
+const BT_SCHEMES=[
+ {id:'supertrend-10-3-25',label:'Supertrend (10, 3) + 25-day time-stop',no:1,asset:'XRP',edge:87.8,
+  params:[{k:'atr_period',label:'ATR period',min:2,max:50,step:1,def:10},{k:'mult',label:'Multiplier',min:0.5,max:10,step:0.1,def:3},{k:'max_hold',label:'Time-stop (days)',min:1,max:10000,step:1,def:25}]},
+ {id:'aroon-25-10',label:'Aroon (25) + 10-day time-stop',no:2,asset:'SOL',edge:83.1,
+  params:[{k:'period',label:'Aroon period',min:2,max:200,step:1,def:25},{k:'max_hold',label:'Time-stop (days)',min:1,max:10000,step:1,def:10}]},
+ {id:'supertrend-7-2',label:'Supertrend (7, 2)',no:3,asset:'SOL',edge:null,
+  params:[{k:'atr_period',label:'ATR period',min:2,max:50,step:1,def:7},{k:'mult',label:'Multiplier',min:0.5,max:10,step:0.1,def:2},{k:'max_hold',label:'Max hold (days)',min:1,max:10000,step:1,def:10000}]},
+ {id:'bollinger-drift-20-2',label:'Bollinger (20, 2) + drift gate',no:4,asset:'SOL',edge:null,fixed:'Fixed Playbook parameters: 20, 2, ±25% SMA200 drift gate'},
+ {id:'aroon-25-40',label:'Aroon (25) + 40-day time-stop',no:5,asset:'ETH',edge:null,
+  params:[{k:'period',label:'Aroon period',min:2,max:200,step:1,def:25},{k:'max_hold',label:'Time-stop (days)',min:1,max:10000,step:1,def:40}]},
+ {id:'aroon-25',label:'Aroon (25) trend-state',no:6,asset:'ETH',edge:null,
+  params:[{k:'period',label:'Aroon period',min:2,max:200,step:1,def:25}]},
+ {id:'ema-20-50',label:'EMA 20/50 cross',no:7,asset:'ETH',edge:null,fixed:'Fixed Playbook parameters: 20/50'},
+ {id:'aroon-40',label:'Aroon (40) trend-state',no:8,asset:'ETH',edge:null,
+  params:[{k:'period',label:'Aroon period',min:2,max:200,step:1,def:40}]},
+ {id:'kama-10-2-30',label:'KAMA (10, 2, 30) cross',no:9,asset:'SOL',edge:null,fixed:'Fixed Playbook parameters: 10, 2, 30'},
+ {id:'supertrend-7-2-xrp',label:'Supertrend (7, 2)',no:10,asset:'XRP',edge:null,
+  params:[{k:'atr_period',label:'ATR period',min:2,max:50,step:1,def:7},{k:'mult',label:'Multiplier',min:0.5,max:10,step:0.1,def:2},{k:'max_hold',label:'Max hold (days)',min:1,max:10000,step:1,def:10000}]},
+];
+const BT_PAIRS=[
+ {id:'sol-usd',label:'SOL/USD · Kraken spot (longest history)'},
+ {id:'sol-usdc',label:'SOL/USDC · GeckoTerminal DEX pool'},
+ {id:'ray-usdc',label:'RAY/USDC · GeckoTerminal DEX pool'},
+ {id:'jup-usdc',label:'JUP/USDC · GeckoTerminal DEX pool'},
+];
+const BT_CFG_KEY='gecko-backtest-configs-v1';
+// N2.2 hook: configs namespace by wallet address once N4.1 lands; 'paper' until then.
+function btIdentity(){return window.__walletAddress||'paper';}
+let btRange='full',btRunning=false,btLastCfg=null;
+function btSchemeContext(s){let t='Playbook #'+s.no+' · measured on '+s.asset;t+=s.edge!=null?(' · Playbook measured edge +'+s.edge+'pp (historical — not a promise)'):(' · Playbook top-10 scheme (historical — not a promise)');if(s.fixed)t+=' · '+s.fixed;return t;}
+function btRenderParams(){const s=BT_SCHEMES.find(x=>x.id===$('btScheme').value)||BT_SCHEMES[0];$('btSchemeCtx').textContent=btSchemeContext(s);const box=$('btParams');let h='';(s.params||[]).forEach(p=>{h+='<div class="field"><label>'+esc(p.label)+' <span class="sub">('+p.min+'–'+p.max+')</span></label><input id="btp_'+p.k+'" type="number" min="'+p.min+'" max="'+p.max+'" step="'+p.step+'" value="'+p.def+'"></div>';});h+='<div class="field"><label>Fee per side <span class="sub">(bps, 0–1000)</span></label><input id="btp_fee_bps" type="number" min="0" max="1000" step="1" value="26"></div>';h+='<div class="field"><label>Deploy <span class="sub">(% of equity, 1–100)</span></label><input id="btp_deploy_pct" type="number" min="1" max="100" step="1" value="95"></div>';box.innerHTML=h;}
+function btDate(t){return new Date(t*1000).toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'});}
+function btExitLabel(r){return r==='time_stop'?'Time-stop':r==='end_of_data'?'End of data':r==='signal'?'Signal':String(r||'—');}
+function btSgn(v){return (v>=0?'+':'')+fmt(v,2);}
+function btLoadCfgStore(){try{const s=JSON.parse(localStorage.getItem(BT_CFG_KEY)||'null');if(s&&s.version===1&&s.configs)return s;}catch(_){}return{version:1,configs:{}};}
+function btSaveCfgStore(s){try{localStorage.setItem(BT_CFG_KEY,JSON.stringify(s));}catch(_){}}
+async function btRun(){
+ if(btRunning)return;btRunning=true;
+ const s=BT_SCHEMES.find(x=>x.id===$('btScheme').value)||BT_SCHEMES[0];
+ const qs=new URLSearchParams({scheme:s.id,pair:$('btPair').value});
+ (s.params||[]).forEach(p=>{const el=$('btp_'+p.k);let v=(el&&el.value!=='')?Number(el.value):NaN;if(!Number.isFinite(v))v=p.def;v=Math.min(p.max,Math.max(p.min,v));if(el)el.value=v;qs.set(p.k,String(v));});
+ let fee=($('btp_fee_bps').value!=='')?Number($('btp_fee_bps').value):NaN;if(!Number.isFinite(fee))fee=26;fee=Math.min(1000,Math.max(0,fee));qs.set('fee_bps',String(fee));
+ let dep=($('btp_deploy_pct').value!=='')?Number($('btp_deploy_pct').value):NaN;if(!Number.isFinite(dep))dep=95;dep=Math.min(100,Math.max(1,dep));qs.set('deploy_pct',String(dep));
+ let from=null,to=null;
+ if(btRange==='1y')from=Math.floor(Date.now()/1000)-365*86400;
+ else if(btRange==='6m')from=Math.floor(Date.now()/1000)-182*86400;
+ else if(btRange==='custom'){
+  const fv=$('btFrom').value,tv=$('btTo').value;
+  if(fv)from=Math.floor(Date.parse(fv+'T00:00:00Z')/1000);
+  if(tv)to=Math.floor(Date.parse(tv+'T00:00:00Z')/1000);
+  if(from&&to&&from>=to){toast('Custom range: From must be before To.');btRunning=false;return;}
+  if(to&&to*1000>Date.now()){toast('Custom range: To cannot be in the future.');btRunning=false;return;}
+ }
+ if(from)qs.set('from',String(from));
+ if(to)qs.set('to',String(to));
+ $('btStatus').textContent='Running backtest…';$('btResults').innerHTML='<div class="empty">Running…</div>';
+ const controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),30000);
+ try{
+  const r=await fetch('/api/backtest?'+qs.toString(),{signal:controller.signal});
+  const j=await r.json();
+  if(!j||j.ok!==true)throw Error((j&&j.error)?j.error+(j.message?': '+j.message:''):'backtest failed');
+  btLastCfg={scheme:s.id,params:Object.fromEntries((s.params||[]).map(p=>{const el=$('btp_'+p.k);return[p.k,el?el.value:String(p.def)];})),pair:$('btPair').value,from:from,to:to,fee_bps:String(fee),deploy_pct:String(dep)};
+  await btRenderResults(j);
+  $('btStatus').textContent='Done · '+(j.cached?'cached result':'fresh result');
+ }catch(e){console.error('backtest failed',e);$('btResults').innerHTML='<div class="empty">Backtest failed: '+esc(e.message||e)+'</div>';$('btStatus').textContent='Failed';}
+ finally{clearTimeout(timeout);btRunning=false;}
+}
+// The BH benchmark curve is recomputed client-side from the same /api/ohlcv
+// bars the engine ran on (identical deploy/fee, entry at the stamped warmup
+// bar's close). If the fetch fails, the strategy curve still renders.
+async function btRenderResults(j){
+ const r=j.result,s=j.scheme,d=j.data,f=j.fee;
+ const cls=v=>v>=0?'positive':'negative';
+ let h='<div class="btstats">';
+ h+='<div class="btstat"><small>Total return</small><strong class="'+cls(r.total_return_pct)+'">'+btSgn(r.total_return_pct)+'%</strong></div>';
+ h+='<div class="btstat"><small>Buy-and-hold</small><strong class="'+cls(r.buy_hold_return_pct)+'">'+btSgn(r.buy_hold_return_pct)+'%</strong></div>';
+ h+='<div class="btstat"><small>Edge (pp)</small><strong class="'+cls(r.edge_pp)+'">'+btSgn(r.edge_pp)+'pp</strong></div>';
+ h+='<div class="btstat"><small>Max drawdown</small><strong class="negative">−'+fmt(r.max_drawdown_pct,2)+'%</strong></div>';
+ h+='<div class="btstat"><small>Trades</small><strong>'+r.trades+'</strong></div>';
+ h+='<div class="btstat"><small>Win rate</small><strong>'+fmt(r.win_rate_pct,1)+'%</strong></div>';
+ h+='<div class="btstat"><small>Avg bars held</small><strong>'+fmt(r.avg_bars_held,1)+'</strong></div>';
+ h+='</div>';
+ h+='<div class="btcurve"><svg id="btCurve" viewBox="0 0 900 200" preserveAspectRatio="none" aria-label="Equity curve versus buy-and-hold"></svg></div>';
+ h+='<div class="btlegend"><span style="color:var(--green)">—</span> '+esc(s.name)+' &nbsp; <span style="color:var(--blue)">- -</span> Buy-and-hold (identical fee/deploy) · <span id="btCurveCap">equity starts at 1.00</span></div>';
+ h+='<div class="bthead">Trades ('+r.trades+')</div>';
+ if(r.trades){h+='<div class="bttable tablewrap"><table><thead><tr><th>Entry</th><th>Entry price</th><th>Exit</th><th>Exit price</th><th>Held</th><th>P&amp;L</th><th>Exit reason</th></tr></thead><tbody>';
+  r.trade_list.forEach(t=>{h+='<tr><td>'+btDate(t.entry_t)+'</td><td>'+formatPriceUsd(t.entry_price)+'</td><td>'+btDate(t.exit_t)+'</td><td>'+formatPriceUsd(t.exit_price)+'</td><td>'+t.bars_held+'d</td><td class="'+cls(t.pnl_pct)+'">'+btSgn(t.pnl_pct)+'%</td><td>'+btExitLabel(t.exit_reason)+'</td></tr>';});
+  h+='</tbody></table></div>';}
+ else h+='<div class="empty">No trades in this window.</div>';
+ h+='<div class="sub" style="margin-top:12px">Data: '+btDate(d.from)+' → '+btDate(d.to)+' · '+d.bars+' daily bars · warmup '+d.warmup_bars+' · source '+esc(j.source)+' · pair '+esc(j.pair)+'</div>';
+ h+='<div class="sub">Fee model: '+f.fee_bps_per_side+' bps/side · '+f.deploy_pct+'% deploy · fill-at-close · long-only · one position'+(j.cached?' · cached':'')+'</div>';
+ if(s.playbook_edge_pp!=null)h+='<div class="sub">Playbook historical context: #'+s.playbook_no+' on '+esc(s.playbook_asset)+' measured +'+s.playbook_edge_pp+'pp — historical, not a promise.</div>';
+ h+='<div class="sub" style="margin-top:8px">'+esc(j.disclaimer)+'</div>';
+ $('btResults').innerHTML=h;
+ try{
+  const or=await fetch('/api/ohlcv?pair='+encodeURIComponent($('btPair').value));
+  const oj=await or.json();
+  btDrawCurves(j,oj);
+ }catch(e){console.error('BH curve fetch failed',e);btDrawCurves(j,null);}
+}
+function btDrawCurves(j,oj){
+ const svg=$('btCurve');if(!svg)return;
+ const curve=j.result.equity_curve;
+ if(!curve||curve.length<2){svg.innerHTML='';return;}
+ const fee=j.fee.fee_bps_per_side/10000,dep=j.fee.deploy_pct/100;
+ let bh=null;
+ if(oj&&oj.ok===true&&Array.isArray(oj.bars)&&oj.bars.length){
+  const from=j.data.from,to=j.data.to,warm=j.data.warmup_bars;
+  const bars=oj.bars.filter(b=>!b.forming&&b.t>=from&&b.t<=to&&Number.isFinite(b.c)&&b.c>0).sort((a,b)=>a.t-b.t);
+  if(bars.length>warm){
+   const entry=bars[warm].c,qty=dep*(1-fee)/entry;
+   bh=bars.slice(warm).map(b=>[b.t,(1-dep)+qty*b.c*(1-fee)]);
+  }
+ }
+ let mn=Infinity,mx=-Infinity;
+ curve.forEach(p=>{if(p[1]<mn)mn=p[1];if(p[1]>mx)mx=p[1];});
+ (bh||[]).forEach(p=>{if(p[1]<mn)mn=p[1];if(p[1]>mx)mx=p[1];});
+ if(!(mx>mn)){mn*=0.999;mx*=1.001;}
+ const pad=(mx-mn)*0.08;mn-=pad;mx+=pad;
+ const t0=curve[0][0],t1=curve[curve.length-1][0],span=Math.max(1,t1-t0);
+ const X=t=>((t-t0)/span*880+10),Y=v=>180-(v-mn)/(mx-mn)*160;
+ const path=pts=>pts.map((p,i)=>(i?'L':'M')+X(p[0]).toFixed(1)+' '+Y(p[1]).toFixed(1)).join(' ');
+ let s='<g stroke="#26303c" stroke-width="1"><path d="M0 40H900M0 100H900M0 160H900"/></g>';
+ s+='<path d="'+path(curve)+'" fill="none" stroke="#42d6a0" stroke-width="2" vector-effect="non-scaling-stroke"/>';
+ if(bh)s+='<path d="'+path(bh)+'" fill="none" stroke="#8aa9ff" stroke-width="1.5" stroke-dasharray="6 4" vector-effect="non-scaling-stroke"/>';
+ svg.innerHTML=s;
+ const cap=$('btCurveCap');
+ if(cap)cap.textContent='equity starts at 1.00 · range '+fmt(mn+pad,2)+' – '+fmt(mx-pad,2)+' · '+btDate(t0)+' → '+btDate(t1)+(bh?'':' · buy-and-hold curve unavailable');
+}
+function btSaveConfig(){
+ if(!btLastCfg){toast('Run a backtest first, then save it.');return;}
+ const name=$('btCfgName').value.trim().slice(0,60);
+ if(!name){toast('Name this configuration first.');$('btCfgName').focus();return;}
+ const store=btLoadCfgStore(),id=btIdentity();
+ const list=store.configs[id]||(store.configs[id]=[]);
+ const cfg=Object.assign({name,savedAt:new Date().toISOString()},btLastCfg);
+ const ix=list.findIndex(c=>c.name===name);
+ if(ix>=0)list[ix]=cfg;else list.push(cfg);
+ while(list.length>25)list.shift();
+ btSaveCfgStore(store);$('btCfgName').value='';btRenderConfigs();toast('Configuration saved.');
+}
+function btRenderConfigs(){
+ const store=btLoadCfgStore(),list=store.configs[btIdentity()]||[];
+ const box=$('btCfgList');
+ if(!list.length){box.innerHTML='<div class="empty">No saved configurations yet. Run a backtest, name it, and save it here.</div>';return;}
+ box.innerHTML=list.map((c,i)=>'<div class="btcfg"><div><strong>'+esc(c.name)+'</strong><div class="sub">'+esc(c.scheme)+' · '+esc(c.pair)+' · fee '+esc(c.fee_bps)+'bps · deploy '+esc(c.deploy_pct)+'%</div></div><div style="display:flex;gap:6px"><button type="button" class="action" data-btload="'+i+'">Load</button><button type="button" class="action sell" data-btdel="'+i+'">Delete</button></div></div>').join('');
+ box.querySelectorAll('[data-btload]').forEach(b=>b.onclick=()=>btLoadConfig(Number(b.dataset.btload)));
+ box.querySelectorAll('[data-btdel]').forEach(b=>b.onclick=()=>{const s2=btLoadCfgStore(),l=s2.configs[btIdentity()]||[];const gone=l.splice(Number(b.dataset.btdel),1)[0];btSaveCfgStore(s2);btRenderConfigs();toast('Deleted '+(gone?gone.name:'configuration')+'.');});
+}
+function btLoadConfig(i){
+ const list=(btLoadCfgStore().configs[btIdentity()]||[]),c=list[i];
+ if(!c)return;
+ $('btScheme').value=c.scheme;btRenderParams();
+ Object.keys(c.params||{}).forEach(k=>{const el=$('btp_'+k);if(el)el.value=c.params[k];});
+ if($('btp_fee_bps'))$('btp_fee_bps').value=c.fee_bps;
+ if($('btp_deploy_pct'))$('btp_deploy_pct').value=c.deploy_pct;
+ if(c.pair)$('btPair').value=c.pair;
+ if(c.from||c.to){btRange='custom';}else{btRange='full';}
+ document.querySelectorAll('[data-btrange]').forEach(x=>x.classList.toggle('active',x.dataset.btrange===btRange));
+ $('btCustomRange').style.display=btRange==='custom'?'grid':'none';
+ if(c.from)$('btFrom').value=new Date(c.from*1000).toISOString().slice(0,10);
+ if(c.to)$('btTo').value=new Date(c.to*1000).toISOString().slice(0,10);
+ toast('Loaded "'+c.name+'". Press Run backtest.');
+}
+function btInit(){
+ if(!$('btScheme'))return;
+ $('btScheme').innerHTML=BT_SCHEMES.map(s=>'<option value="'+s.id+'">'+esc(s.label)+' · #'+s.no+' '+esc(s.asset)+'</option>').join('');
+ $('btPair').innerHTML=BT_PAIRS.map(p=>'<option value="'+p.id+'">'+esc(p.label)+'</option>').join('');
+ $('btScheme').onchange=btRenderParams;btRenderParams();
+ document.querySelectorAll('[data-btrange]').forEach(b=>b.onclick=()=>{document.querySelectorAll('[data-btrange]').forEach(x=>x.classList.remove('active'));b.classList.add('active');btRange=b.dataset.btrange;$('btCustomRange').style.display=btRange==='custom'?'grid':'none';});
+ $('btRun').onclick=btRun;
+ $('btSaveCfg').onclick=btSaveConfig;
+ btRenderConfigs();
+}
+btInit();
+
 </script></body></html>
