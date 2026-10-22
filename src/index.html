@@ -24,7 +24,7 @@
 const $=id=>document.getElementById(id);const STORAGE_KEY='gecko-terminal-state-v1';
 let price=0,change=0,cash=10000,sol=0,costBasis=0,orders=[],side='buy',marketPairs=[],watchlist=[],chartRange='1H';
 let feedFailures=0,lastMarketAt=0;
-const OHLCV_RANGE={'1H':{tf:'minute',agg:1,limit:60},'24H':{tf:'minute',agg:15,limit:96},'7D':{tf:'hour',agg:1,limit:168},'30D':{tf:'hour',agg:6,limit:120}};
+const OHLCV_RANGE={'1H':{tf:'minute',agg:1,limit:60},'24H':{tf:'minute',agg:15,limit:96},'7D':{tf:'hour',agg:1,limit:168},'30D':{tf:'day',agg:1,limit:30}};
 let candles=[],candleStatus='idle',candlePool=null,candlePairLabel='',candleUpdatedAt=0,heroPair=null,candleReq=0;
 const fmt=(n,d=2)=>Number(n||0).toLocaleString('en-US',{minimumFractionDigits:d,maximumFractionDigits:d});
 const usd=n=>'$'+fmt(n,2);
