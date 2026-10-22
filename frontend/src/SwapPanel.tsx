@@ -29,7 +29,7 @@
 import {useEffect} from 'react';
 import {useWallet} from '@solana/wallet-adapter-react';
 import type {VersionedTransaction} from '@solana/web3.js';
-import {COPY as SWAP_COPY,SAFETY_COPY,DEFAULT_SLIPPAGE_BPS,explorerUrl,impactBand,impactNotice,isQuoteFresh,isRejectionError,lamportsToSol,MAX_SLIPPAGE_BPS,MIN_SLIPPAGE_BPS,parseSlippageInput,poolFeeNote,SLIPPAGE_PRESETS_BPS,solPriceUsdFromQuote} from './solana/swapFlow';
+import {COPY as SWAP_COPY,SAFETY_COPY,DEFAULT_SLIPPAGE_BPS,explorerUrl,impactBand,impactNotice,isQuoteFresh,isRejectionError,lamportsToSol,MAX_SLIPPAGE_BPS,MIN_SLIPPAGE_BPS,parseSlippageInput,poolFeeNote,readSharedSlippage,SLIPPAGE_PRESETS_BPS,solPriceUsdFromQuote,writeSharedSlippage} from './solana/swapFlow';
 import type {PrepareState,ImpactBand} from './solana/swapFlow';
 // N4.4 AMENDMENT (2026-10-22): the head's slippage validation below was widened from
 //   1–500 bps to 1–1000 bps (0.01%–10%) with the pack's rejection copy, via parseSlippageInput.
@@ -41,7 +41,7 @@ import {useMemo,useState} from 'react';import {WalletMultiButton} from '@solana/
 //   destructure drops it (tsc TS6133). Keeping the one-step signer wired would reintroduce
 //   a sign-different-bytes path, i.e. a simulate-then-sign hole. executeQuote remains
 //   exported by useRaydiumSwap for API completeness but is unwired here.
-export function SwapPanel(){const [pairId,setPairId]=useState(PAIRS[0].id),[reverse,setReverse]=useState(false),[amount,setAmount]=useState('0.1'),[slippageBps,setSlippageBps]=useState('50'),[quote,setQuote]=useState<QuoteResult|null>(null),[busy,setBusy]=useState(false),[message,setMessage]=useState('Connect your wallet to begin.'),[error,setError]=useState<string|null>(null);const {getQuote,connected}=useRaydiumSwap();const pair=useMemo(()=>PAIRS.find(p=>p.id===pairId)??PAIRS[0],[pairId]);const input=TOKENS[reverse?pair.quoteSymbol:pair.baseSymbol],output=TOKENS[reverse?pair.baseSymbol:pair.quoteSymbol];
+export function SwapPanel(){const [pairId,setPairId]=useState(PAIRS[0].id),[reverse,setReverse]=useState(false),[amount,setAmount]=useState('0.1'),[slippageBps,setSlippageBps]=useState(()=>String(readSharedSlippage())),[quote,setQuote]=useState<QuoteResult|null>(null),[busy,setBusy]=useState(false),[message,setMessage]=useState('Connect your wallet to begin.'),[error,setError]=useState<string|null>(null);const {getQuote,connected}=useRaydiumSwap();const pair=useMemo(()=>PAIRS.find(p=>p.id===pairId)??PAIRS[0],[pairId]);const input=TOKENS[reverse?pair.quoteSymbol:pair.baseSymbol],output=TOKENS[reverse?pair.baseSymbol:pair.quoteSymbol];
 function reset(){setQuote(null);setError(null);setMessage('Request and review a fresh quote before signing.')}
 async function onQuote(){setBusy(true);setError(null);setMessage('Fetching Raydium route…');setQuote(null);try{const slipParsed=parseSlippageInput(slippageBps);if(!slipParsed.ok)throw Error(slipParsed.error);const raw=parseAmountToBaseUnits(amount,input.decimals),slip=slipParsed.bps;const q=await getQuote({inputMint:input.mint,outputMint:output.mint,amountRaw:raw,slippageBps:slip,outputSymbol:output.symbol});setQuote(q);setMessage('Quote ready. Check expected and minimum received before signing.');return q;}catch(err){setError(err instanceof Error?err.message:'Quote failed.');setMessage('Quote failed. Request a fresh quote and try again.');return null;}finally{setBusy(false);}}
 // N4.2 (2026-10-22) — review-sign-confirm flow. "Review & swap" opens a review sheet showing the
@@ -64,8 +64,8 @@ function onAmountChange(v:string){setAmount(v);clearSwapState();reset();}
 function onSlippageChange(v:string){
   const parsed=parseSlippageInput(v);
   if(!parsed.ok){setError(parsed.error);return;}
-  setError(null);setSlippageBps(String(parsed.bps));clearSwapState();reset();
-  setMessage('Slippage set to '+(parsed.bps/100).toFixed(2)+'% — request a fresh quote before confirming.');
+  setError(null);setSlippageBps(String(parsed.bps));writeSharedSlippage(parsed.bps);clearSwapState();reset();
+  setMessage('Slippage set to '+(parsed.bps/100).toFixed(2)+'% — request a fresh quote before confirming. (Shared with the home ticket.)');
 }
 /** N4.4: slippage hint for the custom input (pack §3.1). */
 const slippageHint=`Presets or custom, in basis points (${DEFAULT_SLIPPAGE_BPS} bps = ${(DEFAULT_SLIPPAGE_BPS/100).toFixed(2)}%). Allowed: ${MIN_SLIPPAGE_BPS}–${MAX_SLIPPAGE_BPS} bps (0.01%–10%).`;

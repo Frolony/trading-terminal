@@ -54,6 +54,17 @@ a.wrow{text-decoration:none}
 .pairbox small{display:block;color:var(--muted);font-size:11px;margin-top:3px}
 .moderow{margin-bottom:10px}
 .moderow .modelabel{font-size:10px;color:var(--muted);letter-spacing:1px;text-transform:uppercase;margin-bottom:6px}
+/* N4.4 paper review sheet + ticket slippage (2026-10-22). */
+.amounts button.on{border-color:#b8f36b;color:var(--lime);background:#13251f;font-weight:700}
+.review{border:1px solid #3b625c;border-radius:10px;background:#0d1319;padding:6px 14px 14px;margin-top:4px}
+.review[hidden]{display:none}
+.review .rhead{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:10px 0 4px}
+.paperchip{border:1px solid #8aa9ff;background:#16233f;color:#8aa9ff;border-radius:999px;padding:3px 10px;font-size:10px;font-weight:700;letter-spacing:.6px;white-space:nowrap}
+.rwarn{color:#f0c674;font-size:11px;padding:6px 0}
+.rblock{color:var(--red);font-size:11px;padding:6px 0}
+.ractions{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px}
+.ractions .ghost{padding:12px;border:1px solid var(--line);border-radius:8px;background:transparent;color:var(--muted);font-weight:650}
+.ractions .primary:disabled{opacity:.45;cursor:not-allowed}
 </style></head><body><div class="app">
 <header class="top"><div class="brand"><div class="mark">ɢ</div><div><h1>GECKO TERMINAL</h1><small>Solana market intelligence</small></div></div><div class="topright"><span class="pill">NETWORK&nbsp; / &nbsp;SOLANA</span><span class="status"><i class="dot"></i><span id="feedStatus">CONNECTING DATA</span></span><span class="wwrap"><button id="walletBtn" class="walletbtn" type="button">Connect Wallet</button><div class="wdd" id="walletDd" hidden><div class="eyebrow" id="walletDdName" style="margin-top:8px">Wallet</div><div class="waddr" id="walletDdAddr"></div><div class="walletrow"><span>SOL balance</span><strong id="walletSol">—</strong></div><div class="walletrow"><span>USDC balance</span><strong id="walletUsdc">—</strong></div><div class="walletrow"><span>USDT balance</span><strong id="walletUsdt">—</strong></div><div class="wrowbtn"><button type="button" id="walletCopy">Copy address</button><button type="button" id="walletRetryBal">Retry balances</button></div><div class="wrowbtn"><button type="button" id="walletDisconnect" class="danger">Disconnect</button></div></div></span><span class="pill">PAPER MODE</span></div></header>
 <div class="stats">
@@ -85,7 +96,7 @@ a.wrow{text-decoration:none}
 <section class="panel"><div class="panelhead"><h2>Solana market pairs</h2><div style="display:flex;align-items:center;gap:8px"><button type="button" class="action" id="retryFeed">Retry feed</button><span class="pill" id="pairCount">DISCOVERING</span></div></div><div class="tablewrap"><table><thead><tr><th>Pair / DEX</th><th>Price USD</th><th>24H</th><th>Liquidity</th><th>24H volume</th><th>Trade</th></tr></thead><tbody id="pairs"><tr><td colspan="6" class="empty">Loading live pairs from DexScreener…</td></tr></tbody></table></div></section>
 <section class="panel"><div class="panelhead"><h2>Token discovery</h2><span class="eyebrow">DEXSCREENER SEARCH</span></div><div class="panelbody"><div class="searchrow"><input id="tokenSearch" placeholder="Search token, ticker or mint address" value="SOL"><button id="searchBtn">Search</button></div><div id="searchResults" class="results"><div class="empty">Search live Solana pairs and add candidates to your watchlist.</div></div></div></section>
 </main><aside class="sidecol">
-<section class="panel tradepanel"><div class="panelhead"><h2>Order ticket</h2><span class="pill">SIMULATED</span></div><div class="panelbody"><form class="tradeform" id="tradeForm"><div class="moderow"><div class="modelabel">Execution mode</div><div class="switchrow"><button type="button" id="paperModeBtn" class="active mode">Paper</button><button type="button" id="liveModeBtn">Live</button></div></div><div class="switchrow"><button type="button" id="buyBtn" class="active buy">Buy / Long</button><button type="button" id="sellBtn" class="sell">Sell</button></div><div class="field"><label>Trading pair</label><div class="pairbox"><strong id="ticketPairName">SOL / USDC</strong><small id="ticketPairMeta">Waiting for market data…</small></div></div><div class="field"><label>Order type</label><select id="orderType"><option>Market</option><option disabled>Limit (planned)</option></select></div><div class="field"><label>Order size</label><div class="inputwrap"><input id="orderAmount" type="number" min="0.0001" step="any" value="100" required><span id="amountUnit">USD</span></div></div><div class="amounts"><button type="button" data-amt="25">$25</button><button type="button" data-amt="100">$100</button><button type="button" data-amt="250">$250</button><button type="button" data-amt="max">MAX</button></div><div class="walletrow"><span>Execution price</span><strong id="execPrice">$—</strong></div><div class="walletrow"><span>Estimated quantity</span><strong id="estQty">— SOL</strong></div><div class="walletrow"><span>Available USD</span><strong id="cashAvail">$10,000.00</strong></div><button class="primary" id="submitTrade" type="submit">Buy SOL · Paper</button><div class="note" id="ticketNote">No wallet connected · no real orders or funds</div></form></div></section>
+<section class="panel tradepanel"><div class="panelhead"><h2>Order ticket</h2><span class="pill">SIMULATED</span></div><div class="panelbody"><form class="tradeform" id="tradeForm"><div class="moderow"><div class="modelabel">Execution mode</div><div class="switchrow"><button type="button" id="paperModeBtn" class="active mode">Paper</button><button type="button" id="liveModeBtn">Live</button></div></div><div class="switchrow"><button type="button" id="buyBtn" class="active buy">Buy / Long</button><button type="button" id="sellBtn" class="sell">Sell</button></div><div class="field"><label>Trading pair</label><div class="pairbox"><strong id="ticketPairName">SOL / USDC</strong><small id="ticketPairMeta">Waiting for market data…</small></div></div><div class="field"><label>Order type</label><select id="orderType"><option>Market</option><option disabled>Limit (planned)</option></select></div><div class="field"><label>Order size</label><div class="inputwrap"><input id="orderAmount" type="number" min="0.0001" step="any" value="100" required><span id="amountUnit">USD</span></div></div><div class="amounts"><button type="button" data-amt="25">$25</button><button type="button" data-amt="100">$100</button><button type="button" data-amt="250">$250</button><button type="button" data-amt="max">MAX</button></div><div class="field"><label>Slippage tolerance</label><div class="amounts" id="slipPresets"><button type="button" data-slip="10">0.1%</button><button type="button" data-slip="50">0.5%</button><button type="button" data-slip="100">1.0%</button></div><div class="inputwrap" style="margin-top:6px"><input id="slippageInput" inputmode="numeric" aria-label="Custom slippage in basis points" placeholder="Custom (bps)"><span>bps</span></div><div class="note" style="text-align:left;margin-top:6px">Presets or custom, in basis points (50 bps = 0.50%). Allowed: 1&ndash;1000 bps (0.01%&ndash;10%). Shared with the /raydium/ page.</div></div><div class="walletrow"><span>Execution price</span><strong id="execPrice">$—</strong></div><div class="walletrow"><span>Estimated quantity</span><strong id="estQty">— SOL</strong></div><div class="walletrow"><span>Available USD</span><strong id="cashAvail">$10,000.00</strong></div><button class="primary" id="submitTrade" type="submit">Buy SOL · Paper</button><div class="note" id="ticketNote">No wallet connected · no real orders or funds</div><div id="reviewSheet" class="review" hidden></div></form></div></section>
 <section class="panel"><div class="panelhead"><h2>Paper portfolio</h2><span class="eyebrow">LOCAL SESSION</span></div><div class="panelbody"><div class="walletrow"><span>Cash balance</span><strong id="cashBal">$10,000.00</strong></div><div id="holdingsList"><div class="empty">No paper positions yet.</div></div><div class="walletrow"><span>Position value</span><strong id="posValue">$0.00</strong></div><div class="walletrow"><span>Unrealized P/L</span><strong id="unrealized">$0.00</strong></div><button id="resetPaper" style="margin-top:13px;width:100%;padding:8px;background:#11151d;border:1px solid var(--line);color:#aab5c6;border-radius:7px;font-size:11px">Reset paper account</button></div></section>
 <section class="panel"><div class="panelhead"><h2>Recent orders</h2><span class="eyebrow" id="orderCount">0 ORDERS</span></div><div id="orders"><div class="empty">Your simulated paper orders will appear here.</div></div></section>
 <section class="panel"><div class="panelhead"><h2>Rust execution core</h2><span class="pill">ARCHITECTURE</span></div><div class="panelbody"><div class="rust"><span class="kw">pub struct</span> OrderIntent {<br>&nbsp;&nbsp;pub mint: String,<br>&nbsp;&nbsp;pub side: Side,<br>&nbsp;&nbsp;pub amount_usd: u64,<br>}<br><br><span class="kw">pub enum</span> Side { Buy, Sell }<br><br><span class="kw">pub fn</span> <span class="fn">validate_order</span>(<br>&nbsp;&nbsp;order: &amp;OrderIntent,<br>&nbsp;&nbsp;balance: u64,<br>) -&gt; Result&lt;(), Error&gt; {<br>&nbsp;&nbsp;<span class="kw">if</span> order.amount_usd == 0<br>&nbsp;&nbsp;&nbsp;&nbsp;|| order.amount_usd &gt; balance {<br>&nbsp;&nbsp;&nbsp;&nbsp;<span class="kw">return</span> Err(Error::InvalidSize);<br>&nbsp;&nbsp;}<br>&nbsp;&nbsp;Ok(())<br>}</div><div class="sub" style="margin-top:10px">Rust backend is an architecture stub in this prototype. Order signing, RPC execution and custody are not connected.</div></div></section>
@@ -168,8 +179,74 @@ function paperSellFill(st,fill){
   const order={side:'sell',mode:'paper',baseMint:fill.baseMint,baseSymbol:fill.baseSymbol,quoteSymbol:fill.quoteSymbol,amount:usdProceeds,qty,price:fill.price,time:new Date()};
   return{cash:st.cash+usdProceeds,holdings,order};
 }
+/* === N4.4 paper review + shared slippage (pure, Node-testable) ===
+   - Shared slippage store (pack §3.1.1): localStorage key shared by the / ticket
+     (here) and the /raydium/ panel (frontend/src/solana/swapFlow.ts
+     readSharedSlippage/writeSharedSlippage). Same constants, same validation,
+     same rejection copy — one store, two render sites.
+   - Paper review model (pack §3.6): the canonical 9-line pre-trade review for
+     paper fills ("Place paper order"). Paper fills execute at the feed
+     reference price, so price impact is 0.00% (simulated — no market impact);
+     network and pool fees are honestly n/a (nothing touches the chain). The
+     >15% impact block is kept for parity (unreachable in paper). */
+const SLIP_KEY='gecko-terminal:slippage-bps:v1';
+const SLIP_PRESETS=[10,50,100],SLIP_MIN=1,SLIP_MAX=1000,SLIP_DEFAULT=50;
+function slipValidate(v){ // mirrors swapFlow.parseSlippageInput: integers only, 1–1000 bps
+  const t=String(v===null||v===undefined?'':v).trim();
+  if(!/^\d+$/.test(t))return{ok:false,error:'Slippage must be a whole number of basis points (e.g. 50 for 0.50%).'};
+  const bps=Number(t);
+  if(bps<SLIP_MIN)return{ok:false,error:'Slippage must be at least '+SLIP_MIN+' bp (0.01%).'};
+  if(bps>SLIP_MAX)return{ok:false,error:'Slippage above 10% is disallowed; a quote this loose usually means a bad route. Pick a deeper pair or split the trade.'};
+  return{ok:true,bps};
+}
+function slipLoad(){try{const raw=localStorage.getItem(SLIP_KEY);if(raw===null||raw==='')return SLIP_DEFAULT;const p=slipValidate(raw);return p.ok?p.bps:SLIP_DEFAULT;}catch(_){return SLIP_DEFAULT;}}
+function slipSave(bps){if(!Number.isInteger(bps)||bps<SLIP_MIN||bps>SLIP_MAX)return false;try{localStorage.setItem(SLIP_KEY,String(bps));return true;}catch(_){return false;}}
+function slipImpactBand(pct){ // mirrors swapFlow.impactBand (pack §3.2.2 ladder)
+  if(pct===null||!Number.isFinite(pct)||pct<0)return'unknown';
+  if(pct<1)return'low';if(pct<5)return'elevated';if(pct<=15)return'high';return'blocked';
+}
+function slipImpactNotice(band,pct){
+  const shown=pct===null?'—':Number(pct).toFixed(2)+'%';
+  if(band==='low')return null;
+  if(band==='elevated')return'High price impact ('+shown+'). Consider a smaller size.';
+  if(band==='high')return'Very high price impact ('+shown+'). This trade is likely a bad deal — acknowledge below to continue.';
+  if(band==='blocked')return'Impact above 15% is blocked to protect you ('+shown+'). Split the trade or pick a deeper pair.';
+  return'The quote did not report price impact.';
+}
+function paperAgeTxt(ms){const s=Math.max(0,Math.round(ms/1000));return s<2?'just now':s+'s ago';}
+function paperReviewModel(a){ // a:{side,baseSymbol,quoteSymbol,price,quoteUsd,amountQuote,slippageBps,priceAgeMs,feedStale}
+  const slipFrac=a.slippageBps/10000,usdCost=a.amountQuote*a.quoteUsd,estQty=a.amountQuote/a.price,minQty=estQty*(1-slipFrac);
+  const band=slipImpactBand(0); // paper fills execute at the feed reference price: no routing, no market impact
+  const blockers=[];
+  if(band==='blocked')blockers.push('Impact above 15% — blocked');
+  const qsym=a.quoteSymbol,bsym=a.baseSymbol;
+  const mid=[
+    {label:'Price impact',value:'0.00% (simulated — paper fills execute at the feed price and don\u2019t move the market)',cls:'positive'},
+    {label:'Network fee',value:'— (simulated: no chain fee)'},
+    {label:'Pool fees',value:'— (simulated: no pool routing)'}
+  ];
+  const tail=[
+    {label:'Route',value:'Paper — simulated fill at the feed price; no on-chain route.'},
+    {label:'Price freshness',value:a.feedStale?'STALE — last good price '+paperAgeTxt(a.priceAgeMs):'Live spot · '+paperAgeTxt(a.priceAgeMs),cls:a.feedStale?'negative':''}
+  ];
+  const head=a.side==='buy'?[
+    {label:'You pay',value:fmt(a.amountQuote,2)+' '+qsym+(qsym.toUpperCase()==='USD'?'':' (≈ '+usd(usdCost)+')')},
+    {label:'You receive (est.)',value:fmtQty(estQty)+' '+bsym+' (≈ '+usd(usdCost)+')'},
+    {label:'Minimum received (after slippage)',value:fmtQty(minQty)+' '+bsym},
+    {label:'Total cost',value:usd(usdCost)}
+  ]:[
+    {label:'You pay',value:fmtQty(estQty)+' '+bsym+' (≈ '+usd(usdCost)+')'},
+    {label:'You receive (est.)',value:usd(usdCost)+' '+qsym},
+    {label:'Minimum received (after slippage)',value:usd(usdCost*(1-slipFrac))+' '+qsym},
+    {label:'Total proceeds',value:usd(usdCost)}
+  ];
+  const lines=head.slice(0,3).concat(mid,[head[3]],tail); // canonical 9-line order (pack §3.6.2)
+  return{lines,blockers,impactPct:0,band,notice:slipImpactNotice(band,0),confirmLabel:'Place paper order',chip:'PAPER — simulated, no real funds',estQty,minQty,usdCost,price:a.price,slippageBps:a.slippageBps,warn:a.feedStale?'Feed is stale — this fill will use the last good price.':null};
+}
+/* === end N4.4 pure block === */
 function selectTicketPair(p){ // p: DexScreener-shaped pair row
   if(!p||!p.baseToken||!p.baseToken.address)return;
+  hideReview();
   const px=Number(p.priceUsd),ch=p.priceChange&&p.priceChange.h24;
   ticketPair={baseMint:p.baseToken.address,baseSymbol:String(p.baseToken.symbol||'TOKEN').slice(0,20),quoteSymbol:String((p.quoteToken&&p.quoteToken.symbol)||'USDC').slice(0,10),price:Number.isFinite(px)&&px>0?px:0,change24h:ch==null||!Number.isFinite(Number(ch))?null:Number(ch)};
   refreshTicket();updatePortfolio();
@@ -194,14 +271,61 @@ function refreshTicket(){
 }
 function updatePortfolio(){const rows=Object.keys(holdings);let posValue=0,totalCost=0;rows.forEach(m=>{const h=holdings[m],px=h.lastPrice>0?h.lastPrice:0;posValue+=h.qty*px;totalCost+=h.qty*h.avgCost;});const equity=cash+posValue,unreal=posValue-totalCost;$('equity').textContent=usd(equity);$('pnlSub').textContent=(equity>=10000?'+':'')+usd(equity-10000)+' total return';$('pnlSub').className='sub '+(equity>=10000?'positive':'negative');$('cashBal').textContent=usd(cash);$('cashAvail').textContent=usd(cash);$('posValue').textContent=usd(posValue);$('unrealized').textContent=(unreal>=0?'+':'')+usd(unreal);$('unrealized').className=unreal>=0?'positive':'negative';$('holdingsList').innerHTML=rows.length?rows.map(m=>{const h=holdings[m],px=h.lastPrice>0?h.lastPrice:0,v=h.qty*px,u=v-h.qty*h.avgCost;return '<div class="walletrow"><span>'+esc(h.symbol)+' · '+fmtQty(h.qty)+'</span><strong>'+usd(v)+' <small class="'+(u>=0?'positive':'negative')+'">'+(u>=0?'+':'')+usd(u)+'</small></strong></div>';}).join(''):'<div class="empty">No paper positions yet.</div>';refreshTicket();saveState()}
 function renderWatchlist(){const count=$('watchlistCount'),summary=$('watchlistSummary');if(!count||!summary)return;count.textContent=String(watchlist.length);if(!watchlist.length){summary.textContent='No tokens saved';return}summary.textContent=watchlist.slice(0,2).map(w=>String(w.symbol||'TOKEN')+(Number(w.priceUsd)>0?' '+formatPriceUsd(w.priceUsd):'')).join(' · ')+(watchlist.length>2?' · +'+(watchlist.length-2)+' more':'')}
-function setSide(s){side=s;$('buyBtn').classList.toggle('active',s==='buy');$('buyBtn').classList.toggle('buy',s==='buy');$('sellBtn').classList.toggle('active',s==='sell');$('sellBtn').classList.toggle('sell',s==='sell');updatePortfolio()}
-$('buyBtn').onclick=()=>setSide('buy');$('sellBtn').onclick=()=>setSide('sell');$('orderAmount').oninput=updatePortfolio;document.querySelectorAll('[data-amt]').forEach(b=>b.onclick=()=>{const v=b.dataset.amt;if(v==='max'){const tp=ticketPair,pr=ticketPrice();if(side==='buy'){$('orderAmount').value=maxBuyInput(cash,quoteUsd(tp&&tp.quoteSymbol)).toFixed(2)}else{const h=tp&&holdings[tp.baseMint];$('orderAmount').value=(h&&pr>0?maxSellInput(h.qty,pr):0).toFixed(2)}}else{$('orderAmount').value=v}updatePortfolio()});
-$('tradeForm').onsubmit=e=>{e.preventDefault();const tp=ticketPair;if(!tp)return toast('Waiting for market data.');if(feedFailures>0)toast('Paper fill uses the last good price — the feed is stale.');const fill={baseMint:tp.baseMint,baseSymbol:tp.baseSymbol,quoteSymbol:tp.quoteSymbol,price:ticketPrice(),quoteUsd:quoteUsd(tp.quoteSymbol),amount:Number($('orderAmount').value)};const r=side==='buy'?paperBuyFill({cash,holdings},fill):paperSellFill({cash,holdings},fill);if(r.error)return toast(r.error);cash=r.cash;holdings=r.holdings;orders.unshift(r.order);renderOrders();updatePortfolio();toast('Paper '+side+' order recorded. No blockchain transaction sent.')};
+function setSide(s){hideReview();side=s;$('buyBtn').classList.toggle('active',s==='buy');$('buyBtn').classList.toggle('buy',s==='buy');$('sellBtn').classList.toggle('active',s==='sell');$('sellBtn').classList.toggle('sell',s==='sell');updatePortfolio()}
+$('buyBtn').onclick=()=>setSide('buy');$('sellBtn').onclick=()=>setSide('sell');$('orderAmount').oninput=()=>{hideReview();updatePortfolio();};document.querySelectorAll('[data-amt]').forEach(b=>b.onclick=()=>{hideReview();const v=b.dataset.amt;if(v==='max'){const tp=ticketPair,pr=ticketPrice();if(side==='buy'){$('orderAmount').value=maxBuyInput(cash,quoteUsd(tp&&tp.quoteSymbol)).toFixed(2)}else{const h=tp&&holdings[tp.baseMint];$('orderAmount').value=(h&&pr>0?maxSellInput(h.qty,pr):0).toFixed(2)}}else{$('orderAmount').value=v}updatePortfolio()});
+$('tradeForm').onsubmit=e=>{e.preventDefault();openReview();}; // N4.4: submit opens the canonical review sheet; the fill commits only via "Place paper order" (confirmReview).
 function renderOrders(){$('orderCount').textContent=orders.length+' ORDERS';$('orders').innerHTML=orders.length?orders.slice(0,6).map(o=>{const bs=o.baseSymbol||'SOL',qs=o.quoteSymbol||'USDC',mode=(o.mode||'paper').toUpperCase();return '<div style="padding:12px 16px;border-bottom:1px solid #202733;display:flex;justify-content:space-between;gap:8px"><div><strong class="'+(o.side==='buy'?'positive':'negative')+'">'+o.side.toUpperCase()+' '+esc(bs)+'/'+esc(qs)+'</strong> <span class="pill" style="font-size:10px;padding:2px 7px">'+mode+'</span><div class="sub">'+o.time.toLocaleTimeString()+' · '+fmtQty(o.qty)+' '+esc(bs)+'</div></div><div style="text-align:right"><strong>'+usd(o.amount)+'</strong><div class="sub">@ '+formatPriceUsd(o.price)+'</div></div></div>';}).join(''):'<div class="empty">Your simulated paper orders will appear here.</div>'}
 let resetArmUntil=0,resetLabel=null;$('resetPaper').onclick=()=>{const b=$('resetPaper');if(resetLabel===null)resetLabel=b.textContent;const dirty=orders.length||Object.keys(holdings).length>0||cash!==10000;if(dirty&&Date.now()>resetArmUntil){resetArmUntil=Date.now()+5000;b.textContent='Confirm reset?';setTimeout(()=>{if(Date.now()>=resetArmUntil)b.textContent=resetLabel;},5100);return;}resetArmUntil=0;b.textContent=resetLabel;cash=10000;holdings={};orders=[];renderOrders();updatePortfolio();saveState();toast('Paper account reset.');};
 async function searchTokens(){const q=$('tokenSearch').value.trim();saveState();if(!q)return;const box=$('searchResults');box.innerHTML='<div class="empty">Searching DexScreener…</div>';try{const controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),10000);let j;try{const r=await fetch('https://api.dexscreener.com/latest/dex/search?q='+encodeURIComponent(q),{signal:controller.signal});if(!r.ok)throw Error('Search HTTP '+r.status);j=await r.json()}finally{clearTimeout(timeout)}const ps=(j.pairs||[]).filter(p=>p.chainId==='solana'&&p.baseToken?.address&&p.priceUsd).sort((a,b)=>(Number(b.liquidity?.usd)||0)-(Number(a.liquidity?.usd)||0)).slice(0,8);if(!ps.length){box.innerHTML='<div class="empty">No Solana pairs found for this search.</div>';return}box.innerHTML=ps.map(p=>{const address=p.baseToken.address,added=watchlist.some(w=>w.address===address),change=p.priceChange?.h24==null||!Number.isFinite(Number(p.priceChange.h24))?null:Number(p.priceChange.h24);return '<div class="result"><div><strong>'+esc(p.baseToken.symbol)+' / '+esc(p.quoteToken.symbol)+'</strong><small>'+esc(p.baseToken.name)+' · '+esc(p.dexId||'DEX')+' · liq '+(p.liquidity?.usd?usd(p.liquidity.usd):'—')+'</small><small>'+esc(address.slice(0,6)+'…'+address.slice(-5))+'</small></div><div style="text-align:right"><strong>'+formatPriceUsd(p.priceUsd)+'</strong><small class="'+(change===null?'':change>=0?'positive':'negative')+'">'+(change===null?'—':(change>=0?'+':'')+fmt(change,2)+'%')+' 24h</small><button class="action" style="margin-top:5px" data-watch="'+esc(address)+'">'+(added?'Added ✓':'Watch')+'</button> <button class="action" style="margin-top:5px" data-trade-addr="'+esc(address)+'">Trade</button></div></div>'}).join('');box.querySelectorAll('[data-trade-addr]').forEach(b=>b.onclick=()=>{const p=ps.find(row=>row.baseToken.address===b.dataset.tradeAddr);if(p)selectTicketPair(p);});box.querySelectorAll('[data-watch]').forEach(b=>b.onclick=()=>{const address=b.dataset.watch,index=watchlist.findIndex(w=>w.address===address);if(index>=0){const removed=watchlist.splice(index,1)[0];b.textContent='Watch';toast('Removed '+(removed.symbol||'token')+' from watchlist.')}else{if(watchlist.length>=50){toast('Watchlist limit reached (50 tokens).');return}const p=ps.find(row=>row.baseToken.address===address);if(!p)return;watchlist.push({address,symbol:p.baseToken.symbol||'TOKEN',name:p.baseToken.name||'Saved token',priceUsd:Number(p.priceUsd)||0,change24h:p.priceChange?.h24==null?null:Number(p.priceChange.h24),addedAt:new Date().toISOString()});b.textContent='Added ✓';toast('Added '+(p.baseToken.symbol||'token')+' to watchlist.')}renderWatchlist();saveState()})}catch(e){box.innerHTML='<div class="empty">Search timed out or failed. Check your connection and try again.</div>'}}
 $('searchBtn').onclick=searchTokens;$('tokenSearch').onkeydown=e=>{if(e.key==='Enter')searchTokens()};document.querySelectorAll('[data-range]').forEach(b=>{b.classList.toggle('active',b.dataset.range===chartRange);b.onclick=()=>{document.querySelectorAll('[data-range]').forEach(x=>x.classList.remove('active'));b.classList.add('active');chartRange=b.dataset.range||'1H';tickFails=0;tickSkipUntil=0;saveState();toast('Chart range saved. Loading real candles…');loadCandles('range')}});
-wireChartHover();renderOrders();renderWatchlist();document.querySelectorAll('[data-range]').forEach(b=>b.classList.toggle('active',b.dataset.range===chartRange));$('retryFeed').onclick=fetchMarket;$('chartFeedStatus').onclick=()=>{if(candleStatus==='stale'||candleStatus==='error'){tickFails=0;tickSkipUntil=0;loadCandles('retry')}};document.addEventListener('visibilitychange',()=>{if(!document.hidden&&price>0)fetchMarket()});$('tokenSearch').oninput=saveState;setPrice(0,0);fetchMarket();searchTokens();setInterval(fetchMarket,30000);
+wireChartHover();renderOrders();renderWatchlist();document.querySelectorAll('[data-range]').forEach(b=>b.classList.toggle('active',b.dataset.range===chartRange));document.querySelectorAll('#slipPresets button').forEach(b=>b.onclick=()=>onSlipPreset(Number(b.dataset.slip)));$('slippageInput').value=String(slipLoad());$('slippageInput').addEventListener('change',onSlipCustom);paintSlipPresets();
+$('retryFeed').onclick=fetchMarket;$('chartFeedStatus').onclick=()=>{if(candleStatus==='stale'||candleStatus==='error'){tickFails=0;tickSkipUntil=0;loadCandles('retry')}};document.addEventListener('visibilitychange',()=>{if(!document.hidden&&price>0)fetchMarket()});$('tokenSearch').oninput=saveState;setPrice(0,0);fetchMarket();searchTokens();setInterval(fetchMarket,30000);
+
+/* N4.4: ticket slippage UI + paper review sheet (DOM wiring). */
+let reviewState=null; // {inputs,model} while the sheet is open
+function paintSlipPresets(){const cur=slipLoad();document.querySelectorAll('#slipPresets button').forEach(b=>b.classList.toggle('on',Number(b.dataset.slip)===cur));}
+function onSlipPreset(bps){const p=slipValidate(String(bps));if(!p.ok){toast(p.error);return;}slipSave(p.bps);$('slippageInput').value=String(p.bps);paintSlipPresets();hideReview();}
+function onSlipCustom(){const el=$('slippageInput'),p=slipValidate(el.value);if(!p.ok){el.value=String(slipLoad());paintSlipPresets();toast(p.error);return;}slipSave(p.bps);paintSlipPresets();hideReview();toast('Slippage set to '+(p.bps/100).toFixed(2)+'% — shared with the /raydium/ page.');}
+function renderReview(m){
+  const box=$('reviewSheet');
+  const rows=m.lines.map(l=>'<div class="walletrow"><span>'+esc(l.label)+'</span><strong class="'+(l.cls||'')+'">'+esc(l.value)+'</strong></div>').join('');
+  const warn=m.warn?'<div class="rwarn">'+esc(m.warn)+'</div>':'';
+  const notice=m.notice?'<div class="rwarn">'+esc(m.notice)+'</div>':'';
+  const blockers=m.blockers.map(b=>'<div class="rblock">'+esc(b)+'</div>').join('');
+  box.innerHTML='<div class="rhead"><span class="eyebrow">Order review</span><span class="paperchip">'+esc(m.chip)+'</span></div>'+rows+warn+notice+blockers+
+    '<div class="ractions"><button type="button" class="ghost" id="reviewCancel">Back to edit</button><button type="button" class="primary" id="reviewConfirm"'+(m.blockers.length?' disabled':'')+'>'+esc(m.confirmLabel)+'</button></div>'+
+    (m.blockers.length?'<div class="note">Confirm is disabled — resolve the issue above.</div>':'<div class="note">Review the lines above — nothing moves until you confirm.</div>');
+  box.hidden=false;
+  $('reviewCancel').onclick=hideReview;
+  $('reviewConfirm').onclick=confirmReview;
+}
+function hideReview(){reviewState=null;const box=$('reviewSheet');if(box){box.hidden=true;box.innerHTML='';}const sb=$('submitTrade');if(sb)sb.disabled=false;refreshTicket();}
+function reviewInputs(){const tp=ticketPair;return{side,baseMint:tp.baseMint,baseSymbol:tp.baseSymbol,quoteSymbol:tp.quoteSymbol,quoteUsd:quoteUsd(tp.quoteSymbol),amountQuote:Number($('orderAmount').value),slippageBps:slipLoad()};}
+function openReview(){
+  const tp=ticketPair;if(!tp)return toast('Waiting for market data.');
+  const inp=reviewInputs(),px=ticketPrice();
+  const probe=inp.side==='buy'?paperBuyFill({cash,holdings},{baseMint:inp.baseMint,baseSymbol:inp.baseSymbol,quoteSymbol:inp.quoteSymbol,price:px,quoteUsd:inp.quoteUsd,amount:inp.amountQuote}):paperSellFill({cash,holdings},{baseMint:inp.baseMint,baseSymbol:inp.baseSymbol,quoteSymbol:inp.quoteSymbol,price:px,quoteUsd:inp.quoteUsd,amount:inp.amountQuote});
+  if(probe.error)return toast(probe.error);
+  const m=paperReviewModel(Object.assign({},inp,{price:px,priceAgeMs:Date.now()-lastMarketAt,feedStale:feedFailures>0}));
+  reviewState={inputs:inp,model:m};
+  renderReview(m);
+  const sb=$('submitTrade');sb.disabled=true;sb.textContent='Reviewing order…';
+}
+function confirmReview(){
+  if(!reviewState)return;
+  const inp=reviewState.inputs,tp=ticketPair;if(!tp)return hideReview();
+  const cur=ticketPrice();
+  if(cur>0&&reviewState.model.price>0&&Math.abs(cur-reviewState.model.price)/reviewState.model.price>0.001){
+    // Price moved since the review was rendered: rebuild the sheet and require a fresh confirm (paper analogue of the /raydium/ stale-quote guard).
+    const m=paperReviewModel(Object.assign({},inp,{price:cur,priceAgeMs:Date.now()-lastMarketAt,feedStale:feedFailures>0}));
+    reviewState={inputs:inp,model:m};renderReview(m);
+    return toast('Price moved — review the updated lines, then confirm.');
+  }
+  const fill={baseMint:inp.baseMint,baseSymbol:inp.baseSymbol,quoteSymbol:inp.quoteSymbol,price:cur,quoteUsd:inp.quoteUsd,amount:inp.amountQuote};
+  const r=inp.side==='buy'?paperBuyFill({cash,holdings},fill):paperSellFill({cash,holdings},fill);
+  if(r.error){hideReview();return toast(r.error);}
+  cash=r.cash;holdings=r.holdings;orders.unshift(r.order);renderOrders();updatePortfolio();hideReview();toast('Paper '+inp.side+' order recorded. No blockchain transaction sent.');
+}
 
 // N7.3 Strategy Lab backtest UI (2026-10-22). Client for the N7.2 /api/backtest
 // engine. Scheme metadata (ids, Playbook #, asset, measured edges, tunable
@@ -515,6 +639,7 @@ async function disconnectWallet(){
 const LIVE_TRADING_ENABLED=false; // N4.3 safety contract: human-only flag — flips only after the N4.2 end-to-end acceptance (proven swap) + the §8.4 real-money decision. The timer never flips this. While false, the Live branch below is dead code.
 function clearTicketDraft(){const a=$('orderAmount');if(a)a.value=100;refreshTicket();} // no draft survives a mode flip
 function setTicketMode(m){
+  hideReview();
   if(m==='live'){
     if(!LIVE_TRADING_ENABLED){toast('Live trading is not enabled yet — it arrives with N4.2–N4.4. The ticket stays in paper mode.');return;}
     if(!wallet.connected){toast('Connect a wallet to use Live mode. The ticket stays in paper mode.');return;}

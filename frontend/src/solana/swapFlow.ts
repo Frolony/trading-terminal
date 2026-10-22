@@ -208,3 +208,41 @@ export function poolFeeNote(raw: unknown): string | null {
   if (legFees.length) return `per-leg: ${legFees.join(' · ')} (as reported by quote)`;
   return null;
 }
+
+/**
+ * Shared slippage store — one store, two render sites (pack §3.1.1).
+ * The / ticket (src/index.html) and the /raydium/ panel (SwapPanel.tsx) both
+ * read and write this localStorage key, so a slippage change on either page
+ * is honoured on the other. Values are basis points, validated through
+ * parseSlippageInput — never persisted unvalidated.
+ */
+export const SHARED_SLIPPAGE_KEY = 'gecko-terminal:slippage-bps:v1';
+
+/** Read the shared slippage (bps); falls back to the default on missing/corrupt/unavailable storage. */
+export function readSharedSlippage(): number {
+  try {
+    if (typeof localStorage === 'undefined') return DEFAULT_SLIPPAGE_BPS;
+    const raw = localStorage.getItem(SHARED_SLIPPAGE_KEY);
+    if (raw === null || raw === '') return DEFAULT_SLIPPAGE_BPS;
+    const parsed = parseSlippageInput(raw);
+    return parsed.ok ? parsed.bps : DEFAULT_SLIPPAGE_BPS;
+  } catch {
+    return DEFAULT_SLIPPAGE_BPS;
+  }
+}
+
+/**
+ * Persist a validated slippage value. Returns false (nothing written) when
+ * the value is invalid or storage is unavailable — callers keep their current
+ * valid value in that case.
+ */
+export function writeSharedSlippage(bps: number): boolean {
+  if (!Number.isInteger(bps) || bps < MIN_SLIPPAGE_BPS || bps > MAX_SLIPPAGE_BPS) return false;
+  try {
+    if (typeof localStorage === 'undefined') return false;
+    localStorage.setItem(SHARED_SLIPPAGE_KEY, String(bps));
+    return true;
+  } catch {
+    return false;
+  }
+}
