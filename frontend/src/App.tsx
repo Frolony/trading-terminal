@@ -1,0 +1,1 @@
+import { SolanaWalletProvider } from './solana/SolanaWalletProvider'; import { SwapPanel } from './SwapPanel'; export default function App(){return <SolanaWalletProvider><SwapPanel/></SolanaWalletProvider>;}

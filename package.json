@@ -1,0 +1,1 @@
+{"private":true,"scripts":{"build":"npm install --prefix frontend --no-audit --no-fund && npm run build --prefix frontend && node scripts/preserve-gecko.mjs"}}

@@ -1,0 +1,35 @@
+[package]
+name = "gecko-terminal-api"
+version = "0.3.0"
+edition = "2024"
+
+[dependencies]
+vercel_runtime = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+bs58 = "0.5"
+http-body-util = "0.1"
+
+[[bin]]
+name = "health"
+path = "api/health.rs"
+[[bin]]
+name = "validate"
+path = "api/validate.rs"
+[[bin]]
+name = "raydium_quote"
+path = "api/raydium/quote.rs"
+[[bin]]
+name = "raydium_build"
+path = "api/raydium/build.rs"
+[[bin]]
+name = "raydium_pairs"
+path = "api/raydium/pairs.rs"
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "z"
+strip = true
