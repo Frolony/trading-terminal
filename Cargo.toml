@@ -27,6 +27,9 @@ path = "api/raydium/build.rs"
 [[bin]]
 name = "raydium_pairs"
 path = "api/raydium/pairs.rs"
+[[bin]]
+name = "ohlcv"
+path = "api/ohlcv.rs"
 
 [profile.release]
 codegen-units = 1
