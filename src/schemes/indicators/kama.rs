@@ -8,6 +8,15 @@
 //! Seeded with SMA of first er_period closes.
 //!
 //! Signal: +1 on close crossing above KAMA (strict), -1 on close crossing below.
+//!
+//! Vendored 2026-10-22 from hidden_files/strategy-upload/jupiter-strategies
+//! (N7.2 scheme library). One divergence from the upload, fixed here: on the
+//! seeding bar (window == er_period closes) the efficiency-ratio index
+//! `len - 1 - er_period` underflows usize and the original code panicked — a
+//! latent runtime bug (the upload's runner never selected KamaCross, so it
+//! never fired; it 500s the /api/backtest function on any KAMA run). The fix
+//! establishes the cross-detection baseline on the seeding bar and waits one
+//! bar for the full er_period + 1 window before computing the ratio.
 
 use crate::indicators::Bar;
 use std::collections::VecDeque;
@@ -61,6 +70,18 @@ impl Kama {
             let sma: f64 = self.closes.iter().take(self.er_period).sum::<f64>()
                 / self.er_period as f64;
             self.kama = Some(sma);
+        }
+
+        // The efficiency ratio needs the close from er_period bars ago, which
+        // only exists once the window holds er_period + 1 closes. On the
+        // seeding bar the index `len - 1 - er_period` underflows (usize) and
+        // the original code panicked here. Establish the cross-detection
+        // baseline and wait one bar for the full window instead.
+        if self.closes.len() <= self.er_period {
+            let k = self.kama.unwrap();
+            self.prev_above = Some(bar.close > k);
+            self.prev_close = Some(bar.close);
+            return 0;
         }
 
         // Efficiency Ratio
