@@ -96,9 +96,10 @@ a.wrow{text-decoration:none}
 <section class="panel"><div class="panelhead"><h2>Solana market pairs</h2><div style="display:flex;align-items:center;gap:8px"><button type="button" class="action" id="retryFeed">Retry feed</button><span class="pill" id="pairCount">DISCOVERING</span></div></div><div class="tablewrap"><table><thead><tr><th>Pair / DEX</th><th>Price USD</th><th>24H</th><th>Liquidity</th><th>24H volume</th><th>Trade</th></tr></thead><tbody id="pairs"><tr><td colspan="6" class="empty">Loading live pairs from DexScreener…</td></tr></tbody></table></div></section>
 <section class="panel"><div class="panelhead"><h2>Token discovery</h2><span class="eyebrow">DEXSCREENER SEARCH</span></div><div class="panelbody"><div class="searchrow"><input id="tokenSearch" placeholder="Search token, ticker or mint address" value="SOL"><button id="searchBtn">Search</button></div><div id="searchResults" class="results"><div class="empty">Search live Solana pairs and add candidates to your watchlist.</div></div></div></section>
 </main><aside class="sidecol">
-<section class="panel tradepanel"><div class="panelhead"><h2>Order ticket</h2><span class="pill">SIMULATED</span></div><div class="panelbody"><form class="tradeform" id="tradeForm"><div class="moderow"><div class="modelabel">Execution mode</div><div class="switchrow"><button type="button" id="paperModeBtn" class="active mode">Paper</button><button type="button" id="liveModeBtn">Live</button></div></div><div class="switchrow"><button type="button" id="buyBtn" class="active buy">Buy / Long</button><button type="button" id="sellBtn" class="sell">Sell</button></div><div class="field"><label>Trading pair</label><div class="pairbox"><strong id="ticketPairName">SOL / USDC</strong><small id="ticketPairMeta">Waiting for market data…</small></div></div><div class="field"><label>Order type</label><select id="orderType"><option>Market</option><option disabled>Limit (planned)</option></select></div><div class="field"><label>Order size</label><div class="inputwrap"><input id="orderAmount" type="number" min="0.0001" step="any" value="100" required><span id="amountUnit">USD</span></div></div><div class="amounts"><button type="button" data-amt="25">$25</button><button type="button" data-amt="100">$100</button><button type="button" data-amt="250">$250</button><button type="button" data-amt="max">MAX</button></div><div class="field"><label>Slippage tolerance</label><div class="amounts" id="slipPresets"><button type="button" data-slip="10">0.1%</button><button type="button" data-slip="50">0.5%</button><button type="button" data-slip="100">1.0%</button></div><div class="inputwrap" style="margin-top:6px"><input id="slippageInput" inputmode="numeric" aria-label="Custom slippage in basis points" placeholder="Custom (bps)"><span>bps</span></div><div class="note" style="text-align:left;margin-top:6px">Presets or custom, in basis points (50 bps = 0.50%). Allowed: 1&ndash;1000 bps (0.01%&ndash;10%). Shared with the /raydium/ page.</div></div><div class="walletrow"><span>Execution price</span><strong id="execPrice">$—</strong></div><div class="walletrow"><span>Estimated quantity</span><strong id="estQty">— SOL</strong></div><div class="walletrow"><span>Available USD</span><strong id="cashAvail">$10,000.00</strong></div><button class="primary" id="submitTrade" type="submit">Buy SOL · Paper</button><div class="note" id="ticketNote">No wallet connected · no real orders or funds</div><div id="reviewSheet" class="review" hidden></div></form></div></section>
+<section class="panel tradepanel"><div class="panelhead"><h2>Order ticket</h2><span class="pill">SIMULATED</span></div><div class="panelbody"><form class="tradeform" id="tradeForm"><div class="moderow"><div class="modelabel">Execution mode</div><div class="switchrow"><button type="button" id="paperModeBtn" class="active mode">Paper</button><button type="button" id="liveModeBtn">Live</button></div></div><div class="switchrow"><button type="button" id="buyBtn" class="active buy">Buy / Long</button><button type="button" id="sellBtn" class="sell">Sell</button></div><div class="field"><label>Trading pair</label><div class="pairbox"><strong id="ticketPairName">SOL / USDC</strong><small id="ticketPairMeta">Waiting for market data…</small></div></div><div class="field"><label>Order type</label><div class="switchrow"><button type="button" id="mktBtn" class="active buy">Market</button><button type="button" id="limBtn" class="sell">Limit</button></div></div><div id="limitFields" hidden><div class="field"><label>Limit price (per <span id="limitBaseSym">SOL</span>, in <span id="limitQuoteSym">USDC</span>)</label><div class="inputwrap"><input id="limitPrice" inputmode="decimal" aria-label="Limit price" placeholder="Waiting for live price…"><span id="limitSpotRef">spot</span></div><div class="amounts" id="limitPresets" style="margin-top:6px"><button type="button" data-lp="-10">−10%</button><button type="button" data-lp="-5">−5%</button><button type="button" data-lp="-1">−1%</button><button type="button" data-lp="1">+1%</button><button type="button" data-lp="5">+5%</button><button type="button" data-lp="10">+10%</button></div><div class="note" id="limitNote" style="text-align:left;margin-top:6px"></div></div><div class="field"><label>Expires</label><div class="amounts" id="expiryPresets"><button type="button" data-exp="1h">1 h</button><button type="button" data-exp="24h" class="on">24 h</button><button type="button" data-exp="7d">7 d</button><button type="button" data-exp="never">No expiry</button></div><label id="expiryAckWrap" hidden style="display:none;margin-top:8px;font-size:11px;color:var(--muted);align-items:center;gap:8px"><input type="checkbox" id="expiryAck" style="width:auto"> I understand this order stays open until filled or cancelled.</label></div><div class="note" style="text-align:left">Limit orders are simulated against the spot feed — fills are not instant and are not guaranteed. Paper only; nothing touches the chain.</div></div><div class="field"><label>Order size</label><div class="inputwrap"><input id="orderAmount" type="number" min="0.0001" step="any" value="100" required><span id="amountUnit">USD</span></div></div><div class="amounts"><button type="button" data-amt="25">$25</button><button type="button" data-amt="100">$100</button><button type="button" data-amt="250">$250</button><button type="button" data-amt="max">MAX</button></div><div class="field"><label>Slippage tolerance</label><div class="amounts" id="slipPresets"><button type="button" data-slip="10">0.1%</button><button type="button" data-slip="50">0.5%</button><button type="button" data-slip="100">1.0%</button></div><div class="inputwrap" style="margin-top:6px"><input id="slippageInput" inputmode="numeric" aria-label="Custom slippage in basis points" placeholder="Custom (bps)"><span>bps</span></div><div class="note" style="text-align:left;margin-top:6px">Presets or custom, in basis points (50 bps = 0.50%). Allowed: 1&ndash;1000 bps (0.01%&ndash;10%). Shared with the /raydium/ page.</div></div><div class="walletrow"><span>Execution price</span><strong id="execPrice">$—</strong></div><div class="walletrow"><span>Estimated quantity</span><strong id="estQty">— SOL</strong></div><div class="walletrow"><span>Available USD</span><strong id="cashAvail">$10,000.00</strong></div><button class="primary" id="submitTrade" type="submit">Buy SOL · Paper</button><div class="note" id="ticketNote">No wallet connected · no real orders or funds</div><div id="reviewSheet" class="review" hidden></div></form></div></section>
 <section class="panel"><div class="panelhead"><h2>Paper portfolio</h2><span class="eyebrow">LOCAL SESSION</span></div><div class="panelbody"><div class="walletrow"><span>Cash balance</span><strong id="cashBal">$10,000.00</strong></div><div id="holdingsList"><div class="empty">No paper positions yet.</div></div><div class="walletrow"><span>Position value</span><strong id="posValue">$0.00</strong></div><div class="walletrow"><span>Unrealized P/L</span><strong id="unrealized">$0.00</strong></div><button id="resetPaper" style="margin-top:13px;width:100%;padding:8px;background:#11151d;border:1px solid var(--line);color:#aab5c6;border-radius:7px;font-size:11px">Reset paper account</button></div></section>
 <section class="panel"><div class="panelhead"><h2>Recent orders</h2><span class="eyebrow" id="orderCount">0 ORDERS</span></div><div id="orders"><div class="empty">Your simulated paper orders will appear here.</div></div></section>
+<section class="panel"><div class="panelhead"><h2>Open limit orders</h2><span class="eyebrow" id="limitOpenCount">0 OPEN</span></div><div id="limitOpen"><div class="empty">No open limit orders. Create one from the Limit tab on the ticket.</div></div><div class="sub" style="padding:0 16px 12px">Simulated on the spot feed — fills are not instant and not guaranteed.</div></section>
 <section class="panel"><div class="panelhead"><h2>Rust execution core</h2><span class="pill">ARCHITECTURE</span></div><div class="panelbody"><div class="rust"><span class="kw">pub struct</span> OrderIntent {<br>&nbsp;&nbsp;pub mint: String,<br>&nbsp;&nbsp;pub side: Side,<br>&nbsp;&nbsp;pub amount_usd: u64,<br>}<br><br><span class="kw">pub enum</span> Side { Buy, Sell }<br><br><span class="kw">pub fn</span> <span class="fn">validate_order</span>(<br>&nbsp;&nbsp;order: &amp;OrderIntent,<br>&nbsp;&nbsp;balance: u64,<br>) -&gt; Result&lt;(), Error&gt; {<br>&nbsp;&nbsp;<span class="kw">if</span> order.amount_usd == 0<br>&nbsp;&nbsp;&nbsp;&nbsp;|| order.amount_usd &gt; balance {<br>&nbsp;&nbsp;&nbsp;&nbsp;<span class="kw">return</span> Err(Error::InvalidSize);<br>&nbsp;&nbsp;}<br>&nbsp;&nbsp;Ok(())<br>}</div><div class="sub" style="margin-top:10px">Rust backend is an architecture stub in this prototype. Order signing, RPC execution and custody are not connected.</div></div></section>
 </aside></div><footer class="foot"><span>GECKO TERMINAL · SOLANA WATCH DESK · PROTOTYPE 0.1</span><span>Market data via public DexScreener API and CoinGecko · paper trading only</span></footer></div><div class="wmodal" id="walletModal" hidden><div class="wmodal-card" role="dialog" aria-modal="true" aria-labelledby="wmodalTitle"><div class="wmodal-head"><div><h3 id="wmodalTitle">Connect a wallet</h3><small>Solana mainnet · read-only in this build</small></div><button class="wclose" id="walletModalClose" type="button" aria-label="Close">×</button></div><div class="wmodal-body" id="walletModalBody"><div class="wnote loading">Loading wallet adapters…</div></div></div></div>
 <div class="toast" id="toast"></div>
@@ -114,20 +115,29 @@ const $=id=>document.getElementById(id);const STORAGE_KEY='gecko-terminal-state-
 const WSOL_MINT='So11111111111111111111111111111111111111112';
 let price=0,change=0,cash=10000,holdings={},ticketPair={baseMint:WSOL_MINT,baseSymbol:'SOL',quoteSymbol:'USDC',price:0,change24h:null},orders=[],side='buy',marketPairs=[],watchlist=[],chartRange='1H';
 let feedFailures=0,lastMarketAt=0;
+// N4.5 paper limit orders (pure + DOM blocks below): state lives here so the
+// top-level restoreState() call can read it — const/let would be TDZ otherwise.
+let limitOrders=[],orderType='market',limitExpirySel='24h'; // open paper limit orders; 'market'|'limit' ticket preference; expiry preset id
+const LIMIT_EXPIRIES={'1h':3600000,'24h':86400000,'7d':604800000,'never':null}; // preset id → ms; null = no expiry
 const OHLCV_RANGE={'1H':{tf:'minute',agg:1,limit:60},'24H':{tf:'minute',agg:15,limit:96},'7D':{tf:'hour',agg:1,limit:168},'30D':{tf:'day',agg:1,limit:30}};
 let candles=[],candleStatus='idle',candlePool=null,candlePairLabel='',candleUpdatedAt=0,heroPair=null,candleReq=0,tickFails=0,tickSkipUntil=0,ohlcvViaCoverage=false,candleSource='GeckoTerminal',candleCap=0,coveragePairLabel='',coverageSource='coverage API';
 const fmt=(n,d=2)=>Number(n||0).toLocaleString('en-US',{minimumFractionDigits:d,maximumFractionDigits:d});
 const usd=n=>'$'+fmt(n,2);
 const compact=n=>n>=1e9?(n/1e9).toFixed(2)+'B':n>=1e6?(n/1e6).toFixed(2)+'M':n>=1e3?(n/1e3).toFixed(1)+'K':fmt(n,0);
 function formatPriceUsd(value){const n=Number(value);if(!Number.isFinite(n)||n<=0)return '—';if(n>=0.01)return usd(n);return '$'+n.toPrecision(4)}
-function saveState(){try{const state={version:2,cash,holdings,orders:orders.map(o=>({side:o.side,mode:o.mode||'paper',baseMint:o.baseMint||WSOL_MINT,baseSymbol:o.baseSymbol||'SOL',quoteSymbol:o.quoteSymbol||'USDC',amount:o.amount,qty:o.qty,price:o.price,time:o.time instanceof Date?o.time.toISOString():o.time})),watchlist:watchlist.slice(0,50),search:$('tokenSearch')?$('tokenSearch').value.slice(0,100):'SOL',chartRange};localStorage.setItem(STORAGE_KEY,JSON.stringify(state))}catch(_){}}
+function saveState(){try{const state={version:2,cash,holdings,orders:orders.map(o=>({side:o.side,mode:o.mode||'paper',type:o.type||'market',baseMint:o.baseMint||WSOL_MINT,baseSymbol:o.baseSymbol||'SOL',quoteSymbol:o.quoteSymbol||'USDC',amount:o.amount,qty:o.qty,price:o.price,limitPrice:o.limitPrice||null,status:o.status||'filled',time:o.time instanceof Date?o.time.toISOString():o.time})),watchlist:watchlist.slice(0,50),search:$('tokenSearch')?$('tokenSearch').value.slice(0,100):'SOL',chartRange,orderType,limitExpirySel,limitOrders:limitOrders.map(o=>({id:o.id,side:o.side,baseMint:o.baseMint,baseSymbol:o.baseSymbol,quoteSymbol:o.quoteSymbol,quoteUsd:o.quoteUsd,amountQuote:o.amountQuote,limitPrice:o.limitPrice,createdAt:o.createdAt,expiresAt:o.expiresAt,status:o.status})),ticketPair:ticketPair?{baseMint:ticketPair.baseMint,baseSymbol:ticketPair.baseSymbol,quoteSymbol:ticketPair.quoteSymbol}:null};localStorage.setItem(STORAGE_KEY,JSON.stringify(state))}catch(_){}}
 /* N4.3: v1 stored a single SOL balance (cash/sol/costBasis). v2 keys holdings by base mint. migrateV1 lifts the old shape into v2 once, then the legacy key is deleted. */
 function migrateV1(old){const h={};const sq=Number(old.sol)||0,cb=Number(old.costBasis)||0;if(sq>0)h[WSOL_MINT]={symbol:'SOL',quoteSymbol:'USDC',qty:sq,avgCost:cb/sq,lastPrice:0};return{version:2,cash:old.cash,holdings:h,orders:(Array.isArray(old.orders)?old.orders:[]).map(o=>Object.assign({},o,{mode:'paper',baseMint:WSOL_MINT,baseSymbol:'SOL',quoteSymbol:'USDC'})),watchlist:old.watchlist,search:old.search,chartRange:old.chartRange};}
 function sanitizeHoldings(h){const out={};if(!h||typeof h!=='object')return out;for(const k of Object.keys(h).slice(0,100)){const v=h[k];if(!v||typeof v!=='object'||typeof k!=='string'||!k)continue;const qty=Number(v.qty);if(!Number.isFinite(qty)||qty<0)continue;const ac=Number(v.avgCost),lp=Number(v.lastPrice);out[k]={symbol:String(v.symbol||'TOKEN').slice(0,20),quoteSymbol:String(v.quoteSymbol||'USDC').slice(0,10),qty,avgCost:Number.isFinite(ac)&&ac>=0?ac:0,lastPrice:Number.isFinite(lp)&&lp>=0?lp:0};}return out;}
-function restoreState(){try{let s=JSON.parse(localStorage.getItem(STORAGE_KEY)||'null');if(!s){const legacy=JSON.parse(localStorage.getItem(LEGACY_STORAGE_KEY)||'null');if(legacy&&legacy.version===1){s=migrateV1(legacy);try{localStorage.removeItem(LEGACY_STORAGE_KEY)}catch(_){}}}if(!s||s.version!==2)return;const a=Number(s.cash);if(Number.isFinite(a)&&a>=0)cash=a;holdings=sanitizeHoldings(s.holdings);if(Array.isArray(s.orders))orders=s.orders.filter(o=>o&&['buy','sell'].includes(o.side)&&Number.isFinite(Number(o.amount))&&Number.isFinite(Number(o.qty))&&Number.isFinite(Number(o.price))).slice(0,500).map(o=>({side:o.side,mode:o.mode==='live'?'live':'paper',baseMint:typeof o.baseMint==='string'&&o.baseMint?o.baseMint:WSOL_MINT,baseSymbol:String(o.baseSymbol||'SOL').slice(0,20),quoteSymbol:String(o.quoteSymbol||'USDC').slice(0,10),amount:Number(o.amount),qty:Number(o.qty),price:Number(o.price),time:new Date(o.time||Date.now())}));if(Array.isArray(s.watchlist))watchlist=s.watchlist.slice(0,50).map(w=>typeof w==='string'?{address:w,symbol:'TOKEN',name:'Saved token',priceUsd:0}:w).filter(w=>w&&typeof w.address==='string').map(w=>({address:w.address,symbol:String(w.symbol||'TOKEN').slice(0,20),name:String(w.name||'Saved token').slice(0,80),priceUsd:Number(w.priceUsd)||0,change24h:w.change24h==null?null:Number(w.change24h)}));if(typeof s.search==='string'&&$('tokenSearch'))$('tokenSearch').value=s.search.slice(0,100);if(['1H','24H','7D','30D'].includes(s.chartRange))chartRange=s.chartRange}catch(_){try{localStorage.removeItem(STORAGE_KEY)}catch(__){}}}
+function restoreState(){try{let s=JSON.parse(localStorage.getItem(STORAGE_KEY)||'null');if(!s){const legacy=JSON.parse(localStorage.getItem(LEGACY_STORAGE_KEY)||'null');if(legacy&&legacy.version===1){s=migrateV1(legacy);try{localStorage.removeItem(LEGACY_STORAGE_KEY)}catch(_){}}}if(!s||s.version!==2)return;const a=Number(s.cash);if(Number.isFinite(a)&&a>=0)cash=a;holdings=sanitizeHoldings(s.holdings);if(Array.isArray(s.orders))orders=s.orders.filter(o=>o&&['buy','sell'].includes(o.side)&&Number.isFinite(Number(o.amount))&&Number.isFinite(Number(o.qty))&&Number.isFinite(Number(o.price))).slice(0,500).map(o=>({side:o.side,mode:o.mode==='live'?'live':'paper',type:o.type==='limit'?'limit':'market',baseMint:typeof o.baseMint==='string'&&o.baseMint?o.baseMint:WSOL_MINT,baseSymbol:String(o.baseSymbol||'SOL').slice(0,20),quoteSymbol:String(o.quoteSymbol||'USDC').slice(0,10),amount:Number(o.amount),qty:Number(o.qty),price:Number(o.price),limitPrice:Number.isFinite(Number(o.limitPrice))&&Number(o.limitPrice)>0?Number(o.limitPrice):null,status:['filled','cancelled','expired'].includes(o.status)?o.status:'filled',time:new Date(o.time||Date.now())}));if(Array.isArray(s.watchlist))watchlist=s.watchlist.slice(0,50).map(w=>typeof w==='string'?{address:w,symbol:'TOKEN',name:'Saved token',priceUsd:0}:w).filter(w=>w&&typeof w.address==='string').map(w=>({address:w.address,symbol:String(w.symbol||'TOKEN').slice(0,20),name:String(w.name||'Saved token').slice(0,80),priceUsd:Number(w.priceUsd)||0,change24h:w.change24h==null?null:Number(w.change24h)}));if(typeof s.search==='string'&&$('tokenSearch'))$('tokenSearch').value=s.search.slice(0,100);if(['1H','24H','7D','30D'].includes(s.chartRange))chartRange=s.chartRange;
+/* N4.5: restore order type + open paper limit orders; A17: restore the selected ticket pair (validated shape only — price re-syncs from the feed). */
+if(s.orderType==='limit'||s.orderType==='market')orderType=s.orderType;
+if(typeof s.limitExpirySel==='string'&&Object.prototype.hasOwnProperty.call(LIMIT_EXPIRIES,s.limitExpirySel))limitExpirySel=s.limitExpirySel;
+if(Array.isArray(s.limitOrders))limitOrders=s.limitOrders.filter(o=>o&&o.status==='open'&&['buy','sell'].includes(o.side)&&Number.isFinite(Number(o.limitPrice))&&Number(o.limitPrice)>0&&Number.isFinite(Number(o.amountQuote))&&Number(o.amountQuote)>0&&typeof o.baseMint==='string'&&o.baseMint).slice(0,200).map(o=>({id:String(o.id||limitNewId()),side:o.side,baseMint:o.baseMint,baseSymbol:String(o.baseSymbol||'TOKEN').slice(0,20),quoteSymbol:String(o.quoteSymbol||'USDC').slice(0,10),quoteUsd:Number.isFinite(Number(o.quoteUsd))&&Number(o.quoteUsd)>0?Number(o.quoteUsd):1,amountQuote:Number(o.amountQuote),limitPrice:Number(o.limitPrice),createdAt:Number(o.createdAt)||Date.now(),expiresAt:o.expiresAt==null?null:Number(o.expiresAt),status:'open'}));
+if(s.ticketPair&&typeof s.ticketPair.baseMint==='string'&&/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(s.ticketPair.baseMint))ticketPair={baseMint:s.ticketPair.baseMint,baseSymbol:String(s.ticketPair.baseSymbol||'TOKEN').slice(0,20),quoteSymbol:String(s.ticketPair.quoteSymbol||'USDC').slice(0,10),price:0,change24h:null};}catch(_){try{localStorage.removeItem(STORAGE_KEY)}catch(__){}}}
 restoreState();
 function toast(s){$('toast').textContent=s;$('toast').classList.add('show');setTimeout(()=>$('toast').classList.remove('show'),2600)}
-function setPrice(p,c){if(p>0)price=p;if(c===null||Number.isFinite(c))change=c;const sign=change>=0?'+':'';$('heroPrice').textContent=price?formatPriceUsd(price):'$—';$('statPrice').textContent=price?formatPriceUsd(price):'$—';$('heroChange').textContent=price?(change===null?'— · 24H':sign+fmt(change,2)+'% · 24H'):'Awaiting market feed';$('heroChange').className=change===null?'':change>=0?'positive':'negative';$('statChange').textContent=price?(change===null?'—':sign+fmt(change,2)+'%'):'—';$('statChange').className='big '+(change===null?'':change>=0?'positive':'negative');$('statPriceSub').textContent=lastMarketAt?'Live spot · refreshed '+new Date(lastMarketAt).toLocaleTimeString():'Waiting for live market data';$('updatedAt').textContent=lastMarketAt?'Updated '+new Date(lastMarketAt).toLocaleTimeString():'Waiting for feed';updatePortfolio()}
+function setPrice(p,c){if(p>0)price=p;if(c===null||Number.isFinite(c))change=c;const sign=change>=0?'+':'';$('heroPrice').textContent=price?formatPriceUsd(price):'$—';$('statPrice').textContent=price?formatPriceUsd(price):'$—';$('heroChange').textContent=price?(change===null?'— · 24H':sign+fmt(change,2)+'% · 24H'):'Awaiting market feed';$('heroChange').className=change===null?'':change>=0?'positive':'negative';$('statChange').textContent=price?(change===null?'—':sign+fmt(change,2)+'%'):'—';$('statChange').className='big '+(change===null?'':change>=0?'positive':'negative');$('statPriceSub').textContent=lastMarketAt?'Live spot · refreshed '+new Date(lastMarketAt).toLocaleTimeString():'Waiting for live market data';$('updatedAt').textContent=lastMarketAt?'Updated '+new Date(lastMarketAt).toLocaleTimeString():'Waiting for feed';updatePortfolio();runLimitEngine()} // N4.5: every spot tick also evaluates open paper limit orders
 function isPlausiblePoolAddress(a){return typeof a==='string'&&/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(a)}
 async function fetchOhlcvCoverage(){const controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),20000);try{const r=await fetch('/api/ohlcv?pair=sol-usd',{signal:controller.signal});if(!r.ok)throw Error('coverage API HTTP '+r.status);const j=await r.json();if(!j||j.ok!==true||!Array.isArray(j.bars))throw Error('coverage API: '+(j&&j.error?j.error+(j.message?' — '+j.message:''):'returned no bars'));const out=j.bars.map(w=>({t:w.t*1000,o:+w.o,h:+w.h,l:+w.l,c:+w.c,v:+w.v})).filter(c=>Number.isFinite(c.t)&&Number.isFinite(c.o)&&Number.isFinite(c.h)&&Number.isFinite(c.l)&&Number.isFinite(c.c)&&c.h>=c.l&&c.h>=Math.max(c.o,c.c)&&c.l<=Math.min(c.o,c.c));out.sort((a,b)=>a.t-b.t);if(out.length<2)throw Error('coverage API returned too few rows');return{rows:out,pair:String(j.pair||'SOL-USD').replace('-','/'),source:String(j.source||'coverage API')}}finally{clearTimeout(timeout)}}
 async function fetchOhlcv(poolAddress,range,limitOverride){if(range==='30D'&&!(Number.isFinite(limitOverride)&&limitOverride>0)){ohlcvViaCoverage=true;const cov=await fetchOhlcvCoverage();coveragePairLabel=cov.pair;coverageSource=cov.source;return cov.rows}ohlcvViaCoverage=false;const cfg=OHLCV_RANGE[range]||OHLCV_RANGE['1H'];const limit=Number.isFinite(limitOverride)&&limitOverride>0?Math.floor(limitOverride):cfg.limit;const controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),10000);try{const r=await fetch('https://api.geckoterminal.com/api/v2/networks/solana/pools/'+encodeURIComponent(poolAddress)+'/ohlcv/'+cfg.tf+'?aggregate='+cfg.agg+'&limit='+limit,{signal:controller.signal});if(!r.ok)throw Error('GeckoTerminal OHLCV HTTP '+r.status);const j=await r.json();const rows=(((j||{}).data||{}).attributes||{}).ohlcv_list||[];const out=rows.map(w=>({t:w[0]*1000,o:+w[1],h:+w[2],l:+w[3],c:+w[4],v:+w[5]})).filter(c=>Number.isFinite(c.t)&&Number.isFinite(c.o)&&Number.isFinite(c.h)&&Number.isFinite(c.l)&&Number.isFinite(c.c)&&c.h>=c.l&&c.h>=Math.max(c.o,c.c)&&c.l<=Math.min(c.o,c.c));out.sort((a,b)=>a.t-b.t);if(out.length<2)throw Error('OHLCV returned too few rows');return out}finally{clearTimeout(timeout)}}
@@ -244,12 +254,74 @@ function paperReviewModel(a){ // a:{side,baseSymbol,quoteSymbol,price,quoteUsd,a
   return{lines,blockers,impactPct:0,band,notice:slipImpactNotice(band,0),confirmLabel:'Place paper order',chip:'PAPER — simulated, no real funds',estQty,minQty,usdCost,price:a.price,slippageBps:a.slippageBps,warn:a.feedStale?'Feed is stale — this fill will use the last good price.':null};
 }
 /* === end N4.4 pure block === */
+/* === N4.5 paper limit orders (pure, Node-testable) ===
+   Pack: hidden_files/prep/N4.5-limit-orders.md. Paper ships first; Live
+   creation/cancel is NOT implemented here — it is gated on N4.4 tests + §8.4
+   (real-money scope) and stays dead code until Carlos approves live trading.
+   - Paper limit orders live in the paper store (persisted via N2.1, state
+     version 2 — additive fields, same version). Fills, cancels and expiries
+     land in `orders` as mode-chipped records (the v1 home of N4.6 for limits).
+   - Evaluated on every spot tick via runLimitEngine() (called from setPrice):
+     buy fills when spot <= limit, sell fills when spot >= limit; fills
+     execute at the LIMIT price (conservative, honest) through the same
+     paperBuyFill/paperSellFill math as market fills.
+   - No fund reservation at creation (pack §3.1 sizes against available
+     balance at creation); if funds moved before a fill tick, the fill is
+     skipped and the order stays open for a later tick.
+   - Stale-feed guard: a limit order cannot be created while the feed is
+     stale (pack §3.1.3) — the ticket disables Create until a live price.
+   (State: limitOrders/orderType/limitExpirySel/LIMIT_EXPIRIES are declared at
+   the top of the script so the top-level restoreState() can read them.) */
+function limitNewId(){return 'pl_'+Date.now().toString(36)+'_'+Math.floor(Math.random()*1e6).toString(36);}
+function limitValidate(inp){ // {side,limitPrice,amountQuote,spot,quoteUsd,cash,holdQty,baseSymbol,feedStale}
+  const lp=Number(inp.limitPrice);
+  if(inp.feedStale||!(inp.spot>0))return{ok:false,error:'Waiting for a live price — a limit order cannot be created on a stale feed.'};
+  if(!Number.isFinite(lp)||lp<=0)return{ok:false,error:'Enter a limit price — a number above zero.'};
+  if(!Number.isFinite(inp.amountQuote)||inp.amountQuote<=0)return{ok:false,error:'Enter a valid order size.'};
+  let note=null;
+  if(Math.abs(lp-inp.spot)/inp.spot<0.001)note='Limit is within 0.1% of spot — a Market order may be cheaper after the keeper fee.';
+  else if(inp.side==='buy'&&lp>inp.spot)note='Buy limit is above the spot price — it executes only if the market reaches your price.';
+  else if(inp.side==='sell'&&lp<inp.spot)note='Sell limit is below the spot price — it executes only if the market reaches your price.';
+  if(inp.side==='buy'){if(inp.amountQuote*inp.quoteUsd>inp.cash+1e-9)return{ok:false,error:'Insufficient paper USD balance for this limit order.'};}
+  else{const qty=inp.amountQuote/lp;if(qty>inp.holdQty+1e-9)return{ok:false,error:'Not enough '+inp.baseSymbol+' in your paper portfolio for this limit order.'};}
+  return{ok:true,limitPrice:lp,note};
+}
+function evaluatePaperLimits(list,getSpot,now){ // pure: marks statuses, returns {filled,expired}
+  const filled=[],expired=[];
+  for(const o of list){if(o.status!=='open')continue;
+    if(o.expiresAt&&now>o.expiresAt){o.status='expired';expired.push(o);continue;}
+    const spot=getSpot(o);
+    if(!(spot>0))continue;
+    const crossed=o.side==='buy'?spot<=o.limitPrice:spot>=o.limitPrice;
+    if(crossed){o.status='filled';o.filledAt=now;o.fillPrice=o.limitPrice;filled.push(o);}
+  }
+  return{filled,expired};
+}
+function limitReviewModel(inp){ // inp:{side,baseSymbol,quoteSymbol,quoteUsd,amountQuote,limitPrice,expiresAt,noExpiryAck,spot,priceAgeMs,feedStale}
+  const usdCost=inp.amountQuote*inp.quoteUsd,estQty=inp.amountQuote/inp.limitPrice;
+  const vsSpot=(inp.limitPrice-inp.spot)/inp.spot*100;
+  const vsTxt=Math.abs(vsSpot)<0.001?'at spot':(vsSpot>0?'+':'')+vsSpot.toFixed(2)+'% '+(vsSpot>0?'above':'below')+' spot';
+  const lines=[
+    {label:'Order',value:'Limit '+inp.side.toUpperCase()+' · '+fmt(inp.amountQuote,2)+' '+inp.quoteSymbol},
+    {label:'Limit price',value:formatPriceUsd(inp.limitPrice)+' per '+inp.baseSymbol},
+    {label:'You receive (est.)',value:fmtQty(estQty)+' '+inp.baseSymbol+' (≈ '+usd(usdCost)+') when the price reaches '+formatPriceUsd(inp.limitPrice)},
+    {label:'Price vs spot',value:vsTxt+' (spot '+formatPriceUsd(inp.spot)+')'},
+    {label:'Expires',value:inp.expiresAt?('in '+limitExpLeft({expiresAt:inp.expiresAt},Date.now())+' ('+new Date(inp.expiresAt).toLocaleString()+')'):'No expiry — acknowledged: stays open until filled or cancelled'},
+    {label:'Keeper fee',value:'— (simulated: no on-chain keeper fee)'},
+    {label:'Price freshness',value:inp.feedStale?'STALE — last good price '+paperAgeTxt(inp.priceAgeMs):'Live spot · '+paperAgeTxt(inp.priceAgeMs),cls:inp.feedStale?'negative':''}
+  ];
+  const blockers=inp.feedStale?['Feed is stale — resolve before creating a limit order']:null;
+  return{lines,blockers:blockers||[],impactPct:0,band:'low',notice:null,confirmLabel:'Create paper limit order',chip:'PAPER — simulated, no real funds',warn:null};
+}
+function limitExpLeft(o,now){if(!o.expiresAt)return'No expiry';const ms=o.expiresAt-now;if(ms<=0)return'Expired';const h=Math.floor(ms/3600000),d=Math.floor(h/24);if(d>0)return d+'d '+(h%24)+'h left';if(h>0)return h+'h '+Math.floor(ms%3600000/60000)+'m left';const m=Math.floor(ms/60000);return m>0?m+'m left':'<1m left';}
+/* === end N4.5 pure block === */
 function selectTicketPair(p){ // p: DexScreener-shaped pair row
   if(!p||!p.baseToken||!p.baseToken.address)return;
   hideReview();
   const px=Number(p.priceUsd),ch=p.priceChange&&p.priceChange.h24;
   ticketPair={baseMint:p.baseToken.address,baseSymbol:String(p.baseToken.symbol||'TOKEN').slice(0,20),quoteSymbol:String((p.quoteToken&&p.quoteToken.symbol)||'USDC').slice(0,10),price:Number.isFinite(px)&&px>0?px:0,change24h:ch==null||!Number.isFinite(Number(ch))?null:Number(ch)};
-  refreshTicket();updatePortfolio();
+  const lp=$('limitPrice');if(lp)lp.value=''; // N4.5: re-prefill the limit price for the new pair
+  refreshTicket();updatePortfolio();saveState(); // N4.5/A17: persist the selection
   toast(ticketPair.baseSymbol+'/'+ticketPair.quoteSymbol+' selected for paper trading.');
   const amt=$('orderAmount');if(amt)amt.focus();
 }
@@ -265,17 +337,31 @@ function refreshTicket(){
   $('ticketPairMeta').textContent=tp&&pr>0?(formatPriceUsd(pr)+(tp.change24h===null?'':' · '+(tp.change24h>=0?'+':'')+fmt(tp.change24h,2)+'% 24h')):'Waiting for market data…';
   $('execPrice').textContent=pr>0?formatPriceUsd(pr):'—';
   const amount=Number($('orderAmount')&&$('orderAmount').value||0);
-  $('estQty').textContent=pr>0&&amount>0?fmtQty(amount/pr)+' '+tp.baseSymbol:'— '+(tp?tp.baseSymbol:'');
+  // N4.5: in Limit mode the estimated-quantity row changes meaning — "you receive ≈ X when the price reaches Y" (pack §3.1.2).
+  if(orderType==='limit'){
+    limitPrefill(false);
+    const lp=$('limitPrice')?Number($('limitPrice').value):0;
+    const lbs=$('limitBaseSym');if(lbs)lbs.textContent=tp.baseSymbol;
+    const lqs=$('limitQuoteSym');if(lqs)lqs.textContent=tp.quoteSymbol;
+    const sr=$('limitSpotRef');if(sr)sr.textContent=pr>0?('spot '+formatPriceUsd(pr)):'spot';
+    $('estQty').textContent=lp>0&&amount>0?('≈ '+fmtQty(amount/lp)+' '+tp.baseSymbol+' when the price reaches '+formatPriceUsd(lp)):'— '+(tp?tp.baseSymbol:'');
+    const sb=$('submitTrade');
+    if(sb){sb.textContent='Create limit order · Paper';sb.disabled=!limitFeedLive();}
+    updateLimitNote();
+  }else{
+    $('estQty').textContent=pr>0&&amount>0?fmtQty(amount/pr)+' '+tp.baseSymbol:'— '+(tp?tp.baseSymbol:'');
+    const sb=$('submitTrade');
+    if(sb){sb.textContent=(side==='buy'?'Buy ':'Sell ')+(tp?tp.baseSymbol:'')+' · Paper';}
+  }
   $('amountUnit').textContent=tp?tp.quoteSymbol:'USD';
-  if($('submitTrade'))$('submitTrade').textContent=(side==='buy'?'Buy ':'Sell ')+(tp?tp.baseSymbol:'')+' · Paper';
 }
 function updatePortfolio(){const rows=Object.keys(holdings);let posValue=0,totalCost=0;rows.forEach(m=>{const h=holdings[m],px=h.lastPrice>0?h.lastPrice:0;posValue+=h.qty*px;totalCost+=h.qty*h.avgCost;});const equity=cash+posValue,unreal=posValue-totalCost;$('equity').textContent=usd(equity);$('pnlSub').textContent=(equity>=10000?'+':'')+usd(equity-10000)+' total return';$('pnlSub').className='sub '+(equity>=10000?'positive':'negative');$('cashBal').textContent=usd(cash);$('cashAvail').textContent=usd(cash);$('posValue').textContent=usd(posValue);$('unrealized').textContent=(unreal>=0?'+':'')+usd(unreal);$('unrealized').className=unreal>=0?'positive':'negative';$('holdingsList').innerHTML=rows.length?rows.map(m=>{const h=holdings[m],px=h.lastPrice>0?h.lastPrice:0,v=h.qty*px,u=v-h.qty*h.avgCost;return '<div class="walletrow"><span>'+esc(h.symbol)+' · '+fmtQty(h.qty)+'</span><strong>'+usd(v)+' <small class="'+(u>=0?'positive':'negative')+'">'+(u>=0?'+':'')+usd(u)+'</small></strong></div>';}).join(''):'<div class="empty">No paper positions yet.</div>';refreshTicket();saveState()}
 function renderWatchlist(){const count=$('watchlistCount'),summary=$('watchlistSummary');if(!count||!summary)return;count.textContent=String(watchlist.length);if(!watchlist.length){summary.textContent='No tokens saved';return}summary.textContent=watchlist.slice(0,2).map(w=>String(w.symbol||'TOKEN')+(Number(w.priceUsd)>0?' '+formatPriceUsd(w.priceUsd):'')).join(' · ')+(watchlist.length>2?' · +'+(watchlist.length-2)+' more':'')}
 function setSide(s){hideReview();side=s;$('buyBtn').classList.toggle('active',s==='buy');$('buyBtn').classList.toggle('buy',s==='buy');$('sellBtn').classList.toggle('active',s==='sell');$('sellBtn').classList.toggle('sell',s==='sell');updatePortfolio()}
 $('buyBtn').onclick=()=>setSide('buy');$('sellBtn').onclick=()=>setSide('sell');$('orderAmount').oninput=()=>{hideReview();updatePortfolio();};document.querySelectorAll('[data-amt]').forEach(b=>b.onclick=()=>{hideReview();const v=b.dataset.amt;if(v==='max'){const tp=ticketPair,pr=ticketPrice();if(side==='buy'){$('orderAmount').value=maxBuyInput(cash,quoteUsd(tp&&tp.quoteSymbol)).toFixed(2)}else{const h=tp&&holdings[tp.baseMint];$('orderAmount').value=(h&&pr>0?maxSellInput(h.qty,pr):0).toFixed(2)}}else{$('orderAmount').value=v}updatePortfolio()});
-$('tradeForm').onsubmit=e=>{e.preventDefault();openReview();}; // N4.4: submit opens the canonical review sheet; the fill commits only via "Place paper order" (confirmReview).
-function renderOrders(){$('orderCount').textContent=orders.length+' ORDERS';$('orders').innerHTML=orders.length?orders.slice(0,6).map(o=>{const bs=o.baseSymbol||'SOL',qs=o.quoteSymbol||'USDC',mode=(o.mode||'paper').toUpperCase();return '<div style="padding:12px 16px;border-bottom:1px solid #202733;display:flex;justify-content:space-between;gap:8px"><div><strong class="'+(o.side==='buy'?'positive':'negative')+'">'+o.side.toUpperCase()+' '+esc(bs)+'/'+esc(qs)+'</strong> <span class="pill" style="font-size:10px;padding:2px 7px">'+mode+'</span><div class="sub">'+o.time.toLocaleTimeString()+' · '+fmtQty(o.qty)+' '+esc(bs)+'</div></div><div style="text-align:right"><strong>'+usd(o.amount)+'</strong><div class="sub">@ '+formatPriceUsd(o.price)+'</div></div></div>';}).join(''):'<div class="empty">Your simulated paper orders will appear here.</div>'}
-let resetArmUntil=0,resetLabel=null;$('resetPaper').onclick=()=>{const b=$('resetPaper');if(resetLabel===null)resetLabel=b.textContent;const dirty=orders.length||Object.keys(holdings).length>0||cash!==10000;if(dirty&&Date.now()>resetArmUntil){resetArmUntil=Date.now()+5000;b.textContent='Confirm reset?';setTimeout(()=>{if(Date.now()>=resetArmUntil)b.textContent=resetLabel;},5100);return;}resetArmUntil=0;b.textContent=resetLabel;cash=10000;holdings={};orders=[];renderOrders();updatePortfolio();saveState();toast('Paper account reset.');};
+$('tradeForm').onsubmit=e=>{e.preventDefault();if(orderType==='limit')openLimitReview();else openReview();}; // N4.4/N4.5: submit opens the review sheet; the fill/order commits only via confirm
+function renderOrders(){$('orderCount').textContent=orders.length+' ORDERS';$('orders').innerHTML=orders.length?orders.slice(0,6).map(o=>{const bs=o.baseSymbol||'SOL',qs=o.quoteSymbol||'USDC',mode=(o.mode||'paper').toUpperCase();return '<div style="padding:12px 16px;border-bottom:1px solid #202733;display:flex;justify-content:space-between;gap:8px"><div><strong class="'+(o.side==='buy'?'positive':'negative')+'">'+o.side.toUpperCase()+' '+esc(bs)+'/'+esc(qs)+'</strong> <span class="pill" style="font-size:10px;padding:2px 7px">'+mode+'</span>'+(o.type==='limit'?' <span class="pill" style="font-size:10px;padding:2px 7px">LIMIT</span>':'')+(o.status&&o.status!=='filled'?' <span class="pill" style="font-size:10px;padding:2px 7px">'+esc(o.status.toUpperCase())+'</span>':'')+'<div class="sub">'+o.time.toLocaleTimeString()+' · '+fmtQty(o.qty)+' '+esc(bs)+'</div></div><div style="text-align:right"><strong>'+usd(o.amount)+'</strong><div class="sub">@ '+formatPriceUsd(o.price)+'</div></div></div>';}).join(''):'<div class="empty">Your simulated paper orders will appear here.</div>'}
+let resetArmUntil=0,resetLabel=null;$('resetPaper').onclick=()=>{const b=$('resetPaper');if(resetLabel===null)resetLabel=b.textContent;const dirty=orders.length||Object.keys(holdings).length>0||cash!==10000||limitOrders.some(o=>o.status==='open');if(dirty&&Date.now()>resetArmUntil){resetArmUntil=Date.now()+5000;b.textContent='Confirm reset?';setTimeout(()=>{if(Date.now()>=resetArmUntil)b.textContent=resetLabel;},5100);return;}resetArmUntil=0;b.textContent=resetLabel;cash=10000;holdings={};orders=[];limitOrders=[];renderOrders();renderLimitOrders();updatePortfolio();saveState();toast('Paper account reset.');};
 async function searchTokens(){const q=$('tokenSearch').value.trim();saveState();if(!q)return;const box=$('searchResults');box.innerHTML='<div class="empty">Searching DexScreener…</div>';try{const controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),10000);let j;try{const r=await fetch('https://api.dexscreener.com/latest/dex/search?q='+encodeURIComponent(q),{signal:controller.signal});if(!r.ok)throw Error('Search HTTP '+r.status);j=await r.json()}finally{clearTimeout(timeout)}const ps=(j.pairs||[]).filter(p=>p.chainId==='solana'&&p.baseToken?.address&&p.priceUsd).sort((a,b)=>(Number(b.liquidity?.usd)||0)-(Number(a.liquidity?.usd)||0)).slice(0,8);if(!ps.length){box.innerHTML='<div class="empty">No Solana pairs found for this search.</div>';return}box.innerHTML=ps.map(p=>{const address=p.baseToken.address,added=watchlist.some(w=>w.address===address),change=p.priceChange?.h24==null||!Number.isFinite(Number(p.priceChange.h24))?null:Number(p.priceChange.h24);return '<div class="result"><div><strong>'+esc(p.baseToken.symbol)+' / '+esc(p.quoteToken.symbol)+'</strong><small>'+esc(p.baseToken.name)+' · '+esc(p.dexId||'DEX')+' · liq '+(p.liquidity?.usd?usd(p.liquidity.usd):'—')+'</small><small>'+esc(address.slice(0,6)+'…'+address.slice(-5))+'</small></div><div style="text-align:right"><strong>'+formatPriceUsd(p.priceUsd)+'</strong><small class="'+(change===null?'':change>=0?'positive':'negative')+'">'+(change===null?'—':(change>=0?'+':'')+fmt(change,2)+'%')+' 24h</small><button class="action" style="margin-top:5px" data-watch="'+esc(address)+'">'+(added?'Added ✓':'Watch')+'</button> <button class="action" style="margin-top:5px" data-trade-addr="'+esc(address)+'">Trade</button></div></div>'}).join('');box.querySelectorAll('[data-trade-addr]').forEach(b=>b.onclick=()=>{const p=ps.find(row=>row.baseToken.address===b.dataset.tradeAddr);if(p)selectTicketPair(p);});box.querySelectorAll('[data-watch]').forEach(b=>b.onclick=()=>{const address=b.dataset.watch,index=watchlist.findIndex(w=>w.address===address);if(index>=0){const removed=watchlist.splice(index,1)[0];b.textContent='Watch';toast('Removed '+(removed.symbol||'token')+' from watchlist.')}else{if(watchlist.length>=50){toast('Watchlist limit reached (50 tokens).');return}const p=ps.find(row=>row.baseToken.address===address);if(!p)return;watchlist.push({address,symbol:p.baseToken.symbol||'TOKEN',name:p.baseToken.name||'Saved token',priceUsd:Number(p.priceUsd)||0,change24h:p.priceChange?.h24==null?null:Number(p.priceChange.h24),addedAt:new Date().toISOString()});b.textContent='Added ✓';toast('Added '+(p.baseToken.symbol||'token')+' to watchlist.')}renderWatchlist();saveState()})}catch(e){box.innerHTML='<div class="empty">Search timed out or failed. Check your connection and try again.</div>'}}
 $('searchBtn').onclick=searchTokens;$('tokenSearch').onkeydown=e=>{if(e.key==='Enter')searchTokens()};document.querySelectorAll('[data-range]').forEach(b=>{b.classList.toggle('active',b.dataset.range===chartRange);b.onclick=()=>{document.querySelectorAll('[data-range]').forEach(x=>x.classList.remove('active'));b.classList.add('active');chartRange=b.dataset.range||'1H';tickFails=0;tickSkipUntil=0;saveState();toast('Chart range saved. Loading real candles…');loadCandles('range')}});
 wireChartHover();renderOrders();renderWatchlist();document.querySelectorAll('[data-range]').forEach(b=>b.classList.toggle('active',b.dataset.range===chartRange));document.querySelectorAll('#slipPresets button').forEach(b=>b.onclick=()=>onSlipPreset(Number(b.dataset.slip)));$('slippageInput').value=String(slipLoad());$('slippageInput').addEventListener('change',onSlipCustom);paintSlipPresets();
@@ -286,7 +372,7 @@ let reviewState=null; // {inputs,model} while the sheet is open
 function paintSlipPresets(){const cur=slipLoad();document.querySelectorAll('#slipPresets button').forEach(b=>b.classList.toggle('on',Number(b.dataset.slip)===cur));}
 function onSlipPreset(bps){const p=slipValidate(String(bps));if(!p.ok){toast(p.error);return;}slipSave(p.bps);$('slippageInput').value=String(p.bps);paintSlipPresets();hideReview();}
 function onSlipCustom(){const el=$('slippageInput'),p=slipValidate(el.value);if(!p.ok){el.value=String(slipLoad());paintSlipPresets();toast(p.error);return;}slipSave(p.bps);paintSlipPresets();hideReview();toast('Slippage set to '+(p.bps/100).toFixed(2)+'% — shared with the /raydium/ page.');}
-function renderReview(m){
+function renderReview(m,onConfirm){ // N4.5: onConfirm lets the limit branch use its own confirm handler
   const box=$('reviewSheet');
   const rows=m.lines.map(l=>'<div class="walletrow"><span>'+esc(l.label)+'</span><strong class="'+(l.cls||'')+'">'+esc(l.value)+'</strong></div>').join('');
   const warn=m.warn?'<div class="rwarn">'+esc(m.warn)+'</div>':'';
@@ -297,9 +383,9 @@ function renderReview(m){
     (m.blockers.length?'<div class="note">Confirm is disabled — resolve the issue above.</div>':'<div class="note">Review the lines above — nothing moves until you confirm.</div>');
   box.hidden=false;
   $('reviewCancel').onclick=hideReview;
-  $('reviewConfirm').onclick=confirmReview;
+  $('reviewConfirm').onclick=onConfirm||confirmReview;
 }
-function hideReview(){reviewState=null;const box=$('reviewSheet');if(box){box.hidden=true;box.innerHTML='';}const sb=$('submitTrade');if(sb)sb.disabled=false;refreshTicket();}
+function hideReview(){reviewState=null;limitReviewState=null;const box=$('reviewSheet');if(box){box.hidden=true;box.innerHTML='';}const sb=$('submitTrade');if(sb)sb.disabled=false;refreshTicket();}
 function reviewInputs(){const tp=ticketPair;return{side,baseMint:tp.baseMint,baseSymbol:tp.baseSymbol,quoteSymbol:tp.quoteSymbol,quoteUsd:quoteUsd(tp.quoteSymbol),amountQuote:Number($('orderAmount').value),slippageBps:slipLoad()};}
 function openReview(){
   const tp=ticketPair;if(!tp)return toast('Waiting for market data.');
@@ -326,6 +412,139 @@ function confirmReview(){
   if(r.error){hideReview();return toast(r.error);}
   cash=r.cash;holdings=r.holdings;orders.unshift(r.order);renderOrders();updatePortfolio();hideReview();toast('Paper '+inp.side+' order recorded. No blockchain transaction sent.');
 }
+
+/* === N4.5 DOM wiring: Market|Limit ticket, paper limit engine, open orders (DOM side) === */
+let limitReviewState=null; // {inputs} while a limit review sheet is open
+function limitSpotFor(o){ // spot price for a limit order's pair (0 when unknown)
+  if(!o)return 0;
+  if(o.baseMint===WSOL_MINT)return price;
+  const row=marketPairs.find(p=>p.baseToken&&p.baseToken.address===o.baseMint);
+  const px=row?Number(row.priceUsd):NaN;
+  return Number.isFinite(px)&&px>0?px:0;
+}
+function runLimitEngine(){ // called from setPrice on every spot tick (pack §3.5.2)
+  if(!limitOrders.some(o=>o.status==='open'))return;
+  const now=Date.now();
+  const res=evaluatePaperLimits(limitOrders,limitSpotFor,now);
+  res.filled.forEach(applyLimitFill);
+  res.expired.forEach(applyLimitExpire);
+  if(res.filled.length||res.expired.length){renderLimitOrders();saveState();}
+}
+function applyLimitFill(o){
+  const fill={baseMint:o.baseMint,baseSymbol:o.baseSymbol,quoteSymbol:o.quoteSymbol,price:o.limitPrice,quoteUsd:o.quoteUsd,amount:o.amountQuote};
+  const r=o.side==='buy'?paperBuyFill({cash,holdings},fill):paperSellFill({cash,holdings},fill);
+  if(r.error){o.status='open';return;} // funds moved meanwhile — stays open, retried on the next tick
+  cash=r.cash;holdings=r.holdings;
+  orders.unshift(Object.assign({},r.order,{type:'limit',limitPrice:o.limitPrice,status:'filled'}));
+  renderOrders();updatePortfolio();
+  toast('Paper limit '+o.side+' filled at '+formatPriceUsd(o.limitPrice)+' (limit price). No blockchain transaction sent.');
+}
+function applyLimitExpire(o){
+  orders.unshift({side:o.side,type:'limit',mode:'paper',baseMint:o.baseMint,baseSymbol:o.baseSymbol,quoteSymbol:o.quoteSymbol,amount:o.amountQuote,qty:o.amountQuote/o.limitPrice,price:o.limitPrice,limitPrice:o.limitPrice,status:'expired',time:new Date()});
+  renderOrders();
+  toast('Paper limit order expired unfilled.');
+}
+function cancelLimitOrder(id){
+  const o=limitOrders.find(x=>x.id===id&&x.status==='open');
+  if(!o)return;
+  o.status='cancelled';
+  orders.unshift({side:o.side,type:'limit',mode:'paper',baseMint:o.baseMint,baseSymbol:o.baseSymbol,quoteSymbol:o.quoteSymbol,amount:o.amountQuote,qty:o.amountQuote/o.limitPrice,price:o.limitPrice,limitPrice:o.limitPrice,status:'cancelled',time:new Date()});
+  renderOrders();renderLimitOrders();saveState();
+  toast('Paper limit order cancelled.');
+}
+function renderLimitOrders(){
+  const open=limitOrders.filter(o=>o.status==='open');
+  const c=$('limitOpenCount');if(c)c.textContent=open.length+' OPEN';
+  const box=$('limitOpen');if(!box)return;
+  if(!open.length){box.innerHTML='<div class="empty">No open limit orders. Create one from the Limit tab on the ticket.</div>';return;}
+  const now=Date.now();
+  box.innerHTML=open.map(o=>'<div style="padding:12px 16px;border-bottom:1px solid #202733"><div style="display:flex;justify-content:space-between;gap:8px;align-items:center"><div><strong class="'+(o.side==='buy'?'positive':'negative')+'">'+o.side.toUpperCase()+' '+esc(o.baseSymbol)+'/'+esc(o.quoteSymbol)+'</strong> <span class="pill" style="font-size:10px;padding:2px 7px">LIMIT</span> <span class="pill" style="font-size:10px;padding:2px 7px">PAPER</span><div class="sub">@ '+formatPriceUsd(o.limitPrice)+' · '+fmt(o.amountQuote,2)+' '+esc(o.quoteSymbol)+' · '+esc(limitExpLeft(o,now))+'</div></div><button type="button" class="action sell" data-limit-cancel="'+esc(o.id)+'">Cancel</button></div></div>').join('');
+  box.querySelectorAll('[data-limit-cancel]').forEach(b=>b.onclick=()=>cancelLimitOrder(b.dataset.limitCancel));
+}
+function paintOrderType(){
+  const m=orderType==='market';
+  $('mktBtn').classList.toggle('active',m);$('mktBtn').classList.toggle('buy',m);
+  $('limBtn').classList.toggle('active',!m);$('limBtn').classList.toggle('sell',!m);
+  const lf=$('limitFields');if(lf)lf.hidden=m;
+}
+function setOrderType(t){
+  hideReview();
+  orderType=(t==='limit')?'limit':'market';
+  paintOrderType();refreshTicket();saveState();
+}
+function limitFeedLive(){return feedFailures===0&&ticketPrice()>0;}
+function limitPrefill(force){
+  const el=$('limitPrice');if(!el)return;
+  if(!limitFeedLive()){el.placeholder='Waiting for live price…';el.disabled=true;return;}
+  el.disabled=false;el.placeholder='Limit price';
+  if(force||!el.value)el.value=String(parseFloat(ticketPrice().toPrecision(10)));
+}
+function limitTicketInputs(){
+  const tp=ticketPair;
+  return{side,limitPrice:$('limitPrice')?$('limitPrice').value:'',amountQuote:Number($('orderAmount')&&$('orderAmount').value),spot:ticketPrice(),quoteUsd:quoteUsd(tp.quoteSymbol),cash,holdQty:tp&&holdings[tp.baseMint]?holdings[tp.baseMint].qty:0,baseSymbol:tp.baseSymbol,feedStale:feedFailures>0};
+}
+function updateLimitNote(){
+  const n=$('limitNote');if(!n||orderType!=='limit')return;
+  const raw=$('limitPrice')?$('limitPrice').value.trim():'';
+  if(!raw){n.textContent='';return;}
+  const v=limitValidate(limitTicketInputs());
+  if(!v.ok)n.innerHTML='<span style="color:var(--red)">'+esc(v.error)+'</span>';
+  else if(v.note)n.innerHTML='<span style="color:#f0c674">'+esc(v.note)+'</span>';
+  else n.textContent='';
+}
+function openLimitReview(){
+  const tp=ticketPair;if(!tp)return toast('Waiting for market data.');
+  if(limitExpirySel==='never'&&!($('expiryAck')&&$('expiryAck').checked))return toast('A no-expiry limit order stays open until filled or cancelled — tick the acknowledgment first.');
+  const inp=limitTicketInputs();
+  const v=limitValidate(inp);
+  if(!v.ok)return toast(v.error);
+  const expMs=LIMIT_EXPIRIES[limitExpirySel];
+  const m=limitReviewModel({side,baseSymbol:tp.baseSymbol,quoteSymbol:tp.quoteSymbol,quoteUsd:quoteUsd(tp.quoteSymbol),amountQuote:Number($('orderAmount').value),limitPrice:v.limitPrice,expiresAt:expMs===null?null:Date.now()+expMs,spot:ticketPrice(),priceAgeMs:Date.now()-lastMarketAt,feedStale:feedFailures>0});
+  limitReviewState={inputs:{side,baseMint:tp.baseMint,baseSymbol:tp.baseSymbol,quoteSymbol:tp.quoteSymbol,quoteUsd:quoteUsd(tp.quoteSymbol),amountQuote:Number($('orderAmount').value),limitPrice:v.limitPrice,expiresAt:expMs===null?null:Date.now()+expMs}};
+  renderReview(m,confirmLimitReview);
+  const sb=$('submitTrade');sb.disabled=true;sb.textContent='Reviewing order…';
+}
+function confirmLimitReview(){
+  if(!limitReviewState)return;
+  if(feedFailures>0){hideReview();return toast('Feed went stale — resolve before creating a limit order.');}
+  const inp=limitReviewState.inputs;
+  if(limitExpirySel==='never'&&!($('expiryAck')&&$('expiryAck').checked)){hideReview();return toast('Acknowledge the no-expiry term first.');}
+  const v=limitValidate(Object.assign({},limitTicketInputs(),{side:inp.side,limitPrice:inp.limitPrice,amountQuote:inp.amountQuote}));
+  if(!v.ok){hideReview();return toast(v.error);}
+  limitOrders.unshift({id:limitNewId(),side:inp.side,baseMint:inp.baseMint,baseSymbol:inp.baseSymbol,quoteSymbol:inp.quoteSymbol,quoteUsd:inp.quoteUsd,amountQuote:inp.amountQuote,limitPrice:v.limitPrice,createdAt:Date.now(),expiresAt:inp.expiresAt,status:'open'});
+  renderLimitOrders();hideReview();saveState();
+  toast('Paper limit '+inp.side+' order created — fills if the spot price reaches '+formatPriceUsd(v.limitPrice)+'.');
+}
+/* N4.5 init wiring (runs once; refreshTicket paints the rest on every tick). */
+(function initLimitTicket(){
+  $('mktBtn').onclick=()=>setOrderType('market');
+  $('limBtn').onclick=()=>setOrderType('limit');
+  const lp=$('limitPrice');
+  if(lp)lp.oninput=()=>{hideReview();updateLimitNote();refreshTicket();};
+  document.querySelectorAll('#limitPresets button').forEach(b=>b.onclick=()=>{
+    hideReview();
+    const p=Number(b.dataset.lp),spot=ticketPrice();
+    if(!(spot>0))return toast('Waiting for a live price.');
+    $('limitPrice').disabled=false;
+    $('limitPrice').value=String(parseFloat((spot*(1+p/100)).toPrecision(10)));
+    updateLimitNote();refreshTicket();
+  });
+  document.querySelectorAll('#expiryPresets button').forEach(b=>b.onclick=()=>{
+    hideReview();limitExpirySel=b.dataset.exp;
+    document.querySelectorAll('#expiryPresets button').forEach(x=>x.classList.toggle('on',x===b));
+    const wrap=$('expiryAckWrap'),never=limitExpirySel==='never';
+    if(wrap){wrap.hidden=!never;wrap.style.display=never?'flex':'none';if(!never)$('expiryAck').checked=false;}
+    saveState();
+  });
+  const ack=$('expiryAck');if(ack)ack.onchange=hideReview;
+  const amt=$('orderAmount'),prevAmt=amt?amt.oninput:null;
+  if(amt)amt.oninput=()=>{if(prevAmt)prevAmt();if(orderType==='limit')updateLimitNote();};
+  document.querySelectorAll('#expiryPresets button').forEach(x=>x.classList.toggle('on',x.dataset.exp===limitExpirySel));
+  const wrap0=$('expiryAckWrap'),never0=limitExpirySel==='never';
+  if(wrap0){wrap0.hidden=!never0;wrap0.style.display=never0?'flex':'none';}
+  paintOrderType();
+  renderLimitOrders();
+})();
 
 // N7.3 Strategy Lab backtest UI (2026-10-22). Client for the N7.2 /api/backtest
 // engine. Scheme metadata (ids, Playbook #, asset, measured edges, tunable
