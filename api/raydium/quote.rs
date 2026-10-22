@@ -1,5 +1,5 @@
 // Reconstructed 2026-10-21 from [1500-byte head byte-faithful to the deployed production source; the Raydium public Trade API contract and the same-author raydium-swap-starter backend/src/api.rs — STRUCTURE ONLY, not the deployed source]; not byte-identical to the deployed original.
-// FLAGGED UNEVIDENCED: GET {RAYDIUM_TRADE_API}/compute/swap-base-in, txVersion "V0", and the "UPSTREAM_ERROR" code are the task's conservative choices (the endpoint path and V0 are also the starter's/author's convention). Pass-through proxy only — Raydium's JSON response is forwarded untouched; no swap math was invented. The deployed original's exact response handling beyond the head is unevidenced.
+// FLAGGED UNEVIDENCED: GET {RAYDIUM_TRADE_API}/compute/swap-base-in, txVersion "V0", and the "UPSTREAM_ERROR" code are the task's conservative choices (the endpoint path and V0 are also the starter's/author's convention). A16 (2026-10-22): success responses are wrapped as {ok:true,data:<upstream JSON>} — the bare upstream JSON broke the frontend's envelope contract (browser acceptance 2026-10-22: "Backend request failed (HTTP 200)" on a 200 with valid quote data). Upstream payloads are validated (success flag + /data/outputAmount) before wrapping; no swap math was invented. The deployed original's exact response handling beyond the head is unevidenced.
 #[path = "../../src/raydium_common.rs"] mod common;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -17,5 +17,17 @@ async fn handler(req:Request)->Result<Value,Error>{
  let q=QuoteQuery{input_mint:&r.input_mint,output_mint:&r.output_mint,amount:&amount,slippage_bps:slip,tx_version:"V0"};
  let url=format!("{}/compute/swap-base-in",common::RAYDIUM_TRADE_API);
  let resp=match client.get(&url).query(&q).send().await{Ok(r)=>r,Err(_)=>return Ok(common::api_error("UPSTREAM_ERROR","Raydium quote request failed."))};
- match resp.json::<Value>().await{Ok(v)=>Ok(v),Err(_)=>Ok(common::api_error("UPSTREAM_ERROR","Could not parse the Raydium quote response."))}
+ if !resp.status().is_success(){return Ok(common::api_error("UPSTREAM_ERROR","Raydium quote request failed."));}
+ // N4.2/A16 (2026-10-22): wrap the upstream JSON in the house envelope — the frontend's postJson
+ // requires {ok:true,data}. Validate the upstream payload first (success flag + output amount),
+ // mirroring the quote-validation contract build.rs enforces.
+ match resp.json::<Value>().await{
+  Ok(v)=>{
+   let ok_upstream=v.get("success").and_then(Value::as_bool)==Some(true);
+   let has_amount=v.pointer("/data/outputAmount").and_then(Value::as_str).map(|s|!s.is_empty())==Some(true);
+   if !ok_upstream||!has_amount{return Ok(common::api_error("UPSTREAM_ERROR","Raydium returned an invalid quote."));}
+   Ok(json!({"ok":true,"data":v}))
+  },
+  Err(_)=>Ok(common::api_error("UPSTREAM_ERROR","Could not parse the Raydium quote response."))
+ }
 }

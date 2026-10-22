@@ -1,5 +1,5 @@
 // Reconstructed 2026-10-21 from [1500-byte head byte-faithful to the deployed production source; the Raydium public Trade API contract and the same-author raydium-swap-starter backend/src/api.rs — STRUCTURE ONLY, not the deployed source]; not byte-identical to the deployed original.
-// FLAGGED UNEVIDENCED: The task brief guessed POST {RAYDIUM_TRADE_API}/transaction/swap with a "quote" payload key and wrapSol=input-only, but the same-author starter template (structure evidence only, NOT the deployed source) plus the public Raydium Trade API contract use POST {RAYDIUM_TRADE_API}/transaction/swap-base-in, key "swapResponse", "computeUnitPriceMicroLamports":"50000" (the starter's value), and wrapSol=input||output — so the tail follows the author's convention, flagged here. "UPSTREAM_ERROR"/"BACKEND_CONFIGURATION" codes are unevidenced. Pass-through only — Raydium's JSON response is forwarded untouched; no transaction math was invented.
+// FLAGGED UNEVIDENCED: The task brief guessed POST {RAYDIUM_TRADE_API}/transaction/swap with a "quote" payload key and wrapSol=input-only, but the same-author starter template (structure evidence only, NOT the deployed source) plus the public Raydium Trade API contract use POST {RAYDIUM_TRADE_API}/transaction/swap-base-in, key "swapResponse", "computeUnitPriceMicroLamports":"50000" (the starter's value), and wrapSol=input||output — so the tail follows the author's convention, flagged here. "UPSTREAM_ERROR"/"BACKEND_CONFIGURATION" codes are unevidenced. A16 (2026-10-22): success responses wrapped as {ok:true,data:<upstream JSON>} for envelope consistency with quote.rs (the frontend's extractor deep-searches, so the wrap is transparent client-side). No transaction math was invented.
 #[path = "../../src/raydium_common.rs"] mod common;
 use serde::Deserialize;
 use serde_json::{json,Value};
@@ -18,5 +18,7 @@ async fn handler(req:Request)->Result<Value,Error>{
  let client=match common::client(){Ok(v)=>v,Err(_)=>return Ok(common::api_error("BACKEND_CONFIGURATION","Could not initialize HTTP client."))};
  let url=format!("{}/transaction/swap-base-in",common::RAYDIUM_TRADE_API);
  let resp=match client.post(&url).json(&payload).send().await{Ok(r)=>r,Err(_)=>return Ok(common::api_error("UPSTREAM_ERROR","Raydium transaction build request failed."))};
- match resp.json::<Value>().await{Ok(v)=>Ok(v),Err(_)=>Ok(common::api_error("UPSTREAM_ERROR","Could not parse the Raydium build response."))}
+ // N4.2/A16 (2026-10-22): house envelope for consistency with quote.rs — the frontend's
+ // extractBase64Transaction deep-searches, so the wrap changes nothing client-side.
+ match resp.json::<Value>().await{Ok(v)=>Ok(json!({"ok":true,"data":v})),Err(_)=>Ok(common::api_error("UPSTREAM_ERROR","Could not parse the Raydium build response."))}
 }
