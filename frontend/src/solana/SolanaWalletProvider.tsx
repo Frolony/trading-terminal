@@ -12,16 +12,22 @@
 //   wallets array rather than explicit adapters).
 // UNEVIDENCED (flagged): RPC endpoint 'https://api.mainnet-beta.solana.com' (default mainnet-beta, never
 //   observed in the deployed source); autoConnect enabled (inferred, not observed).
+// N4.2 (2026-10-22): the empty adapter array (Wallet Standard-only detection) left the modal with zero
+//   wallet options in browsers without Wallet-Standard-registered wallets (the A10 QA failure).
+//   Now registers the same explicit adapters the `/` page's N4.1 modal discovers via the adapter
+//   library — Phantom + Solflare — so the modal shows install CTAs instead of dead rows when nothing
+//   is installed, and connect rows when it is. Wallet Standard wallets are still discovered
+//   automatically alongside these.
 
 import { useMemo, type ReactNode } from 'react';
 import { ConnectionProvider, WalletProvider } from '@solana/wallet-adapter-react';
 import { WalletModalProvider } from '@solana/wallet-adapter-react-ui';
+import { PhantomWalletAdapter, SolflareWalletAdapter } from '@solana/wallet-adapter-wallets';
 
 const MAINNET_ENDPOINT = 'https://api.mainnet-beta.solana.com';
 
 export function SolanaWalletProvider({ children }: { children: ReactNode }) {
-  // Wallet Standard only: the page copy names Phantom/Backpack generically instead of listing adapters.
-  const wallets = useMemo(() => [], []);
+  const wallets = useMemo(() => [new PhantomWalletAdapter(), new SolflareWalletAdapter()], []);
   return (
     <ConnectionProvider endpoint={MAINNET_ENDPOINT}>
       <WalletProvider wallets={wallets} autoConnect>

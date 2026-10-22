@@ -7,15 +7,29 @@
 // UNEVIDENCED (flagged): the exact /build success-payload shape (tail of build.rs missing), so the
 //   base64 transaction is extracted tolerantly — explicit transaction/transactions/data/result variants
 //   first (incl. the nested Raydium {data:[{transaction}]} shape), then a bounded deep search for a
-//   base64-looking string; no on-chain confirmation wait — the returned signature is from
-//   sendRawTransaction only; the hook additionally exposes the wallet publicKey (base58 or null) so the
+//   base64-looking string; no on-chain confirmation wait inside executeQuote — the returned signature
+//   is from sendRawTransaction only (the panel shows it in a pending state immediately, then calls
+//   confirmSwap below); the hook additionally exposes the wallet publicKey (base58 or null) so the
 //   panel can pass it to executeQuote per the (quote, walletPubkey) contract.
+// N4.2 (2026-10-22): added confirmSwap — waits for 'confirmed' commitment after sendRawTransaction,
+//   surfacing the on-chain error instead of swallowing it; the panel renders pending → confirmed/failed.
 
 import { useCallback } from 'react';
 import { useConnection, useWallet } from '@solana/wallet-adapter-react';
-import { VersionedTransaction } from '@solana/web3.js';
+import { PublicKey, VersionedTransaction } from '@solana/web3.js';
 import { buildSwap, getQuote } from './raydiumApi';
 import type { QuoteResult } from './raydiumApi';
+import { CONFIRM_COMMITMENT, CONFIRM_TIMEOUT_MS } from './swapFlow';
+
+/** lamports → trimmed SOL string (up to 9 decimals, no float-rounding of base units elsewhere). */
+function trimLamports(lamports: number): string {
+  return (lamports / 1_000_000_000).toFixed(9).replace(/\.?0+$/, '');
+}
+
+/** Sum of uiAmount strings, trimmed (RPC already trims; the sum needs it). */
+function trimTokenSum(total: number): string {
+  return total.toFixed(9).replace(/\.?0+$/, '');
+}
 
 export interface QuoteRequest {
   inputMint: string;
@@ -115,5 +129,61 @@ export function useRaydiumSwap() {
     executeQuote,
     connected,
     publicKey: publicKey ? publicKey.toBase58() : null,
+    /**
+     * Wait for the sent transaction to reach 'confirmed' commitment.
+     * Resolves with the on-chain error (stringified) or null when clean.
+     * Rejects on timeout — the transaction may still confirm, so the caller
+     * must show the explorer link rather than a plain error.
+     */
+    confirmSwap: useCallback(
+      async (signature: string): Promise<string | null> => {
+        const wait = connection.confirmTransaction(signature, CONFIRM_COMMITMENT);
+        const timeout = new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('Confirmation timed out')), CONFIRM_TIMEOUT_MS),
+        );
+        const result = await Promise.race([wait, timeout]);
+        const err = result.value.err;
+        if (err === null) return null;
+        return typeof err === 'string' ? err : JSON.stringify(err);
+      },
+      [connection],
+    ),
+    /**
+     * Post-swap balance refresh. Returns display strings or null per token — a null renders as
+     * "unavailable", never as $0/0. SOL via getBalance; the output token via
+     * getTokenAccountsByOwner/jsonParsed summed uiAmountString.
+     */
+    fetchPostSwapBalances: useCallback(
+      async (outputMint: string): Promise<{ sol: string | null; token: string | null }> => {
+        const out: { sol: string | null; token: string | null } = { sol: null, token: null };
+        if (!publicKey) return out;
+        try {
+          out.sol = trimLamports(await connection.getBalance(publicKey));
+        } catch {
+          /* stays null → panel renders "unavailable" */
+        }
+        try {
+          const accounts = await connection.getParsedTokenAccountsByOwner(
+            publicKey,
+            { mint: new PublicKey(outputMint) },
+          );
+          let total = 0;
+          let seen = false;
+          for (const entry of accounts.value) {
+            const raw = entry.account.data.parsed?.info?.tokenAmount?.uiAmountString;
+            const n = typeof raw === 'string' ? Number(raw) : NaN;
+            if (Number.isFinite(n)) {
+              total += n;
+              seen = true;
+            }
+          }
+          out.token = seen ? trimTokenSum(total) : null;
+        } catch {
+          /* stays null → panel renders "unavailable" */
+        }
+        return out;
+      },
+      [connection, publicKey],
+    ),
   };
 }
