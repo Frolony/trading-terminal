@@ -30,6 +30,9 @@ path = "api/raydium/pairs.rs"
 [[bin]]
 name = "ohlcv"
 path = "api/ohlcv.rs"
+[[bin]]
+name = "backtest"
+path = "api/backtest.rs"
 
 [profile.release]
 codegen-units = 1

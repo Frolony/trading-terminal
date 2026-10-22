@@ -1,1 +1,1 @@
-{"functions":{"api/ohlcv.rs":{"maxDuration":30}},"outputDirectory":"dist"}
+{"functions":{"api/backtest.rs":{"maxDuration":30},"api/ohlcv.rs":{"maxDuration":30}},"outputDirectory":"dist"}
