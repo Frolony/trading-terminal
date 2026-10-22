@@ -23,7 +23,15 @@ pub use supertrend_timestop::SupertrendTimeStop;
 use crate::indicators::Bar;
 
 /// Common interface for lab strategies.
-pub trait Strategy {
+///
+/// Vendored 2026-10-22 from hidden_files/strategy-upload/jupiter-strategies
+/// (N7.2 scheme library). One divergence from the upload: the `Send`
+/// supertrait. The terminal's backtest handler holds the boxed strategy across
+/// `.await` points, and vercel_runtime's `service_fn` requires the handler
+/// future to be `Send` — without the bound the N7.2 build fails with E0277.
+/// All five strategy structs are plain data (no interior mutability), so the
+/// bound is always satisfiable.
+pub trait Strategy: Send {
     fn name(&self) -> &str;
     fn on_bar(&mut self, bar: &Bar);
     fn should_enter(&self) -> bool;
