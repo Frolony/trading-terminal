@@ -31,6 +31,11 @@ import {useWallet} from '@solana/wallet-adapter-react';
 import type {VersionedTransaction} from '@solana/web3.js';
 import {COPY as SWAP_COPY,SAFETY_COPY,DEFAULT_SLIPPAGE_BPS,explorerUrl,impactBand,impactNotice,isQuoteFresh,isRejectionError,lamportsToSol,MAX_SLIPPAGE_BPS,MIN_SLIPPAGE_BPS,parseSlippageInput,poolFeeNote,readSharedSlippage,SLIPPAGE_PRESETS_BPS,solPriceUsdFromQuote,writeSharedSlippage} from './solana/swapFlow';
 import type {PrepareState,ImpactBand} from './solana/swapFlow';
+// N4.6 (2026-10-22): live swap-fill events land in the shared trade-history store
+// (same schema as the home page's History panel) — written ONLY after on-chain
+// confirmation, or with status 'failed' when confirmation itself fails. A
+// signed-but-unconfirmed signature never lands as 'filled'.
+import {buildSwapFillEvent,recordTradeEvent} from './solana/tradeHistory';
 // N4.4 AMENDMENT (2026-10-22): the head's slippage validation below was widened from
 //   1–500 bps to 1–1000 bps (0.01%–10%) with the pack's rejection copy, via parseSlippageInput.
 //   The slippage UI gained presets (0.1/0.5/1.0%) + custom input. The byte-faithful claim above
@@ -170,21 +175,30 @@ async function onConfirmSwap(){
   }
   // The signature exists: show it in a pending state immediately, THEN wait for confirmation.
   setActiveSig(sig);setPhase('pending');setMessage(SWAP_COPY.pendingConfirm);
+  // N4.6: the history event for this swap. Written only after the on-chain
+  // verdict below (filled on clean confirmation, failed otherwise) — never
+  // for the pending state alone.
+  const slipNum=Number(slippageBps);
+  const histInput={wallet:publicKey.toBase58(),inputMint:toSign.inputMint,inputSymbol:input.symbol,inputDecimals:input.decimals,inputAmountBase:toSign.inputAmount,outputMint:toSign.outputMint,outputSymbol:output.symbol,outputDecimals:toSign.outputDecimals,outputAmountBase:toSign.outputAmount,minimumOutBase:toSign.minimumOut,slippageBps:Number.isFinite(slipNum)?slipNum:null,networkFeeLamports:feeLamports,signature:sig};
   try{
     const onChainErr=await swapHelpers.confirmSwap(sig);
     if(onChainErr===null){
+      recordTradeEvent(buildSwapFillEvent(Object.assign({},histInput,{status:'filled' as const})));
       setPhase('confirmed');setQuote(null);
       setMessage(SWAP_COPY.confirmed+' — details and post-swap balances below.');
       try{setPostBalances(await swapHelpers.fetchPostSwapBalances(toSign.outputMint));}
       catch{setPostBalances({sol:null,token:null});}
     }else{
+      recordTradeEvent(buildSwapFillEvent(Object.assign({},histInput,{status:'failed' as const,error:'Swap failed on-chain: '+onChainErr})));
       setPhase('failed');
       setError('Swap failed on-chain: '+onChainErr);
       setMessage('The transaction confirmed with an on-chain error — details on the explorer link.');
     }
   }catch(err){
     // Confirmation timed out; the transaction may still confirm. Keep the signature explorable
-    // and do NOT auto-retry (double-send risk per the pack's non-negotiables).
+    // and do NOT auto-retry (double-send risk per the pack's non-negotiables). The history row
+    // records the unknown outcome honestly as failed-with-timeout so the user has a trail.
+    recordTradeEvent(buildSwapFillEvent(Object.assign({},histInput,{status:'failed' as const,error:SWAP_COPY.confirmTimedOut})));
     setPhase('failed');
     setError(SWAP_COPY.confirmTimedOut);
     setMessage('Confirmation timed out — check the explorer link before retrying.');

@@ -65,6 +65,20 @@ a.wrow{text-decoration:none}
 .ractions{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px}
 .ractions .ghost{padding:12px;border:1px solid var(--line);border-radius:8px;background:transparent;color:var(--muted);font-weight:650}
 .ractions .primary:disabled{opacity:.45;cursor:not-allowed}
+/* N4.6 persistent trade history (2026-10-22): filter chips reuse .amounts/.on; rows expand inline. */
+.histrow{border-bottom:1px solid #202733;padding:11px 2px;cursor:pointer}
+.histrow:last-child{border-bottom:0}
+.histrow:hover{background:#ffffff04}
+.histdetail{display:none;padding:8px 2px 2px;font-size:11px;color:var(--muted)}
+.histrow.open .histdetail{display:block}
+.histdetail .walletrow{padding:6px 0;font-size:11px}
+.histdetail .walletrow span{color:var(--muted)}
+.sigbox{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:2px}
+.sigbox code{font:11px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--text);word-break:break-all}
+.hfilt{display:flex;gap:8px;margin-top:8px;flex-wrap:wrap;align-items:center}
+.hfilt select,.hfilt input{background:#0b0e13;border:1px solid #303949;border-radius:8px;color:var(--text);padding:8px 10px;font-size:12px;max-width:100%}
+.hfilt input{flex:1;min-width:140px}
+.histheadrow{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap}
 </style></head><body><div class="app">
 <header class="top"><div class="brand"><div class="mark">ɢ</div><div><h1>GECKO TERMINAL</h1><small>Solana market intelligence</small></div></div><div class="topright"><span class="pill">NETWORK&nbsp; / &nbsp;SOLANA</span><span class="status"><i class="dot"></i><span id="feedStatus">CONNECTING DATA</span></span><span class="wwrap"><button id="walletBtn" class="walletbtn" type="button">Connect Wallet</button><div class="wdd" id="walletDd" hidden><div class="eyebrow" id="walletDdName" style="margin-top:8px">Wallet</div><div class="waddr" id="walletDdAddr"></div><div class="walletrow"><span>SOL balance</span><strong id="walletSol">—</strong></div><div class="walletrow"><span>USDC balance</span><strong id="walletUsdc">—</strong></div><div class="walletrow"><span>USDT balance</span><strong id="walletUsdt">—</strong></div><div class="wrowbtn"><button type="button" id="walletCopy">Copy address</button><button type="button" id="walletRetryBal">Retry balances</button></div><div class="wrowbtn"><button type="button" id="walletDisconnect" class="danger">Disconnect</button></div></div></span><span class="pill">PAPER MODE</span></div></header>
 <div class="stats">
@@ -100,6 +114,7 @@ a.wrow{text-decoration:none}
 <section class="panel"><div class="panelhead"><h2>Paper portfolio</h2><span class="eyebrow">LOCAL SESSION</span></div><div class="panelbody"><div class="walletrow"><span>Cash balance</span><strong id="cashBal">$10,000.00</strong></div><div id="holdingsList"><div class="empty">No paper positions yet.</div></div><div class="walletrow"><span>Position value</span><strong id="posValue">$0.00</strong></div><div class="walletrow"><span>Unrealized P/L</span><strong id="unrealized">$0.00</strong></div><button id="resetPaper" style="margin-top:13px;width:100%;padding:8px;background:#11151d;border:1px solid var(--line);color:#aab5c6;border-radius:7px;font-size:11px">Reset paper account</button></div></section>
 <section class="panel"><div class="panelhead"><h2>Recent orders</h2><span class="eyebrow" id="orderCount">0 ORDERS</span></div><div id="orders"><div class="empty">Your simulated paper orders will appear here.</div></div></section>
 <section class="panel"><div class="panelhead"><h2>Open limit orders</h2><span class="eyebrow" id="limitOpenCount">0 OPEN</span></div><div id="limitOpen"><div class="empty">No open limit orders. Create one from the Limit tab on the ticket.</div></div><div class="sub" style="padding:0 16px 12px">Simulated on the spot feed — fills are not instant and not guaranteed.</div></section>
+<section class="panel"><div class="panelhead"><div class="histheadrow" style="flex:1"><h2>Trade history</h2><button type="button" class="action" id="histExport">Export CSV</button></div></div><div class="panelbody"><div class="amounts" id="histModeChips"><button type="button" data-hm="all" class="on">All</button><button type="button" data-hm="paper">Paper</button><button type="button" data-hm="live">Live</button></div><div class="hfilt"><select id="histPair" aria-label="Filter history by pair"><option value="all">All pairs</option></select><select id="histKind" aria-label="Filter history by type"><option value="all">All types</option></select><input id="histSig" placeholder="Search signature…" aria-label="Search history by transaction signature" maxlength="88"></div><div id="histLiveBar" class="sub" style="margin-top:8px" hidden></div><div id="historyList" style="margin-top:6px"><div class="empty">No trade events yet.</div></div><div class="sub" style="margin-top:10px">Paper events are device-local. Live events are namespaced by wallet and recorded only after on-chain confirmation. Prices shown are execution prices at fill time — not current quotes.</div></div></section>
 <section class="panel"><div class="panelhead"><h2>Rust execution core</h2><span class="pill">ARCHITECTURE</span></div><div class="panelbody"><div class="rust"><span class="kw">pub struct</span> OrderIntent {<br>&nbsp;&nbsp;pub mint: String,<br>&nbsp;&nbsp;pub side: Side,<br>&nbsp;&nbsp;pub amount_usd: u64,<br>}<br><br><span class="kw">pub enum</span> Side { Buy, Sell }<br><br><span class="kw">pub fn</span> <span class="fn">validate_order</span>(<br>&nbsp;&nbsp;order: &amp;OrderIntent,<br>&nbsp;&nbsp;balance: u64,<br>) -&gt; Result&lt;(), Error&gt; {<br>&nbsp;&nbsp;<span class="kw">if</span> order.amount_usd == 0<br>&nbsp;&nbsp;&nbsp;&nbsp;|| order.amount_usd &gt; balance {<br>&nbsp;&nbsp;&nbsp;&nbsp;<span class="kw">return</span> Err(Error::InvalidSize);<br>&nbsp;&nbsp;}<br>&nbsp;&nbsp;Ok(())<br>}</div><div class="sub" style="margin-top:10px">Rust backend is an architecture stub in this prototype. Order signing, RPC execution and custody are not connected.</div></div></section>
 </aside></div><footer class="foot"><span>GECKO TERMINAL · SOLANA WATCH DESK · PROTOTYPE 0.1</span><span>Market data via public DexScreener API and CoinGecko · paper trading only</span></footer></div><div class="wmodal" id="walletModal" hidden><div class="wmodal-card" role="dialog" aria-modal="true" aria-labelledby="wmodalTitle"><div class="wmodal-head"><div><h3 id="wmodalTitle">Connect a wallet</h3><small>Solana mainnet · read-only in this build</small></div><button class="wclose" id="walletModalClose" type="button" aria-label="Close">×</button></div><div class="wmodal-body" id="walletModalBody"><div class="wnote loading">Loading wallet adapters…</div></div></div></div>
 <div class="toast" id="toast"></div>
@@ -118,6 +133,7 @@ let feedFailures=0,lastMarketAt=0;
 // N4.5 paper limit orders (pure + DOM blocks below): state lives here so the
 // top-level restoreState() call can read it — const/let would be TDZ otherwise.
 let limitOrders=[],orderType='market',limitExpirySel='24h'; // open paper limit orders; 'market'|'limit' ticket preference; expiry preset id
+let histFilter={mode:'all',pair:'all',kind:'all',sig:''}; // N4.6: history filter preference (persisted via N2.1); declared at top so saveState/restoreState avoid TDZ
 const LIMIT_EXPIRIES={'1h':3600000,'24h':86400000,'7d':604800000,'never':null}; // preset id → ms; null = no expiry
 const OHLCV_RANGE={'1H':{tf:'minute',agg:1,limit:60},'24H':{tf:'minute',agg:15,limit:96},'7D':{tf:'hour',agg:1,limit:168},'30D':{tf:'day',agg:1,limit:30}};
 let candles=[],candleStatus='idle',candlePool=null,candlePairLabel='',candleUpdatedAt=0,heroPair=null,candleReq=0,tickFails=0,tickSkipUntil=0,ohlcvViaCoverage=false,candleSource='GeckoTerminal',candleCap=0,coveragePairLabel='',coverageSource='coverage API';
@@ -125,7 +141,7 @@ const fmt=(n,d=2)=>Number(n||0).toLocaleString('en-US',{minimumFractionDigits:d,
 const usd=n=>'$'+fmt(n,2);
 const compact=n=>n>=1e9?(n/1e9).toFixed(2)+'B':n>=1e6?(n/1e6).toFixed(2)+'M':n>=1e3?(n/1e3).toFixed(1)+'K':fmt(n,0);
 function formatPriceUsd(value){const n=Number(value);if(!Number.isFinite(n)||n<=0)return '—';if(n>=0.01)return usd(n);return '$'+n.toPrecision(4)}
-function saveState(){try{const state={version:2,cash,holdings,orders:orders.map(o=>({side:o.side,mode:o.mode||'paper',type:o.type||'market',baseMint:o.baseMint||WSOL_MINT,baseSymbol:o.baseSymbol||'SOL',quoteSymbol:o.quoteSymbol||'USDC',amount:o.amount,qty:o.qty,price:o.price,limitPrice:o.limitPrice||null,status:o.status||'filled',time:o.time instanceof Date?o.time.toISOString():o.time})),watchlist:watchlist.slice(0,50),search:$('tokenSearch')?$('tokenSearch').value.slice(0,100):'SOL',chartRange,orderType,limitExpirySel,limitOrders:limitOrders.map(o=>({id:o.id,side:o.side,baseMint:o.baseMint,baseSymbol:o.baseSymbol,quoteSymbol:o.quoteSymbol,quoteUsd:o.quoteUsd,amountQuote:o.amountQuote,limitPrice:o.limitPrice,createdAt:o.createdAt,expiresAt:o.expiresAt,status:o.status})),ticketPair:ticketPair?{baseMint:ticketPair.baseMint,baseSymbol:ticketPair.baseSymbol,quoteSymbol:ticketPair.quoteSymbol}:null};localStorage.setItem(STORAGE_KEY,JSON.stringify(state))}catch(_){}}
+function saveState(){try{const state={version:2,cash,holdings,orders:orders.map(o=>({side:o.side,mode:o.mode||'paper',type:o.type||'market',baseMint:o.baseMint||WSOL_MINT,baseSymbol:o.baseSymbol||'SOL',quoteSymbol:o.quoteSymbol||'USDC',amount:o.amount,qty:o.qty,price:o.price,limitPrice:o.limitPrice||null,status:o.status||'filled',time:o.time instanceof Date?o.time.toISOString():o.time})),watchlist:watchlist.slice(0,50),search:$('tokenSearch')?$('tokenSearch').value.slice(0,100):'SOL',chartRange,orderType,limitExpirySel,limitOrders:limitOrders.map(o=>({id:o.id,side:o.side,baseMint:o.baseMint,baseSymbol:o.baseSymbol,quoteSymbol:o.quoteSymbol,quoteUsd:o.quoteUsd,amountQuote:o.amountQuote,limitPrice:o.limitPrice,createdAt:o.createdAt,expiresAt:o.expiresAt,status:o.status})),ticketPair:ticketPair?{baseMint:ticketPair.baseMint,baseSymbol:ticketPair.baseSymbol,quoteSymbol:ticketPair.quoteSymbol}:null,histFilter:{mode:histFilter.mode,pair:histFilter.pair,kind:histFilter.kind,sig:String(histFilter.sig||'').slice(0,88)}};localStorage.setItem(STORAGE_KEY,JSON.stringify(state))}catch(_){}}
 /* N4.3: v1 stored a single SOL balance (cash/sol/costBasis). v2 keys holdings by base mint. migrateV1 lifts the old shape into v2 once, then the legacy key is deleted. */
 function migrateV1(old){const h={};const sq=Number(old.sol)||0,cb=Number(old.costBasis)||0;if(sq>0)h[WSOL_MINT]={symbol:'SOL',quoteSymbol:'USDC',qty:sq,avgCost:cb/sq,lastPrice:0};return{version:2,cash:old.cash,holdings:h,orders:(Array.isArray(old.orders)?old.orders:[]).map(o=>Object.assign({},o,{mode:'paper',baseMint:WSOL_MINT,baseSymbol:'SOL',quoteSymbol:'USDC'})),watchlist:old.watchlist,search:old.search,chartRange:old.chartRange};}
 function sanitizeHoldings(h){const out={};if(!h||typeof h!=='object')return out;for(const k of Object.keys(h).slice(0,100)){const v=h[k];if(!v||typeof v!=='object'||typeof k!=='string'||!k)continue;const qty=Number(v.qty);if(!Number.isFinite(qty)||qty<0)continue;const ac=Number(v.avgCost),lp=Number(v.lastPrice);out[k]={symbol:String(v.symbol||'TOKEN').slice(0,20),quoteSymbol:String(v.quoteSymbol||'USDC').slice(0,10),qty,avgCost:Number.isFinite(ac)&&ac>=0?ac:0,lastPrice:Number.isFinite(lp)&&lp>=0?lp:0};}return out;}
@@ -134,7 +150,14 @@ function restoreState(){try{let s=JSON.parse(localStorage.getItem(STORAGE_KEY)||
 if(s.orderType==='limit'||s.orderType==='market')orderType=s.orderType;
 if(typeof s.limitExpirySel==='string'&&Object.prototype.hasOwnProperty.call(LIMIT_EXPIRIES,s.limitExpirySel))limitExpirySel=s.limitExpirySel;
 if(Array.isArray(s.limitOrders))limitOrders=s.limitOrders.filter(o=>o&&o.status==='open'&&['buy','sell'].includes(o.side)&&Number.isFinite(Number(o.limitPrice))&&Number(o.limitPrice)>0&&Number.isFinite(Number(o.amountQuote))&&Number(o.amountQuote)>0&&typeof o.baseMint==='string'&&o.baseMint).slice(0,200).map(o=>({id:String(o.id||limitNewId()),side:o.side,baseMint:o.baseMint,baseSymbol:String(o.baseSymbol||'TOKEN').slice(0,20),quoteSymbol:String(o.quoteSymbol||'USDC').slice(0,10),quoteUsd:Number.isFinite(Number(o.quoteUsd))&&Number(o.quoteUsd)>0?Number(o.quoteUsd):1,amountQuote:Number(o.amountQuote),limitPrice:Number(o.limitPrice),createdAt:Number(o.createdAt)||Date.now(),expiresAt:o.expiresAt==null?null:Number(o.expiresAt),status:'open'}));
-if(s.ticketPair&&typeof s.ticketPair.baseMint==='string'&&/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(s.ticketPair.baseMint))ticketPair={baseMint:s.ticketPair.baseMint,baseSymbol:String(s.ticketPair.baseSymbol||'TOKEN').slice(0,20),quoteSymbol:String(s.ticketPair.quoteSymbol||'USDC').slice(0,10),price:0,change24h:null};}catch(_){try{localStorage.removeItem(STORAGE_KEY)}catch(__){}}}
+if(s.ticketPair&&typeof s.ticketPair.baseMint==='string'&&/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(s.ticketPair.baseMint))ticketPair={baseMint:s.ticketPair.baseMint,baseSymbol:String(s.ticketPair.baseSymbol||'TOKEN').slice(0,20),quoteSymbol:String(s.ticketPair.quoteSymbol||'USDC').slice(0,10),price:0,change24h:null};
+/* N4.6: restore the history filter preference. (Kind list is a literal here, not
+   HIST_KINDS — restoreState runs before that const is initialized; TDZ.) */
+if(s.histFilter&&typeof s.histFilter==='object'){const hf=s.histFilter;
+if(['all','paper','live'].indexOf(hf.mode)>=0)histFilter.mode=hf.mode;
+if(typeof hf.pair==='string')histFilter.pair=hf.pair;
+if(['all','market-fill','swap-fill','limit-create','limit-cancel','limit-fill','paper-limit-fill'].indexOf(hf.kind)>=0)histFilter.kind=hf.kind;
+if(typeof hf.sig==='string')histFilter.sig=hf.sig.slice(0,88);}}catch(_){try{localStorage.removeItem(STORAGE_KEY)}catch(__){}}}
 restoreState();
 function toast(s){$('toast').textContent=s;$('toast').classList.add('show');setTimeout(()=>$('toast').classList.remove('show'),2600)}
 function setPrice(p,c){if(p>0)price=p;if(c===null||Number.isFinite(c))change=c;const sign=change>=0?'+':'';$('heroPrice').textContent=price?formatPriceUsd(price):'$—';$('statPrice').textContent=price?formatPriceUsd(price):'$—';$('heroChange').textContent=price?(change===null?'— · 24H':sign+fmt(change,2)+'% · 24H'):'Awaiting market feed';$('heroChange').className=change===null?'':change>=0?'positive':'negative';$('statChange').textContent=price?(change===null?'—':sign+fmt(change,2)+'%'):'—';$('statChange').className='big '+(change===null?'':change>=0?'positive':'negative');$('statPriceSub').textContent=lastMarketAt?'Live spot · refreshed '+new Date(lastMarketAt).toLocaleTimeString():'Waiting for live market data';$('updatedAt').textContent=lastMarketAt?'Updated '+new Date(lastMarketAt).toLocaleTimeString():'Waiting for feed';updatePortfolio();runLimitEngine()} // N4.5: every spot tick also evaluates open paper limit orders
@@ -315,6 +338,199 @@ function limitReviewModel(inp){ // inp:{side,baseSymbol,quoteSymbol,quoteUsd,amo
 }
 function limitExpLeft(o,now){if(!o.expiresAt)return'No expiry';const ms=o.expiresAt-now;if(ms<=0)return'Expired';const h=Math.floor(ms/3600000),d=Math.floor(h/24);if(d>0)return d+'d '+(h%24)+'h left';if(h>0)return h+'h '+Math.floor(ms%3600000/60000)+'m left';const m=Math.floor(ms/60000);return m>0?m+'m left':'<1m left';}
 /* === end N4.5 pure block === */
+/* === N4.6 persistent trade history (pure, Node-testable) ===
+   Pack: hidden_files/prep/N4.6-persistent-order-trade-history.md. One unified
+   event store for every trade event, newest-first, append-only:
+   - key gecko-terminal:v1:history → {version:1, paper: TradeEvent[], live: {[pubkey]: TradeEvent[]}}
+   - CAP 500 per list (oldest pruned on write); writeNow — never debounce a fill event.
+   - Corrupt payload → quarantined to <key>:corrupt:<ts>, store resets empty (never throws on load).
+   - Live events are namespaced by wallet pubkey and are written ONLY after
+     on-chain confirmation — the /raydium/ panel writes them via
+     frontend/src/solana/tradeHistory.ts (same schema). Paper events carry
+     wallet:null and the honest note "paper — no blockchain transaction sent".
+   TradeEvent (pack §3.1): {id, ts, mode, kind, wallet, pair:{baseMint,quoteMint,baseSymbol,quoteSymbol},
+     side, sizeBase, execPrice, notionalQuote, fees:{networkLamports,protocolQuote,label},
+     quoted?, status, txSig, error?, note?}
+   kinds: market-fill | swap-fill | limit-create | limit-cancel | limit-fill | paper-limit-fill
+   status: open | filled | cancelled | expired | failed.
+   The History list shows every event except nothing is hidden — limit-create
+   events (status open) are the order's birth record; the Open-orders panel
+   remains the actionable view for open orders. */
+const HIST_KEY='gecko-terminal:v1:history';
+const HIST_VERSION=1;
+const HIST_CAP=500;
+const HIST_KINDS=['market-fill','swap-fill','limit-create','limit-cancel','limit-fill','paper-limit-fill'];
+const HIST_STATUSES=['open','filled','cancelled','expired','failed'];
+function histNewId(){
+  if(typeof crypto!=='undefined'&&crypto&&typeof crypto.randomUUID==='function')return 'h_'+crypto.randomUUID().replace(/-/g,'');
+  return 'h_'+Date.now().toString(36)+'_'+Math.floor(Math.random()*1e9).toString(36);
+}
+function histQuarantine(raw){
+  try{
+    const body=typeof raw==='string'?raw.slice(0,100000):JSON.stringify(raw).slice(0,100000);
+    localStorage.setItem(HIST_KEY+':corrupt:'+Date.now(),body);
+  }catch(_){}
+}
+function histEmptyState(){return{version:HIST_VERSION,paper:[],live:{}};}
+function histValidEvent(e){
+  if(!e||typeof e!=='object')return false;
+  if(typeof e.id!=='string'||!e.id)return false;
+  if(!Number.isFinite(Number(e.ts)))return false;
+  if(e.mode!=='paper'&&e.mode!=='live')return false;
+  if(HIST_KINDS.indexOf(e.kind)<0)return false;
+  if(HIST_STATUSES.indexOf(e.status)<0)return false;
+  if(e.side!=='buy'&&e.side!=='sell')return false;
+  if(!Number.isFinite(Number(e.sizeBase))||!Number.isFinite(Number(e.execPrice))||!Number.isFinite(Number(e.notionalQuote)))return false;
+  if(e.mode==='live'&&typeof e.wallet!=='string')return false;
+  return true;
+}
+function histLoad(){
+  try{
+    const raw=localStorage.getItem(HIST_KEY);
+    if(raw===null||raw==='')return histEmptyState();
+    const s=JSON.parse(raw);
+    if(!s||s.version!==HIST_VERSION||!Array.isArray(s.paper)||!s.live||typeof s.live!=='object'){histQuarantine(raw);return histEmptyState();}
+    const paper=s.paper.filter(histValidEvent).slice(0,HIST_CAP);
+    const live={};
+    for(const k of Object.keys(s.live).slice(0,50)){const arr=s.live[k];if(Array.isArray(arr))live[k]=arr.filter(histValidEvent).slice(0,HIST_CAP);}
+    return{version:HIST_VERSION,paper,live};
+  }catch(_){histQuarantine(null);return histEmptyState();}
+}
+function histSave(s){
+  try{localStorage.setItem(HIST_KEY,JSON.stringify(s));return true;}catch(_){return false;}
+}
+function histPair(p){
+  p=p||{};
+  return{baseMint:String(p.baseMint||'').slice(0,64),quoteMint:String(p.quoteMint||'').slice(0,64),baseSymbol:String(p.baseSymbol||'TOKEN').slice(0,20),quoteSymbol:String(p.quoteSymbol||'USDC').slice(0,10)};
+}
+function histFees(f){
+  f=f||{};
+  const nl=Number(f.networkLamports),pq=Number(f.protocolQuote);
+  return{networkLamports:Number.isFinite(nl)&&nl>=0?nl:0,protocolQuote:Number.isFinite(pq)&&pq>=0?pq:0,label:String(f.label||'—').slice(0,200)};
+}
+/** Append-only writeNow (pack §3.2 — a crash between fill and persist must not lose the event).
+    Live events REQUIRE a wallet pubkey (never mix namespaces). Returns the stored event, or null. */
+function histRecord(evt){
+  if(!evt||typeof evt!=='object')return null;
+  const mode=evt.mode==='live'?'live':'paper';
+  if(mode==='live'&&(typeof evt.wallet!=='string'||!evt.wallet))return null;
+  const e={
+    id:typeof evt.id==='string'&&evt.id?evt.id:histNewId(),
+    ts:Number.isFinite(Number(evt.ts))?Number(evt.ts):Date.now(),
+    mode:mode,
+    kind:HIST_KINDS.indexOf(evt.kind)>=0?evt.kind:'market-fill',
+    wallet:mode==='live'?evt.wallet:null,
+    pair:histPair(evt.pair),
+    side:evt.side==='sell'?'sell':'buy',
+    sizeBase:Number(evt.sizeBase)||0,execPrice:Number(evt.execPrice)||0,notionalQuote:Number(evt.notionalQuote)||0,
+    fees:histFees(evt.fees),
+    status:HIST_STATUSES.indexOf(evt.status)>=0?evt.status:'filled',
+    txSig:typeof evt.txSig==='string'&&evt.txSig?evt.txSig:null
+  };
+  if(evt.quoted&&Number.isFinite(Number(evt.quoted.minOut))&&Number.isFinite(Number(evt.quoted.slippageBps)))e.quoted={minOut:Number(evt.quoted.minOut),slippageBps:Number(evt.quoted.slippageBps),minOutUnit:String(evt.quoted.minOutUnit||e.pair.quoteSymbol).slice(0,10)};
+  if(typeof evt.error==='string'&&evt.error)e.error=evt.error.slice(0,500);
+  if(typeof evt.note==='string'&&evt.note)e.note=evt.note.slice(0,500);
+  const s=histLoad();
+  if(mode==='paper'){s.paper.unshift(e);s.paper.length=Math.min(s.paper.length,HIST_CAP);}
+  else{const arr=(s.live[e.wallet]||(s.live[e.wallet]=[]));arr.unshift(e);arr.length=Math.min(arr.length,HIST_CAP);}
+  return histSave(s)?e:null;
+}
+/** Visible events for the current filter, newest-first. */
+function histVisible(s,o){
+  o=o||{};
+  let list=[];
+  if(o.mode!=='live')list=list.concat(s.paper);
+  if(o.mode!=='paper'&&o.wallet)list=list.concat(s.live[o.wallet]||[]);
+  if(o.pair&&o.pair!=='all')list=list.filter(e=>e.pair.baseMint===o.pair);
+  if(o.kind&&o.kind!=='all')list=list.filter(e=>e.kind===o.kind);
+  if(o.sig)list=list.filter(e=>e.txSig&&e.txSig.toLowerCase().indexOf(String(o.sig).toLowerCase())>=0);
+  list.sort((a,b)=>b.ts-a.ts);
+  return list;
+}
+function histClearPaper(){const s=histLoad();s.paper=[];histSave(s);}
+function histClearLive(wallet){if(!wallet)return;const s=histLoad();delete s.live[wallet];histSave(s);}
+function histPairOptions(s,wallet){
+  const seen={},out=[];
+  const all=s.paper.concat(wallet&&s.live[wallet]?s.live[wallet]:[]);
+  for(const e of all){const m=e.pair.baseMint;if(!seen[m]){seen[m]=1;out.push({mint:m,label:e.pair.baseSymbol+'/'+e.pair.quoteSymbol});}}
+  return out;
+}
+/** Cluster-aware explorer links (pack §3.3). Only real signatures get links — paper rows never render one. */
+function explorerLinks(sig,cluster){
+  const s=String(sig||'');
+  const dev=cluster==='devnet';
+  return{
+    solscan:'https://solscan.io/tx/'+s+(dev?'?cluster=devnet':''),
+    explorer:'https://explorer.solana.com/tx/'+s+'?cluster='+(dev?'devnet':'mainnet-beta')
+  };
+}
+function histRelTime(ts,nowMs){
+  const d=Math.max(0,(nowMs||Date.now())-ts),m=Math.floor(d/60000);
+  if(m<1)return'just now';
+  if(m<60)return m+'m ago';
+  const h=Math.floor(m/60);
+  if(h<24)return h+'h ago';
+  return Math.floor(h/24)+'d ago';
+}
+function histKindLabel(k){
+  return{'market-fill':'Market fill','swap-fill':'Swap fill','limit-create':'Limit created','limit-cancel':'Limit cancelled','limit-fill':'Limit fill','paper-limit-fill':'Limit fill'}[k]||k;
+}
+function histCsvCell(v){
+  const s=v===null||v===undefined?'':String(v);
+  return /[",\n\r]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s;
+}
+/** CSV of the currently filtered view (pack §3.5). Raw numbers only — formatting happens at render. */
+function histCsv(events){
+  const lines=[['timestamp','mode','kind','side','base','quote','size','execPrice','notional','feeNetwork','feeProtocol','txSig','status','error'].join(',')];
+  for(const e of events){
+    lines.push([new Date(e.ts).toISOString(),e.mode,e.kind,e.side,e.pair.baseSymbol,e.pair.quoteSymbol,
+      e.sizeBase,e.execPrice,e.notionalQuote,e.fees.networkLamports,e.fees.protocolQuote,
+      e.txSig||'',e.status,e.error||''].map(histCsvCell).join(','));
+  }
+  return lines.join('\r\n');
+}
+/* Stable-mint map for quoteMint resolution in paper history events. The ticket
+   stores quote symbols, not mints — literals are duplicated from the wallet
+   block (WALLET_USDC_MINT / WALLET_USDT_MINT) so this pure block stays
+   self-contained and Node-testable; unknown symbols resolve to the symbol. */
+const HIST_STABLE_MINTS={
+  'USDC':'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+  'USDT':'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB',
+  'SOL':'So11111111111111111111111111111111111111112'
+};
+function histQuoteMint(qs){const s=String(qs||'').toUpperCase();return HIST_STABLE_MINTS[s]||s;}
+const HIST_PAPER_NOTE='paper — no blockchain transaction sent';
+/** Event builders from the page's own fill/order records (plain data in, plain data out). */
+function histEventFromMarketFill(o,amountQuote,quoted){
+  return{mode:'paper',kind:'market-fill',wallet:null,
+    pair:{baseMint:o.baseMint,quoteMint:histQuoteMint(o.quoteSymbol),baseSymbol:o.baseSymbol,quoteSymbol:o.quoteSymbol},
+    side:o.side,sizeBase:o.qty,execPrice:o.price,notionalQuote:Number(amountQuote)||o.amount,
+    fees:{networkLamports:0,protocolQuote:0,label:'— (simulated: no chain fee)'},
+    quoted:quoted||null,status:'filled',txSig:null,note:HIST_PAPER_NOTE};
+}
+function histEventFromLimitCreate(lo){
+  return{mode:'paper',kind:'limit-create',wallet:null,
+    pair:{baseMint:lo.baseMint,quoteMint:histQuoteMint(lo.quoteSymbol),baseSymbol:lo.baseSymbol,quoteSymbol:lo.quoteSymbol},
+    side:lo.side,sizeBase:lo.amountQuote/lo.limitPrice,execPrice:lo.limitPrice,notionalQuote:lo.amountQuote*lo.quoteUsd,
+    fees:{networkLamports:0,protocolQuote:0,label:'— (simulated: no on-chain keeper fee)'},
+    status:'open',txSig:null,note:HIST_PAPER_NOTE};
+}
+function histEventFromLimitFill(o,lo){
+  return{mode:'paper',kind:'paper-limit-fill',wallet:null,
+    pair:{baseMint:lo.baseMint,quoteMint:histQuoteMint(lo.quoteSymbol),baseSymbol:lo.baseSymbol,quoteSymbol:lo.quoteSymbol},
+    side:lo.side,sizeBase:o.qty,execPrice:lo.limitPrice,notionalQuote:lo.amountQuote*lo.quoteUsd,
+    fees:{networkLamports:0,protocolQuote:0,label:'— (simulated: no on-chain keeper fee)'},
+    status:'filled',txSig:null,note:'Filled at the limit price. '+HIST_PAPER_NOTE};
+}
+function histEventFromLimitCancel(lo,expired){
+  return{mode:'paper',kind:'limit-cancel',wallet:null,
+    pair:{baseMint:lo.baseMint,quoteMint:histQuoteMint(lo.quoteSymbol),baseSymbol:lo.baseSymbol,quoteSymbol:lo.quoteSymbol},
+    side:lo.side,sizeBase:lo.amountQuote/lo.limitPrice,execPrice:lo.limitPrice,notionalQuote:lo.amountQuote*lo.quoteUsd,
+    fees:{networkLamports:0,protocolQuote:0,label:'— (simulated: no on-chain keeper fee)'},
+    status:expired?'expired':'cancelled',txSig:null,
+    note:expired?'Expired unfilled — no funds moved. '+HIST_PAPER_NOTE:'Cancelled before fill — no funds moved. '+HIST_PAPER_NOTE};
+}
+/* === end N4.6 pure block === */
 function selectTicketPair(p){ // p: DexScreener-shaped pair row
   if(!p||!p.baseToken||!p.baseToken.address)return;
   hideReview();
@@ -361,7 +577,7 @@ function setSide(s){hideReview();side=s;$('buyBtn').classList.toggle('active',s=
 $('buyBtn').onclick=()=>setSide('buy');$('sellBtn').onclick=()=>setSide('sell');$('orderAmount').oninput=()=>{hideReview();updatePortfolio();};document.querySelectorAll('[data-amt]').forEach(b=>b.onclick=()=>{hideReview();const v=b.dataset.amt;if(v==='max'){const tp=ticketPair,pr=ticketPrice();if(side==='buy'){$('orderAmount').value=maxBuyInput(cash,quoteUsd(tp&&tp.quoteSymbol)).toFixed(2)}else{const h=tp&&holdings[tp.baseMint];$('orderAmount').value=(h&&pr>0?maxSellInput(h.qty,pr):0).toFixed(2)}}else{$('orderAmount').value=v}updatePortfolio()});
 $('tradeForm').onsubmit=e=>{e.preventDefault();if(orderType==='limit')openLimitReview();else openReview();}; // N4.4/N4.5: submit opens the review sheet; the fill/order commits only via confirm
 function renderOrders(){$('orderCount').textContent=orders.length+' ORDERS';$('orders').innerHTML=orders.length?orders.slice(0,6).map(o=>{const bs=o.baseSymbol||'SOL',qs=o.quoteSymbol||'USDC',mode=(o.mode||'paper').toUpperCase();return '<div style="padding:12px 16px;border-bottom:1px solid #202733;display:flex;justify-content:space-between;gap:8px"><div><strong class="'+(o.side==='buy'?'positive':'negative')+'">'+o.side.toUpperCase()+' '+esc(bs)+'/'+esc(qs)+'</strong> <span class="pill" style="font-size:10px;padding:2px 7px">'+mode+'</span>'+(o.type==='limit'?' <span class="pill" style="font-size:10px;padding:2px 7px">LIMIT</span>':'')+(o.status&&o.status!=='filled'?' <span class="pill" style="font-size:10px;padding:2px 7px">'+esc(o.status.toUpperCase())+'</span>':'')+'<div class="sub">'+o.time.toLocaleTimeString()+' · '+fmtQty(o.qty)+' '+esc(bs)+'</div></div><div style="text-align:right"><strong>'+usd(o.amount)+'</strong><div class="sub">@ '+formatPriceUsd(o.price)+'</div></div></div>';}).join(''):'<div class="empty">Your simulated paper orders will appear here.</div>'}
-let resetArmUntil=0,resetLabel=null;$('resetPaper').onclick=()=>{const b=$('resetPaper');if(resetLabel===null)resetLabel=b.textContent;const dirty=orders.length||Object.keys(holdings).length>0||cash!==10000||limitOrders.some(o=>o.status==='open');if(dirty&&Date.now()>resetArmUntil){resetArmUntil=Date.now()+5000;b.textContent='Confirm reset?';setTimeout(()=>{if(Date.now()>=resetArmUntil)b.textContent=resetLabel;},5100);return;}resetArmUntil=0;b.textContent=resetLabel;cash=10000;holdings={};orders=[];limitOrders=[];renderOrders();renderLimitOrders();updatePortfolio();saveState();toast('Paper account reset.');};
+let resetArmUntil=0,resetLabel=null;$('resetPaper').onclick=()=>{const b=$('resetPaper');if(resetLabel===null)resetLabel=b.textContent;const dirty=orders.length||Object.keys(holdings).length>0||cash!==10000||limitOrders.some(o=>o.status==='open');if(dirty&&Date.now()>resetArmUntil){resetArmUntil=Date.now()+5000;b.textContent='Confirm reset?';toast('This also clears your paper order history. Click again within 5 s to confirm.');setTimeout(()=>{if(Date.now()>=resetArmUntil)b.textContent=resetLabel;},5100);return;}resetArmUntil=0;b.textContent=resetLabel;cash=10000;holdings={};orders=[];limitOrders=[];histClearPaper();histExpanded.clear();renderOrders();renderLimitOrders();renderHistory();updatePortfolio();saveState();toast('Paper account reset — paper order history cleared.');};
 async function searchTokens(){const q=$('tokenSearch').value.trim();saveState();if(!q)return;const box=$('searchResults');box.innerHTML='<div class="empty">Searching DexScreener…</div>';try{const controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),10000);let j;try{const r=await fetch('https://api.dexscreener.com/latest/dex/search?q='+encodeURIComponent(q),{signal:controller.signal});if(!r.ok)throw Error('Search HTTP '+r.status);j=await r.json()}finally{clearTimeout(timeout)}const ps=(j.pairs||[]).filter(p=>p.chainId==='solana'&&p.baseToken?.address&&p.priceUsd).sort((a,b)=>(Number(b.liquidity?.usd)||0)-(Number(a.liquidity?.usd)||0)).slice(0,8);if(!ps.length){box.innerHTML='<div class="empty">No Solana pairs found for this search.</div>';return}box.innerHTML=ps.map(p=>{const address=p.baseToken.address,added=watchlist.some(w=>w.address===address),change=p.priceChange?.h24==null||!Number.isFinite(Number(p.priceChange.h24))?null:Number(p.priceChange.h24);return '<div class="result"><div><strong>'+esc(p.baseToken.symbol)+' / '+esc(p.quoteToken.symbol)+'</strong><small>'+esc(p.baseToken.name)+' · '+esc(p.dexId||'DEX')+' · liq '+(p.liquidity?.usd?usd(p.liquidity.usd):'—')+'</small><small>'+esc(address.slice(0,6)+'…'+address.slice(-5))+'</small></div><div style="text-align:right"><strong>'+formatPriceUsd(p.priceUsd)+'</strong><small class="'+(change===null?'':change>=0?'positive':'negative')+'">'+(change===null?'—':(change>=0?'+':'')+fmt(change,2)+'%')+' 24h</small><button class="action" style="margin-top:5px" data-watch="'+esc(address)+'">'+(added?'Added ✓':'Watch')+'</button> <button class="action" style="margin-top:5px" data-trade-addr="'+esc(address)+'">Trade</button></div></div>'}).join('');box.querySelectorAll('[data-trade-addr]').forEach(b=>b.onclick=()=>{const p=ps.find(row=>row.baseToken.address===b.dataset.tradeAddr);if(p)selectTicketPair(p);});box.querySelectorAll('[data-watch]').forEach(b=>b.onclick=()=>{const address=b.dataset.watch,index=watchlist.findIndex(w=>w.address===address);if(index>=0){const removed=watchlist.splice(index,1)[0];b.textContent='Watch';toast('Removed '+(removed.symbol||'token')+' from watchlist.')}else{if(watchlist.length>=50){toast('Watchlist limit reached (50 tokens).');return}const p=ps.find(row=>row.baseToken.address===address);if(!p)return;watchlist.push({address,symbol:p.baseToken.symbol||'TOKEN',name:p.baseToken.name||'Saved token',priceUsd:Number(p.priceUsd)||0,change24h:p.priceChange?.h24==null?null:Number(p.priceChange.h24),addedAt:new Date().toISOString()});b.textContent='Added ✓';toast('Added '+(p.baseToken.symbol||'token')+' to watchlist.')}renderWatchlist();saveState()})}catch(e){box.innerHTML='<div class="empty">Search timed out or failed. Check your connection and try again.</div>'}}
 $('searchBtn').onclick=searchTokens;$('tokenSearch').onkeydown=e=>{if(e.key==='Enter')searchTokens()};document.querySelectorAll('[data-range]').forEach(b=>{b.classList.toggle('active',b.dataset.range===chartRange);b.onclick=()=>{document.querySelectorAll('[data-range]').forEach(x=>x.classList.remove('active'));b.classList.add('active');chartRange=b.dataset.range||'1H';tickFails=0;tickSkipUntil=0;saveState();toast('Chart range saved. Loading real candles…');loadCandles('range')}});
 wireChartHover();renderOrders();renderWatchlist();document.querySelectorAll('[data-range]').forEach(b=>b.classList.toggle('active',b.dataset.range===chartRange));document.querySelectorAll('#slipPresets button').forEach(b=>b.onclick=()=>onSlipPreset(Number(b.dataset.slip)));$('slippageInput').value=String(slipLoad());$('slippageInput').addEventListener('change',onSlipCustom);paintSlipPresets();
@@ -410,7 +626,13 @@ function confirmReview(){
   const fill={baseMint:inp.baseMint,baseSymbol:inp.baseSymbol,quoteSymbol:inp.quoteSymbol,price:cur,quoteUsd:inp.quoteUsd,amount:inp.amountQuote};
   const r=inp.side==='buy'?paperBuyFill({cash,holdings},fill):paperSellFill({cash,holdings},fill);
   if(r.error){hideReview();return toast(r.error);}
-  cash=r.cash;holdings=r.holdings;orders.unshift(r.order);renderOrders();updatePortfolio();hideReview();toast('Paper '+inp.side+' order recorded. No blockchain transaction sent.');
+  const m=reviewState.model; // N4.6: snapshot the reviewed terms into the history event
+  const quoted=inp.side==='buy'
+    ?{minOut:m.minQty,minOutUnit:inp.baseSymbol,slippageBps:m.slippageBps}
+    :{minOut:m.usdCost*(1-m.slippageBps/10000),minOutUnit:inp.quoteSymbol,slippageBps:m.slippageBps};
+  cash=r.cash;holdings=r.holdings;orders.unshift(r.order);
+  histRecord(histEventFromMarketFill(r.order,inp.amountQuote,quoted)); // N4.6: durable paper history
+  renderOrders();renderHistory();updatePortfolio();hideReview();toast('Paper '+inp.side+' order recorded. No blockchain transaction sent.');
 }
 
 /* === N4.5 DOM wiring: Market|Limit ticket, paper limit engine, open orders (DOM side) === */
@@ -435,13 +657,16 @@ function applyLimitFill(o){
   const r=o.side==='buy'?paperBuyFill({cash,holdings},fill):paperSellFill({cash,holdings},fill);
   if(r.error){o.status='open';return;} // funds moved meanwhile — stays open, retried on the next tick
   cash=r.cash;holdings=r.holdings;
-  orders.unshift(Object.assign({},r.order,{type:'limit',limitPrice:o.limitPrice,status:'filled'}));
-  renderOrders();updatePortfolio();
+  const filledOrder=Object.assign({},r.order,{type:'limit',limitPrice:o.limitPrice,status:'filled'});
+  orders.unshift(filledOrder);
+  histRecord(histEventFromLimitFill(filledOrder,o)); // N4.6: durable paper history
+  renderOrders();renderHistory();updatePortfolio();
   toast('Paper limit '+o.side+' filled at '+formatPriceUsd(o.limitPrice)+' (limit price). No blockchain transaction sent.');
 }
 function applyLimitExpire(o){
   orders.unshift({side:o.side,type:'limit',mode:'paper',baseMint:o.baseMint,baseSymbol:o.baseSymbol,quoteSymbol:o.quoteSymbol,amount:o.amountQuote,qty:o.amountQuote/o.limitPrice,price:o.limitPrice,limitPrice:o.limitPrice,status:'expired',time:new Date()});
-  renderOrders();
+  histRecord(histEventFromLimitCancel(o,true)); // N4.6
+  renderOrders();renderHistory();
   toast('Paper limit order expired unfilled.');
 }
 function cancelLimitOrder(id){
@@ -449,7 +674,8 @@ function cancelLimitOrder(id){
   if(!o)return;
   o.status='cancelled';
   orders.unshift({side:o.side,type:'limit',mode:'paper',baseMint:o.baseMint,baseSymbol:o.baseSymbol,quoteSymbol:o.quoteSymbol,amount:o.amountQuote,qty:o.amountQuote/o.limitPrice,price:o.limitPrice,limitPrice:o.limitPrice,status:'cancelled',time:new Date()});
-  renderOrders();renderLimitOrders();saveState();
+  histRecord(histEventFromLimitCancel(o,false)); // N4.6
+  renderOrders();renderLimitOrders();renderHistory();saveState();
   toast('Paper limit order cancelled.');
 }
 function renderLimitOrders(){
@@ -511,8 +737,10 @@ function confirmLimitReview(){
   if(limitExpirySel==='never'&&!($('expiryAck')&&$('expiryAck').checked)){hideReview();return toast('Acknowledge the no-expiry term first.');}
   const v=limitValidate(Object.assign({},limitTicketInputs(),{side:inp.side,limitPrice:inp.limitPrice,amountQuote:inp.amountQuote}));
   if(!v.ok){hideReview();return toast(v.error);}
-  limitOrders.unshift({id:limitNewId(),side:inp.side,baseMint:inp.baseMint,baseSymbol:inp.baseSymbol,quoteSymbol:inp.quoteSymbol,quoteUsd:inp.quoteUsd,amountQuote:inp.amountQuote,limitPrice:v.limitPrice,createdAt:Date.now(),expiresAt:inp.expiresAt,status:'open'});
-  renderLimitOrders();hideReview();saveState();
+  const lo={id:limitNewId(),side:inp.side,baseMint:inp.baseMint,baseSymbol:inp.baseSymbol,quoteSymbol:inp.quoteSymbol,quoteUsd:inp.quoteUsd,amountQuote:inp.amountQuote,limitPrice:v.limitPrice,createdAt:Date.now(),expiresAt:inp.expiresAt,status:'open'};
+  limitOrders.unshift(lo);
+  histRecord(histEventFromLimitCreate(lo)); // N4.6: the birth record lands in history; the order works in the Open panel
+  renderLimitOrders();renderHistory();hideReview();saveState();
   toast('Paper limit '+inp.side+' order created — fills if the spot price reaches '+formatPriceUsd(v.limitPrice)+'.');
 }
 /* N4.5 init wiring (runs once; refreshTicket paints the rest on every tick). */
@@ -725,6 +953,141 @@ function btInit(){
  $('btSaveCfg').onclick=btSaveConfig;
  btRenderConfigs();
 }
+/* === N4.6 history UI (DOM) ===
+   - Filter state (histFilter, declared at the top) persists via the N2.1 v2
+     state — it is a preference. Row-expand state is session-only view state.
+   - Paper rows NEVER render explorer links (no fake links — the N4.3 honesty
+     bar). Live rows link only real signatures, written by the /raydium/
+     panel only after on-chain confirmation (tradeHistory.ts).
+   - The Live filter is namespaced by the connected wallet
+     (window.__walletAddress); without a wallet it shows the connect
+     empty-state — never another wallet's rows. */
+const histExpanded=new Set(); // session-only view state
+let histClearArmed=false;
+function histWalletAddr(){return window.__walletAddress||null;}
+function histCurrentView(){
+  const s=histLoad();
+  return histVisible(s,{mode:histFilter.mode,wallet:histWalletAddr(),pair:histFilter.pair,kind:histFilter.kind,sig:histFilter.sig});
+}
+function histChip(txt){return '<span class="pill" style="font-size:10px;padding:2px 7px">'+esc(txt)+'</span>';}
+function histRowHtml(e){
+  const open=histExpanded.has(e.id);
+  const sideCls=e.side==='buy'?'positive':'negative';
+  const limitTag=(e.kind==='limit-create'||e.kind==='limit-cancel'||e.kind==='paper-limit-fill')?' '+histChip('LIMIT'):'';
+  const statusTag=e.status==='filled'?'':(e.status==='open'?' '+histChip('OPEN'):' '+histChip(e.status.toUpperCase()));
+  let det='';
+  if(open){
+    const netSol=(e.fees.networkLamports/1e9).toFixed(9).replace(/\.?0+$/,'');
+    const quoted=e.quoted?'<div class="walletrow"><span>Quoted min-out</span><strong>'+fmtQty(e.quoted.minOut)+' '+esc(e.quoted.minOutUnit)+' · '+(e.quoted.slippageBps/100).toFixed(2)+'% slippage</strong></div>':'';
+    const received=e.side==='buy'?fmtQty(e.sizeBase)+' '+esc(e.pair.baseSymbol)+' (≈ '+usd(e.notionalQuote)+')':usd(e.notionalQuote)+' '+esc(e.pair.quoteSymbol);
+    let tx='';
+    if(e.mode==='live'&&e.txSig){
+      const links=explorerLinks(e.txSig);
+      tx='<div class="walletrow"><span>Transaction</span><strong><span class="sigbox"><code>'+esc(e.txSig.slice(0,10)+'…'+e.txSig.slice(-6))+'</code><button type="button" class="action" data-hist-copy="'+esc(e.id)+'">Copy</button><a class="action" style="text-decoration:none" href="'+esc(links.solscan)+'" target="_blank" rel="noopener">Solscan ↗</a><a class="action" style="text-decoration:none" href="'+esc(links.explorer)+'" target="_blank" rel="noopener">Explorer ↗</a></span></strong></div>';
+    }
+    det='<div class="histdetail">'
+      +'<div class="walletrow"><span>Type</span><strong>'+esc(histKindLabel(e.kind))+'</strong></div>'
+      +'<div class="walletrow"><span>Received</span><strong>'+esc(received)+'</strong></div>'
+      +quoted
+      +'<div class="walletrow"><span>Network fee</span><strong>'+esc(netSol)+' SOL</strong></div>'
+      +'<div class="walletrow"><span>Protocol fee</span><strong>'+esc(e.fees.label)+'</strong></div>'
+      +'<div class="walletrow"><span>Recorded</span><strong>'+esc(new Date(e.ts).toLocaleString())+'</strong></div>'
+      +tx
+      +(e.error?'<div class="walletrow"><span>Error</span><strong class="negative">'+esc(e.error)+'</strong></div>':'')
+      +(e.note?'<div class="sub" style="margin-top:6px">'+esc(e.note)+'</div>':'')
+      +'</div>';
+  }
+  return '<div class="histrow'+(open?' open':'')+'" data-hist="'+esc(e.id)+'">'
+    +'<div style="display:flex;justify-content:space-between;gap:8px;align-items:flex-start">'
+    +'<div><strong class="'+sideCls+'">'+e.side.toUpperCase()+' '+esc(e.pair.baseSymbol)+'/'+esc(e.pair.quoteSymbol)+'</strong> '+histChip(e.mode==='live'?'LIVE':'PAPER')+limitTag+statusTag
+    +'<div class="sub">'+esc(histRelTime(e.ts))+' · '+fmtQty(e.sizeBase)+' '+esc(e.pair.baseSymbol)+'</div></div>'
+    +'<div style="text-align:right"><strong title="Execution price at fill time — not a current quote">'+formatPriceUsd(e.execPrice)+'</strong><div class="sub">'+usd(e.notionalQuote)+'</div></div>'
+    +'</div>'+det+'</div>';
+}
+function renderHistory(){
+  const list=$('historyList');if(!list)return;
+  const s=histLoad(),wa=histWalletAddr();
+  const evs=histVisible(s,{mode:histFilter.mode,wallet:wa,pair:histFilter.pair,kind:histFilter.kind,sig:histFilter.sig});
+  const pairSel=$('histPair'),opts=histPairOptions(s,wa);
+  if(pairSel){
+    pairSel.innerHTML='<option value="all">All pairs</option>'+opts.map(p=>'<option value="'+esc(p.mint)+'"'+(p.mint===histFilter.pair?' selected':'')+'>'+esc(p.label)+'</option>').join('');
+    if(histFilter.pair!=='all'&&!opts.some(p=>p.mint===histFilter.pair))histFilter.pair='all';
+  }
+  const bar=$('histLiveBar');
+  if(bar){
+    if(histFilter.mode==='live'){
+      bar.hidden=false;
+      bar.innerHTML=wa?('Live history for <strong>'+esc(wa.slice(0,4)+'…'+wa.slice(-4))+'</strong> · on this device only · <button type="button" class="action sell" id="histClearLive" style="margin-left:6px">'+(histClearArmed?'Confirm clear?':'Clear')+'</button>')
+                      :'';
+    }else{bar.hidden=true;histClearArmed=false;}
+  }
+  if(histFilter.mode==='live'&&!wa){
+    list.innerHTML='<div class="empty">Connect a wallet to see live history.</div>';
+  }else if(!evs.length){
+    const empty=histFilter.mode==='live'?'No live trades recorded for this wallet yet.':(histFilter.mode==='paper'?'No trades yet — place a paper order to start.':'No trade events yet — paper fills and limit orders land here.');
+    list.innerHTML='<div class="empty">'+empty+'</div>';
+  }else{
+    list.innerHTML=evs.map(histRowHtml).join('');
+    list.querySelectorAll('[data-hist]').forEach(r=>r.addEventListener('click',ev=>{
+      if(ev.target.closest&&ev.target.closest('[data-hist-copy]'))return;
+      const id=r.dataset.hist;
+      if(histExpanded.has(id))histExpanded.delete(id);else histExpanded.add(id);
+      renderHistory();
+    }));
+    list.querySelectorAll('[data-hist-copy]').forEach(b=>b.addEventListener('click',ev=>{
+      ev.stopPropagation();
+      const s2=histLoad();
+      const all=s2.paper.concat(Object.keys(s2.live).reduce((a,k)=>a.concat(s2.live[k]),[]));
+      const found=all.find(x=>x.id===b.dataset.histCopy);
+      if(!found||!found.txSig)return;
+      if(navigator.clipboard&&navigator.clipboard.writeText)navigator.clipboard.writeText(found.txSig).then(()=>toast('Signature copied.'),()=>toast('Copy failed — select the signature manually.'));
+      else toast('Copy not available in this browser.');
+    }));
+  }
+  const cl=$('histClearLive');
+  if(cl)cl.onclick=()=>{
+    if(!histClearArmed){histClearArmed=true;renderHistory();return;}
+    histClearArmed=false;
+    histClearLive(wa);
+    histExpanded.clear();
+    renderHistory();
+    toast('Live history for this wallet cleared on this device. (The chain is unchanged.)');
+  };
+}
+function histExportCsv(){
+  const evs=histCurrentView();
+  if(!evs.length){toast('Nothing to export with the current filters.');return;}
+  const wa=histWalletAddr();
+  const scope=(histFilter.mode==='live'&&wa)?wa.slice(0,4)+wa.slice(-4):'paper';
+  const name='gecko-terminal-history-'+scope+'-'+new Date().toISOString().slice(0,10)+'.csv';
+  const blob=new Blob([histCsv(evs)],{type:'text/csv'});
+  const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=name;
+  document.body.appendChild(a);a.click();
+  setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove();},1000);
+  toast('Exported '+evs.length+' history events to CSV.');
+}
+(function initHistory(){
+  document.querySelectorAll('#histModeChips button').forEach(b=>{
+    b.classList.toggle('on',b.dataset.hm===histFilter.mode);
+    b.onclick=()=>{
+      histFilter.mode=b.dataset.hm;histClearArmed=false;
+      document.querySelectorAll('#histModeChips button').forEach(x=>x.classList.toggle('on',x===b));
+      renderHistory();saveState();
+    };
+  });
+  const ks=$('histKind');
+  if(ks){
+    ks.innerHTML='<option value="all">All types</option>'+HIST_KINDS.map(k=>'<option value="'+k+'"'+(k===histFilter.kind?' selected':'')+'>'+esc(histKindLabel(k))+'</option>').join('');
+    ks.onchange=()=>{histFilter.kind=ks.value;renderHistory();saveState();};
+  }
+  const ps=$('histPair');
+  if(ps)ps.onchange=()=>{histFilter.pair=ps.value;renderHistory();saveState();};
+  const sg=$('histSig');
+  if(sg){sg.value=histFilter.sig;sg.oninput=()=>{histFilter.sig=sg.value.trim();renderHistory();saveState();};}
+  const ex=$('histExport');if(ex)ex.onclick=histExportCsv;
+  renderHistory();
+})();
+/* === end N4.6 history UI === */
 /*__N41_WALLET_BEGIN__*/
 // N4.1 — Solana wallet adapter on the main page (2026-10-22).
 // Ecosystem-standard discovery: Phantom + Solflare adapters from
