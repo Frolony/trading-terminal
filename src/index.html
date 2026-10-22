@@ -591,6 +591,10 @@ function deleteWorkspace(id){
 function paintLayoutPop(){
   const ws=activeWorkspace();
   const pl=$('layoutPanelList');if(!pl)return;
+  // N5.2 fix 2026-10-22 ~17:2x CST: re-rendering destroys the focused control, so
+  // remember it and restore focus afterward (keyboard flow keeps working).
+  const ae=document.activeElement;
+  const fk=ae&&ae.dataset?(ae.dataset.lvis?'v:'+ae.dataset.lvis:ae.dataset.lup?'u:'+ae.dataset.lup:ae.dataset.ldn?'d:'+ae.dataset.ldn:null):null;
   pl.innerHTML=ws.order.map((id,i)=>{
     const hidden=ws.hidden.includes(id);
     return '<div class="lprow'+(hidden?' is-hidden':'')+'">'+
@@ -619,6 +623,25 @@ function paintLayoutPop(){
   pl.querySelectorAll('[data-lvis]').forEach(b=>b.onclick=()=>togglePanelVisibility(b.dataset.lvis));
   pl.querySelectorAll('[data-lup]').forEach(b=>b.onclick=()=>movePanel(b.dataset.lup,-1));
   pl.querySelectorAll('[data-ldn]').forEach(b=>b.onclick=()=>movePanel(b.dataset.ldn,1));
+  if(fk){ // restore focus to the re-created control the user just used
+    const kind=fk[0],id=fk.slice(2);
+    const nb=pl.querySelector(kind==='v'?'[data-lvis="'+id+'"]':kind==='u'?'[data-lup="'+id+'"]':'[data-ldn="'+id+'"]');
+    if(nb)nb.focus();
+  }
+}
+/* N5.2 fix 2026-10-22 ~17:2x CST (acceptance check 6): the Rename/Apply/Delete/Save
+   buttons re-render the popover lists, which DETACHES the clicked button; the same
+   click then bubbled to the document handler where p.contains(detachedTarget) is
+   false, so it was misread as an outside click and the popover closed (Rename never
+   visibly opened). A click whose target is no longer connected is never an outside
+   click. */
+function layoutOutsideClick(e){
+  const p=$('layoutPop');if(!p||p.hidden)return;
+  const t=e.target;
+  if(t&&t.isConnected===false)return;
+  if(p.contains(t))return;
+  const btn=$('layoutBtn');if(btn&&btn.contains(t))return;
+  closeLayout(); // genuine outside click dismisses
 }
 function startRenameWorkspace(id){
   const ws=layout.workspaces.find(w=>w.id===id);if(!ws||ws.builtIn)return;
@@ -645,11 +668,7 @@ function wireLayoutPop(){
   if(b)b.onclick=()=>{const p=$('layoutPop');if(p&&p.hidden)openLayout();else closeLayout();};
   const c=$('layoutPopClose');if(c)c.onclick=closeLayout;
   const p=$('layoutPop');if(!p)return;
-  document.addEventListener('click',e=>{
-    if(p.hidden||p.contains(e.target))return;
-    const btn=$('layoutBtn');if(btn&&btn.contains(e.target))return;
-    closeLayout(); // outside click dismisses
-  });
+  document.addEventListener('click',layoutOutsideClick);
   document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!p.hidden)closeLayout();});
   const sv=$('layoutWsSave');
   if(sv)sv.onclick=()=>{const inp=$('layoutWsName');if(saveWorkspaceAs(inp?inp.value:''))inp.value='';};
