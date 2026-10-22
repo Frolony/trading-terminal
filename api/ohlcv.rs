@@ -35,7 +35,7 @@ struct PoolDef { pair: &'static str, address: &'static str }
 // daily OHLCV history is deepest. SOL-USDC's pool carries 365 daily bars
 // (2025-10-24 → present, verified 2026-10-22); alternates carry ~183.
 const POOLS: &[PoolDef] = &[
-    PoolDef{pair:"SOL-USDC", address:"Czfq3xZZDmsdGdUyrNLtRhGc47cXcZtLG4crryfu44zE},
+    PoolDef{pair:"SOL-USDC", address:"Czfq3xZZDmsdGdUyrNLtRhGc47cXcZtLG4crryfu44zE"},
     PoolDef{pair:"RAY-USDC", address:"6UmmUiYoBjSrhakAobJw8BvkmJtDVxaeBtbt7rxWo1mg"},
     PoolDef{pair:"JUP-USDC", address:"HfgjZDmexhFVD28Vkb1NbQwWeXP3uDcVTLPjSGHmRHhL"},
 ];
