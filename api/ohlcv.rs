@@ -15,6 +15,8 @@
 // accordingly. coverage.complete=false is honest: the free tier only carries
 // ~365 daily bars for the best SOL/USDC pool (verified 2026-10-22); coverage
 // grows ~1 bar/day and the envelope always reports the real range.
+// Upstream requests carry a browser User-Agent: GeckoTerminal's edge 401s
+// bare reqwest/datacenter requests (observed 2026-10-22 from Vercel iad1).
 #[path = "../src/raydium_common.rs"] mod common;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -138,7 +140,10 @@ async fn handler(req: Request) -> Result<Value, Error> {
     for _ in 0..MAX_PAGES {
         let mut url = format!("{}/{}/ohlcv/day?aggregate={}&limit={}", GECKO_BASE, pool_addr, agg, UPSTREAM_LIMIT);
         if let Some(b) = before { url = format!("{}&before_timestamp={}", url, b); }
-        let resp = match client.get(&url).send().await {
+        let resp = match client.get(&url)
+            .header("User-Agent", "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
+            .header("Accept", "application/json")
+            .send().await {
             Ok(r) => r,
             Err(_) => return Ok(common::api_error("UPSTREAM_ERROR", "GeckoTerminal OHLCV request failed.")),
         };
