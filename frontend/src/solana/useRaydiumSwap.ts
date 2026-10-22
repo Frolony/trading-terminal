@@ -107,9 +107,13 @@ export function useRaydiumSwap() {
 
   const quote = useCallback((req: QuoteRequest): Promise<QuoteResult> => getQuote(req), []);
 
-  const executeQuote = useCallback(
-    async (quoteResult: QuoteResult, walletPubkey: string): Promise<string> => {
-      if (!publicKey || !signTransaction) throw new Error('Connect a wallet before swapping.');
+  /**
+   * N4.4: build the unsigned transaction for a quote and deserialize it.
+   * This is the transaction the review sheet simulates and fee-estimates;
+   * the wallet later signs THESE bytes (simulate-then-sign the same bytes).
+   */
+  const buildPreparedTx = useCallback(
+    async (quoteResult: QuoteResult, walletPubkey: string): Promise<VersionedTransaction> => {
       const built = await buildSwap({
         walletPubkey,
         inputMint: quoteResult.inputMint,
@@ -117,8 +121,70 @@ export function useRaydiumSwap() {
         quoteRaw: quoteResult.raw,
       });
       const base64Tx = extractBase64Transaction(built);
-      const transaction = VersionedTransaction.deserialize(decodeBase64(base64Tx));
+      return VersionedTransaction.deserialize(decodeBase64(base64Tx));
+    },
+    [],
+  );
+
+  /**
+   * N4.4: pre-flight simulation (pack §3.4). Returns the RPC verdict;
+   * throws only when simulation itself cannot run (unavailable path).
+   */
+  const simulatePreparedTx = useCallback(
+    async (tx: VersionedTransaction): Promise<{ ok: boolean; message: string | null }> => {
+      let result;
+      try {
+        result = await connection.simulateTransaction(tx);
+      } catch (err) {
+        throw new Error(
+          'simulateTransaction unavailable: ' + (err instanceof Error ? err.message : 'unknown error'),
+        );
+      }
+      const err = result.value.err;
+      if (err === null || err === undefined) return { ok: true, message: null };
+      const detail = typeof err === 'string' ? err : JSON.stringify(err);
+      const logs = Array.isArray(result.value.logs) ? result.value.logs.slice(-3).join(' | ') : '';
+      return { ok: false, message: logs ? `${detail} — ${logs}` : detail };
+    },
+    [connection],
+  );
+
+  /**
+   * N4.4: network-fee estimate via getFeeForMessage (pack §3.3.1).
+   * Returns lamports, or null when the estimate cannot be obtained —
+   * the caller must then block the Live confirm with the honest reason.
+   */
+  const estimateFeeLamports = useCallback(
+    async (tx: VersionedTransaction): Promise<number | null> => {
+      try {
+        const fee = await connection.getFeeForMessage(tx.message);
+        return typeof fee.value === 'number' && Number.isFinite(fee.value) ? fee.value : null;
+      } catch {
+        return null;
+      }
+    },
+    [connection],
+  );
+
+  const executeQuote = useCallback(
+    async (quoteResult: QuoteResult, walletPubkey: string): Promise<string> => {
+      if (!publicKey || !signTransaction) throw new Error('Connect a wallet before swapping.');
+      const transaction = await buildPreparedTx(quoteResult, walletPubkey);
       const signed = await signTransaction(transaction);
+      return connection.sendRawTransaction(signed.serialize());
+    },
+    [connection, publicKey, signTransaction, buildPreparedTx],
+  );
+
+  /**
+   * N4.4: sign and send a PREPARED transaction — the exact bytes that were
+   * simulated and fee-estimated at sheet-open (simulate-then-sign the same
+   * bytes). The panel only calls this after the prepare gate passes.
+   */
+  const signAndSendPrepared = useCallback(
+    async (tx: VersionedTransaction): Promise<string> => {
+      if (!publicKey || !signTransaction) throw new Error('Connect a wallet before swapping.');
+      const signed = await signTransaction(tx);
       return connection.sendRawTransaction(signed.serialize());
     },
     [connection, publicKey, signTransaction],
@@ -127,6 +193,10 @@ export function useRaydiumSwap() {
   return {
     getQuote: quote,
     executeQuote,
+    buildPreparedTx,
+    simulatePreparedTx,
+    estimateFeeLamports,
+    signAndSendPrepared,
     connected,
     publicKey: publicKey ? publicKey.toBase58() : null,
     /**
