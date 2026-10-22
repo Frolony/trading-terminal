@@ -16,8 +16,42 @@
 .btcfg{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 0;border-bottom:1px solid #202733;font-size:12px}
 .btcfg:last-child{border-bottom:0}
 .btlegend{font-size:10px;color:var(--muted);margin-top:8px}
+/* N4.1 wallet connect (2026-10-22): header wallet button, connect modal, account dropdown.
+   Design follows the page's own pill/action/toast language. */
+.walletbtn{border:1px solid #3f4a2e;background:#1c2317;color:var(--lime);border-radius:8px;padding:7px 12px;font-size:12px;font-weight:650}
+.walletbtn:hover{border-color:#5a6b42}
+.walletbtn.connected{color:var(--text);border-color:var(--line);background:#141923}
+.walletbtn:disabled{opacity:.6;cursor:wait}
+.wwrap{position:relative}
+.wdd{position:absolute;right:0;top:calc(100% + 8px);width:262px;background:linear-gradient(145deg,#131923,#10141b);border:1px solid var(--line);border-radius:12px;z-index:60;padding:4px 14px 12px;box-shadow:0 18px 50px #000a}
+.wdd .waddr{font-size:10px;color:var(--muted);word-break:break-all;margin:8px 0 4px}
+.wdd .wrowbtn{display:flex;gap:8px;margin-top:10px}
+.wdd .wrowbtn button{flex:1;border:1px solid var(--line);background:#141923;color:#aeb9ca;border-radius:7px;padding:7px;font-size:11px}
+.wdd .wrowbtn button:hover{border-color:#3a4657}
+.wdd .wrowbtn button.danger{color:var(--red);border-color:#472a35;background:#281820}
+.wmodal{position:fixed;inset:0;background:#06080bd9;display:flex;align-items:center;justify-content:center;z-index:70;padding:20px}
+.wmodal[hidden]{display:none}
+.wmodal-card{width:min(430px,100%);background:linear-gradient(145deg,#131923,#10141b);border:1px solid var(--line);border-radius:14px;max-height:82vh;overflow:auto;box-shadow:0 24px 70px #000c}
+.wmodal-head{padding:15px 18px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;gap:12px}
+.wmodal-head h3{font-size:14px;margin:0;font-weight:650}
+.wmodal-head small{display:block;color:var(--muted);font-size:10px;font-weight:400;margin-top:3px}
+.wclose{background:transparent;border:0;color:var(--muted);font-size:18px;line-height:1;padding:4px 8px;border-radius:6px}
+.wclose:hover{color:var(--text)}
+.wmodal-body{padding:8px 18px 18px}
+.wrow{display:flex;align-items:center;gap:12px;width:100%;background:#0b0e13;border:1px solid var(--line);border-radius:9px;padding:11px 13px;margin-top:10px;color:var(--text);text-align:left;font-size:13px}
+.wrow:hover{border-color:#3a4657}
+.wrow img{width:28px;height:28px;border-radius:6px;flex:none}
+.wrow .wname{flex:1;font-weight:650}
+.wrow .wname small{display:block;color:var(--muted);font-size:10px;font-weight:400;margin-top:2px}
+.wrow .wgo{font-size:11px;color:var(--lime)}
+a.wrow{text-decoration:none}
+.wnote{font-size:11px;color:var(--muted);margin-top:14px;text-align:center;line-height:1.6}
+.werr{font-size:12px;color:var(--red);background:#281820;border:1px solid #472a35;border-radius:8px;padding:10px 12px;margin-top:10px;text-align:center}
+.switchrow button.active.mode{background:#1b2635;color:var(--blue)}
+.moderow{margin-bottom:10px}
+.moderow .modelabel{font-size:10px;color:var(--muted);letter-spacing:1px;text-transform:uppercase;margin-bottom:6px}
 </style></head><body><div class="app">
-<header class="top"><div class="brand"><div class="mark">ɢ</div><div><h1>GECKO TERMINAL</h1><small>Solana market intelligence</small></div></div><div class="topright"><span class="pill">NETWORK&nbsp; / &nbsp;SOLANA</span><span class="status"><i class="dot"></i><span id="feedStatus">CONNECTING DATA</span></span><span class="pill">PAPER MODE</span></div></header>
+<header class="top"><div class="brand"><div class="mark">ɢ</div><div><h1>GECKO TERMINAL</h1><small>Solana market intelligence</small></div></div><div class="topright"><span class="pill">NETWORK&nbsp; / &nbsp;SOLANA</span><span class="status"><i class="dot"></i><span id="feedStatus">CONNECTING DATA</span></span><span class="wwrap"><button id="walletBtn" class="walletbtn" type="button">Connect Wallet</button><div class="wdd" id="walletDd" hidden><div class="eyebrow" id="walletDdName" style="margin-top:8px">Wallet</div><div class="waddr" id="walletDdAddr"></div><div class="walletrow"><span>SOL balance</span><strong id="walletSol">—</strong></div><div class="walletrow"><span>USDC balance</span><strong id="walletUsdc">—</strong></div><div class="walletrow"><span>USDT balance</span><strong id="walletUsdt">—</strong></div><div class="wrowbtn"><button type="button" id="walletCopy">Copy address</button><button type="button" id="walletRetryBal">Retry balances</button></div><div class="wrowbtn"><button type="button" id="walletDisconnect" class="danger">Disconnect</button></div></div></span><span class="pill">PAPER MODE</span></div></header>
 <div class="stats">
 <div class="stat"><div class="eyebrow">SOL / USD</div><div class="big" id="statPrice">$—</div><div class="sub" id="statPriceSub">Live market feed</div></div>
 <div class="stat"><div class="eyebrow">24H CHANGE</div><div class="big" id="statChange">—</div><div class="sub">Solana spot market</div></div>
@@ -47,11 +81,12 @@
 <section class="panel"><div class="panelhead"><h2>Solana market pairs</h2><div style="display:flex;align-items:center;gap:8px"><button type="button" class="action" id="retryFeed">Retry feed</button><span class="pill" id="pairCount">DISCOVERING</span></div></div><div class="tablewrap"><table><thead><tr><th>Pair / DEX</th><th>Price USD</th><th>24H</th><th>Liquidity</th><th>24H volume</th><th>Trade</th></tr></thead><tbody id="pairs"><tr><td colspan="6" class="empty">Loading live pairs from DexScreener…</td></tr></tbody></table></div></section>
 <section class="panel"><div class="panelhead"><h2>Token discovery</h2><span class="eyebrow">DEXSCREENER SEARCH</span></div><div class="panelbody"><div class="searchrow"><input id="tokenSearch" placeholder="Search token, ticker or mint address" value="SOL"><button id="searchBtn">Search</button></div><div id="searchResults" class="results"><div class="empty">Search live Solana pairs and add candidates to your watchlist.</div></div></div></section>
 </main><aside class="sidecol">
-<section class="panel tradepanel"><div class="panelhead"><h2>Order ticket</h2><span class="pill">SIMULATED</span></div><div class="panelbody"><form class="tradeform" id="tradeForm"><div class="switchrow"><button type="button" id="buyBtn" class="active buy">Buy / Long</button><button type="button" id="sellBtn" class="sell">Sell</button></div><div class="field"><label>Asset</label><select id="asset"><option value="SOL">SOL — Solana</option></select></div><div class="field"><label>Order type</label><select id="orderType"><option>Market</option><option disabled>Limit (planned)</option></select></div><div class="field"><label>Order size</label><div class="inputwrap"><input id="orderAmount" type="number" min="0.0001" step="any" value="100" required><span id="amountUnit">USD</span></div></div><div class="amounts"><button type="button" data-amt="25">$25</button><button type="button" data-amt="100">$100</button><button type="button" data-amt="250">$250</button><button type="button" data-amt="max">MAX</button></div><div class="walletrow"><span>Execution price</span><strong id="execPrice">$—</strong></div><div class="walletrow"><span>Estimated quantity</span><strong id="estQty">— SOL</strong></div><div class="walletrow"><span>Available USD</span><strong id="cashAvail">$10,000.00</strong></div><button class="primary" id="submitTrade" type="submit">Buy SOL · Paper</button><div class="note">No wallet connected · no real orders or funds</div></form></div></section>
+<section class="panel tradepanel"><div class="panelhead"><h2>Order ticket</h2><span class="pill">SIMULATED</span></div><div class="panelbody"><form class="tradeform" id="tradeForm"><div class="moderow"><div class="modelabel">Execution mode</div><div class="switchrow"><button type="button" id="paperModeBtn" class="active mode">Paper</button><button type="button" id="liveModeBtn">Live</button></div></div><div class="switchrow"><button type="button" id="buyBtn" class="active buy">Buy / Long</button><button type="button" id="sellBtn" class="sell">Sell</button></div><div class="field"><label>Asset</label><select id="asset"><option value="SOL">SOL — Solana</option></select></div><div class="field"><label>Order type</label><select id="orderType"><option>Market</option><option disabled>Limit (planned)</option></select></div><div class="field"><label>Order size</label><div class="inputwrap"><input id="orderAmount" type="number" min="0.0001" step="any" value="100" required><span id="amountUnit">USD</span></div></div><div class="amounts"><button type="button" data-amt="25">$25</button><button type="button" data-amt="100">$100</button><button type="button" data-amt="250">$250</button><button type="button" data-amt="max">MAX</button></div><div class="walletrow"><span>Execution price</span><strong id="execPrice">$—</strong></div><div class="walletrow"><span>Estimated quantity</span><strong id="estQty">— SOL</strong></div><div class="walletrow"><span>Available USD</span><strong id="cashAvail">$10,000.00</strong></div><button class="primary" id="submitTrade" type="submit">Buy SOL · Paper</button><div class="note" id="ticketNote">No wallet connected · no real orders or funds</div></form></div></section>
 <section class="panel"><div class="panelhead"><h2>Paper portfolio</h2><span class="eyebrow">LOCAL SESSION</span></div><div class="panelbody"><div class="walletrow"><span>Cash balance</span><strong id="cashBal">$10,000.00</strong></div><div class="walletrow"><span>SOL holdings</span><strong id="solBal">0.000000 SOL</strong></div><div class="walletrow"><span>Position value</span><strong id="posValue">$0.00</strong></div><div class="walletrow"><span>Unrealized P/L</span><strong id="unrealized">$0.00</strong></div><button id="resetPaper" style="margin-top:13px;width:100%;padding:8px;background:#11151d;border:1px solid var(--line);color:#aab5c6;border-radius:7px;font-size:11px">Reset paper account</button></div></section>
 <section class="panel"><div class="panelhead"><h2>Recent orders</h2><span class="eyebrow" id="orderCount">0 ORDERS</span></div><div id="orders"><div class="empty">Your simulated orders will appear here.</div></div></section>
 <section class="panel"><div class="panelhead"><h2>Rust execution core</h2><span class="pill">ARCHITECTURE</span></div><div class="panelbody"><div class="rust"><span class="kw">pub struct</span> OrderIntent {<br>&nbsp;&nbsp;pub mint: String,<br>&nbsp;&nbsp;pub side: Side,<br>&nbsp;&nbsp;pub amount_usd: u64,<br>}<br><br><span class="kw">pub enum</span> Side { Buy, Sell }<br><br><span class="kw">pub fn</span> <span class="fn">validate_order</span>(<br>&nbsp;&nbsp;order: &amp;OrderIntent,<br>&nbsp;&nbsp;balance: u64,<br>) -&gt; Result&lt;(), Error&gt; {<br>&nbsp;&nbsp;<span class="kw">if</span> order.amount_usd == 0<br>&nbsp;&nbsp;&nbsp;&nbsp;|| order.amount_usd &gt; balance {<br>&nbsp;&nbsp;&nbsp;&nbsp;<span class="kw">return</span> Err(Error::InvalidSize);<br>&nbsp;&nbsp;}<br>&nbsp;&nbsp;Ok(())<br>}</div><div class="sub" style="margin-top:10px">Rust backend is an architecture stub in this prototype. Order signing, RPC execution and custody are not connected.</div></div></section>
-</aside></div><footer class="foot"><span>GECKO TERMINAL · SOLANA WATCH DESK · PROTOTYPE 0.1</span><span>Market data via public DexScreener API and CoinGecko · paper trading only</span></footer></div><div class="toast" id="toast"></div>
+</aside></div><footer class="foot"><span>GECKO TERMINAL · SOLANA WATCH DESK · PROTOTYPE 0.1</span><span>Market data via public DexScreener API and CoinGecko · paper trading only</span></footer></div><div class="wmodal" id="walletModal" hidden><div class="wmodal-card" role="dialog" aria-modal="true" aria-labelledby="wmodalTitle"><div class="wmodal-head"><div><h3 id="wmodalTitle">Connect a wallet</h3><small>Solana mainnet · read-only in this build</small></div><button class="wclose" id="walletModalClose" type="button" aria-label="Close">×</button></div><div class="wmodal-body" id="walletModalBody"><div class="wnote loading">Loading wallet adapters…</div></div></div></div>
+<div class="toast" id="toast"></div>
 <script>
 const $=id=>document.getElementById(id);const STORAGE_KEY='gecko-terminal-state-v1';
 // Canonical wrapped-SOL mint. The DexScreener *search* endpoint is gamed by
@@ -283,6 +318,161 @@ function btInit(){
  $('btSaveCfg').onclick=btSaveConfig;
  btRenderConfigs();
 }
+/*__N41_WALLET_BEGIN__*/
+// N4.1 — Solana wallet adapter on the main page (2026-10-22).
+// Ecosystem-standard discovery: Phantom + Solflare adapters from
+// @solana/wallet-adapter-wallets, lazy-loaded from CDN on first modal open.
+// Rows are driven by each adapter's readyState — never hand-rolled
+// window.solana detection. Read-only in this item: connect/disconnect +
+// balance display. NO signing anywhere (no signTransaction/signMessage).
+// autoConnect stays OFF (N2.2 identity decision later); the wallet address
+// lives in memory only (window.__walletAddress) and is NOT persisted — the
+// N2.1 paper state is untouched. Balances use raw JSON-RPC (getBalance +
+// getTokenAccountsByOwner/jsonParsed) against WALLET_RPC_ENDPOINT, a config
+// constant the N5.1 settings panel will surface.
+const WALLET_RPC_ENDPOINT='https://api.mainnet-beta.solana.com'; // = the project's configured ConnectionProvider endpoint (frontend/src/solana/SolanaWalletProvider.tsx); N5.1 will make it a setting
+const WADAPTER_CDN='https://esm.sh/@solana/wallet-adapter-wallets@0.19';
+const WALLET_USDC_MINT='EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'; // frontend/src/solana/tokens.ts
+const WALLET_USDT_MINT='Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB'; // frontend/src/solana/tokens.ts
+const wallet={connected:false,publicKey:null,name:null,icon:null,adapter:null,balances:{sol:null,usdc:null,usdt:null},balErr:{},balLoading:false,_adapters:null,_connecting:false};
+let ticketMode='paper'; // N4.3: 'live' unlocks only with N4.2–N4.4
+window.__walletState={connected:false,publicKey:null,balances:null}; // read-only exposure for the ticket
+function truncateAddr(a){if(!a||a.length<8)return a||'—';return a.slice(0,4)+'…'+a.slice(-4);}
+function classifyWallets(adapters){const installed=[],installable=[];(adapters||[]).forEach(a=>{if(!a||!a.name)return;((a.readyState==='Installed')?installed:installable).push(a);});return{installed,installable};}
+function walletIconHtml(a){return a&&a.icon?'<img src="'+a.icon+'" alt="">':'';}
+function walletRowHtml(a,kind){
+  if(kind==='install')return '<a class="wrow" href="'+esc(a.url||'#')+'" target="_blank" rel="noopener">'+walletIconHtml(a)+'<span class="wname">'+esc(a.name)+'<small>Not detected · install the '+esc(a.name)+' extension</small></span><span class="wgo">Get →</span></a>';
+  return '<button type="button" class="wrow" data-wallet="'+esc(a.name)+'">'+walletIconHtml(a)+'<span class="wname">'+esc(a.name)+'<small>Detected in this browser · click to connect</small></span><span class="wgo">Connect →</span></button>';
+}
+async function ensureWalletAdapters(){
+  if(wallet._adapters)return wallet._adapters;
+  const mod=await import(WADAPTER_CDN);
+  const list=[];
+  if(mod.PhantomWalletAdapter)list.push(new mod.PhantomWalletAdapter());
+  if(mod.SolflareWalletAdapter)list.push(new mod.SolflareWalletAdapter());
+  if(!list.length)throw new Error('no adapters exported');
+  wallet._adapters=list;return list;
+}
+function renderWalletModalError(){
+  $('walletModalBody').innerHTML='<div class="werr">Wallet library failed to load. Check your connection and retry.</div><button type="button" class="wrow" id="walletLibRetry"><span class="wname">Retry loading adapters</span><span class="wgo">↻</span></button><div class="wnote">No wallet is connected. The terminal keeps working in paper mode.</div>';
+}
+async function openWalletModal(){
+  const modal=$('walletModal'),body=$('walletModalBody');
+  modal.hidden=false;
+  if(!wallet._adapters){
+    body.innerHTML='<div class="wnote loading">Loading wallet adapters…</div>';
+    try{await ensureWalletAdapters();}
+    catch(e){renderWalletModalError();return;}
+  }
+  const c=classifyWallets(wallet._adapters);
+  let html=c.installed.map(a=>walletRowHtml(a,'installed')).join('')+c.installable.map(a=>walletRowHtml(a,'install')).join('');
+  if(!c.installed.length&&!c.installable.length)html='<div class="wnote">No supported wallets found.</div>';
+  html+='<div class="wnote">Only wallets detected in this browser can connect.<br>Connecting is read-only in this build — the terminal never signs or sends anything.</div>';
+  body.innerHTML=html;
+}
+function closeWalletModal(){$('walletModal').hidden=true;}
+async function rpcCall(method,params){
+  const c=new AbortController(),t=setTimeout(()=>c.abort(),10000);
+  try{
+    const r=await fetch(WALLET_RPC_ENDPOINT,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({jsonrpc:'2.0',id:1,method,params}),signal:c.signal});
+    if(!r.ok)throw new Error('RPC HTTP '+r.status);
+    const j=await r.json();
+    if(j.error)throw new Error(j.error.message||'RPC error');
+    return j.result;
+  }finally{clearTimeout(t);}
+}
+async function getSolBalance(pk){const res=await rpcCall('getBalance',[pk]);return res.value/1e9;}
+async function getSplBalance(pk,mint){
+  const res=await rpcCall('getTokenAccountsByOwner',[pk,{mint},{encoding:'jsonParsed',commitment:'confirmed'}]);
+  let total=0;((res&&res.value)||[]).forEach(a=>{const info=a.account&&a.account.data&&a.account.data.parsed&&a.account.data.parsed.info;const amt=info&&info.tokenAmount;if(amt&&Number.isFinite(Number(amt.uiAmount)))total+=Number(amt.uiAmount);});
+  return total;
+}
+function balText(v,sym){if(v===null||v===undefined||!Number.isFinite(Number(v)))return'—';return fmt(Number(v),sym==='SOL'?4:2)+' '+sym;}
+function renderWalletDd(){
+  const set=(id,v,sym,err)=>{const el=$(id);if(wallet.balLoading){el.textContent='…';el.title='';}else if(err){el.textContent='unavailable';el.title='Balance unavailable — use Retry balances';}else{el.textContent=balText(v,sym);el.title='';}};
+  set('walletSol',wallet.balances.sol,'SOL',wallet.balErr.sol);
+  set('walletUsdc',wallet.balances.usdc,'USDC',wallet.balErr.usdc);
+  set('walletUsdt',wallet.balances.usdt,'USDT',wallet.balErr.usdt);
+}
+function setWalletConnected(a,pk){
+  wallet.connected=true;wallet.publicKey=pk;wallet.name=a.name;wallet.icon=a.icon;wallet.adapter=a;
+  wallet.balances={sol:null,usdc:null,usdt:null};wallet.balErr={};
+  window.__walletAddress=pk; // N2.2/N7.3 identity hook — memory-only, never persisted
+  window.__walletState={connected:true,publicKey:pk,name:a.name,balances:null};
+  const b=$('walletBtn');b.textContent=truncateAddr(pk);b.classList.add('connected');
+  $('walletDdName').textContent=a.name||'Wallet';
+  $('walletDdAddr').textContent=pk;
+  renderWalletDd();
+  $('ticketNote').textContent='Wallet '+truncateAddr(pk)+' connected · paper mode — no real orders or funds';
+  try{document.dispatchEvent(new CustomEvent('walletchange',{detail:{connected:true,publicKey:pk}}));}catch(e){}
+}
+async function connectWallet(a){
+  if(wallet._connecting||wallet.connected)return;
+  wallet._connecting=true;
+  try{
+    await a.connect();
+    const pk=a.publicKey?a.publicKey.toBase58():null;
+    if(!pk)throw new Error('no public key');
+    setWalletConnected(a,pk);
+    closeWalletModal();
+    toast('Wallet connected · '+truncateAddr(pk));
+    refreshWalletBalances();
+  }catch(e){toast('Wallet connection failed or was rejected.');}
+  finally{wallet._connecting=false;}
+}
+async function refreshWalletBalances(){
+  if(!wallet.connected||!wallet.publicKey||wallet.balLoading)return;
+  wallet.balLoading=true;wallet.balErr={};renderWalletDd();
+  const pk=wallet.publicKey;
+  const mark=(key)=>{wallet.balErr[key]=true;return null;};
+  const results=await Promise.all([
+    getSolBalance(pk).catch(()=>mark('sol')),
+    getSplBalance(pk,WALLET_USDC_MINT).catch(()=>mark('usdc')),
+    getSplBalance(pk,WALLET_USDT_MINT).catch(()=>mark('usdt'))
+  ]);
+  if(!wallet.connected||wallet.publicKey!==pk){wallet.balLoading=false;return;} // disconnected mid-flight
+  wallet.balances={sol:results[0],usdc:results[1],usdt:results[2]};wallet.balLoading=false;
+  window.__walletState.balances={sol:results[0],usdc:results[1],usdt:results[2]};
+  renderWalletDd();
+}
+async function disconnectWallet(){
+  const a=wallet.adapter;
+  wallet.connected=false;wallet.publicKey=null;wallet.name=null;wallet.icon=null;wallet.adapter=null;
+  wallet.balances={sol:null,usdc:null,usdt:null};wallet.balErr={};wallet.balLoading=false;
+  try{delete window.__walletAddress;}catch(e){window.__walletAddress=null;}
+  window.__walletState={connected:false,publicKey:null,balances:null};
+  if(a){try{await a.disconnect();}catch(e){}}
+  const b=$('walletBtn');b.textContent='Connect Wallet';b.classList.remove('connected');
+  $('walletDd').hidden=true;
+  $('ticketNote').textContent='No wallet connected · no real orders or funds';
+  try{document.dispatchEvent(new CustomEvent('walletchange',{detail:{connected:false}}));}catch(e){}
+  toast('Wallet disconnected.');
+}
+function setTicketMode(m){
+  if(m==='live'){toast('Live trading is not enabled yet — it arrives with N4.2–N4.4. The ticket stays in paper mode.');return;}
+  ticketMode='paper';
+  $('paperModeBtn').classList.add('active','mode');$('liveModeBtn').classList.remove('active','mode');
+}
+function bindWalletUi(){
+  const modal=$('walletModal'),body=$('walletModalBody');
+  $('walletBtn').onclick=()=>{if(wallet.connected){const dd=$('walletDd');dd.hidden=!dd.hidden;}else openWalletModal();};
+  $('walletModalClose').onclick=closeWalletModal;
+  modal.addEventListener('click',e=>{if(e.target===modal)closeWalletModal();});
+  document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!modal.hidden)closeWalletModal();});
+  document.addEventListener('click',e=>{const dd=$('walletDd');if(!dd.hidden&&!e.target.closest('.wwrap'))dd.hidden=true;});
+  body.addEventListener('click',e=>{
+    const rb=e.target.closest?e.target.closest('[data-wallet]'):null;
+    if(rb&&wallet._adapters){const a=wallet._adapters.find(x=>x.name===rb.dataset.wallet);if(a){connectWallet(a);return;}}
+    if(e.target.closest&&e.target.closest('#walletLibRetry')){wallet._adapters=null;openWalletModal();}
+  });
+  $('walletDisconnect').onclick=()=>disconnectWallet();
+  $('walletCopy').onclick=()=>{const pk=wallet.publicKey;if(!pk)return;if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(pk).then(()=>toast('Address copied.'),()=>toast('Copy failed — select the address manually.'));}else toast('Copy not available in this browser.');};
+  $('walletRetryBal').onclick=()=>refreshWalletBalances();
+  $('paperModeBtn').onclick=()=>setTicketMode('paper');
+  $('liveModeBtn').onclick=()=>setTicketMode('live');
+}
+bindWalletUi();
+/*__N41_WALLET_END__*/
 btInit();
 
 </script></body></html>
