@@ -114,16 +114,42 @@ a.wrow{text-decoration:none}
 [data-theme="light"] .switchrow button.active.mode{background:#e2e9fa;color:#2f5fd0}
 [data-theme="light"] .amounts button.on{background:#eef4e2;border-color:#7ba23a;color:#4e8a1a}
 [data-theme="light"] .werr{background:#fbe9e9;border-color:#eec5c5}
+/* N5.2 customizable layout (2026-10-22): Layout button popover + panel/workspace rows. */
+.lpop{position:absolute;right:0;top:calc(100% + 8px);width:302px;background:linear-gradient(145deg,var(--panelA),var(--panelB));border:1px solid var(--line);border-radius:12px;z-index:60;padding:12px 14px;box-shadow:0 18px 50px #000a;max-height:72vh;overflow:auto}
+.lpop[hidden]{display:none}
+.lpop-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:4px}
+.lpop-head strong{font-size:13px}
+.lpop-note{font-size:10px;color:var(--muted);margin:2px 0 8px;line-height:1.55}
+.lprow{display:flex;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid var(--rowline)}
+.lprow:last-child{border-bottom:0}
+.lpname{flex:1;font-size:12px;font-weight:600}
+.lprow.is-hidden .lpname{color:var(--muted);font-weight:400}
+.leyebtn.off{opacity:.45}
+.lparrows{display:flex;gap:4px}
+.lparrows button{border:1px solid var(--line);background:var(--btnbg);color:var(--btntext);border-radius:6px;padding:4px 8px;font-size:10px;line-height:1.2}
+.lparrows button:hover:not(:disabled){border-color:var(--hoverline);color:var(--text)}
+.lparrows button:disabled{opacity:.35;cursor:default}
+.lpop-hidden{margin:8px 0 0;font-size:10px;color:var(--amber)}
+.lpop-sec{font-size:10px;letter-spacing:1.2px;text-transform:uppercase;color:var(--muted);margin:12px 0 4px}
+.lwsrow{display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--rowline);font-size:12px}
+.lwsrow:last-child{border-bottom:0}
+.lwsname{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.lwsname.active{font-weight:700;color:var(--lime)}
+.lwsbadge{font-size:9px;letter-spacing:1px;color:var(--muted);border:1px solid var(--line);border-radius:5px;padding:2px 6px;white-space:nowrap}
+.lwsact{border:1px solid var(--line);background:var(--btnbg);color:var(--btntext);border-radius:6px;padding:4px 8px;font-size:10px;white-space:nowrap}
+.lwsact:hover{border-color:var(--hoverline);color:var(--text)}
+.lwsact.danger{color:var(--red)}
+.lwsrename{flex:1;min-width:0;background:var(--input);border:1px solid var(--inputline);border-radius:6px;color:var(--text);padding:5px 8px;font-size:12px}
 </style></head><body><div class="app">
-<header class="top"><div class="brand"><div class="mark">ɢ</div><div><h1>GECKO TERMINAL</h1><small>Solana market intelligence</small></div></div><div class="topright"><span class="pill">NETWORK&nbsp; / &nbsp;SOLANA</span><span class="status"><i class="dot"></i><span id="feedStatus">CONNECTING DATA</span></span><span class="wwrap"><button id="walletBtn" class="walletbtn" type="button">Connect Wallet</button><div class="wdd" id="walletDd" hidden><div class="eyebrow" id="walletDdName" style="margin-top:8px">Wallet</div><div class="waddr" id="walletDdAddr"></div><div class="walletrow"><span>SOL balance</span><strong id="walletSol">—</strong></div><div class="walletrow"><span>USDC balance</span><strong id="walletUsdc">—</strong></div><div class="walletrow"><span>USDT balance</span><strong id="walletUsdt">—</strong></div><div class="wrowbtn"><button type="button" id="walletCopy">Copy address</button><button type="button" id="walletRetryBal">Retry balances</button></div><div class="wrowbtn"><button type="button" id="walletDisconnect" class="danger">Disconnect</button></div></div></span><span class="pill">PAPER MODE</span><button id="settingsBtn" class="iconbtn" type="button" aria-label="Open settings" title="Settings">⚙</button></div></header>
-<div class="stats">
+<header class="top"><div class="brand"><div class="mark">ɢ</div><div><h1>GECKO TERMINAL</h1><small>Solana market intelligence</small></div></div><div class="topright"><span class="pill">NETWORK&nbsp; / &nbsp;SOLANA</span><span class="status"><i class="dot"></i><span id="feedStatus">CONNECTING DATA</span></span><span class="wwrap"><button id="walletBtn" class="walletbtn" type="button">Connect Wallet</button><div class="wdd" id="walletDd" hidden><div class="eyebrow" id="walletDdName" style="margin-top:8px">Wallet</div><div class="waddr" id="walletDdAddr"></div><div class="walletrow"><span>SOL balance</span><strong id="walletSol">—</strong></div><div class="walletrow"><span>USDC balance</span><strong id="walletUsdc">—</strong></div><div class="walletrow"><span>USDT balance</span><strong id="walletUsdt">—</strong></div><div class="wrowbtn"><button type="button" id="walletCopy">Copy address</button><button type="button" id="walletRetryBal">Retry balances</button></div><div class="wrowbtn"><button type="button" id="walletDisconnect" class="danger">Disconnect</button></div></div></span><span class="pill">PAPER MODE</span><span class="wwrap"><button id="layoutBtn" class="iconbtn" type="button" aria-label="Open layout" title="Layout">▦</button><div class="lpop" id="layoutPop" hidden role="dialog" aria-label="Layout"><div class="lpop-head"><strong>Layout</strong><button class="wclose" id="layoutPopClose" type="button" aria-label="Close layout">×</button></div><div class="lpop-note">Layouts apply to the trading desk (main page). Panels stay in their home column — the arrows reorder panels within each column.</div><div id="layoutPanelList"></div><div class="lpop-hidden" id="layoutHiddenNote" hidden></div><div class="lpop-sec">Workspaces</div><div id="layoutWsList"></div><div class="searchrow" style="margin-top:8px"><input id="layoutWsName" maxlength="40" placeholder="Name this layout" aria-label="Workspace name" autocomplete="off" spellcheck="false"><button id="layoutWsSave" type="button">Save</button></div></div></span><button id="settingsBtn" class="iconbtn" type="button" aria-label="Open settings" title="Settings">⚙</button></div></header>
+<div class="stats" data-layout-root>
 <div class="stat"><div class="eyebrow">SOL / USD</div><div class="big" id="statPrice">$—</div><div class="sub" id="statPriceSub">Live market feed</div></div>
 <div class="stat"><div class="eyebrow">24H CHANGE</div><div class="big" id="statChange">—</div><div class="sub">Solana spot market</div></div>
 <div class="stat"><div class="eyebrow">PAPER EQUITY</div><div class="big" id="equity">$10,000.00</div><div class="sub" id="pnlSub">Virtual starting balance</div></div>
-<div class="stat"><div class="eyebrow">WATCHLIST</div><div class="big" id="watchlistCount">0</div><div class="sub" id="watchlistSummary">No tokens saved</div></div>
+<div class="stat" data-panel="watchlist"><div class="eyebrow">WATCHLIST</div><div class="big" id="watchlistCount">0</div><div class="sub" id="watchlistSummary">No tokens saved</div></div>
 </div>
-<div class="layout"><main class="maincol">
-<section class="panel"><div class="panelbody"><div class="charthead"><div class="coinname"><div class="coinicon">◎</div><div><strong>Solana <span id="chartCoinPair" style="color:var(--muted);font-weight:500">SOL</span></strong><small id="chartCoinSub">Native asset · Solana mainnet</small></div></div><div style="text-align:right"><div class="price" id="heroPrice">$—</div><div id="heroChange" class="positive" style="font-size:12px">Fetching market data…</div></div></div><div class="range"><span class="pill" id="chartFeedStatus" style="font-size:11px;align-self:center;cursor:default" title="Chart feed status — click to retry when stale">CHART —</span><button class="active" data-range="1H">1H</button><button data-range="24H">24H</button><button data-range="7D">7D</button><button data-range="30D">30D</button></div><div class="chart" id="chartBox"><svg id="priceChart" viewBox="0 0 900 220" preserveAspectRatio="none" aria-label="SOL price chart"><defs><linearGradient id="fill" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="#42d6a0" stop-opacity=".25"/><stop offset="1" stop-color="#42d6a0" stop-opacity="0"/></linearGradient></defs><g stroke="var(--chartgrid)" stroke-width="1"><path d="M0 35H900M0 85H900M0 135H900M0 185H900"/></g><path id="area" d="" fill="url(#fill)"/><path id="line" d="" fill="none" stroke="#42d6a0" stroke-width="2.5" vector-effect="non-scaling-stroke"/><g id="candles"></g><line id="lastPriceLine" x1="0" x2="900" y1="0" y2="0" stroke="var(--muted)" stroke-width="1" stroke-dasharray="5 4" vector-effect="non-scaling-stroke" visibility="hidden"/></svg><div class="yaxis" id="chartYAxis"></div><div class="readout" id="chartReadout"></div><div class="crosshair" id="chartCross"></div><div class="chartmsg" id="chartMsg" hidden></div></div><div class="chartfoot"><span id="chartCaption">Loading real candles…</span><span id="updatedAt">Waiting for feed</span></div></div></section>
+<div class="layout"><main class="maincol" data-layout-root>
+<section class="panel" data-panel="chart"><div class="panelbody"><div class="charthead"><div class="coinname"><div class="coinicon">◎</div><div><strong>Solana <span id="chartCoinPair" style="color:var(--muted);font-weight:500">SOL</span></strong><small id="chartCoinSub">Native asset · Solana mainnet</small></div></div><div style="text-align:right"><div class="price" id="heroPrice">$—</div><div id="heroChange" class="positive" style="font-size:12px">Fetching market data…</div></div></div><div class="range"><span class="pill" id="chartFeedStatus" style="font-size:11px;align-self:center;cursor:default" title="Chart feed status — click to retry when stale">CHART —</span><button class="active" data-range="1H">1H</button><button data-range="24H">24H</button><button data-range="7D">7D</button><button data-range="30D">30D</button></div><div class="chart" id="chartBox"><svg id="priceChart" viewBox="0 0 900 220" preserveAspectRatio="none" aria-label="SOL price chart"><defs><linearGradient id="fill" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="#42d6a0" stop-opacity=".25"/><stop offset="1" stop-color="#42d6a0" stop-opacity="0"/></linearGradient></defs><g stroke="var(--chartgrid)" stroke-width="1"><path d="M0 35H900M0 85H900M0 135H900M0 185H900"/></g><path id="area" d="" fill="url(#fill)"/><path id="line" d="" fill="none" stroke="#42d6a0" stroke-width="2.5" vector-effect="non-scaling-stroke"/><g id="candles"></g><line id="lastPriceLine" x1="0" x2="900" y1="0" y2="0" stroke="var(--muted)" stroke-width="1" stroke-dasharray="5 4" vector-effect="non-scaling-stroke" visibility="hidden"/></svg><div class="yaxis" id="chartYAxis"></div><div class="readout" id="chartReadout"></div><div class="crosshair" id="chartCross"></div><div class="chartmsg" id="chartMsg" hidden></div></div><div class="chartfoot"><span id="chartCaption">Loading real candles…</span><span id="updatedAt">Waiting for feed</span></div></div></section>
 <section class="panel"><div class="panelhead"><h2>Strategy Lab</h2><span class="eyebrow">BACKTEST BEFORE YOU DEPLOY</span></div><div class="panelbody">
 <p class="labintro">Run one of the Playbook's top-10 schemes over real historical daily bars with the same house-rule accounting the Playbook used (fill-at-close, long-only, 0.26%/side fees, 95% deploy). <strong style="color:var(--text)">Playbook edges are historical measurements — never promises.</strong> Every scheme is a fresh experiment on the data you select.</p>
 <div class="bthead">Scheme</div>
@@ -142,10 +168,10 @@ a.wrow{text-decoration:none}
 <div class="searchrow"><input id="btCfgName" placeholder="Name this configuration" maxlength="60"><button id="btSaveCfg" type="button">Save</button></div>
 <div id="btCfgList" style="margin-top:10px"></div>
 </div></section>
-<section class="panel"><div class="panelhead"><h2>Solana market pairs</h2><div style="display:flex;align-items:center;gap:8px"><button type="button" class="action" id="retryFeed">Retry feed</button><span class="pill" id="pairCount">DISCOVERING</span></div></div><div class="tablewrap"><table><thead><tr><th>Pair / DEX</th><th>Price USD</th><th>24H</th><th>Liquidity</th><th>24H volume</th><th>Trade</th></tr></thead><tbody id="pairs"><tr><td colspan="6" class="empty">Loading live pairs from DexScreener…</td></tr></tbody></table></div></section>
+<section class="panel" data-panel="pairs"><div class="panelhead"><h2>Solana market pairs</h2><div style="display:flex;align-items:center;gap:8px"><button type="button" class="action" id="retryFeed">Retry feed</button><span class="pill" id="pairCount">DISCOVERING</span></div></div><div class="tablewrap"><table><thead><tr><th>Pair / DEX</th><th>Price USD</th><th>24H</th><th>Liquidity</th><th>24H volume</th><th>Trade</th></tr></thead><tbody id="pairs"><tr><td colspan="6" class="empty">Loading live pairs from DexScreener…</td></tr></tbody></table></div></section>
 <section class="panel"><div class="panelhead"><h2>Token discovery</h2><span class="eyebrow">DEXSCREENER SEARCH</span></div><div class="panelbody"><div class="searchrow"><input id="tokenSearch" placeholder="Search token, ticker or mint address" value="SOL"><button id="searchBtn">Search</button></div><div id="searchResults" class="results"><div class="empty">Search live Solana pairs and add candidates to your watchlist.</div></div></div></section>
-</main><aside class="sidecol">
-<section class="panel tradepanel"><div class="panelhead"><h2>Order ticket</h2><span class="pill">SIMULATED</span></div><div class="panelbody"><form class="tradeform" id="tradeForm"><div class="moderow"><div class="modelabel">Execution mode</div><div class="switchrow"><button type="button" id="paperModeBtn" class="active mode">Paper</button><button type="button" id="liveModeBtn">Live</button></div></div><div class="switchrow"><button type="button" id="buyBtn" class="active buy">Buy / Long</button><button type="button" id="sellBtn" class="sell">Sell</button></div><div class="field"><label>Trading pair</label><div class="pairbox"><strong id="ticketPairName">SOL / USDC</strong><small id="ticketPairMeta">Waiting for market data…</small></div></div><div class="field"><label>Order type</label><div class="switchrow"><button type="button" id="mktBtn" class="active buy">Market</button><button type="button" id="limBtn" class="sell">Limit</button></div></div><div id="limitFields" hidden><div class="field"><label>Limit price (per <span id="limitBaseSym">SOL</span>, in <span id="limitQuoteSym">USDC</span>)</label><div class="inputwrap"><input id="limitPrice" inputmode="decimal" aria-label="Limit price" placeholder="Waiting for live price…"><span id="limitSpotRef">spot</span></div><div class="amounts" id="limitPresets" style="margin-top:6px"><button type="button" data-lp="-10">−10%</button><button type="button" data-lp="-5">−5%</button><button type="button" data-lp="-1">−1%</button><button type="button" data-lp="1">+1%</button><button type="button" data-lp="5">+5%</button><button type="button" data-lp="10">+10%</button></div><div class="note" id="limitNote" style="text-align:left;margin-top:6px"></div></div><div class="field"><label>Expires</label><div class="amounts" id="expiryPresets"><button type="button" data-exp="1h">1 h</button><button type="button" data-exp="24h" class="on">24 h</button><button type="button" data-exp="7d">7 d</button><button type="button" data-exp="never">No expiry</button></div><label id="expiryAckWrap" hidden style="display:none;margin-top:8px;font-size:11px;color:var(--muted);align-items:center;gap:8px"><input type="checkbox" id="expiryAck" style="width:auto"> I understand this order stays open until filled or cancelled.</label></div><div class="note" style="text-align:left">Limit orders are simulated against the spot feed — fills are not instant and are not guaranteed. Paper only; nothing touches the chain.</div></div><div class="field"><label>Order size</label><div class="inputwrap"><input id="orderAmount" type="number" min="0.0001" step="any" value="100" required><span id="amountUnit">USD</span></div></div><div class="amounts"><button type="button" data-amt="25">$25</button><button type="button" data-amt="100">$100</button><button type="button" data-amt="250">$250</button><button type="button" data-amt="max">MAX</button></div><div class="field"><label>Slippage tolerance</label><div class="amounts" id="slipPresets"><button type="button" data-slip="10">0.1%</button><button type="button" data-slip="50">0.5%</button><button type="button" data-slip="100">1.0%</button></div><div class="inputwrap" style="margin-top:6px"><input id="slippageInput" inputmode="numeric" aria-label="Custom slippage in basis points" placeholder="Custom (bps)"><span>bps</span></div><div class="note" style="text-align:left;margin-top:6px">Presets or custom, in basis points (50 bps = 0.50%). Allowed: 1&ndash;1000 bps (0.01%&ndash;10%). Shared with the /raydium/ page.</div></div><div class="walletrow"><span>Execution price</span><strong id="execPrice">$—</strong></div><div class="walletrow"><span>Estimated quantity</span><strong id="estQty">— SOL</strong></div><div class="walletrow"><span>Available USD</span><strong id="cashAvail">$10,000.00</strong></div><button class="primary" id="submitTrade" type="submit">Buy SOL · Paper</button><div class="note" id="ticketNote">No wallet connected · no real orders or funds</div><div id="reviewSheet" class="review" hidden></div></form></div></section>
+</main><aside class="sidecol" data-layout-root>
+<section class="panel tradepanel" data-panel="ticket"><div class="panelhead"><h2>Order ticket</h2><span class="pill">SIMULATED</span></div><div class="panelbody"><form class="tradeform" id="tradeForm"><div class="moderow"><div class="modelabel">Execution mode</div><div class="switchrow"><button type="button" id="paperModeBtn" class="active mode">Paper</button><button type="button" id="liveModeBtn">Live</button></div></div><div class="switchrow"><button type="button" id="buyBtn" class="active buy">Buy / Long</button><button type="button" id="sellBtn" class="sell">Sell</button></div><div class="field"><label>Trading pair</label><div class="pairbox"><strong id="ticketPairName">SOL / USDC</strong><small id="ticketPairMeta">Waiting for market data…</small></div></div><div class="field"><label>Order type</label><div class="switchrow"><button type="button" id="mktBtn" class="active buy">Market</button><button type="button" id="limBtn" class="sell">Limit</button></div></div><div id="limitFields" hidden><div class="field"><label>Limit price (per <span id="limitBaseSym">SOL</span>, in <span id="limitQuoteSym">USDC</span>)</label><div class="inputwrap"><input id="limitPrice" inputmode="decimal" aria-label="Limit price" placeholder="Waiting for live price…"><span id="limitSpotRef">spot</span></div><div class="amounts" id="limitPresets" style="margin-top:6px"><button type="button" data-lp="-10">−10%</button><button type="button" data-lp="-5">−5%</button><button type="button" data-lp="-1">−1%</button><button type="button" data-lp="1">+1%</button><button type="button" data-lp="5">+5%</button><button type="button" data-lp="10">+10%</button></div><div class="note" id="limitNote" style="text-align:left;margin-top:6px"></div></div><div class="field"><label>Expires</label><div class="amounts" id="expiryPresets"><button type="button" data-exp="1h">1 h</button><button type="button" data-exp="24h" class="on">24 h</button><button type="button" data-exp="7d">7 d</button><button type="button" data-exp="never">No expiry</button></div><label id="expiryAckWrap" hidden style="display:none;margin-top:8px;font-size:11px;color:var(--muted);align-items:center;gap:8px"><input type="checkbox" id="expiryAck" style="width:auto"> I understand this order stays open until filled or cancelled.</label></div><div class="note" style="text-align:left">Limit orders are simulated against the spot feed — fills are not instant and are not guaranteed. Paper only; nothing touches the chain.</div></div><div class="field"><label>Order size</label><div class="inputwrap"><input id="orderAmount" type="number" min="0.0001" step="any" value="100" required><span id="amountUnit">USD</span></div></div><div class="amounts"><button type="button" data-amt="25">$25</button><button type="button" data-amt="100">$100</button><button type="button" data-amt="250">$250</button><button type="button" data-amt="max">MAX</button></div><div class="field"><label>Slippage tolerance</label><div class="amounts" id="slipPresets"><button type="button" data-slip="10">0.1%</button><button type="button" data-slip="50">0.5%</button><button type="button" data-slip="100">1.0%</button></div><div class="inputwrap" style="margin-top:6px"><input id="slippageInput" inputmode="numeric" aria-label="Custom slippage in basis points" placeholder="Custom (bps)"><span>bps</span></div><div class="note" style="text-align:left;margin-top:6px">Presets or custom, in basis points (50 bps = 0.50%). Allowed: 1&ndash;1000 bps (0.01%&ndash;10%). Shared with the /raydium/ page.</div></div><div class="walletrow"><span>Execution price</span><strong id="execPrice">$—</strong></div><div class="walletrow"><span>Estimated quantity</span><strong id="estQty">— SOL</strong></div><div class="walletrow"><span>Available USD</span><strong id="cashAvail">$10,000.00</strong></div><button class="primary" id="submitTrade" type="submit">Buy SOL · Paper</button><div class="note" id="ticketNote">No wallet connected · no real orders or funds</div><div id="reviewSheet" class="review" hidden></div></form></div></section>
 <section class="panel"><div class="panelhead"><h2>Paper portfolio</h2><span class="eyebrow">LOCAL SESSION</span></div><div class="panelbody"><div class="walletrow"><span>Cash balance</span><strong id="cashBal">$10,000.00</strong></div><div id="holdingsList"><div class="empty">No paper positions yet.</div></div><div class="walletrow"><span>Position value</span><strong id="posValue">$0.00</strong></div><div class="walletrow"><span>Unrealized P/L</span><strong id="unrealized">$0.00</strong></div><button id="resetPaper" style="margin-top:13px;width:100%;padding:8px;background:var(--panel);border:1px solid var(--line);color:var(--btntext);border-radius:7px;font-size:11px">Reset paper account</button></div></section>
 <section class="panel"><div class="panelhead"><h2>Recent orders</h2><span class="eyebrow" id="orderCount">0 ORDERS</span></div><div id="orders"><div class="empty">Your simulated paper orders will appear here.</div></div></section>
 <section class="panel"><div class="panelhead"><h2>Open limit orders</h2><span class="eyebrow" id="limitOpenCount">0 OPEN</span></div><div id="limitOpen"><div class="empty">No open limit orders. Create one from the Limit tab on the ticket.</div></div><div class="sub" style="padding:0 16px 12px">Simulated on the spot feed — fills are not instant and not guaranteed.</div></section>
@@ -423,6 +449,224 @@ function applySettingsBoot(){
   syncMetaTheme();
   fillSizeInput(settings.defaultOrderSize);
 }
+/*__N52_LAYOUT_START__*/
+/* N5.2 customizable layout (2026-10-22): show/hide + reorder the four desk panels
+   (chart, pairs, ticket, watchlist card) and save named workspaces. Panels keep their
+   home containers (main column / side column / header stats) — v1 reorders within
+   each container; cross-container moves are out of scope (pack non-goals: free-form
+   grid). Layouts persist in their own versioned key `gecko-terminal:layout-v1`,
+   independent of the N2.1 paper store and N5.1 settings — same rationale as N5.1's
+   separate key (N1.1's paper reset never touches layout; layoutVersion versions
+   separately from SETTINGS_VERSION per the pack's own §5 cross-link). */
+const LAYOUT_KEY='gecko-terminal:layout-v1';
+const LAYOUT_VERSION=1;
+const PANEL_IDS=['chart','pairs','ticket','watchlist'];
+const PANEL_LABELS={chart:'Chart',pairs:'Market pairs',ticket:'Order ticket',watchlist:'Watchlist card'};
+/* Pack §1.4: the Trader built-in matches the page's shipped order (chart first in the
+   main column, ticket top of the side column); Watcher swaps pairs above chart and
+   hides the ticket. */
+const BUILT_IN_WORKSPACES=Object.freeze([
+  {id:'builtin-trader',name:'Trader',builtIn:true,order:['chart','pairs','ticket','watchlist'],hidden:[]},
+  {id:'builtin-watcher',name:'Watcher',builtIn:true,order:['pairs','chart','ticket','watchlist'],hidden:['ticket']},
+]);
+function sanitizeWorkspace(ws){
+  ws=ws||{};
+  const ordered=(Array.isArray(ws.order)?ws.order:[]).filter(id=>PANEL_IDS.includes(id));
+  for(const id of PANEL_IDS)if(!ordered.includes(id))ordered.push(id);
+  const hidden=(Array.isArray(ws.hidden)?ws.hidden:[]).filter(id=>PANEL_IDS.includes(id));
+  if(ordered.every(id=>hidden.includes(id)))hidden.splice(hidden.indexOf(ordered[0]),1); // never a blank page
+  const name=String(ws.name==null?'':ws.name).slice(0,40).trim()||'Workspace';
+  return{id:(typeof ws.id==='string'&&ws.id)?ws.id:'ws-'+Date.now().toString(36),name,order:ordered,hidden,builtIn:!!ws.builtIn};
+}
+function loadLayout(raw){
+  let parsed={};
+  try{parsed=JSON.parse(raw||'{}')||{};}catch(_){parsed={};}
+  let custom=[],activeId='builtin-trader';
+  if(parsed&&parsed.version===LAYOUT_VERSION){
+    custom=(Array.isArray(parsed.workspaces)?parsed.workspaces:[]).map(sanitizeWorkspace).filter(w=>!w.builtIn);
+    if(typeof parsed.activeWorkspaceId==='string'&&parsed.activeWorkspaceId)activeId=parsed.activeWorkspaceId;
+  }
+  const workspaces=BUILT_IN_WORKSPACES.map(w=>({id:w.id,name:w.name,builtIn:true,order:[...w.order],hidden:[...w.hidden]})).concat(custom);
+  const active=workspaces.find(w=>w.id===activeId)||workspaces[0];
+  return{version:LAYOUT_VERSION,workspaces,activeWorkspaceId:active.id};
+}
+let layout=null; // {version, workspaces, activeWorkspaceId} — set by applyLayoutBoot
+let wsSeq=0;
+function activeWorkspace(){return layout.workspaces.find(w=>w.id===layout.activeWorkspaceId)||layout.workspaces[0];}
+function saveLayout(){try{localStorage.setItem(LAYOUT_KEY,JSON.stringify({version:LAYOUT_VERSION,activeWorkspaceId:layout.activeWorkspaceId,workspaces:layout.workspaces.filter(w=>!w.builtIn)}));}catch(_){}}
+function panelEl(id){return document.querySelector('[data-panel="'+id+'"]');}
+function renderPanelOrder(order){
+  // Reorder existing DOM nodes within each home container (pack §3 wiring note:
+  // appendChild-style moves preserve ticket input state, chart canvas and feed
+  // subscriptions). Containers with <2 layoutable panels are untouched.
+  const rank=id=>{const i=order.indexOf(id);return i<0?PANEL_IDS.length:i;};
+  document.querySelectorAll('[data-layout-root]').forEach(root=>{
+    const kids=[...root.children].filter(el=>el.getAttribute&&PANEL_IDS.includes(el.getAttribute('data-panel')));
+    if(kids.length<2)return;
+    const slots=kids.map(k=>{const ph=document.createComment('layout-slot');k.replaceWith(ph);return ph;});
+    kids.sort((a,b)=>rank(a.getAttribute('data-panel'))-rank(b.getAttribute('data-panel')));
+    slots.forEach((ph,i)=>ph.replaceWith(kids[i]));
+  });
+}
+function applyPanelVisibility(hidden){
+  PANEL_IDS.forEach(id=>{const el=panelEl(id);if(el)el.style.display=hidden.includes(id)?'none':'';});
+}
+function setActiveWorkspace(id){
+  const ws=layout.workspaces.find(w=>w.id===id);if(!ws)return false;
+  layout.activeWorkspaceId=ws.id;
+  renderPanelOrder(ws.order);
+  applyPanelVisibility(ws.hidden);
+  saveLayout();
+  paintLayoutPop();
+  return true;
+}
+function uniqueWsName(base){
+  const taken=new Set(layout.workspaces.map(w=>w.name.toLowerCase()));
+  let n=String(base==null?'':base).slice(0,40).trim()||'Workspace',i=2;
+  while(taken.has(n.toLowerCase())){n=(String(base).slice(0,34).trim()+' '+i).slice(0,40);i++;}
+  return n;
+}
+function forkActiveWorkspace(){
+  // Pack §3 wiring: the first edit to a built-in forks it into a custom workspace
+  // and switches to it — built-ins are never mutated in place.
+  const src=activeWorkspace();
+  if(!src.builtIn)return{ws:src,forked:false};
+  const copy=sanitizeWorkspace({id:'ws-'+Date.now().toString(36)+'-'+(wsSeq++),name:uniqueWsName(src.name+' (custom)'),order:[...src.order],hidden:[...src.hidden],builtIn:false});
+  layout.workspaces.push(copy);
+  layout.activeWorkspaceId=copy.id;
+  return{ws:copy,forked:true};
+}
+function movePanel(id,dir){
+  const{ws,forked}=forkActiveWorkspace();
+  const i=ws.order.indexOf(id),j=i+dir;
+  if(i<0||j<0||j>=ws.order.length)return; // no-op at the edges (pack §3)
+  const order=[...ws.order];const t=order[i];order[i]=order[j];order[j]=t;
+  ws.order=order;
+  setActiveWorkspace(ws.id);
+  if(forked)toast('Saved as a copy — rename it in Layouts.');
+}
+function togglePanelVisibility(id){
+  const cur=activeWorkspace();
+  const isHidden=cur.hidden.includes(id);
+  if(!isHidden&&cur.order.filter(pid=>!cur.hidden.includes(pid)).length<=1){
+    toast('At least one panel must stay visible.'); // pack §2.1: never a blank page
+    return;
+  }
+  const{ws,forked}=forkActiveWorkspace();
+  ws.hidden=isHidden?ws.hidden.filter(h=>h!==id):[...ws.hidden,id];
+  setActiveWorkspace(ws.id);
+  toast(forked?'Saved as a copy — rename it in Layouts.':(isHidden?'Shown: ':'Hidden: ')+PANEL_LABELS[id]);
+}
+function saveWorkspaceAs(name){
+  const clean=String(name==null?'':name).trim().slice(0,40);
+  if(!clean){toast('Name this layout first.');return false;}
+  if(layout.workspaces.some(w=>w.name.toLowerCase()===clean.toLowerCase())){toast('A layout named "'+clean+'" already exists.');return false;}
+  const src=activeWorkspace();
+  const ws=sanitizeWorkspace({id:'ws-'+Date.now().toString(36)+'-'+(wsSeq++),name:clean,order:[...src.order],hidden:[...src.hidden],builtIn:false});
+  layout.workspaces.push(ws);
+  setActiveWorkspace(ws.id);
+  toast('Layout saved.');
+  return true;
+}
+function renameWorkspace(id,name){
+  const ws=layout.workspaces.find(w=>w.id===id);
+  if(!ws||ws.builtIn)return false;
+  const clean=String(name==null?'':name).trim().slice(0,40);
+  if(!clean){toast('Name cannot be empty.');return false;}
+  if(layout.workspaces.some(w=>w.id!==id&&w.name.toLowerCase()===clean.toLowerCase())){toast('A layout named "'+clean+'" already exists.');return false;}
+  ws.name=clean;saveLayout();paintLayoutPop();
+  toast('Layout renamed.');
+  return true;
+}
+function deleteWorkspace(id){
+  const i=layout.workspaces.findIndex(w=>w.id===id);
+  if(i<0||layout.workspaces[i].builtIn)return false; // built-ins are protected (pack §2.4)
+  const wasActive=layout.activeWorkspaceId===id;
+  layout.workspaces.splice(i,1);
+  if(wasActive)setActiveWorkspace('builtin-trader'); // deleting the active workspace falls back to Trader
+  else{saveLayout();paintLayoutPop();}
+  toast('Layout deleted.');
+  return true;
+}
+function paintLayoutPop(){
+  const ws=activeWorkspace();
+  const pl=$('layoutPanelList');if(!pl)return;
+  pl.innerHTML=ws.order.map((id,i)=>{
+    const hidden=ws.hidden.includes(id);
+    return '<div class="lprow'+(hidden?' is-hidden':'')+'">'+
+      '<button type="button" class="iconbtn leyebtn'+(hidden?' off':'')+'" data-lvis="'+id+'" aria-pressed="'+(!hidden)+'" aria-label="'+(hidden?'Show ':'Hide ')+esc(PANEL_LABELS[id])+' panel" title="'+(hidden?'Show':'Hide')+'">'+(hidden?'⊘':'👁')+'</button>'+
+      '<span class="lpname">'+esc(PANEL_LABELS[id])+'</span>'+
+      '<span class="lparrows"><button type="button" data-lup="'+id+'" aria-label="Move '+esc(PANEL_LABELS[id])+' up"'+(i===0?' disabled':'')+'>▲</button>'+
+      '<button type="button" data-ldn="'+id+'" aria-label="Move '+esc(PANEL_LABELS[id])+' down"'+(i===ws.order.length-1?' disabled':'')+'>▼</button></span></div>';
+  }).join('');
+  const hn=$('layoutHiddenNote'),hc=ws.hidden.length;
+  if(hn){hn.hidden=hc===0;if(hc>0)hn.textContent=hc+(hc===1?' panel':' panels')+' hidden';}
+  const wl=$('layoutWsList');
+  if(wl){
+    wl.innerHTML=layout.workspaces.map(w=>{
+      const active=w.id===ws.id;
+      let inner='<span class="lwsname'+(active?' active':'')+'">'+(active?'✓ ':'')+esc(w.name)+'</span>';
+      if(!active)inner+='<button type="button" class="lwsact" data-lwsapply="'+esc(w.id)+'">Apply</button>';
+      if(w.builtIn)inner+='<span class="lwsbadge">BUILT-IN</span>';
+      else inner+='<button type="button" class="lwsact" data-lwsrename="'+esc(w.id)+'" aria-label="Rename layout '+esc(w.name)+'">Rename</button>'+
+                  '<button type="button" class="lwsact danger" data-lwsdel="'+esc(w.id)+'" aria-label="Delete layout '+esc(w.name)+'">Delete</button>';
+      return '<div class="lwsrow" data-lwsrow="'+esc(w.id)+'">'+inner+'</div>';
+    }).join('');
+    wl.querySelectorAll('[data-lwsapply]').forEach(b=>b.onclick=()=>{if(setActiveWorkspace(b.dataset.lwsapply))toast('Layout applied.');});
+    wl.querySelectorAll('[data-lwsdel]').forEach(b=>b.onclick=()=>deleteWorkspace(b.dataset.lwsdel));
+    wl.querySelectorAll('[data-lwsrename]').forEach(b=>b.onclick=()=>startRenameWorkspace(b.dataset.lwsrename));
+  }
+  pl.querySelectorAll('[data-lvis]').forEach(b=>b.onclick=()=>togglePanelVisibility(b.dataset.lvis));
+  pl.querySelectorAll('[data-lup]').forEach(b=>b.onclick=()=>movePanel(b.dataset.lup,-1));
+  pl.querySelectorAll('[data-ldn]').forEach(b=>b.onclick=()=>movePanel(b.dataset.ldn,1));
+}
+function startRenameWorkspace(id){
+  const ws=layout.workspaces.find(w=>w.id===id);if(!ws||ws.builtIn)return;
+  const row=document.querySelector('#layoutWsList [data-lwsrow="'+id+'"]');if(!row)return;
+  row.innerHTML='<input class="lwsrename" id="layoutRenameInput" maxlength="40" value="'+esc(ws.name)+'" aria-label="New layout name">'+
+    '<button type="button" class="lwsact" id="layoutRenameOk">Save</button>'+
+    '<button type="button" class="lwsact" id="layoutRenameCancel">Cancel</button>';
+  const inp=$('layoutRenameInput');
+  const commit=()=>renameWorkspace(id,inp.value);
+  $('layoutRenameOk').onclick=commit;
+  $('layoutRenameCancel').onclick=()=>paintLayoutPop();
+  if(inp){
+    inp.focus();inp.select();
+    inp.addEventListener('keydown',e=>{
+      if(e.key==='Enter')commit();
+      else if(e.key==='Escape'){e.stopPropagation();paintLayoutPop();} // cancel rename, keep the popover open
+    });
+  }
+}
+function openLayout(){const p=$('layoutPop');if(!p)return;paintLayoutPop();p.hidden=false;const c=$('layoutPopClose');if(c)c.focus();}
+function closeLayout(){const p=$('layoutPop');if(!p)return;p.hidden=true;const b=$('layoutBtn');if(b)b.focus();}
+function wireLayoutPop(){
+  const b=$('layoutBtn');
+  if(b)b.onclick=()=>{const p=$('layoutPop');if(p&&p.hidden)openLayout();else closeLayout();};
+  const c=$('layoutPopClose');if(c)c.onclick=closeLayout;
+  const p=$('layoutPop');if(!p)return;
+  document.addEventListener('click',e=>{
+    if(p.hidden||p.contains(e.target))return;
+    const btn=$('layoutBtn');if(btn&&btn.contains(e.target))return;
+    closeLayout(); // outside click dismisses
+  });
+  document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!p.hidden)closeLayout();});
+  const sv=$('layoutWsSave');
+  if(sv)sv.onclick=()=>{const inp=$('layoutWsName');if(saveWorkspaceAs(inp?inp.value:''))inp.value='';};
+  const nm=$('layoutWsName');
+  if(nm)nm.addEventListener('keydown',e=>{if(e.key==='Enter'){const inp=$('layoutWsName');if(saveWorkspaceAs(inp.value))inp.value='';}});
+}
+function applyLayoutBoot(){
+  let raw=null;
+  try{raw=localStorage.getItem(LAYOUT_KEY);}catch(_){raw=null;}
+  layout=loadLayout(raw); // corrupt/missing/version-mismatch → built-ins, Trader active (never a blank page)
+  const ws=activeWorkspace();
+  renderPanelOrder(ws.order);
+  applyPanelVisibility(ws.hidden);
+  saveLayout();
+  wireLayoutPop();
+}
+/*__N52_LAYOUT_END__*/
 function slipImpactBand(pct){ // mirrors swapFlow.impactBand (pack §3.2.2 ladder)
   if(pct===null||!Number.isFinite(pct)||pct<0)return'unknown';
   if(pct<1)return'low';if(pct<5)return'elevated';if(pct<=15)return'high';return'blocked';
@@ -770,7 +1014,7 @@ function renderOrders(){$('orderCount').textContent=orders.length+' ORDERS';$('o
 let resetArmUntil=0,resetLabel=null;$('resetPaper').onclick=()=>{const b=$('resetPaper');if(resetLabel===null)resetLabel=b.textContent;const dirty=orders.length||Object.keys(holdings).length>0||cash!==10000||limitOrders.some(o=>o.status==='open');if(dirty&&Date.now()>resetArmUntil){resetArmUntil=Date.now()+5000;b.textContent='Confirm reset?';toast('This also clears your paper order history. Click again within 5 s to confirm.');setTimeout(()=>{if(Date.now()>=resetArmUntil)b.textContent=resetLabel;},5100);return;}resetArmUntil=0;b.textContent=resetLabel;cash=10000;holdings={};orders=[];limitOrders=[];histClearPaper();histExpanded.clear();renderOrders();renderLimitOrders();renderHistory();updatePortfolio();saveState();toast('Paper account reset — paper order history cleared.');};
 async function searchTokens(){const q=$('tokenSearch').value.trim();saveState();if(!q)return;const box=$('searchResults');box.innerHTML='<div class="empty">Searching DexScreener…</div>';try{const controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),10000);let j;try{const r=await fetch('https://api.dexscreener.com/latest/dex/search?q='+encodeURIComponent(q),{signal:controller.signal});if(!r.ok)throw Error('Search HTTP '+r.status);j=await r.json()}finally{clearTimeout(timeout)}const ps=(j.pairs||[]).filter(p=>p.chainId==='solana'&&p.baseToken?.address&&p.priceUsd).sort((a,b)=>(Number(b.liquidity?.usd)||0)-(Number(a.liquidity?.usd)||0)).slice(0,8);if(!ps.length){box.innerHTML='<div class="empty">No Solana pairs found for this search.</div>';return}box.innerHTML=ps.map(p=>{const address=p.baseToken.address,added=watchlist.some(w=>w.address===address),change=p.priceChange?.h24==null||!Number.isFinite(Number(p.priceChange.h24))?null:Number(p.priceChange.h24);return '<div class="result"><div><strong>'+esc(p.baseToken.symbol)+' / '+esc(p.quoteToken.symbol)+'</strong><small>'+esc(p.baseToken.name)+' · '+esc(p.dexId||'DEX')+' · liq '+(p.liquidity?.usd?usd(p.liquidity.usd):'—')+'</small><small>'+esc(address.slice(0,6)+'…'+address.slice(-5))+'</small></div><div style="text-align:right"><strong>'+formatPriceUsd(p.priceUsd)+'</strong><small class="'+(change===null?'':change>=0?'positive':'negative')+'">'+(change===null?'—':(change>=0?'+':'')+fmt(change,2)+'%')+' 24h</small><button class="action" style="margin-top:5px" data-watch="'+esc(address)+'">'+(added?'Added ✓':'Watch')+'</button> <button class="action" style="margin-top:5px" data-trade-addr="'+esc(address)+'">Trade</button></div></div>'}).join('');box.querySelectorAll('[data-trade-addr]').forEach(b=>b.onclick=()=>{const p=ps.find(row=>row.baseToken.address===b.dataset.tradeAddr);if(p)selectTicketPair(p);});box.querySelectorAll('[data-watch]').forEach(b=>b.onclick=()=>{const address=b.dataset.watch,index=watchlist.findIndex(w=>w.address===address);if(index>=0){const removed=watchlist.splice(index,1)[0];b.textContent='Watch';toast('Removed '+(removed.symbol||'token')+' from watchlist.')}else{if(watchlist.length>=50){toast('Watchlist limit reached (50 tokens).');return}const p=ps.find(row=>row.baseToken.address===address);if(!p)return;watchlist.push({address,symbol:p.baseToken.symbol||'TOKEN',name:p.baseToken.name||'Saved token',priceUsd:Number(p.priceUsd)||0,change24h:p.priceChange?.h24==null?null:Number(p.priceChange.h24),addedAt:new Date().toISOString()});b.textContent='Added ✓';toast('Added '+(p.baseToken.symbol||'token')+' to watchlist.')}renderWatchlist();saveState()})}catch(e){box.innerHTML='<div class="empty">Search timed out or failed. Check your connection and try again.</div>'}}
 $('searchBtn').onclick=searchTokens;$('tokenSearch').onkeydown=e=>{if(e.key==='Enter')searchTokens()};document.querySelectorAll('[data-range]').forEach(b=>{b.classList.toggle('active',b.dataset.range===chartRange);b.onclick=()=>{document.querySelectorAll('[data-range]').forEach(x=>x.classList.remove('active'));b.classList.add('active');chartRange=b.dataset.range||'1H';tickFails=0;tickSkipUntil=0;saveState();toast('Chart range saved. Loading real candles…');loadCandles('range')}});
-wireChartHover();renderOrders();renderWatchlist();document.querySelectorAll('[data-range]').forEach(b=>b.classList.toggle('active',b.dataset.range===chartRange));document.querySelectorAll('#slipPresets button').forEach(b=>b.onclick=()=>onSlipPreset(Number(b.dataset.slip)));$('slippageInput').value=String(slipLoad());$('slippageInput').addEventListener('change',onSlipCustom);paintSlipPresets();applySettingsBoot(); // N5.1: theme/density attrs, default size, drawer wiring
+wireChartHover();renderOrders();renderWatchlist();document.querySelectorAll('[data-range]').forEach(b=>b.classList.toggle('active',b.dataset.range===chartRange));document.querySelectorAll('#slipPresets button').forEach(b=>b.onclick=()=>onSlipPreset(Number(b.dataset.slip)));$('slippageInput').value=String(slipLoad());$('slippageInput').addEventListener('change',onSlipCustom);paintSlipPresets();applySettingsBoot();applyLayoutBoot(); // N5.1: theme/density attrs, default size, drawer wiring; N5.2: layout panels + workspaces
 $('retryFeed').onclick=fetchMarket;$('chartFeedStatus').onclick=()=>{if(candleStatus==='stale'||candleStatus==='error'){tickFails=0;tickSkipUntil=0;loadCandles('retry')}};document.addEventListener('visibilitychange',()=>{if(!document.hidden&&price>0)fetchMarket()});$('tokenSearch').oninput=saveState;setPrice(0,0);fetchMarket();searchTokens();setInterval(fetchMarket,30000);
 
 /* N4.4: ticket slippage UI + paper review sheet (DOM wiring). */
