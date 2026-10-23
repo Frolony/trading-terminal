@@ -7,6 +7,14 @@ name = "coordination-kernel"
 version = "0.2.0"
 
 [[package]]
+name = "engine-sim"
+version = "0.1.0"
+dependencies = [
+ "coordination-kernel",
+ "kernel-policy",
+]
+
+[[package]]
 name = "kernel-conformance"
 version = "0.1.0"
 dependencies = [

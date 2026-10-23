@@ -1,0 +1,10 @@
+[package]
+name = "engine-sim"
+version = "0.1.0"
+edition = "2021"
+description = "W3.1 executable specification of the retail liquidity engine: the treasury mathematics of TREASURY_MATHEMATICAL_LOGIC.md as a deterministic simulator whose flows are gated by the Coordination Kernel under the kernel-policy launch profile."
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+coordination-kernel = { path = "../kernel" }
+kernel-policy = { path = "../kernel-policy" }

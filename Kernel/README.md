@@ -11,13 +11,14 @@
 | `kernel/` | The kernel crate, pristine. Verify: every source file compares byte-identical against the archived original (`src/kernel.rs`, `src/lib.rs`, `src/num.rs`, `tests/kernel_tests.rs`, `reference/CoordinationKernel.sol`, `Cargo.toml`, `README.md`). |
 | `kernel-conformance/` | **W2.3** — our conformance suite: 7 property tests of *our* requirements against the crate (commit ⟺ mask-clear under randomized defect injection; capacity conservation across chained commits; settle discipline; monotonic time; attribution vs an independent re-implementation, permutation-invariant; lifecycle legality under a 2,000-op randomized fuzz × 3 seeds; lineage chain integrity). Deterministic xorshift RNG, zero external dependencies. |
 | `kernel-policy/` | **W2.4** — the treasury deployment's policy profile: an evidence-bound `Attestor` (settlement admitted only when the claimed realized hash matches independently recorded evidence — settle-after-realized, fail-closed), flat launch weights (reputation recorded, zero influence), named capacity stocks, and `launch_kernel()` constructor. Its tests are the executable spec of the profile. |
+| `engine-sim/` | **W3.1** — the treasury mathematics as an executable specification: a deterministic monthly engine (12 cohorts, rotational windows, lending book with position settlement, dividend tranches, penalty doors) whose theorem tests reproduce the projection model's numbers, and whose flows can be gated by the Kernel itself (every tranche and lending batch must commit as a Kernel transition before money moves). |
 | `KERNEL_VERIFICATION_REPORT.md` | W2.2 + W2.3/W2.4 results: every claim, executed, with verdicts. |
 | `KERNEL_POLICY_PROFILE.md` | The W2.4 profile in prose, incl. the W2.5 contention recommendation (open — awaiting the author's ruling). |
 
 ## Run it
 
 ```sh
-cargo test --workspace            # 55 tests: 42 kernel + 7 conformance + 6 policy
+cargo test --workspace            # 62 tests: 42 kernel + 7 conformance + 6 policy + 7 engine-sim theorems
 cargo clippy --workspace --all-targets -- -D warnings   # clean
 cargo build -p coordination-kernel --no-default-features  # no_std + alloc
 ```
