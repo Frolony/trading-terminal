@@ -1,0 +1,139 @@
+# N6.2 — E2E regression suite: alert-only CI trigger.
+#
+# Gating policy (§8.6, decided 2026-10-23 by Carlos): ALERT-ONLY — "just alert me, keep shipping."
+# A failed run must surface as a material report (which tests failed, on which deployment/commit)
+# and file/reopen the GitHub issue per the failed-acceptance rule. It must NEVER block pushes,
+# deployments, or production promotion — this workflow declares no required-status checks and
+# sets no deployment gates.
+#
+# Triggers (N6.2 prep pack §4, adapted to the §8.6 policy):
+#   - deployment_status: Vercel's GitHub integration fires this when a deployment's status
+#     changes. Only the Production environment is exercised. Preview (pinned) deployment URLs
+#     are gated by Vercel Deployment Protection (SSO login), which CI cannot pass, so the suite
+#     cannot run against preview URLs; production is public, so the suite runs against
+#     https://gecko-solana-terminal.vercel.app after each successful production deployment.
+#   - schedule: nightly against production — the feed-drift sentinel. If DexScreener's schema
+#     drifts, the fixture-intercepted T4 tests fail loudly here (alert-only) before anyone
+#     depends on a false green.
+#   - workflow_dispatch: manual run against production (debugging / re-run after a fix).
+#
+# Suite coverage: T1.1–T1.3 (N1.1 reset), T2.1–T2.3 (N1.2 MAX), T3.1–T3.3 (N1.3 watchlist),
+# T4.1–T4.4 (N1.4 24h change), T5.1–T5.2 (N1.5 sub-cent), T6.1–T6.4 (N1.6 feed resilience +
+# N2.1 persistence). Chromium is the canonical CI browser (the VM-local Firefox config exists
+# only because the VM's egress proxy refuses Chromium CONNECT tunnels; GitHub runners have no
+# such proxy).
+
+name: E2E regression (N6.2)
+
+on:
+  deployment_status:
+  schedule:
+    - cron: '17 5 * * *' # 05:17 UTC nightly (~23:17 CST) — production feed-drift sentinel
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write # alert-only reporting: file/reopen the e2e-regression issue on failure
+
+concurrency:
+  group: e2e-${{ github.event.deployment.id || github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  e2e:
+    name: Playwright E2E (production)
+    # deployment_status fires on every status change; only successful PRODUCTION deployments
+    # are exercised (Vercel names the environments "Production"/"Preview").
+    if: >-
+      github.event_name != 'deployment_status' ||
+      (github.event.deployment_status.state == 'success' &&
+       (github.event.deployment.environment == 'Production' ||
+        github.event.deployment.environment == 'production'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      BASE_URL: https://gecko-solana-terminal.vercel.app
+      # Commit under test: the deployed commit on deployment events, the branch head otherwise.
+      UNDER_TEST_SHA: ${{ github.event.deployment.sha || github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: tests/e2e/package-lock.json
+
+      - name: Install E2E deps
+        run: npm ci
+        working-directory: tests/e2e
+
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+        working-directory: tests/e2e
+
+      - name: Settle after deployment
+        if: github.event_name == 'deployment_status'
+        run: sleep 60
+
+      - name: Run E2E suite
+        run: npx playwright test --project=chromium --reporter=line,json,html
+        working-directory: tests/e2e
+        env:
+          PLAYWRIGHT_JSON_OUTPUT_NAME: playwright-results.json
+
+      - name: Upload report artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-report-${{ github.run_id }}
+          path: |
+            tests/e2e/playwright-report/
+            tests/e2e/test-results/
+            tests/e2e/playwright-results.json
+          retention-days: 14
+
+  report:
+    name: File/reopen the alert issue
+    needs: [e2e]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      # The alert script files/queries issues by label; ensure it exists so the
+      # first-ever failure files cleanly instead of tripping on a missing label.
+      - name: Ensure e2e-regression label exists
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh label create e2e-regression --description "Alert-only E2E regression failures (N6.2, gating policy §8.6)" --color B60205 2>/dev/null || true
+
+      - name: Download results
+        if: needs.e2e.result == 'failure'
+        uses: actions/download-artifact@v4
+        with:
+          name: e2e-report-${{ github.run_id }}
+          path: e2e-artifacts
+
+      - name: File or update the e2e-regression issue (failure)
+        if: needs.e2e.result == 'failure'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RESULTS_JSON: e2e-artifacts/tests/e2e/playwright-results.json
+          UNDER_TEST_SHA: ${{ github.event.deployment.sha || github.sha }}
+          DEPLOY_URL: ${{ github.event.deployment_status.environment_url }}
+          BASE_URL: https://gecko-solana-terminal.vercel.app
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: node tests/e2e/scripts/ci-issue-report.cjs
+
+      - name: Close the alert issue on green (recovery)
+        if: needs.e2e.result == 'success'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          UNDER_TEST_SHA: ${{ github.event.deployment.sha || github.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: node tests/e2e/scripts/ci-issue-report.cjs --close-on-green
