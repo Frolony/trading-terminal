@@ -1,0 +1,18 @@
+[package]
+name = "coordination-kernel"
+version = "0.2.0"
+edition = "2021"
+description = "Closed-loop state-machine coordination kernel — deterministic, memory-safe Rust for Substrate / Solana / WASM"
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+
+[features]
+default = ["std"]
+std = []
+
+[dependencies]
+# Intentionally empty for the reference implementation.
+# Production ports:
+#   Solana  → anchor-lang, solana-program
+#   Substrate → frame-support, sp-runtime, parity-scale-codec
+#   no_std WASM → just enable the feature and use alloc

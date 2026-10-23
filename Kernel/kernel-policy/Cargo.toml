@@ -1,0 +1,9 @@
+[package]
+name = "kernel-policy"
+version = "0.1.0"
+edition = "2021"
+description = "The treasury deployment's Coordination Kernel policy profile (W2.4): evidence-bound attestation, flat launch weights, named capacity stocks."
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+coordination-kernel = { path = "../kernel" }
