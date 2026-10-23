@@ -1,4 +1,16 @@
-# N6.2 — E2E regression suite: alert-only CI trigger. (PROPER FIX VARIANT v3 — prepared 2026-10-23, supersedes v2 posted as commit eff4fc2b)
+# N6.2 — E2E regression suite: alert-only CI trigger. (PROPER FIX VARIANT v4 — prepared 2026-10-23 ~15:5x CST, supersedes v3 posted as commit 14122437)
+#
+# v4 change (the only functional delta from v3): the deployment-wait poll now
+# distinguishes an UNAUTHORIZED token from a deployment that is genuinely not
+# READY yet. Runs #4 (commit 5f6ec13) and #5 (commit 636753a) both burned the
+# full 35-minute wait reporting NOT_FOUND while their production deployments
+# were verifiably READY with matching githubCommitSha in meta (checked
+# independently via the Vercel connector) — the poll's jq maps ANY api failure
+# (including HTTP 401/403 from a bad VERCEL_TOKEN) to NOT_FOUND, so a dead
+# token looks exactly like a slow deployment. v4 captures the HTTP status: a
+# 401/403 fails fast via fail_with_report with a token-specific message
+# (regenerate the token, update the repo secret) instead of burning 35 min,
+# and every poll logs http code + listed-deployment count for diagnosis.
 #
 # v3 change (the only functional delta from v2): RESULTS_JSON in the report job corrected
 # from e2e-artifacts/tests/e2e/playwright-results.json to e2e-artifacts/playwright-results.json.
@@ -123,10 +135,15 @@ jobs:
           fi
           deadline=$(( $(date +%s) + 2100 )) # 35 min — slowest observed Vercel build ~25 min
           while :; do
-            resp=$(curl -s -H "Authorization: Bearer $VERCEL_TOKEN" "$api") || resp=""
+            http_code=$(curl -s -o /tmp/vercel-deps.json -w "%{http_code}" -H "Authorization: Bearer $VERCEL_TOKEN" "$api") || http_code="000"
+            resp=$(cat /tmp/vercel-deps.json 2>/dev/null || echo "")
+            if [ "$http_code" = "401" ] || [ "$http_code" = "403" ]; then
+              fail_with_report "Vercel API rejected VERCEL_TOKEN (HTTP $http_code) when listing deployments for team team_fHW8WwtE1ZrfVfH5m7ZVTYxp. The token is expired, revoked, or lacks access to the team scope — regenerate it in the Vercel dashboard and update the VERCEL_TOKEN repo secret (GitHub repo Settings → Secrets and variables → Actions). The E2E suite did not run."
+            fi
+            dep_count=$(printf '%s' "$resp" | jq -r '.deployments | length // 0' 2>/dev/null || echo "?")
             state=$(printf '%s' "$resp" | jq -r --arg sha "$UNDER_TEST_SHA" '[.deployments[]? | select(.meta.githubCommitSha == $sha)][0] | (.readyState // .state // "NOT_FOUND")' 2>/dev/null || echo "QUERY_FAILED")
             url=$(printf '%s' "$resp" | jq -r --arg sha "$UNDER_TEST_SHA" '[.deployments[]? | select(.meta.githubCommitSha == $sha)][0] | (.url // "")' 2>/dev/null || echo "")
-            echo "deployment state for $UNDER_TEST_SHA: $state ${url}"
+            echo "deployment state for $UNDER_TEST_SHA: $state ${url} (vercel api http=$http_code, deployments listed=$dep_count)"
             case "$state" in
               READY)
                 echo "Production is serving $UNDER_TEST_SHA — settling 30s for edge propagation."
