@@ -2,15 +2,20 @@
 //
 // A Rust service in the terminal's API with Carlos's uploaded `jupiter-strategies`
 // crate integrated as its scheme library (vendored under src/schemes/: the
-// indicators + strategies modules only — the crate's jupiter.rs execution client
+// indicators + strategies modules only — the crate's `jupiter.rs` execution client
 // and main.rs runner are NOT vendored: they would pull solana-sdk/solana-client
-// and other heavy deps into every serverless function build. They remain at
-// hidden_files/strategy-upload/jupiter-strategies/ as the N7.4 starting point).
+// and other heavy deps into every serverless build; they remain at
+// hidden_files/strategy-upload/ as the N7.4 starting point).
 //
 // This file is NEW code (not part of the production reconstruction): it is the
 // "executor" the crate's README leaves to the implementer — the crate only logs
 // signals over synthetic bars; this engine runs the Strategy trait over real
 // N7.1 bars with Playbook house-rule accounting.
+//
+// N7.4 refactor: the scheme registry and the accounting loop now live in
+// src/strategy_engine.rs, shared verbatim with /api/paperlive ("build once,
+// use twice"). The response contract below is unchanged — the extraction is
+// mechanical and the engine math is identical.
 //
 // House rules (Playbook defaults, stamped on every result):
 // - long-only, one position at a time
@@ -52,33 +57,17 @@
 #[path = "../src/ohlcv_source.rs"] mod ohlcv_source;
 #[path = "../src/schemes/indicators/mod.rs"] mod indicators;
 #[path = "../src/schemes/strategies/mod.rs"] mod strategies;
-use indicators::Bar;
+#[path = "../src/strategy_engine.rs"] mod strategy_engine;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use strategies::{AroonTimeStop, DriftGatedBollinger, Ema20_50, KamaCross, Strategy, SupertrendTimeStop};
+use strategy_engine::{build_scheme, run_engine, SchemeQuery, SCHEME_IDS};
 use vercel_runtime::{run, service_fn, Error, Request};
 
 const CACHE_TTL: Duration = Duration::from_secs(600);
 const DISCLAIMER: &str = "Backtests run on historical daily bars under house-rule accounting (fill-at-close, long-only, one position, fee and deploy assumptions as stamped). Playbook edges are historical measurements on Kraken daily data under the same house rules — not promises. Every scheme is a fresh experiment on the selected data; edges measured on one asset do not transfer to another. Not financial advice.";
-
-/// The 10 Playbook schemes, in Playbook order. #3 and #10 share parameters
-/// (Supertrend(7,2)); the Playbook measured #3 on SOL and #10 on XRP — the
-/// `pair` parameter selects the data, so the distinction lives there.
-const SCHEME_IDS: &[&str] = &[
-    "supertrend-10-3-25",
-    "aroon-25-10",
-    "supertrend-7-2",
-    "bollinger-drift-20-2",
-    "aroon-25-40",
-    "aroon-25",
-    "ema-20-50",
-    "aroon-40",
-    "kama-10-2-30",
-    "supertrend-7-2-xrp",
-];
 
 static CACHE: OnceLock<Mutex<HashMap<String, (Instant, Value)>>> = OnceLock::new();
 fn cache() -> &'static Mutex<HashMap<String, (Instant, Value)>> {
@@ -140,146 +129,6 @@ fn parse_query(req: &Request) -> Query {
     q
 }
 
-struct SchemeDef {
-    id: &'static str,
-    playbook_no: u8,
-    playbook_asset: &'static str,
-    playbook_edge_pp: Option<f64>,
-    tunable: &'static str,
-}
-
-struct BuiltScheme {
-    strategy: Box<dyn Strategy>,
-    name: String,
-    def: SchemeDef,
-    warmup_bars: usize,
-    time_stop_at: Option<usize>,
-    params: Value,
-}
-
-fn unknown_scheme(id: &str) -> Value {
-    json!({
-        "ok": false,
-        "error": "UNKNOWN_SCHEME",
-        "message": format!("Unknown scheme '{}'.", id),
-        "schemes": SCHEME_IDS,
-    })
-}
-
-fn build_scheme(id: &str, q: &Query) -> Result<BuiltScheme, Value> {
-    let no = |name: &str| common::api_error("INVALID_PARAM", &format!("'{}' is not tunable for this scheme.", name));
-    match id {
-        "supertrend-10-3-25" | "supertrend-7-2" | "supertrend-7-2-xrp" => {
-            if q.period.is_some() { return Err(no("period")); }
-            let (d_atr, d_mult, d_hold): (usize, f64, usize) = match id {
-                "supertrend-10-3-25" => (10, 3.0, 25),
-                // #3/#10 are the pure Supertrend(7,2): no Playbook time-stop, so the
-                // default hold is effectively infinite over daily data (tunable down).
-                _ => (7, 2.0, 10_000),
-            };
-            let atr = q.atr_period.unwrap_or(d_atr).clamp(2, 50);
-            let mult = q.mult.unwrap_or(d_mult).clamp(0.5, 10.0);
-            let hold = q.max_hold.unwrap_or(d_hold).clamp(1, 10_000);
-            let (pno, asset, edge, sid): (u8, &'static str, Option<f64>, &'static str) = match id {
-                "supertrend-10-3-25" => (1, "XRP", Some(87.8), "supertrend-10-3-25"),
-                "supertrend-7-2" => (3, "SOL", None, "supertrend-7-2"),
-                _ => (10, "XRP", None, "supertrend-7-2-xrp"),
-            };
-            let strategy = SupertrendTimeStop::new(atr, mult, hold);
-            let name = strategy.name().to_string();
-            Ok(BuiltScheme {
-                strategy: Box::new(strategy), name,
-                def: SchemeDef { id: sid, playbook_no: pno, playbook_asset: asset, playbook_edge_pp: edge, tunable: "atr_period, mult, max_hold" },
-                warmup_bars: atr,
-                time_stop_at: Some(hold),
-                params: json!({"atr_period": atr, "mult": mult, "max_hold": hold}),
-            })
-        }
-        "aroon-25-10" | "aroon-25-40" | "aroon-25" | "aroon-40" => {
-            if q.atr_period.is_some() { return Err(no("atr_period")); }
-            if q.mult.is_some() { return Err(no("mult")); }
-            let d_period: usize = match id {
-                "aroon-40" => 40,
-                _ => 25,
-            };
-            let period = q.period.unwrap_or(d_period).clamp(2, 200);
-            let hold: Option<usize> = match id {
-                "aroon-25-10" => Some(q.max_hold.unwrap_or(10).clamp(1, 10_000)),
-                "aroon-25-40" => Some(q.max_hold.unwrap_or(40).clamp(1, 10_000)),
-                _ => {
-                    if q.max_hold.is_some() {
-                        return Err(common::api_error("INVALID_PARAM", "'max_hold' is not tunable on the pure trend-state variant — use aroon-25-10 or aroon-25-40 for a time-stop overlay."));
-                    }
-                    None
-                }
-            };
-            let (pno, asset, sid): (u8, &'static str, &'static str) = match id {
-                "aroon-25-10" => (2, "SOL", "aroon-25-10"),
-                "aroon-25-40" => (5, "ETH", "aroon-25-40"),
-                "aroon-25" => (6, "ETH", "aroon-25"),
-                _ => (8, "ETH", "aroon-40"),
-            };
-            let edge = if id == "aroon-25-10" { Some(83.1) } else { None };
-            let strategy = AroonTimeStop::new(period, hold);
-            let name = strategy.name().to_string();
-            Ok(BuiltScheme {
-                strategy: Box::new(strategy), name,
-                def: SchemeDef { id: sid, playbook_no: pno, playbook_asset: asset, playbook_edge_pp: edge, tunable: "period, max_hold (time-stop variants only)" },
-                warmup_bars: period,
-                time_stop_at: hold,
-                params: json!({"period": period, "max_hold": hold}),
-            })
-        }
-        "bollinger-drift-20-2" => {
-            if q.atr_period.is_some() { return Err(no("atr_period")); }
-            if q.mult.is_some() { return Err(no("mult")); }
-            if q.max_hold.is_some() { return Err(no("max_hold")); }
-            if q.period.is_some() { return Err(no("period")); }
-            let strategy = DriftGatedBollinger::new();
-            let name = strategy.name().to_string();
-            Ok(BuiltScheme {
-                strategy: Box::new(strategy), name,
-                def: SchemeDef { id: "bollinger-drift-20-2", playbook_no: 4, playbook_asset: "SOL", playbook_edge_pp: None, tunable: "none — fixed Playbook parameters (20, 2, ±25% SMA200 drift gate)" },
-                // The drift gate reads a 200-day SMA: the dominant lookback.
-                warmup_bars: 200,
-                time_stop_at: None,
-                params: json!({}),
-            })
-        }
-        "ema-20-50" => {
-            if q.atr_period.is_some() { return Err(no("atr_period")); }
-            if q.mult.is_some() { return Err(no("mult")); }
-            if q.max_hold.is_some() { return Err(no("max_hold")); }
-            if q.period.is_some() { return Err(no("period")); }
-            let strategy = Ema20_50::new();
-            let name = strategy.name().to_string();
-            Ok(BuiltScheme {
-                strategy: Box::new(strategy), name,
-                def: SchemeDef { id: "ema-20-50", playbook_no: 7, playbook_asset: "ETH", playbook_edge_pp: None, tunable: "none — fixed Playbook parameters (20/50)" },
-                warmup_bars: 50,
-                time_stop_at: None,
-                params: json!({}),
-            })
-        }
-        "kama-10-2-30" => {
-            if q.atr_period.is_some() { return Err(no("atr_period")); }
-            if q.mult.is_some() { return Err(no("mult")); }
-            if q.max_hold.is_some() { return Err(no("max_hold")); }
-            if q.period.is_some() { return Err(no("period")); }
-            let strategy = KamaCross::new();
-            let name = strategy.name().to_string();
-            Ok(BuiltScheme {
-                strategy: Box::new(strategy), name,
-                def: SchemeDef { id: "kama-10-2-30", playbook_no: 9, playbook_asset: "SOL", playbook_edge_pp: None, tunable: "none — fixed Playbook parameters (10, 2, 30)" },
-                warmup_bars: 30,
-                time_stop_at: None,
-                params: json!({}),
-            })
-        }
-        _ => Err(unknown_scheme(id)),
-    }
-}
-
 #[tokio::main]
 async fn main() -> Result<(), Error> { run(service_fn(handler)).await }
 
@@ -301,7 +150,11 @@ async fn handler(req: Request) -> Result<Value, Error> {
     let fee_bps = q.fee_bps.unwrap_or(26.0).clamp(0.0, 1000.0);
     let deploy_pct = q.deploy_pct.unwrap_or(95.0).clamp(1.0, 100.0);
 
-    let built = match build_scheme(&raw_id, &q) {
+    let sq = SchemeQuery {
+        atr_period: q.atr_period, mult: q.mult,
+        max_hold: q.max_hold, period: q.period,
+    };
+    let mut built = match build_scheme(&raw_id, &sq) {
         Ok(b) => b,
         Err(e) => return Ok(e),
     };
@@ -359,102 +212,12 @@ async fn handler(req: Request) -> Result<Value, Error> {
             n, built.def.id, built.warmup_bars)));
     }
 
-    // ---- Engine: pure function of (scheme, params, bars, fee, deploy). ----
-    let fee = fee_bps / 10000.0;
-    let deploy = deploy_pct / 100.0;
-    let mut strategy = built.strategy;
-    let mut equity = 1.0f64;
-    let mut cash = 1.0f64;
-    let mut qty = 0.0f64;
-    let mut entry_notional = 0.0f64;
-    let mut entry_price = 0.0f64;
-    let mut entry_t = 0u64;
-    let mut bars_held = 0usize;
-    let mut in_position = false;
-    let mut trades: Vec<Value> = Vec::new();
-    let mut trade_count = 0usize;
-    let mut wins = 0usize;
-    let mut held_sum = 0usize;
-    let mut curve: Vec<Value> = Vec::with_capacity(n);
-    let mut peak = 1.0f64;
-    let mut max_dd = 0.0f64;
-
-    for (i, bar) in bars_all.iter().enumerate() {
-        let (t, _o, h, l, c, _v) = *bar;
-        strategy.on_bar(&Bar::new(h, l, c));
-        if i < built.warmup_bars { continue; }
-        if in_position {
-            bars_held += 1;
-            if strategy.should_exit(bars_held) {
-                let proceeds = qty * c * (1.0 - fee);
-                let pnl_pct = (proceeds - entry_notional) / entry_notional * 100.0;
-                equity = cash + proceeds;
-                // When the time-stop and the signal flip fire on the same bar,
-                // classification reports the time-stop.
-                let reason = match built.time_stop_at {
-                    Some(m) if bars_held >= m => "time_stop",
-                    _ => "signal",
-                };
-                trade_count += 1;
-                held_sum += bars_held;
-                if pnl_pct > 0.0 { wins += 1; }
-                trades.push(json!({
-                    "entry_t": entry_t, "entry_price": entry_price,
-                    "exit_t": t, "exit_price": c,
-                    "bars_held": bars_held, "pnl_pct": pnl_pct,
-                    "exit_reason": reason,
-                }));
-                in_position = false;
-                qty = 0.0;
-            } else {
-                equity = cash + qty * c;
-            }
-        } else if i + 1 < n && strategy.should_enter() {
-            // No entry on the final bar — there would be no bar left to exit on.
-            let notional = equity * deploy;
-            let cost = notional * fee;
-            qty = (notional - cost) / c;
-            entry_notional = notional;
-            entry_price = c;
-            entry_t = t;
-            cash = equity - notional;
-            bars_held = 0;
-            in_position = true;
-            equity = cash + qty * c;
-        }
-        curve.push(json!([t, equity]));
-        if equity > peak { peak = equity; }
-        let dd = (peak - equity) / peak;
-        if dd > max_dd { max_dd = dd; }
-    }
-    if in_position {
-        // Force-close at the last bar's close; restate the curve's last point.
-        let (t, _o, _h, _l, c, _v) = bars_all[n - 1];
-        let proceeds = qty * c * (1.0 - fee);
-        let pnl_pct = (proceeds - entry_notional) / entry_notional * 100.0;
-        equity = cash + proceeds;
-        trade_count += 1;
-        held_sum += bars_held;
-        if pnl_pct > 0.0 { wins += 1; }
-        trades.push(json!({
-            "entry_t": entry_t, "entry_price": entry_price,
-            "exit_t": t, "exit_price": c,
-            "bars_held": bars_held, "pnl_pct": pnl_pct,
-            "exit_reason": "end_of_data",
-        }));
-        if let Some(pt) = curve.last_mut() { *pt = json!([t, equity]); }
-    }
-
-    // Buy-and-hold benchmark over the same trading window, identical deploy/fee.
-    let bh_entry = bars_all[built.warmup_bars].4;
-    let bh_last = bars_all[n - 1].4;
-    let bh_qty = deploy * (1.0 - fee) / bh_entry;
-    let bh_equity = (1.0 - deploy) + bh_qty * bh_last * (1.0 - fee);
-    let bh_ret = (bh_equity - 1.0) * 100.0;
-    let total_ret = (equity - 1.0) * 100.0;
-
-    let win_rate = if trade_count > 0 { wins as f64 / trade_count as f64 * 100.0 } else { 0.0 };
-    let avg_held = if trade_count > 0 { held_sum as f64 / trade_count as f64 } else { 0.0 };
+    // ---- Engine: the shared house-rule loop (src/strategy_engine.rs). ----
+    // Backtest semantics: indicators fed from bar 0, trading starts after the
+    // scheme's warmup, open positions force-closed at the last bar
+    // (mark_open=false — exit_reason "end_of_data").
+    let warmup = built.warmup_bars;
+    let res = run_engine(&mut built, &bars_all, warmup, false, fee_bps, deploy_pct);
 
     let mut scheme_map = serde_json::Map::with_capacity(8);
     scheme_map.insert("id".to_string(), json!(built.def.id));
@@ -471,8 +234,8 @@ async fn handler(req: Request) -> Result<Value, Error> {
     data_map.insert("from".to_string(), json!(bars_all.first().map(|b| b.0).unwrap_or(0)));
     data_map.insert("to".to_string(), json!(bars_all.last().map(|b| b.0).unwrap_or(0)));
     data_map.insert("bars".to_string(), json!(n));
-    data_map.insert("trading_from".to_string(), json!(bars_all[built.warmup_bars].0));
-    data_map.insert("warmup_bars".to_string(), json!(built.warmup_bars));
+    data_map.insert("trading_from".to_string(), json!(bars_all[warmup].0));
+    data_map.insert("warmup_bars".to_string(), json!(warmup));
     data_map.insert("forming_excluded".to_string(), json!(forming_t));
     if let Some(f) = q.from { data_map.insert("from_param".to_string(), json!(f)); }
     if let Some(t) = q.to { data_map.insert("to_param".to_string(), json!(t)); }
@@ -496,16 +259,16 @@ async fn handler(req: Request) -> Result<Value, Error> {
             "benchmark": "buy-and-hold uses identical deploy and fee assumptions over the same trading window",
         },
         "result": {
-            "total_return_pct": total_ret,
-            "buy_hold_return_pct": bh_ret,
-            "edge_pp": total_ret - bh_ret,
-            "max_drawdown_pct": max_dd * 100.0,
-            "trades": trade_count,
-            "wins": wins,
-            "win_rate_pct": win_rate,
-            "avg_bars_held": avg_held,
-            "equity_curve": curve,
-            "trade_list": trades,
+            "total_return_pct": res.total_return_pct,
+            "buy_hold_return_pct": res.buy_hold_return_pct,
+            "edge_pp": res.edge_pp,
+            "max_drawdown_pct": res.max_drawdown_pct,
+            "trades": res.trades,
+            "wins": res.wins,
+            "win_rate_pct": res.win_rate_pct,
+            "avg_bars_held": res.avg_bars_held,
+            "equity_curve": res.equity_curve,
+            "trade_list": res.trade_list.iter().map(|t| t.to_json()).collect::<Vec<Value>>(),
         },
         "cached": false,
         "disclaimer": DISCLAIMER,

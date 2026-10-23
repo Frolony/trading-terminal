@@ -33,6 +33,9 @@ path = "api/ohlcv.rs"
 [[bin]]
 name = "backtest"
 path = "api/backtest.rs"
+[[bin]]
+name = "paperlive"
+path = "api/paperlive.rs"
 
 [profile.release]
 codegen-units = 1
