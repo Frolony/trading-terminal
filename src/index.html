@@ -416,6 +416,9 @@ function paintWlDrawer(){
     if(Date.now()>arm){arm=Date.now()+5000;delBtn.textContent='Delete \''+l.name+'\' ('+l.tokens.length+' tokens)?';toast('Delete \''+l.name+'\' and its '+l.tokens.length+' tokens? Click again within 5 s to confirm.');setTimeout(()=>{if(Date.now()>=arm&&$('wlDeleteBtn')===delBtn)paintWlDrawer();},5100);return;}
     arm=0;const name=l.name,r=wlDeleteList(l.id);
     if(r==='ok'){toast('Watchlist \''+name+'\' deleted.');renderWatchlist();paintWlDrawer();refreshWatchButtons();}};}
+  /* A25 fix: re-renders unmount the focused control, dropping focus to <body> where the
+     drawer's keydown handler can't hear Escape — keep focus inside the open drawer. */
+  try{const dw=$('wlDrawer');if(dw&&!dw.hidden&&document.activeElement===document.body){const c=$('wlClose');if(c)c.focus();}}catch(_){}
 }
 function openWlDrawer(){const d=$('wlDrawer');if(!d)return;paintWlDrawer();d.hidden=false;const c=$('wlClose');if(c)c.focus();}
 function closeWlDrawer(){const d=$('wlDrawer');if(d)d.hidden=true;const card=document.querySelector('[data-panel="watchlist"]');if(card&&card.focus)card.focus();}
@@ -435,6 +438,11 @@ function wireWatchlistDrawer(){
     if(e.shiftKey&&document.activeElement===first){e.preventDefault();last.focus();}
     else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first.focus();}
   });
+  /* A25 fix: the drawer-element keydown handler only fires while focus is inside the drawer —
+     a document-level listener closes on Escape whenever the drawer is open, even if a
+     re-render dropped focus to <body>. (The ▾ menu's own Escape stops propagation, so an
+     open menu still closes alone first.) */
+  document.addEventListener('keydown',e=>{try{const dw=$('wlDrawer');if(e.key==='Escape'&&dw&&!dw.hidden)closeWlDrawer();}catch(_){}});
 }
 function refreshWatchButtons(){ // re-label row buttons against the (possibly changed) active list
   document.querySelectorAll('[data-watch]').forEach(b=>{try{b.textContent=wlIsIn(wlActiveId(),b.dataset.watch)?'Added ✓':'Watch';}catch(_){}});
