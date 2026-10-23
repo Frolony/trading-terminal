@@ -48,6 +48,42 @@ a.wrow{text-decoration:none}
 .wnote{font-size:11px;color:var(--muted);margin-top:14px;text-align:center;line-height:1.6}
 .werr{font-size:12px;color:var(--red);background:#281820;border:1px solid #472a35;border-radius:8px;padding:10px 12px;margin-top:10px;text-align:center}
 .switchrow button.active.mode{background:#1b2635;color:var(--blue)}
+/* N5.3 full watchlists (2026-10-22): list tabs, token rows, save-to mini-menu, drawer management. */
+.wlcard{cursor:pointer}
+.wlcard:hover{border-color:var(--hoverline)}
+.wlcard:focus-visible{outline:2px solid #3b625c;outline-offset:2px}
+.wltabs{display:flex;gap:6px;flex-wrap:wrap;margin:4px 0 2px}
+.wltab{border:1px solid var(--line);background:var(--btnbg);color:var(--btntext);border-radius:999px;padding:6px 11px;font-size:12px}
+.wltab.on{border-color:#3b625c;color:var(--lime);background:#13251f}
+.wlcount{opacity:.7;font-size:10px}
+.wlnew{display:flex;gap:8px;margin:10px 0 2px}
+.wlnew input{flex:1;min-width:0;border:1px solid var(--inputline);border-radius:8px;background:var(--input);color:var(--text);padding:9px 10px}
+.wlnew button{border:1px solid #36433a;background:#18251e;color:var(--lime);border-radius:8px;padding:0 13px}
+.wlcap{font-size:11px;color:var(--muted);margin:10px 0 2px}
+.wlrows{display:grid;gap:8px;margin-top:6px}
+.wlrow{display:flex;align-items:center;gap:10px;border:1px solid var(--line);border-radius:9px;padding:10px 12px}
+.wltok{flex:1;min-width:0}
+.wltok strong{font-size:13px}
+.wltok small{display:block;color:var(--muted);font-size:10px}
+.wlprice{text-align:right}
+.wlprice strong{font-size:12px}
+.wlprice div{font-size:10px;color:var(--muted)}
+.wlstale{color:var(--amber);font-size:9px;border:1px solid var(--warnline);border-radius:4px;padding:0 4px;margin-left:4px;white-space:nowrap}
+.wlrm{background:transparent;border:0;color:var(--muted);font-size:16px;padding:2px 6px;border-radius:6px;flex:none}
+.wlrm:hover{color:var(--red)}
+.wlclear{margin-top:12px;width:100%;padding:9px;background:var(--panel);border:1px solid var(--line);color:var(--btntext);border-radius:7px;font-size:11px}
+.wlmanage{display:grid;gap:8px}
+.wlrowbtn{display:flex;gap:8px;flex-wrap:wrap}
+.wlrowbtn button{flex:1;border:1px solid var(--line);background:var(--btnbg);color:var(--btntext);border-radius:7px;padding:8px;font-size:11px;min-width:90px}
+.wlrowbtn button.danger{color:var(--red);border-color:#472a35;background:#281820}
+.wlrowbtn input{flex:1;min-width:120px;border:1px solid var(--inputline);border-radius:7px;background:var(--input);color:var(--text);padding:8px}
+.wlhint{font-size:11px;color:var(--muted);margin-bottom:4px}
+.wlsave{margin-left:2px}
+.wlmenu{position:absolute;z-index:90;min-width:210px;max-width:280px;background:linear-gradient(145deg,var(--panelA),var(--panelB));border:1px solid var(--line);border-radius:10px;box-shadow:0 18px 50px #000a;padding:6px}
+.wlmenu button{display:flex;align-items:center;gap:8px;width:100%;background:transparent;border:0;color:var(--text);text-align:left;font-size:12px;padding:8px 10px;border-radius:7px}
+.wlmenu button:hover{background:#ffffff08}
+.wlcheck{width:16px;color:var(--lime);font-weight:700;flex:none}
+[data-theme="light"] .wltab.on{background:#e6f4e9}
 /* N4.3 multi-asset ticket (2026-10-22): selected-pair display box. */
 .pairbox{background:var(--input);border:1px solid var(--line);border-radius:7px;padding:9px 11px}
 .pairbox strong{font-size:14px;letter-spacing:.3px}
@@ -179,6 +215,7 @@ a.wrow{text-decoration:none}
 <section class="panel"><div class="panelhead"><h2>Execution path</h2><span class="pill">HOW IT WORKS</span></div><div class="panelbody" id="execPathBody"></div></section>
 </aside></div><footer class="foot"><span>GECKO TERMINAL · SOLANA WATCH DESK · PROTOTYPE 0.1</span><span>Market data via public DexScreener API and CoinGecko · paper trading only</span></footer></div><div class="wmodal" id="walletModal" hidden><div class="wmodal-card" role="dialog" aria-modal="true" aria-labelledby="wmodalTitle"><div class="wmodal-head"><div><h3 id="wmodalTitle">Connect a wallet</h3><small>Solana mainnet · read-only in this build</small></div><button class="wclose" id="walletModalClose" type="button" aria-label="Close">×</button></div><div class="wmodal-body" id="walletModalBody"><div class="wnote loading">Loading wallet adapters…</div></div></div></div>
 <div class="drawer" id="settingsDrawer" hidden><div class="drawer-card" role="dialog" aria-modal="true" aria-labelledby="settingsTitle"><div class="drawer-head"><div><h3 id="settingsTitle">Settings</h3><small>Preferences · saved on this device</small></div><button class="wclose" id="settingsClose" type="button" aria-label="Close settings">×</button></div><div class="drawer-body" id="settingsBody"><!-- N5.2 appends further sections here; N5.1 owns the Terminal section. --></div></div></div>
+<div class="drawer" id="wlDrawer" hidden><div class="drawer-card" role="dialog" aria-modal="true" aria-labelledby="wlTitle"><div class="drawer-head"><div><h3 id="wlTitle">Watchlists</h3><small>Personal lists · saved on this device</small></div><button class="wclose" id="wlClose" type="button" aria-label="Close watchlists">×</button></div><div class="drawer-body" id="wlBody"></div></div></div>
 <div class="toast" id="toast"></div>
 <script>
 const $=id=>document.getElementById(id);const STORAGE_KEY='gecko-terminal-state-v2';const LEGACY_STORAGE_KEY='gecko-terminal-state-v1';
@@ -196,7 +233,7 @@ let hadStoredTicketPair=false,defaultPairApplied=false;
 // and additionally requires baseToken.address === WSOL_MINT as
 // defense-in-depth.
 const WSOL_MINT='So11111111111111111111111111111111111111112';
-let price=0,change=0,cash=10000,holdings={},ticketPair={baseMint:WSOL_MINT,baseSymbol:'SOL',quoteSymbol:'USDC',price:0,change24h:null},orders=[],side='buy',marketPairs=[],watchlist=[],chartRange='1H';
+let price=0,change=0,cash=10000,holdings={},ticketPair={baseMint:WSOL_MINT,baseSymbol:'SOL',quoteSymbol:'USDC',price:0,change24h:null},orders=[],side='buy',marketPairs=[],chartRange='1H';
 let feedFailures=0,lastMarketAt=0;
 // N4.5 paper limit orders (pure + DOM blocks below): state lives here so the
 // top-level restoreState() call can read it — const/let would be TDZ otherwise.
@@ -209,11 +246,11 @@ const fmt=(n,d=2)=>Number(n||0).toLocaleString('en-US',{minimumFractionDigits:d,
 const usd=n=>'$'+fmt(n,2);
 const compact=n=>n>=1e9?(n/1e9).toFixed(2)+'B':n>=1e6?(n/1e6).toFixed(2)+'M':n>=1e3?(n/1e3).toFixed(1)+'K':fmt(n,0);
 function formatPriceUsd(value){const n=Number(value);if(!Number.isFinite(n)||n<=0)return '—';if(n>=0.01)return usd(n);return '$'+n.toPrecision(4)}
-function saveState(){try{const state={version:2,cash,holdings,orders:orders.map(o=>({side:o.side,mode:o.mode||'paper',type:o.type||'market',baseMint:o.baseMint||WSOL_MINT,baseSymbol:o.baseSymbol||'SOL',quoteSymbol:o.quoteSymbol||'USDC',amount:o.amount,qty:o.qty,price:o.price,limitPrice:o.limitPrice||null,status:o.status||'filled',time:o.time instanceof Date?o.time.toISOString():o.time})),watchlist:watchlist.slice(0,50),search:$('tokenSearch')?$('tokenSearch').value.slice(0,100):'SOL',chartRange,orderType,limitExpirySel,limitOrders:limitOrders.map(o=>({id:o.id,side:o.side,baseMint:o.baseMint,baseSymbol:o.baseSymbol,quoteSymbol:o.quoteSymbol,quoteUsd:o.quoteUsd,amountQuote:o.amountQuote,limitPrice:o.limitPrice,createdAt:o.createdAt,expiresAt:o.expiresAt,status:o.status})),ticketPair:ticketPair?{baseMint:ticketPair.baseMint,baseSymbol:ticketPair.baseSymbol,quoteSymbol:ticketPair.quoteSymbol}:null,histFilter:{mode:histFilter.mode,pair:histFilter.pair,kind:histFilter.kind,sig:String(histFilter.sig||'').slice(0,88)}};localStorage.setItem(STORAGE_KEY,JSON.stringify(state))}catch(_){}}
+function saveState(){try{const state={version:2,cash,holdings,orders:orders.map(o=>({side:o.side,mode:o.mode||'paper',type:o.type||'market',baseMint:o.baseMint||WSOL_MINT,baseSymbol:o.baseSymbol||'SOL',quoteSymbol:o.quoteSymbol||'USDC',amount:o.amount,qty:o.qty,price:o.price,limitPrice:o.limitPrice||null,status:o.status||'filled',time:o.time instanceof Date?o.time.toISOString():o.time})),watchlists:watchlists,watchlistsMigrated:true,watchlist:wlLegacyMirror(),search:$('tokenSearch')?$('tokenSearch').value.slice(0,100):'SOL',chartRange,orderType,limitExpirySel,limitOrders:limitOrders.map(o=>({id:o.id,side:o.side,baseMint:o.baseMint,baseSymbol:o.baseSymbol,quoteSymbol:o.quoteSymbol,quoteUsd:o.quoteUsd,amountQuote:o.amountQuote,limitPrice:o.limitPrice,createdAt:o.createdAt,expiresAt:o.expiresAt,status:o.status})),ticketPair:ticketPair?{baseMint:ticketPair.baseMint,baseSymbol:ticketPair.baseSymbol,quoteSymbol:ticketPair.quoteSymbol}:null,histFilter:{mode:histFilter.mode,pair:histFilter.pair,kind:histFilter.kind,sig:String(histFilter.sig||'').slice(0,88)}};localStorage.setItem(STORAGE_KEY,JSON.stringify(state))}catch(_){}}
 /* N4.3: v1 stored a single SOL balance (cash/sol/costBasis). v2 keys holdings by base mint. migrateV1 lifts the old shape into v2 once, then the legacy key is deleted. */
 function migrateV1(old){const h={};const sq=Number(old.sol)||0,cb=Number(old.costBasis)||0;if(sq>0)h[WSOL_MINT]={symbol:'SOL',quoteSymbol:'USDC',qty:sq,avgCost:cb/sq,lastPrice:0};return{version:2,cash:old.cash,holdings:h,orders:(Array.isArray(old.orders)?old.orders:[]).map(o=>Object.assign({},o,{mode:'paper',baseMint:WSOL_MINT,baseSymbol:'SOL',quoteSymbol:'USDC'})),watchlist:old.watchlist,search:old.search,chartRange:old.chartRange};}
 function sanitizeHoldings(h){const out={};if(!h||typeof h!=='object')return out;for(const k of Object.keys(h).slice(0,100)){const v=h[k];if(!v||typeof v!=='object'||typeof k!=='string'||!k)continue;const qty=Number(v.qty);if(!Number.isFinite(qty)||qty<0)continue;const ac=Number(v.avgCost),lp=Number(v.lastPrice);out[k]={symbol:String(v.symbol||'TOKEN').slice(0,20),quoteSymbol:String(v.quoteSymbol||'USDC').slice(0,10),qty,avgCost:Number.isFinite(ac)&&ac>=0?ac:0,lastPrice:Number.isFinite(lp)&&lp>=0?lp:0};}return out;}
-function restoreState(){try{let s=JSON.parse(localStorage.getItem(STORAGE_KEY)||'null');if(!s){const legacy=JSON.parse(localStorage.getItem(LEGACY_STORAGE_KEY)||'null');if(legacy&&legacy.version===1){s=migrateV1(legacy);try{localStorage.removeItem(LEGACY_STORAGE_KEY)}catch(_){}}}if(!s||s.version!==2)return;const a=Number(s.cash);if(Number.isFinite(a)&&a>=0)cash=a;holdings=sanitizeHoldings(s.holdings);if(Array.isArray(s.orders))orders=s.orders.filter(o=>o&&['buy','sell'].includes(o.side)&&Number.isFinite(Number(o.amount))&&Number.isFinite(Number(o.qty))&&Number.isFinite(Number(o.price))).slice(0,500).map(o=>({side:o.side,mode:o.mode==='live'?'live':'paper',type:o.type==='limit'?'limit':'market',baseMint:typeof o.baseMint==='string'&&o.baseMint?o.baseMint:WSOL_MINT,baseSymbol:String(o.baseSymbol||'SOL').slice(0,20),quoteSymbol:String(o.quoteSymbol||'USDC').slice(0,10),amount:Number(o.amount),qty:Number(o.qty),price:Number(o.price),limitPrice:Number.isFinite(Number(o.limitPrice))&&Number(o.limitPrice)>0?Number(o.limitPrice):null,status:['filled','cancelled','expired'].includes(o.status)?o.status:'filled',time:new Date(o.time||Date.now())}));if(Array.isArray(s.watchlist))watchlist=s.watchlist.slice(0,50).map(w=>typeof w==='string'?{address:w,symbol:'TOKEN',name:'Saved token',priceUsd:0}:w).filter(w=>w&&typeof w.address==='string').map(w=>({address:w.address,symbol:String(w.symbol||'TOKEN').slice(0,20),name:String(w.name||'Saved token').slice(0,80),priceUsd:Number(w.priceUsd)||0,change24h:w.change24h==null?null:Number(w.change24h)}));if(typeof s.search==='string'&&$('tokenSearch'))$('tokenSearch').value=s.search.slice(0,100);if(['1H','24H','7D','30D'].includes(s.chartRange))chartRange=s.chartRange;
+function restoreState(){try{let s=JSON.parse(localStorage.getItem(STORAGE_KEY)||'null');if(!s){const legacy=JSON.parse(localStorage.getItem(LEGACY_STORAGE_KEY)||'null');if(legacy&&legacy.version===1){s=migrateV1(legacy);try{localStorage.removeItem(LEGACY_STORAGE_KEY)}catch(_){}}}if(!s||s.version!==2)return;const a=Number(s.cash);if(Number.isFinite(a)&&a>=0)cash=a;holdings=sanitizeHoldings(s.holdings);if(Array.isArray(s.orders))orders=s.orders.filter(o=>o&&['buy','sell'].includes(o.side)&&Number.isFinite(Number(o.amount))&&Number.isFinite(Number(o.qty))&&Number.isFinite(Number(o.price))).slice(0,500).map(o=>({side:o.side,mode:o.mode==='live'?'live':'paper',type:o.type==='limit'?'limit':'market',baseMint:typeof o.baseMint==='string'&&o.baseMint?o.baseMint:WSOL_MINT,baseSymbol:String(o.baseSymbol||'SOL').slice(0,20),quoteSymbol:String(o.quoteSymbol||'USDC').slice(0,10),amount:Number(o.amount),qty:Number(o.qty),price:Number(o.price),limitPrice:Number.isFinite(Number(o.limitPrice))&&Number(o.limitPrice)>0?Number(o.limitPrice):null,status:['filled','cancelled','expired'].includes(o.status)?o.status:'filled',time:new Date(o.time||Date.now())}));wlRestore(s); // N5.3: valid watchlists subtree wins; else migrate the N1.3 legacy array once; else seed Defaultif(typeof s.search==='string'&&$('tokenSearch'))$('tokenSearch').value=s.search.slice(0,100);if(['1H','24H','7D','30D'].includes(s.chartRange))chartRange=s.chartRange;
 /* N4.5: restore order type + open paper limit orders; A17: restore the selected ticket pair (validated shape only — price re-syncs from the feed). */
 if(s.orderType==='limit'||s.orderType==='market')orderType=s.orderType;
 if(typeof s.limitExpirySel==='string'&&Object.prototype.hasOwnProperty.call(LIMIT_EXPIRIES,s.limitExpirySel))limitExpirySel=s.limitExpirySel;
@@ -228,6 +265,207 @@ if(['all','paper','live'].indexOf(hf.mode)>=0)histFilter.mode=hf.mode;
 if(typeof hf.pair==='string')histFilter.pair=hf.pair;
 if(['all','market-fill','swap-fill','limit-create','limit-cancel','limit-fill','paper-limit-fill'].indexOf(hf.kind)>=0)histFilter.kind=hf.kind;
 if(typeof hf.sig==='string')histFilter.sig=hf.sig.slice(0,88);}}catch(_){try{localStorage.removeItem(STORAGE_KEY)}catch(__){}}}
+/*__N53_WATCHLISTS_START__*/
+/* N5.3 full watchlists (2026-10-22): multiple named watchlists with rename/remove,
+   persistence, and a sync design (dormant until N2.2) in the prep pack. This block
+   supersedes/absorbs N1.3: the v0 single-list contract becomes the Default list's
+   behavior. Tokens are keyed by mint (symbols collide); the symbol is display-only.
+   The legacy flat `watchlist` array migrates once into Default (idempotent — runs
+   only when no valid `watchlists` subtree exists); the legacy key is then kept as
+   a flattened mirror and ignored. N1.1 amendment: paper reset never touches
+   watchlists — they are personal data, not paper state. Feed enrichment (§1.4):
+   drawer/header rows resolve live price+change from wlFeedMap (populated by the
+   existing renderPairs/searchTokens renders — no per-render fetch); a token not
+   seen this session keeps its last-good snapshot with the N1.6 stale flag. */
+const WL_LISTS_VERSION=1,WL_MAX_LISTS=10,WL_MAX_TOKENS=50,WL_NAME_CAP=40;
+let watchlists=null; // {listsVersion,lists:[{id,name,createdAt,tokens:[{mint,symbol,name,priceUsd,change24h,addedAt}]}],activeListId}
+let wlFeedMap=new Map(); // mint -> {priceUsd,change24h} from the latest feed renders (pack §1.4)
+function wlNewId(){try{if(typeof crypto!=='undefined'&&crypto.randomUUID)return crypto.randomUUID();}catch(_){}return 'wl-'+Date.now().toString(36)+'-'+Math.floor(Math.random()*1e9).toString(36);}
+function wlCleanToken(t){if(!t||typeof t!=='object')return null;const mint=typeof t.mint==='string'?t.mint:(typeof t.address==='string'?t.address:'');if(!mint)return null;return{mint,symbol:String(t.symbol||'TOKEN').slice(0,20),name:String(t.name||'Saved token').slice(0,80),priceUsd:Number(t.priceUsd)||0,change24h:t.change24h==null?null:Number(t.change24h),addedAt:Number(t.addedAt)||Date.now()};}
+function wlSeedDefault(){const l={id:wlNewId(),name:'Default',createdAt:Date.now(),tokens:[]};return{listsVersion:WL_LISTS_VERSION,lists:[l],activeListId:l.id};}
+function sanitizeWatchlists(s){
+  if(!s||typeof s!=='object'||s.listsVersion!==WL_LISTS_VERSION||!Array.isArray(s.lists))return wlSeedDefault();
+  const seen=new Set(),lists=[];
+  for(const raw of s.lists.slice(0,WL_MAX_LISTS)){
+    if(!raw||typeof raw.id!=='string'||!raw.id||typeof raw.name!=='string')continue;
+    const name=raw.name.trim().slice(0,WL_NAME_CAP);
+    if(!name||seen.has(name.toLowerCase()))continue;
+    seen.add(name.toLowerCase());
+    if(!Array.isArray(raw.tokens))continue;
+    const tm=new Set(),tokens=[];
+    for(const rt of raw.tokens){const t=wlCleanToken(rt);if(!t||tm.has(t.mint))continue;tm.add(t.mint);tokens.push(t);if(tokens.length>=WL_MAX_TOKENS)break;}
+    lists.push({id:raw.id,name,createdAt:Number(raw.createdAt)||Date.now(),tokens});
+  }
+  if(!lists.length)return wlSeedDefault();
+  const activeId=lists.some(l=>l.id===s.activeListId)?s.activeListId:lists[0].id;
+  return{listsVersion:WL_LISTS_VERSION,lists,activeListId:activeId};
+}
+function migrateFromLegacy(arr){ // N1.3-era flat array -> Default list; idempotent (runs only when no watchlists subtree exists)
+  const st=wlSeedDefault(),def=st.lists[0],tm=new Set();
+  if(Array.isArray(arr))for(const w of arr){const t=wlCleanToken(typeof w==='string'?{address:w}:w);if(!t||tm.has(t.mint))continue;tm.add(t.mint);def.tokens.push(t);if(def.tokens.length>=WL_MAX_TOKENS)break;}
+  return st;
+}
+function wlRestore(s){
+  if(s&&s.watchlistsMigrated&&s.watchlists&&typeof s.watchlists==='object'){watchlists=sanitizeWatchlists(s.watchlists);return;}
+  if(s&&Array.isArray(s.watchlist)){watchlists=migrateFromLegacy(s.watchlist);return;}
+  watchlists=wlSeedDefault();
+}
+function wlLegacyMirror(){ // flattened mirror of every watched token, legacy shape; ignored after migration
+  try{const tm=new Set(),out=[];
+    for(const l of wlLists())for(const t of l.tokens){if(tm.has(t.mint))continue;tm.add(t.mint);out.push({address:t.mint,symbol:t.symbol,name:t.name,priceUsd:t.priceUsd,change24h:t.change24h,addedAt:t.addedAt});if(out.length>=WL_MAX_TOKENS)break;}
+    return out;}catch(_){return[];}
+}
+function wlLists(){return watchlists&&Array.isArray(watchlists.lists)?watchlists.lists:[];}
+function wlGetList(id){return wlLists().find(l=>l.id===id)||null;}
+function wlActiveId(){const l=wlGetList(watchlists&&watchlists.activeListId);return l?l.id:((wlLists()[0]||{}).id||null);}
+function wlActiveList(){return wlGetList(wlActiveId())||wlLists()[0]||null;}
+function wlSetActive(id){if(!wlGetList(id))return;watchlists.activeListId=id;saveState();renderWatchlist();paintWlDrawer();refreshWatchButtons();}
+function wlIsIn(listId,mint){const l=wlGetList(listId);return!!l&&l.tokens.some(t=>t.mint===mint);}
+function wlPairToken(address,p){return{mint:address,symbol:(p&&p.baseToken&&p.baseToken.symbol)||'TOKEN',name:(p&&p.baseToken&&p.baseToken.name)||'Saved token',priceUsd:p?Number(p.priceUsd)||0:0,change24h:!p||p.priceChange?.h24==null?null:Number(p.priceChange.h24)};}
+function wlToggle(listId,token){
+  const l=wlGetList(listId);if(!l||!token||!token.mint)return'no-list';
+  const ix=l.tokens.findIndex(t=>t.mint===token.mint);
+  if(ix>=0){l.tokens.splice(ix,1);saveState();return'removed';}
+  if(l.tokens.length>=WL_MAX_TOKENS)return'full';
+  const c=wlCleanToken(token);if(!c)return'no-list';
+  l.tokens.push(c);saveState();return'added';
+}
+function wlCreateList(name){
+  const clean=String(name==null?'':name).trim().slice(0,WL_NAME_CAP);
+  if(!clean)return'empty';
+  if(wlLists().some(l=>l.name.toLowerCase()===clean.toLowerCase()))return'duplicate';
+  if(wlLists().length>=WL_MAX_LISTS)return'full';
+  const l={id:wlNewId(),name:clean,createdAt:Date.now(),tokens:[]};
+  watchlists.lists.push(l);watchlists.activeListId=l.id;saveState();return l;
+}
+function wlRenameList(id,name){
+  const l=wlGetList(id);if(!l)return'no-list';
+  const clean=String(name==null?'':name).trim().slice(0,WL_NAME_CAP);
+  if(!clean)return'empty';
+  if(wlLists().some(o=>o.id!==id&&o.name.toLowerCase()===clean.toLowerCase()))return'duplicate';
+  l.name=clean;saveState();return'ok';
+}
+function wlDeleteList(id){
+  const l=wlGetList(id);if(!l)return'no-list';
+  if(l.name==='Default'&&l.tokens.length)return'blocked-default'; // pack §1.2: blocked while holding tokens
+  const wasActive=watchlists.activeListId===id;
+  watchlists.lists=watchlists.lists.filter(x=>x.id!==id);
+  if(wasActive){let def=wlLists().find(x=>x.name==='Default');if(!def){def=wlSeedDefault().lists[0];watchlists.lists.push(def);}watchlists.activeListId=def.id;}
+  if(!watchlists.lists.length)watchlists=wlSeedDefault(); // never a zero-list state
+  saveState();return'ok';
+}
+function wlClearList(id){const l=wlGetList(id);if(!l)return 0;const n=l.tokens.length;l.tokens=[];saveState();return n;}
+function wlEnrich(t){ // pack §1.4: live feed value when this session has seen the mint, else last-good snapshot with the stale flag
+  const live=wlFeedMap.get(t.mint);
+  if(live&&Number(live.priceUsd)>0)return{priceUsd:live.priceUsd,change24h:live.change24h,stale:false};
+  return{priceUsd:t.priceUsd,change24h:t.change24h,stale:true};
+}
+function wlChangeHtml(ch){return '<span class="'+(ch===null?'':ch>=0?'positive':'negative')+'">'+(ch===null?'—':(ch>=0?'+':'')+fmt(ch,2)+'%')+' 24h</span>';}
+function renderWatchlist(){ // header card renders the ACTIVE list
+  const count=$('watchlistCount'),summary=$('watchlistSummary');if(!count||!summary)return;
+  const l=wlActiveList(),toks=l?l.tokens:[];
+  count.textContent=String(toks.length);
+  if(!toks.length){summary.textContent='No tokens saved';return;}
+  summary.textContent=toks.slice(0,2).map(t=>{const e=wlEnrich(t);return t.symbol+(e.priceUsd>0?' '+formatPriceUsd(e.priceUsd):'');}).join(' · ')+(toks.length>2?' · +'+(toks.length-2)+' more':'')+(l&&l.name!=='Default'?' · '+l.name:'');
+}
+function wlTokenRow(t){
+  const e=wlEnrich(t);
+  return '<div class="wlrow"><div class="wltok"><strong>'+esc(t.symbol)+'</strong><small>'+esc(t.name)+'</small></div><div class="wlprice"><strong>'+formatPriceUsd(e.priceUsd)+'</strong><div>'+wlChangeHtml(e.change24h)+(e.stale?' <span class="wlstale" title="Last known price — this token is not in the current feed view">stale</span>':'')+'</div></div><button class="wlrm" type="button" data-wlrm="'+esc(t.mint)+'" aria-label="Remove '+esc(t.symbol)+' from list">×</button></div>';
+}
+function wlCreateFromInput(){
+  const inp=$('wlNewName'),r=wlCreateList(inp?inp.value:'');
+  if(typeof r==='object'){toast('Watchlist \''+r.name+'\' created.');renderWatchlist();paintWlDrawer();refreshWatchButtons();}
+  else if(r==='duplicate')toast('\''+String(inp?inp.value:'').trim().slice(0,WL_NAME_CAP)+'\' is already a watchlist.');
+  else if(r==='full')toast('You have '+WL_MAX_LISTS+' watchlists — the maximum. Delete one to start another.');
+  else toast('Name your watchlist first.');
+}
+function paintWlDrawer(){
+  const body=$('wlBody');if(!body)return;
+  const lists=wlLists(),active=wlActiveList();
+  let h='<div class="wltabs" role="tablist">'+lists.map(l=>'<button class="wltab'+(active&&l.id===active.id?' on':'')+'" type="button" role="tab" aria-selected="'+(active&&l.id===active.id)+'" data-wltab="'+esc(l.id)+'">'+esc(l.name)+' <span class="wlcount">'+l.tokens.length+'</span></button>').join('')+'</div>';
+  if(lists.length<WL_MAX_LISTS)h+='<div class="wlnew"><input id="wlNewName" maxlength="40" placeholder="New list name" aria-label="New watchlist name" autocomplete="off" spellcheck="false"><button id="wlNewBtn" type="button">+ New</button></div>';
+  else h+='<div class="wlcap">Maximum '+WL_MAX_LISTS+' watchlists.</div>';
+  h+='<div class="lpop-sec">Tokens · '+esc(active?active.name:'')+'</div>';
+  const toks=active?active.tokens:[];
+  h+=toks.length?'<div class="wlrows">'+toks.map(wlTokenRow).join('')+'</div>':'<div class="empty">No tokens watched yet. Hit Watch on any pair.</div>';
+  if(toks.length)h+='<button id="wlClearAll" class="wlclear" type="button">Remove all '+toks.length+' from \''+esc(active.name)+'\'</button>';
+  h+='<div class="lpop-sec">Manage list</div><div class="wlmanage">';
+  if(active&&active.name==='Default')h+='<div class="wlhint">Default is the built-in list. It can be renamed, and deleted once it is empty.</div>';
+  h+='<div class="wlrowbtn"><input id="wlRenameInput" maxlength="40" value="'+esc(active?active.name:'')+'" aria-label="Rename watchlist" autocomplete="off" spellcheck="false" hidden><button id="wlRenameBtn" type="button">Rename</button><button id="wlRenameSave" type="button" hidden>Save</button><button id="wlRenameCancel" type="button" hidden>Cancel</button><button id="wlDeleteBtn" type="button" class="danger">Delete list</button></div></div>';
+  body.innerHTML=h;
+  body.querySelectorAll('[data-wltab]').forEach(b=>b.onclick=()=>wlSetActive(b.dataset.wltab));
+  const newBtn=$('wlNewBtn');if(newBtn)newBtn.onclick=wlCreateFromInput;
+  const newInput=$('wlNewName');if(newInput)newInput.onkeydown=e=>{if(e.key==='Enter')wlCreateFromInput();};
+  body.querySelectorAll('[data-wlrm]').forEach(b=>b.onclick=()=>{const l=wlActiveList();if(!l)return;const t=l.tokens.find(x=>x.mint===b.dataset.wlrm);const r=wlToggle(l.id,{mint:b.dataset.wlrm});if(r==='removed'){toast('Removed '+(t?t.symbol:'token')+' from \''+l.name+'\'.');renderWatchlist();paintWlDrawer();refreshWatchButtons();}});
+  const clearBtn=$('wlClearAll');
+  if(clearBtn){let arm=0;clearBtn.onclick=()=>{const l=wlActiveList();if(!l||!l.tokens.length)return;
+    if(Date.now()>arm){arm=Date.now()+5000;clearBtn.textContent='Click again to clear '+l.tokens.length+' tokens';toast('Clearing \''+l.name+'\' — click again within 5 s to confirm.');setTimeout(()=>{if(Date.now()>=arm&&$('wlClearAll')===clearBtn)paintWlDrawer();},5100);return;}
+    arm=0;const n=wlClearList(l.id);toast('Cleared '+n+' tokens from \''+l.name+'\'.');renderWatchlist();paintWlDrawer();refreshWatchButtons();};}
+  const rnBtn=$('wlRenameBtn'),rnSave=$('wlRenameSave'),rnCancel=$('wlRenameCancel'),rnInput=$('wlRenameInput');
+  const cancelRename=()=>paintWlDrawer();
+  if(rnBtn)rnBtn.onclick=()=>{rnInput.hidden=false;rnBtn.hidden=true;rnSave.hidden=false;rnCancel.hidden=false;rnInput.focus();rnInput.select();};
+  if(rnCancel)rnCancel.onclick=cancelRename;
+  if(rnSave)rnSave.onclick=()=>{const l=wlActiveList();if(!l)return;const r=wlRenameList(l.id,rnInput.value);
+    if(r==='ok'){toast('Watchlist renamed to \''+wlActiveList().name+'\'.');renderWatchlist();paintWlDrawer();refreshWatchButtons();}
+    else if(r==='duplicate')toast('\''+rnInput.value.trim().slice(0,WL_NAME_CAP)+'\' is already a watchlist.');
+    else toast('Name your watchlist first.');};
+  if(rnInput)rnInput.onkeydown=e=>{if(e.key==='Enter'&&rnSave)rnSave.onclick();if(e.key==='Escape')cancelRename();};
+  const delBtn=$('wlDeleteBtn');
+  if(delBtn){let arm=0;delBtn.onclick=()=>{const l=wlActiveList();if(!l)return;
+    if(l.name==='Default'&&l.tokens.length){toast('\'Default\' can\'t be deleted while it holds tokens.');return;}
+    if(Date.now()>arm){arm=Date.now()+5000;delBtn.textContent='Delete \''+l.name+'\' ('+l.tokens.length+' tokens)?';toast('Delete \''+l.name+'\' and its '+l.tokens.length+' tokens? Click again within 5 s to confirm.');setTimeout(()=>{if(Date.now()>=arm&&$('wlDeleteBtn')===delBtn)paintWlDrawer();},5100);return;}
+    arm=0;const name=l.name,r=wlDeleteList(l.id);
+    if(r==='ok'){toast('Watchlist \''+name+'\' deleted.');renderWatchlist();paintWlDrawer();refreshWatchButtons();}};}
+}
+function openWlDrawer(){const d=$('wlDrawer');if(!d)return;paintWlDrawer();d.hidden=false;const c=$('wlClose');if(c)c.focus();}
+function closeWlDrawer(){const d=$('wlDrawer');if(d)d.hidden=true;const card=document.querySelector('[data-panel="watchlist"]');if(card&&card.focus)card.focus();}
+function wireWatchlistDrawer(){
+  const card=document.querySelector('[data-panel="watchlist"]');
+  if(card){card.classList.add('wlcard');card.setAttribute('role','button');card.setAttribute('tabindex','0');card.setAttribute('aria-label','Open watchlists');
+    card.onclick=e=>{if(e.target.closest('button'))return;openWlDrawer();};
+    card.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();openWlDrawer();}};}
+  const c=$('wlClose');if(c)c.onclick=closeWlDrawer;
+  const d=$('wlDrawer');if(!d)return;
+  d.addEventListener('click',e=>{if(e.target===d)closeWlDrawer();});
+  d.addEventListener('keydown',e=>{
+    if(e.key==='Escape'){closeWlDrawer();return;}
+    if(e.key!=='Tab')return;
+    const f=d.querySelectorAll('button,input,select');if(!f.length)return;
+    const first=f[0],last=f[f.length-1];
+    if(e.shiftKey&&document.activeElement===first){e.preventDefault();last.focus();}
+    else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first.focus();}
+  });
+}
+function refreshWatchButtons(){ // re-label row buttons against the (possibly changed) active list
+  document.querySelectorAll('[data-watch]').forEach(b=>{try{b.textContent=wlIsIn(wlActiveId(),b.dataset.watch)?'Added ✓':'Watch';}catch(_){}});
+}
+let wlMenuEl=null;
+function closeWlMenu(){if(wlMenuEl){try{wlMenuEl.remove();}catch(_){}wlMenuEl=null;document.removeEventListener('click',wlMenuOutside,true);}}
+function wlMenuOutside(e){if(wlMenuEl&&!wlMenuEl.contains(e.target))closeWlMenu();}
+function openWlMenu(anchor,address,tokenInfo){ // pack §1.3: "save to…" mini-menu with per-list checkmarks
+  closeWlMenu();
+  const lists=wlLists();if(!lists.length||!anchor)return;
+  const m=document.createElement('div');m.className='wlmenu';m.setAttribute('role','menu');m.setAttribute('aria-label','Save to watchlist');
+  m.innerHTML=lists.map(l=>{const has=wlIsIn(l.id,address);return '<button type="button" role="menuitemcheckbox" aria-checked="'+has+'" data-wlmenu-list="'+esc(l.id)+'"><span class="wlcheck">'+(has?'✓':'')+'</span>'+esc(l.name)+' <span class="wlcount">'+l.tokens.length+'</span></button>';}).join('');
+  document.body.appendChild(m);
+  const r=anchor.getBoundingClientRect();
+  m.style.left=Math.max(8,Math.min(window.innerWidth-230,r.left))+'px';
+  m.style.top=(r.bottom+window.scrollY+4)+'px';
+  m.querySelectorAll('[data-wlmenu-list]').forEach(b=>b.onclick=()=>{
+    const id=b.dataset.wlmenuList,l=wlGetList(id);if(!l)return;
+    const res=wlToggle(id,tokenInfo);
+    if(res==='full'){toast('\''+l.name+'\' is full ('+WL_MAX_TOKENS+' tokens). Remove one or start a new list.');}
+    else toast((res==='added'?'Added ':'Removed ')+tokenInfo.symbol+' '+(res==='added'?'to':'from')+' \''+l.name+'\'.');
+    const has=wlIsIn(id,address);b.setAttribute('aria-checked',has);b.querySelector('.wlcheck').textContent=has?'✓':'';
+    b.querySelector('.wlcount').textContent=String(wlGetList(id).tokens.length);
+    renderWatchlist();if(!$('wlDrawer').hidden)paintWlDrawer();refreshWatchButtons();
+  });
+  m.addEventListener('keydown',e=>{if(e.key==='Escape'){e.stopPropagation();closeWlMenu();anchor.focus();}});
+  wlMenuEl=m;
+  setTimeout(()=>document.addEventListener('click',wlMenuOutside,true),0); // defer: the opening click must not read as an outside click (A23-class bug)
+  const first=m.querySelector('button');if(first)first.focus();
+}
+/*__N53_WATCHLISTS_END__*/
 restoreState();
 function toast(s){$('toast').textContent=s;$('toast').classList.add('show');setTimeout(()=>$('toast').classList.remove('show'),2600)}
 function setPrice(p,c){if(p>0)price=p;if(c===null||Number.isFinite(c))change=c;const sign=change>=0?'+':'';$('heroPrice').textContent=price?formatPrice(price):'$—';$('statPrice').textContent=price?formatPrice(price):'$—';$('heroChange').textContent=price?(change===null?'— · 24H':sign+fmt(change,2)+'% · 24H'):'Awaiting market feed';$('heroChange').className=change===null?'':change>=0?'positive':'negative';$('statChange').textContent=price?(change===null?'—':sign+fmt(change,2)+'%'):'—';$('statChange').className='big '+(change===null?'':change>=0?'positive':'negative');$('statPriceSub').textContent=lastMarketAt?'Live spot · refreshed '+new Date(lastMarketAt).toLocaleTimeString():'Waiting for live market data';$('updatedAt').textContent=lastMarketAt?'Updated '+new Date(lastMarketAt).toLocaleTimeString():'Waiting for feed';updatePortfolio();runLimitEngine()} // N4.5: every spot tick also evaluates open paper limit orders
@@ -247,7 +485,7 @@ async function tickCandles(){if(document.hidden)return;if(Date.now()<tickSkipUnt
 function fmtChartTime(t){return new Date(t).toLocaleString(undefined,{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'})}
 function wireChartHover(){const box=$('chartBox'),cross=$('chartCross'),ro=$('chartReadout');if(!box||!cross||!ro)return;box.addEventListener('mousemove',e=>{if(!candles.length)return;const r=box.getBoundingClientRect();let i=Math.floor(((e.clientX-r.left)/r.width)*candles.length);i=Math.max(0,Math.min(candles.length-1,i));const c=candles[i],up=c.c>=c.o;cross.style.display='block';cross.style.left=((i+0.5)/candles.length*100)+'%';ro.style.display='block';ro.innerHTML='<b>'+fmtChartTime(c.t)+(i===candles.length-1?' · forming':'')+'</b><br>O '+formatPriceUsd(c.o)+'&nbsp;&nbsp;H '+formatPriceUsd(c.h)+'<br>L '+formatPriceUsd(c.l)+'&nbsp;&nbsp;C '+formatPriceUsd(c.c)+'<br><span style="color:'+(up?'var(--green)':'var(--red)')+'">'+(up?'+':'')+(((c.c-c.o)/c.o)*100).toFixed(2)+'%</span>&nbsp;&nbsp;Vol '+(c.v>0?formatPriceUsd(c.v):'—')});box.addEventListener('mouseleave',()=>{cross.style.display='none';ro.style.display='none'})}
 async function fetchMarket(){const controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),10000);try{const r=await fetch('https://api.dexscreener.com/latest/dex/tokens/'+WSOL_MINT,{signal:controller.signal});if(!r.ok)throw Error('DexScreener HTTP '+r.status);const j=await r.json();const rows=(j.pairs||[]).filter(p=>p.chainId==='solana'&&Number.isFinite(Number(p.priceUsd))&&Number(p.priceUsd)>0&&p.baseToken&&p.baseToken.address===WSOL_MINT&&(p.quoteToken&&p.quoteToken.symbol||'').toUpperCase()==='USDC').sort((a,b)=>(Number(b.liquidity?.usd)||0)-(Number(a.liquidity?.usd)||0));if(!rows.length)throw Error('No real-WSOL Solana pairs in feed');marketPairs=rows;const solpair=marketPairs.find(p=>(p.baseToken.symbol||'').toUpperCase()==='SOL')||marketPairs[0];if(!solpair)throw Error('No SOL spot pair');feedFailures=0;lastMarketAt=Date.now();setPrice(Number(solpair.priceUsd),solpair.priceChange?.h24==null||!Number.isFinite(Number(solpair.priceChange.h24))?null:Number(solpair.priceChange.h24));renderPairs();heroPair=solpair;maybeApplyDefaultPair();if(candles.length&&candlePool===solpair.pairAddress)tickCandles();else loadCandles('poll');$('feedStatus').textContent='LIVE FEED';$('feedStatus').style.color='var(--green)';$('statPriceSub').textContent='Live spot · refreshed '+new Date(lastMarketAt).toLocaleTimeString()}catch(e){feedFailures++;if(price>0&&marketPairs.length){$('feedStatus').textContent='STALE DATA';$('feedStatus').style.color='var(--amber)';$('updatedAt').textContent='STALE · last good update '+new Date(lastMarketAt).toLocaleTimeString();$('statPriceSub').textContent='Refresh failed · showing last good data';renderPairs();if(candles.length)renderCandles()}else{$('feedStatus').textContent='FEED ERROR';$('feedStatus').style.color='var(--red)';$('statPriceSub').textContent='Market feed unavailable · use Retry feed';$('pairs').innerHTML='<tr><td colspan="6" class="empty">Market data did not load. Check your connection and retry.</td></tr>';$('pairCount').textContent='UNAVAILABLE';$('updatedAt').textContent='No successful feed yet'}if(!candles.length){candleStatus='idle';renderCandles()}console.error('Market feed request failed',e)}finally{clearTimeout(timeout)}}
-function renderPairs(){const rows=marketPairs.slice(0,8);$('pairCount').textContent=rows.length+' PAIRS';if(!rows.length){$('pairs').innerHTML='<tr><td colspan="6" class="empty">No market pairs are currently available.</td></tr>';return}$('pairs').innerHTML=rows.map(p=>{const rawChange=p.priceChange?.h24,ch=rawChange===null||rawChange===undefined||!Number.isFinite(Number(rawChange))?null:Number(rawChange),sym=p.baseToken.symbol||'TOKEN',pair=sym+'/'+(p.quoteToken.symbol||'—'),liquidity=Number(p.liquidity?.usd),volume=p.volume?.h24===null||p.volume?.h24===undefined?NaN:Number(p.volume.h24),changeText=ch===null?'—':(ch>=0?'+':'')+fmt(ch,2)+'%';return '<tr><td><div class="token"><div class="tokenbadge">'+esc(sym.slice(0,3))+'</div><div><strong>'+esc(pair)+'</strong><small>'+esc(p.dexId||'DEX')+'</small></div></div></td><td>'+formatPrice(p.priceUsd)+'</td><td class="'+(ch===null?'':ch>=0?'positive':'negative')+'">'+changeText+'</td><td>'+(Number.isFinite(liquidity)&&liquidity>0?usd(liquidity):'—')+'</td><td>'+(Number.isFinite(volume)&&volume>=0?usd(volume):'—')+'</td><td><button class="action" data-trade="buy" data-mint="'+esc(p.baseToken.address||'')+'">Buy</button></td></tr>'}).join('');document.querySelectorAll('[data-trade]').forEach(b=>b.onclick=()=>{const p=marketPairs.find(r=>r.baseToken&&r.baseToken.address===b.dataset.mint);if(p)selectTicketPair(p);});syncPricesFromPairs();updatePortfolio();renderWatchlist()}
+function renderPairs(){const rows=marketPairs.slice(0,8);$('pairCount').textContent=rows.length+' PAIRS';rows.forEach(p=>{try{if(p.baseToken&&p.baseToken.address)wlFeedMap.set(p.baseToken.address,{priceUsd:Number(p.priceUsd),change24h:p.priceChange?.h24==null?null:Number(p.priceChange.h24)});}catch(_){}});if(!rows.length){$('pairs').innerHTML='<tr><td colspan="6" class="empty">No market pairs are currently available.</td></tr>';return}$('pairs').innerHTML=rows.map(p=>{const rawChange=p.priceChange?.h24,ch=rawChange===null||rawChange===undefined||!Number.isFinite(Number(rawChange))?null:Number(rawChange),sym=p.baseToken.symbol||'TOKEN',pair=sym+'/'+(p.quoteToken.symbol||'—'),liquidity=Number(p.liquidity?.usd),volume=p.volume?.h24===null||p.volume?.h24===undefined?NaN:Number(p.volume.h24),changeText=ch===null?'—':(ch>=0?'+':'')+fmt(ch,2)+'%';return '<tr><td><div class="token"><div class="tokenbadge">'+esc(sym.slice(0,3))+'</div><div><strong>'+esc(pair)+'</strong><small>'+esc(p.dexId||'DEX')+'</small></div></div></td><td>'+formatPrice(p.priceUsd)+'</td><td class="'+(ch===null?'':ch>=0?'positive':'negative')+'">'+changeText+'</td><td>'+(Number.isFinite(liquidity)&&liquidity>0?usd(liquidity):'—')+'</td><td>'+(Number.isFinite(volume)&&volume>=0?usd(volume):'—')+'</td><td><button class="action" data-trade="buy" data-mint="'+esc(p.baseToken.address||'')+'">Buy</button></td></tr>'}).join('');document.querySelectorAll('[data-trade]').forEach(b=>b.onclick=()=>{const p=marketPairs.find(r=>r.baseToken&&r.baseToken.address===b.dataset.mint);if(p)selectTicketPair(p);});syncPricesFromPairs();updatePortfolio();renderWatchlist()}
 function esc(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 /* N4.3 (2026-10-22): multi-asset paper ticket + mode safety contract.
    - Holdings are keyed by base mint: holdings[mint] = {symbol, quoteSymbol, qty, avgCost, lastPrice}.
@@ -1025,15 +1263,16 @@ function refreshTicket(){
   $('amountUnit').textContent=settings&&settings.quoteCurrency==='SOL'?'SOL':(tp?tp.quoteSymbol:'USD'); // N5.1: size input unit follows the quote-currency setting
 }
 function updatePortfolio(){const rows=Object.keys(holdings);let posValue=0,totalCost=0;rows.forEach(m=>{const h=holdings[m],px=h.lastPrice>0?h.lastPrice:0;posValue+=h.qty*px;totalCost+=h.qty*h.avgCost;});const equity=cash+posValue,unreal=posValue-totalCost;$('equity').textContent=usd(equity);$('pnlSub').textContent=(equity>=10000?'+':'')+usd(equity-10000)+' total return';$('pnlSub').className='sub '+(equity>=10000?'positive':'negative');$('cashBal').textContent=usd(cash);$('cashAvail').textContent=usd(cash);$('posValue').textContent=usd(posValue);$('unrealized').textContent=(unreal>=0?'+':'')+usd(unreal);$('unrealized').className=unreal>=0?'positive':'negative';$('holdingsList').innerHTML=rows.length?rows.map(m=>{const h=holdings[m],px=h.lastPrice>0?h.lastPrice:0,v=h.qty*px,u=v-h.qty*h.avgCost;return '<div class="walletrow"><span>'+esc(h.symbol)+' · '+fmtQty(h.qty)+'</span><strong>'+usd(v)+' <small class="'+(u>=0?'positive':'negative')+'">'+(u>=0?'+':'')+usd(u)+'</small></strong></div>';}).join(''):'<div class="empty">No paper positions yet.</div>';refreshTicket();saveState()}
-function renderWatchlist(){const count=$('watchlistCount'),summary=$('watchlistSummary');if(!count||!summary)return;count.textContent=String(watchlist.length);if(!watchlist.length){summary.textContent='No tokens saved';return}summary.textContent=watchlist.slice(0,2).map(w=>String(w.symbol||'TOKEN')+(Number(w.priceUsd)>0?' '+formatPriceUsd(w.priceUsd):'')).join(' · ')+(watchlist.length>2?' · +'+(watchlist.length-2)+' more':'')}
+/* N5.3: renderWatchlist lives in the __N53_WATCHLISTS_START__ block (multi-list header card). */
 function setSide(s){hideReview();side=s;$('buyBtn').classList.toggle('active',s==='buy');$('buyBtn').classList.toggle('buy',s==='buy');$('sellBtn').classList.toggle('active',s==='sell');$('sellBtn').classList.toggle('sell',s==='sell');updatePortfolio()}
 $('buyBtn').onclick=()=>setSide('buy');$('sellBtn').onclick=()=>setSide('sell');$('orderAmount').oninput=()=>{hideReview();updatePortfolio();};document.querySelectorAll('[data-amt]').forEach(b=>b.onclick=()=>{hideReview();const v=b.dataset.amt;const tp=ticketPair,pr=ticketPrice(),q=quoteUsd(tp&&tp.quoteSymbol);if(v==='max'){if(side==='buy'){fillSizeInput(maxBuyInput(cash,q)*q);}else{const h=tp&&holdings[tp.baseMint];fillSizeInput(h&&pr>0?maxSellInput(h.qty,pr)*q:0);}}else{fillSizeInput(Number(v));}updatePortfolio()}); // N5.1: presets/MAX fill via fillSizeInput (unit-aware)
 $('tradeForm').onsubmit=e=>{e.preventDefault();if(orderType==='limit')openLimitReview();else openReview();}; // N4.4/N4.5: submit opens the review sheet; the fill/order commits only via confirm
 function renderOrders(){$('orderCount').textContent=orders.length+' ORDERS';$('orders').innerHTML=orders.length?orders.slice(0,6).map(o=>{const bs=o.baseSymbol||'SOL',qs=o.quoteSymbol||'USDC',mode=(o.mode||'paper').toUpperCase();return '<div style="padding:12px 16px;border-bottom:1px solid var(--rowline);display:flex;justify-content:space-between;gap:8px"><div><strong class="'+(o.side==='buy'?'positive':'negative')+'">'+o.side.toUpperCase()+' '+esc(bs)+'/'+esc(qs)+'</strong> <span class="pill" style="font-size:10px;padding:2px 7px">'+mode+'</span>'+(o.type==='limit'?' <span class="pill" style="font-size:10px;padding:2px 7px">LIMIT</span>':'')+(o.status&&o.status!=='filled'?' <span class="pill" style="font-size:10px;padding:2px 7px">'+esc(o.status.toUpperCase())+'</span>':'')+'<div class="sub">'+o.time.toLocaleTimeString()+' · '+fmtQty(o.qty)+' '+esc(bs)+'</div></div><div style="text-align:right"><strong>'+usd(o.amount)+'</strong><div class="sub">@ '+formatPriceUsd(o.price)+'</div></div></div>';}).join(''):'<div class="empty">Your simulated paper orders will appear here.</div>'}
-let resetArmUntil=0,resetLabel=null;$('resetPaper').onclick=()=>{const b=$('resetPaper');if(resetLabel===null)resetLabel=b.textContent;const dirty=orders.length||Object.keys(holdings).length>0||cash!==10000||limitOrders.some(o=>o.status==='open');if(dirty&&Date.now()>resetArmUntil){resetArmUntil=Date.now()+5000;b.textContent='Confirm reset?';toast('This also clears your paper order history. Click again within 5 s to confirm.');setTimeout(()=>{if(Date.now()>=resetArmUntil)b.textContent=resetLabel;},5100);return;}resetArmUntil=0;b.textContent=resetLabel;cash=10000;holdings={};orders=[];limitOrders=[];histClearPaper();histExpanded.clear();renderOrders();renderLimitOrders();renderHistory();updatePortfolio();saveState();toast('Paper account reset — paper order history cleared.');};
-async function searchTokens(){const q=$('tokenSearch').value.trim();saveState();if(!q)return;const box=$('searchResults');box.innerHTML='<div class="empty">Searching DexScreener…</div>';try{const controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),10000);let j;try{const r=await fetch('https://api.dexscreener.com/latest/dex/search?q='+encodeURIComponent(q),{signal:controller.signal});if(!r.ok)throw Error('Search HTTP '+r.status);j=await r.json()}finally{clearTimeout(timeout)}const ps=(j.pairs||[]).filter(p=>p.chainId==='solana'&&p.baseToken?.address&&p.priceUsd).sort((a,b)=>(Number(b.liquidity?.usd)||0)-(Number(a.liquidity?.usd)||0)).slice(0,8);if(!ps.length){box.innerHTML='<div class="empty">No Solana pairs found for this search.</div>';return}box.innerHTML=ps.map(p=>{const address=p.baseToken.address,added=watchlist.some(w=>w.address===address),change=p.priceChange?.h24==null||!Number.isFinite(Number(p.priceChange.h24))?null:Number(p.priceChange.h24);return '<div class="result"><div><strong>'+esc(p.baseToken.symbol)+' / '+esc(p.quoteToken.symbol)+'</strong><small>'+esc(p.baseToken.name)+' · '+esc(p.dexId||'DEX')+' · liq '+(p.liquidity?.usd?usd(p.liquidity.usd):'—')+'</small><small>'+esc(address.slice(0,6)+'…'+address.slice(-5))+'</small></div><div style="text-align:right"><strong>'+formatPriceUsd(p.priceUsd)+'</strong><small class="'+(change===null?'':change>=0?'positive':'negative')+'">'+(change===null?'—':(change>=0?'+':'')+fmt(change,2)+'%')+' 24h</small><button class="action" style="margin-top:5px" data-watch="'+esc(address)+'">'+(added?'Added ✓':'Watch')+'</button> <button class="action" style="margin-top:5px" data-trade-addr="'+esc(address)+'">Trade</button></div></div>'}).join('');box.querySelectorAll('[data-trade-addr]').forEach(b=>b.onclick=()=>{const p=ps.find(row=>row.baseToken.address===b.dataset.tradeAddr);if(p)selectTicketPair(p);});box.querySelectorAll('[data-watch]').forEach(b=>b.onclick=()=>{const address=b.dataset.watch,index=watchlist.findIndex(w=>w.address===address);if(index>=0){const removed=watchlist.splice(index,1)[0];b.textContent='Watch';toast('Removed '+(removed.symbol||'token')+' from watchlist.')}else{if(watchlist.length>=50){toast('Watchlist limit reached (50 tokens).');return}const p=ps.find(row=>row.baseToken.address===address);if(!p)return;watchlist.push({address,symbol:p.baseToken.symbol||'TOKEN',name:p.baseToken.name||'Saved token',priceUsd:Number(p.priceUsd)||0,change24h:p.priceChange?.h24==null?null:Number(p.priceChange.h24),addedAt:new Date().toISOString()});b.textContent='Added ✓';toast('Added '+(p.baseToken.symbol||'token')+' to watchlist.')}renderWatchlist();saveState()})}catch(e){box.innerHTML='<div class="empty">Search timed out or failed. Check your connection and try again.</div>'}}
+let resetArmUntil=0,resetLabel=null;$('resetPaper').onclick=()=>{const b=$('resetPaper');if(resetLabel===null)resetLabel=b.textContent;const dirty=orders.length||Object.keys(holdings).length>0||cash!==10000||limitOrders.some(o=>o.status==='open');if(dirty&&Date.now()>resetArmUntil){resetArmUntil=Date.now()+5000;b.textContent='Confirm reset?';toast('This also clears your paper order history. Click again within 5 s to confirm.');setTimeout(()=>{if(Date.now()>=resetArmUntil)b.textContent=resetLabel;},5100);return;}resetArmUntil=0;b.textContent=resetLabel;/* N5.3: watchlists are personal data, not paper state — the reset deliberately leaves them (and settings/layout) untouched. */cash=10000;holdings={};orders=[];limitOrders=[];histClearPaper();histExpanded.clear();renderOrders();renderLimitOrders();renderHistory();updatePortfolio();saveState();toast('Paper account reset — paper order history cleared.');};
+async function searchTokens(){const q=$('tokenSearch').value.trim();saveState();if(!q)return;const box=$('searchResults');box.innerHTML='<div class="empty">Searching DexScreener…</div>';try{const controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),10000);let j;try{const r=await fetch('https://api.dexscreener.com/latest/dex/search?q='+encodeURIComponent(q),{signal:controller.signal});if(!r.ok)throw Error('Search HTTP '+r.status);j=await r.json()}finally{clearTimeout(timeout)}const ps=(j.pairs||[]).filter(p=>p.chainId==='solana'&&p.baseToken?.address&&p.priceUsd).sort((a,b)=>(Number(b.liquidity?.usd)||0)-(Number(a.liquidity?.usd)||0)).slice(0,8);ps.forEach(p=>{try{wlFeedMap.set(p.baseToken.address,{priceUsd:Number(p.priceUsd),change24h:p.priceChange?.h24==null?null:Number(p.priceChange.h24)});}catch(_){}});if(!ps.length){box.innerHTML='<div class="empty">No Solana pairs found for this search.</div>';return}box.innerHTML=ps.map(p=>{const address=p.baseToken.address,added=wlIsIn(wlActiveId(),address),change=p.priceChange?.h24==null||!Number.isFinite(Number(p.priceChange.h24))?null:Number(p.priceChange.h24);return '<div class="result"><div><strong>'+esc(p.baseToken.symbol)+' / '+esc(p.quoteToken.symbol)+'</strong><small>'+esc(p.baseToken.name)+' · '+esc(p.dexId||'DEX')+' · liq '+(p.liquidity?.usd?usd(p.liquidity.usd):'—')+'</small><small>'+esc(address.slice(0,6)+'…'+address.slice(-5))+'</small></div><div style="text-align:right"><strong>'+formatPriceUsd(p.priceUsd)+'</strong><small class="'+(change===null?'':change>=0?'positive':'negative')+'">'+(change===null?'—':(change>=0?'+':'')+fmt(change,2)+'%')+' 24h</small><button class="action" style="margin-top:5px" data-watch="'+esc(address)+'">'+(added?'Added ✓':'Watch')+'</button> <button class="action wlsave" style="margin-top:5px" data-wlsave="'+esc(address)+'" aria-label="Save to a watchlist" title="Save to…">▾</button> <button class="action" style="margin-top:5px" data-trade-addr="'+esc(address)+'">Trade</button></div></div>'}).join('');box.querySelectorAll('[data-trade-addr]').forEach(b=>b.onclick=()=>{const p=ps.find(row=>row.baseToken.address===b.dataset.tradeAddr);if(p)selectTicketPair(p);});box.querySelectorAll('[data-watch]').forEach(b=>b.onclick=()=>{const address=b.dataset.watch,p=ps.find(row=>row.baseToken.address===address),l=wlActiveList();if(!p||!l)return;const res=wlToggle(l.id,wlPairToken(address,p));if(res==='full'){toast('\''+l.name+'\' is full ('+WL_MAX_TOKENS+' tokens). Remove one or start a new list.');return}b.textContent=res==='added'?'Added ✓':'Watch';toast((res==='added'?'Added ':'Removed ')+(p.baseToken.symbol||'token')+(res==='added'?' to ':' from ')+'\''+l.name+'\'.');renderWatchlist();if(!$('wlDrawer').hidden)paintWlDrawer()});
+box.querySelectorAll('[data-wlsave]').forEach(b=>b.onclick=e=>{e.stopPropagation();const address=b.dataset.wlsave,p=ps.find(row=>row.baseToken.address===address);if(!p)return;openWlMenu(b,address,wlPairToken(address,p));})}catch(e){box.innerHTML='<div class="empty">Search timed out or failed. Check your connection and try again.</div>'}}
 $('searchBtn').onclick=searchTokens;$('tokenSearch').onkeydown=e=>{if(e.key==='Enter')searchTokens()};document.querySelectorAll('[data-range]').forEach(b=>{b.classList.toggle('active',b.dataset.range===chartRange);b.onclick=()=>{document.querySelectorAll('[data-range]').forEach(x=>x.classList.remove('active'));b.classList.add('active');chartRange=b.dataset.range||'1H';tickFails=0;tickSkipUntil=0;saveState();toast('Chart range saved. Loading real candles…');loadCandles('range')}});
-wireChartHover();renderOrders();renderWatchlist();document.querySelectorAll('[data-range]').forEach(b=>b.classList.toggle('active',b.dataset.range===chartRange));document.querySelectorAll('#slipPresets button').forEach(b=>b.onclick=()=>onSlipPreset(Number(b.dataset.slip)));$('slippageInput').value=String(slipLoad());$('slippageInput').addEventListener('change',onSlipCustom);paintSlipPresets();applySettingsBoot();applyLayoutBoot(); // N5.1: theme/density attrs, default size, drawer wiring; N5.2: layout panels + workspaces
+wireChartHover();renderOrders();renderWatchlist();document.querySelectorAll('[data-range]').forEach(b=>b.classList.toggle('active',b.dataset.range===chartRange));document.querySelectorAll('#slipPresets button').forEach(b=>b.onclick=()=>onSlipPreset(Number(b.dataset.slip)));$('slippageInput').value=String(slipLoad());$('slippageInput').addEventListener('change',onSlipCustom);paintSlipPresets();applySettingsBoot();applyLayoutBoot();wireWatchlistDrawer(); // N5.1: theme/density attrs, default size, drawer wiring; N5.2: layout panels + workspaces; N5.3: watchlist drawer + header card trigger
 $('retryFeed').onclick=fetchMarket;$('chartFeedStatus').onclick=()=>{if(candleStatus==='stale'||candleStatus==='error'){tickFails=0;tickSkipUntil=0;loadCandles('retry')}};document.addEventListener('visibilitychange',()=>{if(!document.hidden&&price>0)fetchMarket()});$('tokenSearch').oninput=saveState;setPrice(0,0);fetchMarket();searchTokens();setInterval(fetchMarket,30000);
 
 /* N4.4: ticket slippage UI + paper review sheet (DOM wiring). */
