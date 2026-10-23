@@ -74,7 +74,8 @@ pub struct Config {
     pub position_micro: i128,
     /// Portfolio growth assumption (the 5% blend): 50_000 ppm.
     pub growth_ppm: i128,
-    /// Combined transaction + IDL fee (60 + 13 bps), if both ride one flow (D-5 open).
+    /// Combined transaction + IDL fee: 60 + 13 bps on ONE stream (D-5 CLOSED
+    /// 2026-10-23 — Carlos: both fees ride the same flow, one 73 bps stream).
     pub fee_ppm: i128,
     pub turnover_ppm: i128,
     /// Cash sleeve weight (25% after Carlos's 2026-10-22 revision).
