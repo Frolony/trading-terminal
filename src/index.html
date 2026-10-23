@@ -1885,12 +1885,42 @@ async function btRun(){
   const r=await fetch('/api/backtest?'+qs.toString(),{signal:controller.signal});
   const j=await r.json();
   if(!j||j.ok!==true)throw Error((j&&j.error)?j.error+(j.message?': '+j.message:''):'backtest failed');
-  btLastCfg={scheme:c.scheme.id,params:Object.fromEntries(Object.keys(c.params).map(k=>[k,String(c.params[k])])),pair:c.pair,from:c.from,to:c.to,fee_bps:String(c.fee_bps),deploy_pct:String(c.deploy_pct)};
+  btLastCfg={scheme:c.scheme.id,params:Object.fromEntries(Object.keys(c.params).map(k=>[k,String(c.params[k])])),pair:c.pair,from:c.from,to:c.to,fee_bps:String(c.fee_bps),deploy_pct:String(c.deploy_pct),range:btRange};
   await btRenderResults(j);
   $('btStatus').textContent='Done · '+(j.cached?'cached result':'fresh result');
  }catch(e){console.error('backtest failed',e);$('btResults').innerHTML='<div class="empty">Backtest failed: '+esc(e.message||e)+'</div>';$('btStatus').textContent='Failed';}
  finally{clearTimeout(timeout);btRunning=false;}
 }
+/*__BT_DIRTY_CHECK_START__*/
+/* A15: the Save/Deploy actions must never silently snapshot a stale run config.
+   btFormDirty() is true when any form input differs from what the last run
+   captured (params normalized exactly like btCollectParams, so an emptied
+   field that falls back to its default is NOT dirty). Range presets are
+   compared by mode (1y/6m epochs are time-relative); custom ranges compare
+   the computed from/to epochs. */
+function btFormParamsMatch(){
+ if(!btLastCfg)return false;
+ var sv=$('btScheme');if(!sv||sv.value!==btLastCfg.scheme)return false;
+ var s=null;for(var i=0;i<BT_SCHEMES.length;i++)if(BT_SCHEMES[i].id===btLastCfg.scheme)s=BT_SCHEMES[i];
+ var norm=function(el,def,mn,mx){var v=(el&&el.value!=='')?Number(el.value):NaN;if(!Number.isFinite(v))v=def;return Math.min(mx,Math.max(mn,v));};
+ var ok=true,lp=btLastCfg.params||{};
+ ((s&&s.params)||[]).forEach(function(p){var el=$('btp_'+p.k);if(String(norm(el,p.def,p.min,p.max))!==String(lp[p.k]))ok=false;});
+ if(String(norm($('btp_fee_bps'),26,0,1000))!==String(btLastCfg.fee_bps))ok=false;
+ if(String(norm($('btp_deploy_pct'),95,1,100))!==String(btLastCfg.deploy_pct))ok=false;
+ var pv=$('btPair');if(!pv||pv.value!==btLastCfg.pair)ok=false;
+ var r=btRange;
+ if(r!==(btLastCfg.range||'full'))ok=false;
+ else if(r==='custom'){
+  var fEl=$('btFrom'),tEl=$('btTo');
+  var fv=fEl?fEl.value:'',tv=tEl?tEl.value:'';
+  var fe=fv?Math.floor(Date.parse(fv+'T00:00:00Z')/1000):null;
+  var te=tv?Math.floor(Date.parse(tv+'T00:00:00Z')/1000):null;
+  if(fe!==btLastCfg.from||te!==btLastCfg.to)ok=false;
+ }
+ return ok;
+}
+function btFormDirty(){return !!btLastCfg&&!btFormParamsMatch();}
+/*__BT_DIRTY_CHECK_END__*/
 // The BH benchmark curve is recomputed client-side from the same /api/ohlcv
 // bars the engine ran on (identical deploy/fee, entry at the stamped warmup
 // bar's close). If the fetch fails, the strategy curve still renders.
@@ -1955,6 +1985,7 @@ function btDrawCurves(j,oj){
 }
 function btSaveConfig(){
  if(!btLastCfg){toast('Run a backtest first, then save it.');return;}
+ if(btFormDirty()){toast('Parameters changed since the last run — press Run backtest, then Save.');return;}
  const name=$('btCfgName').value.trim().slice(0,60);
  if(!name){toast('Name this configuration first.');$('btCfgName').focus();return;}
  const store=btLoadCfgStore(),id=btIdentity();
@@ -2069,6 +2100,7 @@ function plDeployCfg(cfg,name){
    not deployed, matching the A15-observed Save behavior). */
 function plDeployCurrent(){
  if(!btLastCfg){toast('Run a backtest first, then deploy it.');return;}
+ if(btFormDirty()){toast('Parameters changed since the last run — press Run backtest, then deploy.');return;}
  const cfg=plNormalizeCfg(btLastCfg);
  if(!cfg){toast('Could not deploy: unknown scheme.');return;}
  const s=BT_SCHEMES.find(x=>x.id===cfg.scheme);
