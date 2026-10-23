@@ -1,4 +1,15 @@
-# N6.2 — E2E regression suite: alert-only CI trigger. (PROPER FIX VARIANT — prepared 2026-10-23, not yet landed)
+# N6.2 — E2E regression suite: alert-only CI trigger. (PROPER FIX VARIANT v2 — prepared 2026-10-23, supersedes the version Carlos posted as commit 9f9cb218)
+#
+# v2 change (the only functional delta from v1): the e2e job seeds a fallback Playwright
+# results file immediately after checkout, before anything can fail. Run #1 (2026-10-23,
+# commit 9f9cb218) proved why: it died at actions/setup-node in 9s — the setup-node cache
+# path tests/e2e/package-lock.json did not exist because the tests/e2e suite files had
+# never been pushed (only the reporter script had) — so no results file existed, the
+# upload step created no artifact, and the report job crashed on download-artifact:
+# a CI failure that produced NO alert issue. With the seed, any failure before the suite
+# produces real results still uploads an artifact and the reporter files the alert with
+# a pipeline-failure entry. When the suite runs, its JSON reporter overwrites the seed.
+# (The missing suite files themselves are pushed separately as a normal code push.)
 #
 # Gating policy (§8.6, decided 2026-10-23 by Carlos): ALERT-ONLY — "just alert me, keep shipping."
 # A failed run must surface as a material report (which tests failed, on which deployment/commit)
@@ -55,6 +66,16 @@ jobs:
       UNDER_TEST_SHA: ${{ github.sha }}
     steps:
       - uses: actions/checkout@v4
+
+      # v2: seed a fallback results file BEFORE anything can fail. If a later step
+      # (setup, install, deployment wait) dies, the upload step still has a file, an
+      # artifact is created, and the report job files the alert instead of crashing
+      # on a missing artifact (run #1's silent failure). The suite's JSON reporter
+      # overwrites this file when the suite actually runs.
+      - name: Seed fallback results (alert-path insurance)
+        run: |
+          mkdir -p tests/e2e
+          jq -n '{suites:[{title:"ci-pipeline",file:"ci-pipeline",specs:[{title:"CI pipeline reaches the E2E suite and the suite produces results",outcome:"unexpected",tests:[{results:[{status:"failed",error:{message:"The workflow run ended before the E2E suite produced results — a setup, install, or deployment-wait step failed. See the failed step in the workflow run log."}}]}]}],suites:[]}]}' > tests/e2e/playwright-results.json
 
       - uses: actions/setup-node@v4
         with:
