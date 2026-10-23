@@ -1,4 +1,13 @@
-# N6.2 — E2E regression suite: alert-only CI trigger. (PROPER FIX VARIANT v2 — prepared 2026-10-23, supersedes the version Carlos posted as commit 9f9cb218)
+# N6.2 — E2E regression suite: alert-only CI trigger. (PROPER FIX VARIANT v3 — prepared 2026-10-23, supersedes v2 posted as commit eff4fc2b)
+#
+# v3 change (the only functional delta from v2): RESULTS_JSON in the report job corrected
+# from e2e-artifacts/tests/e2e/playwright-results.json to e2e-artifacts/playwright-results.json.
+# upload-artifact v4 stores matched files relative to their least common ancestor — every
+# uploaded path lives under tests/e2e/, so the results file lands at the artifact root.
+# Run #3 (commit eff4fc2b, v2) proved it: the seed uploaded fine, but the reporter looked
+# at the old nested path, found nothing, exited 1, and filed NO alert issue (repo issues: 0).
+# Verified locally 2026-10-23: reporter + stubbed gh files the alert with the v3 path and
+# reproduces the silent exit-1 with the v2 path.
 #
 # v2 change (the only functional delta from v1): the e2e job seeds a fallback Playwright
 # results file immediately after checkout, before anything can fail. Run #1 (2026-10-23,
@@ -181,7 +190,7 @@ jobs:
         if: needs.e2e.result == 'failure'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RESULTS_JSON: e2e-artifacts/tests/e2e/playwright-results.json
+          RESULTS_JSON: e2e-artifacts/playwright-results.json
           UNDER_TEST_SHA: ${{ github.sha }}
           BASE_URL: https://gecko-solana-terminal.vercel.app
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
