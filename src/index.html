@@ -416,7 +416,7 @@ function paintWlDrawer(){
     if(Date.now()>arm){arm=Date.now()+5000;delBtn.textContent='Delete \''+l.name+'\' ('+l.tokens.length+' tokens)?';toast('Delete \''+l.name+'\' and its '+l.tokens.length+' tokens? Click again within 5 s to confirm.');setTimeout(()=>{if(Date.now()>=arm&&$('wlDeleteBtn')===delBtn)paintWlDrawer();},5100);return;}
     arm=0;const name=l.name,r=wlDeleteList(l.id);
     if(r==='ok'){toast('Watchlist \''+name+'\' deleted.');renderWatchlist();paintWlDrawer();refreshWatchButtons();}};}
-  /* A25 fix: re-renders unmount the focused control, dropping focus to <body> where the
+  /* A27 fix: re-renders unmount the focused control, dropping focus to <body> where the
      drawer's keydown handler can't hear Escape — keep focus inside the open drawer. */
   try{const dw=$('wlDrawer');if(dw&&!dw.hidden&&document.activeElement===document.body){const c=$('wlClose');if(c)c.focus();}}catch(_){}
 }
@@ -438,11 +438,15 @@ function wireWatchlistDrawer(){
     if(e.shiftKey&&document.activeElement===first){e.preventDefault();last.focus();}
     else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first.focus();}
   });
-  /* A25 fix: the drawer-element keydown handler only fires while focus is inside the drawer —
-     a document-level listener closes on Escape whenever the drawer is open, even if a
-     re-render dropped focus to <body>. (The ▾ menu's own Escape stops propagation, so an
-     open menu still closes alone first.) */
-  document.addEventListener('keydown',e=>{try{const dw=$('wlDrawer');if(e.key==='Escape'&&dw&&!dw.hidden)closeWlDrawer();}catch(_){}});
+  /* A27 fix: the drawer/menu element keydown handlers only fire while focus is inside them —
+     a document-level listener closes the topmost layer on Escape whenever it is open, even
+     if a re-render dropped focus to <body>. (The ▾ menu's own Escape stops propagation when
+     focused, so it still closes alone first with focus returned to its anchor.) */
+  document.addEventListener('keydown',e=>{try{
+    if(e.key!=='Escape')return;
+    if(wlMenuEl){closeWlMenu();return;} // the open ▾ menu is the top layer — its own handler stops propagation when focused, so this covers focus-outside cases
+    const dw=$('wlDrawer');if(dw&&!dw.hidden)closeWlDrawer();
+  }catch(_){}});
 }
 function refreshWatchButtons(){ // re-label row buttons against the (possibly changed) active list
   document.querySelectorAll('[data-watch]').forEach(b=>{try{b.textContent=wlIsIn(wlActiveId(),b.dataset.watch)?'Added ✓':'Watch';}catch(_){}});
