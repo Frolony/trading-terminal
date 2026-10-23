@@ -16,6 +16,16 @@
 .btcfg{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 0;border-bottom:1px solid var(--rowline);font-size:12px}
 .btcfg:last-child{border-bottom:0}
 .btlegend{font-size:10px;color:var(--muted);margin-top:8px}
+/* N7.4 paper-live deployments (2026-10-23): per-deployment tracking cards in the Strategy Lab. */
+.plcard{border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin-top:10px;background:var(--input)}
+.plhead{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:4px}
+.pltitle{font-weight:700;font-size:13px}
+.plchip{font-size:10px;letter-spacing:1px;font-weight:700;border-radius:6px;padding:3px 8px;border:1px solid #2a5a7a;background:#12293a;color:#7fd4ff;white-space:nowrap}
+.plchip.pend{border-color:var(--warnline);background:#2a2113;color:var(--amber)}
+[data-theme="light"] .plchip{border-color:#9cc8e8;background:#e3f1fb;color:#0b5f9e}
+[data-theme="light"] .plchip.pend{border-color:#d9b36a;background:#fbf3df;color:#9a6b12}
+.plspark{width:100%;height:44px;display:block;margin:8px 0 4px}
+.plactions{display:flex;gap:6px;margin-top:10px;flex-wrap:wrap}
 /* N4.1 wallet connect (2026-10-22): header wallet button, connect modal, account dropdown.
    Design follows the page's own pill/action/toast language. */
 .walletbtn{border:1px solid #3f4a2e;background:#1c2317;color:var(--lime);border-radius:8px;padding:7px 12px;font-size:12px;font-weight:650}
@@ -213,11 +223,15 @@ tr.dashmover{cursor:pointer}
 <div class="amounts" id="btRangeBtns"><button type="button" data-btrange="full" class="active">Full history</button><button type="button" data-btrange="1y">1 year</button><button type="button" data-btrange="6m">6 months</button><button type="button" data-btrange="custom">Custom</button></div>
 <div id="btCustomRange" class="labgrid" style="display:none;margin-top:10px"><div class="field"><label>From</label><input id="btFrom" type="date"></div><div class="field"><label>To</label><input id="btTo" type="date"></div></div>
 <button class="primary" id="btRun" type="button" style="margin-top:14px">Run backtest</button>
+<button class="ghostbtn" id="btDeploy" type="button" style="margin-top:8px" title="Track this configuration against new daily bars. Simulated — no real funds.">Deploy to paper-live</button>
 <div class="sub" id="btStatus" style="margin-top:8px;text-align:center">Idle — no backtest run yet.</div>
 <div id="btResults" style="margin-top:10px"></div>
 <div class="bthead">Saved configurations <span class="sub" style="text-transform:none;letter-spacing:0">· on this device</span></div>
 <div class="searchrow"><input id="btCfgName" placeholder="Name this configuration" maxlength="60"><button id="btSaveCfg" type="button">Save</button></div>
 <div id="btCfgList" style="margin-top:10px"></div>
+<div class="bthead">Paper-live deployments <span class="sub" style="text-transform:none;letter-spacing:0">· on this device</span></div>
+<div class="sub" style="margin-bottom:4px">Deploy pins a configuration and tracks it against new daily bars. Simulated — no real funds, nothing on-chain.</div>
+<div id="btDeployList" style="margin-top:10px"></div>
 </div></section>
 <section class="panel" data-panel="pairs"><div class="panelhead"><h2>Solana market pairs</h2><div style="display:flex;align-items:center;gap:8px"><button type="button" class="action" id="retryFeed" data-testid="retry-btn">Retry feed</button><span class="pill" id="pairCount">DISCOVERING</span></div></div><div class="tablewrap"><table><thead><tr><th>Pair / DEX</th><th>Price USD</th><th>24H</th><th>Liquidity</th><th>24H volume</th><th>Trade</th></tr></thead><tbody id="pairs" data-testid="pairs-table"><tr><td colspan="6" class="empty">Loading live pairs from DexScreener…</td></tr></tbody></table></div></section>
 <section class="panel" data-panel="dashboard" id="dashboardPanel"><div class="panelhead"><h2>Dashboard</h2><span class="pill" id="dashModePill">PAPER</span></div><div class="panelbody"><div class="amounts" id="dashModeChips" role="group" aria-label="Dashboard mode"><button type="button" data-dm="paper" class="on">Paper</button><button type="button" data-dm="live">Live</button></div><div id="dashContent" style="margin-top:12px"><div class="empty">Loading dashboard…</div></div><div class="sub" style="margin-top:10px">P&amp;L uses FIFO cost basis from your paper fills. Paper figures are simulated — no blockchain transaction is ever sent. The dashboard is a read view: it is derived, never stored.</div></div></section>
@@ -1832,13 +1846,17 @@ function btExitLabel(r){return r==='time_stop'?'Time-stop':r==='end_of_data'?'En
 function btSgn(v){return (v>=0?'+':'')+fmt(v,2);}
 function btLoadCfgStore(){try{const s=JSON.parse(localStorage.getItem(BT_CFG_KEY)||'null');if(s&&s.version===1&&s.configs)return s;}catch(_){}return{version:1,configs:{}};}
 function btSaveCfgStore(s){try{localStorage.setItem(BT_CFG_KEY,JSON.stringify(s));}catch(_){}}
-async function btRun(){
- if(btRunning)return;btRunning=true;
+/*__BT_COLLECT_PARAMS_START__*/
+/* N7.4 (2026-10-23): the form→params collection btRun used inline, extracted
+   so Deploy-to-paper-live uses the identical strict validation. Behavior is
+   unchanged — same defaults, same clamps, same toasts; returns null on the
+   custom-range validation failures that used to return early from btRun. */
+function btCollectParams(){
  const s=BT_SCHEMES.find(x=>x.id===$('btScheme').value)||BT_SCHEMES[0];
- const qs=new URLSearchParams({scheme:s.id,pair:$('btPair').value});
- (s.params||[]).forEach(p=>{const el=$('btp_'+p.k);let v=(el&&el.value!=='')?Number(el.value):NaN;if(!Number.isFinite(v))v=p.def;v=Math.min(p.max,Math.max(p.min,v));if(el)el.value=v;qs.set(p.k,String(v));});
- let fee=($('btp_fee_bps').value!=='')?Number($('btp_fee_bps').value):NaN;if(!Number.isFinite(fee))fee=26;fee=Math.min(1000,Math.max(0,fee));qs.set('fee_bps',String(fee));
- let dep=($('btp_deploy_pct').value!=='')?Number($('btp_deploy_pct').value):NaN;if(!Number.isFinite(dep))dep=95;dep=Math.min(100,Math.max(1,dep));qs.set('deploy_pct',String(dep));
+ const params={};
+ (s.params||[]).forEach(p=>{const el=$('btp_'+p.k);let v=(el&&el.value!=='')?Number(el.value):NaN;if(!Number.isFinite(v))v=p.def;v=Math.min(p.max,Math.max(p.min,v));if(el)el.value=v;params[p.k]=v;});
+ let fee=($('btp_fee_bps').value!=='')?Number($('btp_fee_bps').value):NaN;if(!Number.isFinite(fee))fee=26;fee=Math.min(1000,Math.max(0,fee));
+ let dep=($('btp_deploy_pct').value!=='')?Number($('btp_deploy_pct').value):NaN;if(!Number.isFinite(dep))dep=95;dep=Math.min(100,Math.max(1,dep));
  let from=null,to=null;
  if(btRange==='1y')from=Math.floor(Date.now()/1000)-365*86400;
  else if(btRange==='6m')from=Math.floor(Date.now()/1000)-182*86400;
@@ -1846,18 +1864,28 @@ async function btRun(){
   const fv=$('btFrom').value,tv=$('btTo').value;
   if(fv)from=Math.floor(Date.parse(fv+'T00:00:00Z')/1000);
   if(tv)to=Math.floor(Date.parse(tv+'T00:00:00Z')/1000);
-  if(from&&to&&from>=to){toast('Custom range: From must be before To.');btRunning=false;return;}
-  if(to&&to*1000>Date.now()){toast('Custom range: To cannot be in the future.');btRunning=false;return;}
+  if(from&&to&&from>=to){toast('Custom range: From must be before To.');return null;}
+  if(to&&to*1000>Date.now()){toast('Custom range: To cannot be in the future.');return null;}
  }
- if(from)qs.set('from',String(from));
- if(to)qs.set('to',String(to));
+ return {scheme:s,params:params,pair:$('btPair').value,fee_bps:fee,deploy_pct:dep,from:from,to:to};
+}
+/*__BT_COLLECT_PARAMS_END__*/
+async function btRun(){
+ if(btRunning)return;btRunning=true;
+ const c=btCollectParams();
+ if(!c){btRunning=false;return;}
+ const qs=new URLSearchParams({scheme:c.scheme.id,pair:c.pair});
+ Object.keys(c.params).forEach(k=>qs.set(k,String(c.params[k])));
+ qs.set('fee_bps',String(c.fee_bps));qs.set('deploy_pct',String(c.deploy_pct));
+ if(c.from)qs.set('from',String(c.from));
+ if(c.to)qs.set('to',String(c.to));
  $('btStatus').textContent='Running backtest…';$('btResults').innerHTML='<div class="empty">Running…</div>';
  const controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),30000);
  try{
   const r=await fetch('/api/backtest?'+qs.toString(),{signal:controller.signal});
   const j=await r.json();
   if(!j||j.ok!==true)throw Error((j&&j.error)?j.error+(j.message?': '+j.message:''):'backtest failed');
-  btLastCfg={scheme:s.id,params:Object.fromEntries((s.params||[]).map(p=>{const el=$('btp_'+p.k);return[p.k,el?el.value:String(p.def)];})),pair:$('btPair').value,from:from,to:to,fee_bps:String(fee),deploy_pct:String(dep)};
+  btLastCfg={scheme:c.scheme.id,params:Object.fromEntries(Object.keys(c.params).map(k=>[k,String(c.params[k])])),pair:c.pair,from:c.from,to:c.to,fee_bps:String(c.fee_bps),deploy_pct:String(c.deploy_pct)};
   await btRenderResults(j);
   $('btStatus').textContent='Done · '+(j.cached?'cached result':'fresh result');
  }catch(e){console.error('backtest failed',e);$('btResults').innerHTML='<div class="empty">Backtest failed: '+esc(e.message||e)+'</div>';$('btStatus').textContent='Failed';}
@@ -1941,7 +1969,8 @@ function btRenderConfigs(){
  const store=btLoadCfgStore(),list=store.configs[btIdentity()]||[];
  const box=$('btCfgList');
  if(!list.length){box.innerHTML='<div class="empty">No saved configurations yet. Run a backtest, name it, and save it here.</div>';return;}
- box.innerHTML=list.map((c,i)=>'<div class="btcfg"><div><strong>'+esc(c.name)+'</strong><div class="sub">'+esc(c.scheme)+' · '+esc(c.pair)+' · fee '+esc(c.fee_bps)+'bps · deploy '+esc(c.deploy_pct)+'%</div></div><div style="display:flex;gap:6px"><button type="button" class="action" data-btload="'+i+'">Load</button><button type="button" class="action sell" data-btdel="'+i+'">Delete</button></div></div>').join('');
+ box.innerHTML=list.map((c,i)=>'<div class="btcfg"><div><strong>'+esc(c.name)+'</strong><div class="sub">'+esc(c.scheme)+' · '+esc(c.pair)+' · fee '+esc(c.fee_bps)+'bps · deploy '+esc(c.deploy_pct)+'%</div></div><div style="display:flex;gap:6px"><button type="button" class="action" data-btdeploy="'+i+'">Deploy</button><button type="button" class="action" data-btload="'+i+'">Load</button><button type="button" class="action sell" data-btdel="'+i+'">Delete</button></div></div>').join('');
+ box.querySelectorAll('[data-btdeploy]').forEach(b=>b.onclick=()=>plDeploySaved(Number(b.dataset.btdeploy)));
  box.querySelectorAll('[data-btload]').forEach(b=>b.onclick=()=>btLoadConfig(Number(b.dataset.btload)));
  box.querySelectorAll('[data-btdel]').forEach(b=>b.onclick=()=>{const s2=btLoadCfgStore(),l=s2.configs[btIdentity()]||[];const gone=l.splice(Number(b.dataset.btdel),1)[0];btSaveCfgStore(s2);btRenderConfigs();toast('Deleted '+(gone?gone.name:'configuration')+'.');});
 }
@@ -1968,8 +1997,192 @@ function btInit(){
  document.querySelectorAll('[data-btrange]').forEach(b=>b.onclick=()=>{document.querySelectorAll('[data-btrange]').forEach(x=>x.classList.remove('active'));b.classList.add('active');btRange=b.dataset.btrange;$('btCustomRange').style.display=btRange==='custom'?'grid':'none';});
  $('btRun').onclick=btRun;
  $('btSaveCfg').onclick=btSaveConfig;
+ $('btDeploy').onclick=plDeployCurrent; /* N7.4 */
  btRenderConfigs();
+ plRenderDeploys(); /* N7.4 */
 }
+/*__N74_PAPERLIVE_START__*/
+/* === N7.4 paper-live deployments (DOM + store) ===
+   - Deploy pins a validated backtest config (the last run, or a saved one)
+     and tracks it against new daily bars via GET /api/paperlive (the N7.4
+     server half). Stateless: the deployment record lives in localStorage
+     under gecko-terminal:paperlive:v1, namespaced by btIdentity() (wallet
+     address or 'paper'), 25-cap like saved configs.
+   - Every surface carries the simulated / no-real-funds line. There is no
+     "Deploy to live" button — the live half stays gated (pack §7).
+   - Index-safety: plFetchDeploy verifies the card still belongs to its
+     deployment (data-plid) before writing, so a late fetch can never paint
+     a re-rendered card after an undeploy reshuffles indexes. */
+const BT_DEPLOY_KEY='gecko-terminal:paperlive:v1';
+let plUndeployArm=null; /* deployment id with the two-step undeploy armed */
+function plLoadStore(){
+ try{
+  const s=JSON.parse(localStorage.getItem(BT_DEPLOY_KEY)||'null');
+  if(s&&s.version===1&&s.deployments&&typeof s.deployments==='object'){
+   for(const k of Object.keys(s.deployments)){
+    const l=s.deployments[k];
+    if(!Array.isArray(l)){s.deployments[k]=[];continue;}
+    s.deployments[k]=l.filter(d=>d&&typeof d.id==='string'&&typeof d.scheme==='string'&&Number.isFinite(Number(d.deployed_at))).slice(0,25);
+   }
+   return s;
+  }
+ }catch(_){}
+ return {version:1,deployments:{}};
+}
+function plSaveStore(s){try{localStorage.setItem(BT_DEPLOY_KEY,JSON.stringify(s));}catch(_){}}
+/* Strict validation shared by both deploy entry points: unknown scheme or
+   unusable shape -> null (no deploy). Params clamp to the scheme's own
+   ranges, mirroring btCollectParams; fee/deploy clamp to the API contract. */
+/* Number() with the form's empty/missing -> default semantics ('' is not 0) —
+   mirrors btCollectParams so a deployed config validates exactly like a run. */
+function plNum(v,def){const n=(v===''||v==null)?NaN:Number(v);return Number.isFinite(n)?n:def;}
+function plNormalizeCfg(raw){
+ if(!raw||typeof raw!=='object')return null;
+ const s=BT_SCHEMES.find(x=>x.id===raw.scheme);
+ if(!s)return null;
+ const params={};
+ (s.params||[]).forEach(p=>{
+  const v=plNum(raw.params?raw.params[p.k]:null,p.def);
+  params[p.k]=Math.min(p.max,Math.max(p.min,v));
+ });
+ const fee=Math.min(1000,Math.max(0,plNum(raw.fee_bps,26)));
+ const dep=Math.min(100,Math.max(1,plNum(raw.deploy_pct,95)));
+ const pair=BT_PAIRS.some(x=>x.id===raw.pair)?raw.pair:BT_PAIRS[0].id;
+ return {scheme:s.id,params:params,pair:pair,fee_bps:fee,deploy_pct:dep};
+}
+function plDeployCfg(cfg,name){
+ const store=plLoadStore(),id=btIdentity();
+ const list=store.deployments[id]||(store.deployments[id]=[]);
+ const nowS=Math.floor(Date.now()/1000);
+ const dep={id:'pl'+nowS.toString(36)+Math.floor(Math.random()*46656).toString(36),
+  name:String(name||'Paper-live deployment').slice(0,80),
+  scheme:cfg.scheme,params:cfg.params,pair:cfg.pair,
+  fee_bps:cfg.fee_bps,deploy_pct:cfg.deploy_pct,
+  deployed_at:nowS,createdAt:new Date().toISOString()};
+ list.unshift(dep);
+ while(list.length>25)list.pop();
+ plSaveStore(store);plRenderDeploys();
+ toast('Deployed to paper-live. Simulated — no real funds.');
+}
+/* Main panel button: deploys the last RUN config (same semantics as Save —
+   the panel's own "run it, name it, save it" flow; unsaved form edits are
+   not deployed, matching the A15-observed Save behavior). */
+function plDeployCurrent(){
+ if(!btLastCfg){toast('Run a backtest first, then deploy it.');return;}
+ const cfg=plNormalizeCfg(btLastCfg);
+ if(!cfg){toast('Could not deploy: unknown scheme.');return;}
+ const s=BT_SCHEMES.find(x=>x.id===cfg.scheme);
+ plDeployCfg(cfg,(s?s.label:cfg.scheme)+' · '+new Date().toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'}));
+}
+/* Per saved-config row button. */
+function plDeploySaved(i){
+ const l=(btLoadCfgStore().configs[btIdentity()]||[]),c=l[i];
+ if(!c)return;
+ const cfg=plNormalizeCfg(c);
+ if(!cfg){toast('Could not deploy: unknown scheme.');return;}
+ plDeployCfg(cfg,c.name||('Saved configuration · '+new Date().toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'})));
+}
+function plPairLabel(id){const p=BT_PAIRS.find(x=>x.id===id);return p?p.label:String(id);}
+function plSpark(curve){
+ if(!Array.isArray(curve)||curve.length<2)return '<div class="sub">No equity curve yet.</div>';
+ let mn=Infinity,mx=-Infinity;
+ curve.forEach(p=>{if(p[1]<mn)mn=p[1];if(p[1]>mx)mx=p[1];});
+ if(!(mx>mn)){mn*=0.999;mx*=1.001;}
+ const t0=curve[0][0],t1=curve[curve.length-1][0],span=Math.max(1,t1-t0);
+ const X=t=>((t-t0)/span*280+10),Y=v=>36-(v-mn)/(mx-mn)*28;
+ const d=curve.map((p,i)=>(i?'L':'M')+X(p[0]).toFixed(1)+' '+Y(p[1]).toFixed(1)).join(' ');
+ const col=curve[curve.length-1][1]>=1?'#42d6a0':'#ff6e7c';
+ return '<svg class="plspark" viewBox="0 0 300 44" preserveAspectRatio="none" aria-label="Paper-live equity curve"><path d="'+d+'" fill="none" stroke="'+col+'" stroke-width="1.5" vector-effect="non-scaling-stroke"/></svg>';
+}
+function plCardShell(d,i){
+ const s=BT_SCHEMES.find(x=>x.id===d.scheme);
+ const label=s?s.label:d.scheme;
+ const paramTxt=Object.keys(d.params||{}).map(k=>k+'='+d.params[k]).join(' · ');
+ return '<div class="plcard" id="plcard_'+i+'" data-plid="'+esc(d.id)+'">'
+  +'<div class="plhead"><span class="pltitle">'+esc(d.name||label)+'</span></div>'
+  +'<div class="sub">'+esc(label)+(paramTxt?' · '+esc(paramTxt):'')+' · '+esc(plPairLabel(d.pair))+' · fee '+esc(String(d.fee_bps))+'bps · deploy '+esc(String(d.deploy_pct))+'% · deployed '+btDate(d.deployed_at)+'</div>'
+  +'<div id="plbody_'+i+'"><div class="empty">Loading paper-live track record…</div></div>'
+  +'<div class="plactions"><button type="button" class="action" data-plrefresh="'+i+'">Refresh</button><button type="button" class="action sell" data-plundeploy="'+i+'">Undeploy</button></div>'
+  +'<div class="sub" style="margin-top:6px">Simulated fills at daily closes — not trading. The record lives on this device only.</div>'
+  +'</div>';
+}
+function plCardHtml(d,j){
+ const cls=v=>v>=0?'positive':'negative';
+ if(!j||j.ok!==true){
+  const code=j&&j.error?j.error:'FETCH_FAILED';
+  return '<div class="sub">Track record unavailable ('+esc(code)+').'+(j&&j.message?' '+esc(j.message):'')+'</div>';
+ }
+ const chip=j.status==='pending'
+  ?'<div class="plhead" style="margin:8px 0 4px"><span class="plchip pend">PAPER-LIVE · PENDING</span></div>'
+  :'<div class="plhead" style="margin:8px 0 4px"><span class="plchip">PAPER-LIVE · TRACKING</span></div>';
+ if(j.status==='pending'){
+  const dep=j.deployment||{};
+  return chip+'<div class="sub">Awaiting first completed bar — closes '+btDate(dep.first_tradable_bar_t)+'. No trades simulated yet.</div>';
+ }
+ const r=j.result;
+ const days=Math.max(0,Math.floor((Date.now()/1000-Number(d.deployed_at||0))/86400));
+ const op=r.open_position;
+ let h=chip+'<div class="btstats">'
+  +'<div class="btstat"><small>Days live</small><strong>'+days+'</strong></div>'
+  +'<div class="btstat"><small>Current equity</small><strong>×'+fmt(r.current_equity,4)+'</strong></div>'
+  +'<div class="btstat"><small>Closed trades</small><strong>'+r.trades+'</strong></div>'
+  +'<div class="btstat"><small>Edge vs backtest</small><strong class="'+cls(r.edge_pp)+'">'+btSgn(r.edge_pp)+'pp</strong></div>'
+  +'</div>';
+ h+=plSpark(r.equity_curve);
+ h+='<div class="walletrow"><span>Open position</span><strong>'+(op?('LONG · '+btDate(op.entry_t)+' @ '+formatPriceUsd(op.entry_price)+' · '+op.bars_held+'d held · <span class="'+cls(op.unrealized_pct)+'">'+btSgn(op.unrealized_pct)+'%</span>'):'FLAT')+'</strong></div>';
+ const be=j.backtest_equivalent;
+ if(be&&be.url)h+='<div class="sub" style="margin-top:8px">Compare vs backtest: identical scheme, params, pair, fee and deploy over the same bar window — <a href="'+esc(be.url)+'" target="_blank" rel="noopener">view the equivalent backtest</a>.</div>';
+ h+='<div class="sub" style="margin-top:6px">'+esc(j.disclaimer||'Simulated fills — not trading. Not financial advice.')+'</div>';
+ return h;
+}
+function plWireCard(i,d){
+ const card=$('plcard_'+i);
+ if(!card||card.dataset.plid!==d.id)return;
+ const rb=card.querySelector('[data-plrefresh]');
+ if(rb)rb.onclick=function(){plFetchDeploy(d,i);};
+ const ub=card.querySelector('[data-plundeploy]');
+ if(ub)ub.onclick=function(){
+  if(plUndeployArm===d.id){
+   const store=plLoadStore(),l=store.deployments[btIdentity()]||[];
+   const ix=l.findIndex(x=>x.id===d.id);
+   if(ix>=0)l.splice(ix,1);
+   plSaveStore(store);plUndeployArm=null;plRenderDeploys();
+   toast('Undeployed. The simulation record is discarded — nothing was ever on-chain.');
+  }else{
+   plUndeployArm=d.id;ub.textContent='Confirm undeploy?';
+   setTimeout(function(){if(plUndeployArm===d.id){plUndeployArm=null;try{if(document.body.contains(ub))ub.textContent='Undeploy';}catch(_){}}},8000);
+  }
+ };
+ const rt=card.querySelector('[data-plretry]');
+ if(rt)rt.onclick=function(){plFetchDeploy(d,i);};
+}
+async function plFetchDeploy(d,i){
+ const box=$('plbody_'+i);
+ if(!box)return;
+ const qs=new URLSearchParams({scheme:d.scheme,pair:d.pair,deployed_at:String(d.deployed_at),fee_bps:String(d.fee_bps),deploy_pct:String(d.deploy_pct)});
+ Object.keys(d.params||{}).forEach(k=>qs.set(k,String(d.params[k])));
+ const controller=new AbortController(),timeout=setTimeout(function(){controller.abort();},30000);
+ try{
+  const r=await fetch('/api/paperlive?'+qs.toString(),{signal:controller.signal});
+  const j=await r.json();
+  const card=$('plcard_'+i);
+  if(card&&card.dataset.plid===d.id){box.innerHTML=plCardHtml(d,j);plWireCard(i,d);}
+ }catch(e){
+  console.error('paperlive failed',e);
+  const card=$('plcard_'+i);
+  if(card&&card.dataset.plid===d.id){box.innerHTML='<div class="empty">Track record unavailable: '+esc(e.message||e)+' <button type="button" class="action" data-plretry="'+i+'">Retry</button></div>';plWireCard(i,d);}
+ }finally{clearTimeout(timeout);}
+}
+function plRenderDeploys(){
+ const box=$('btDeployList');
+ if(!box)return;
+ const store=plLoadStore();
+ const list=(store.deployments&&store.deployments[btIdentity()])||[];
+ if(!list.length){box.innerHTML='<div class="empty">No paper-live deployments yet. Run a backtest, then deploy it — the scheme is tracked against new daily bars. Simulated, no real funds.</div>';return;}
+ box.innerHTML=list.map(function(d,i){return plCardShell(d,i);}).join('');
+ list.forEach(function(d,i){plWireCard(i,d);plFetchDeploy(d,i);});
+}
+/*__N74_PAPERLIVE_END__*/
 /* === N4.6 history UI (DOM) ===
    - Filter state (histFilter, declared at the top) persists via the N2.1 v2
      state — it is a preference. Row-expand state is session-only view state.
