@@ -175,3 +175,81 @@ fn t7_kernel_gates_the_flows() {
     assert_eq!(blocked_r.dividends_paid_micro, 0);
     assert!(blocked_r.blocked_flows >= 1);
 }
+
+/// T8 — Dividend reinvestment (Carlos's window rule, logic doc §8.1): at
+/// their window a holder may EXTRACT (cash out) or REINVEST (compound).
+/// (a) 0% reinvestment is the T1 baseline: positions static over the year,
+///     dividends fully paid in cash. (b) 100% reinvestment: the whole
+///     dividend compounds into positions while the cash sleeve is untouched
+///     by dividends; the obligation is still book-kept and discharged.
+/// (c) 50% reinvestment over 5 years: geometric position drift at half the
+///     rate, monotone year over year. (d) The Kernel-gated path accepts a
+///     reinvested tranche (no cash claim, no block, no phantom settlement).
+#[test]
+fn t8_dividend_reinvestment_compounds_positions() {
+    // Clean stress setup: no growth, no fees, no lending; the dividend is a
+    // fixed 6.258% override (the with-lending rate, priced as an assumption
+    // per claims discipline).
+    fn stress(mut cfg: Config) -> (Config, i128) {
+        cfg.growth_ppm = 0;
+        cfg.fee_ppm = 0;
+        cfg.uptake_ppm = 0;
+        cfg.delinquency_ppm = 0;
+        cfg.dividend_rate_override_ppm = Some(62_580);
+        let t = cfg.initial_treasury_micro();
+        (cfg, t)
+    }
+
+    // (a) Baseline: no reinvestment — positions static, $6,258,000 paid in cash.
+    let (cfg, t) = stress(Config::reference());
+    let mut e = Engine::new(cfg);
+    let r = e.run_months(12, None).unwrap();
+    assert_eq!(r.final_total_position_micro, t);
+    assert!((usd(r.dividends_paid_micro) - 6_258_000.0).abs() < 0.01, // per-segment micro rounding
+        "paid {}", usd(r.dividends_paid_micro));
+    assert_eq!(r.dividend_shortfall_micro, 0);
+    assert_eq!(r.full_tranches_paid, 12);
+
+    // (b) Full reinvestment: $6,258,000 compounds into positions; the cash
+    // sleeve never moves for dividends.
+    let mut cfg = Config::reference();
+    cfg.reinvest_ppm = PPM;
+    let (cfg, t) = stress(cfg);
+    let mut e = Engine::new(cfg);
+    let r = e.run_months(12, None).unwrap();
+    assert!((usd(r.final_total_position_micro - t) - 6_258_000.0).abs() < 2.0,
+        "position gain {}", usd(r.final_total_position_micro - t));
+    assert_eq!(r.dividends_paid_micro, 0, "no cash left the sleeve for dividends");
+    assert_eq!(r.final_cash_micro, dollars(25_000_000), "cash sleeve untouched");
+    assert_eq!(r.full_tranches_paid, 12, "obligation discharged via compounding");
+
+    // (c) Five years at 50% reinvestment: each cohort compounds half its
+    // annual dividend once per year → T × 1.03129^5, monotone year over year.
+    let mut cfg = Config::reference();
+    cfg.reinvest_ppm = PPM / 2;
+    let (cfg, t) = stress(cfg);
+    let mut e = Engine::new(cfg);
+    let mut prev = t;
+    let mut last = Report::default();
+    for _ in 0..5 {
+        last = e.run_months(12, None).unwrap();
+        assert!(last.final_total_position_micro > prev, "positions must drift up");
+        prev = last.final_total_position_micro;
+    }
+    let expected = t as f64 / MICRO as f64 * 1.03129f64.powi(5);
+    assert!((usd(last.final_total_position_micro) - expected).abs() < 10.0,
+        "5y drift {} vs geometric {}", usd(last.final_total_position_micro), expected);
+
+    // (d) Kernel-gated: a reinvested tranche claims no cash — no block, no
+    // phantom settlement, obligation still recorded.
+    let mut cfg = Config::reference();
+    cfg.reinvest_ppm = PPM;
+    let (cfg, _) = stress(cfg);
+    let mut gov = Governance::new(None).unwrap();
+    let mut e = Engine::new(cfg);
+    let r = e.run_months(1, Some(&mut gov)).unwrap();
+    assert_eq!(r.blocked_flows, 0);
+    assert_eq!(r.dividends_paid_micro, 0);
+    assert_eq!(r.settled_transitions, 0);
+    assert_eq!(r.full_tranches_paid, 1);
+}

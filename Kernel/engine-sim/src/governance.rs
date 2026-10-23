@@ -32,6 +32,12 @@ pub struct Authorization {
     settle_at: Timestamp,
 }
 
+impl Authorization {
+    /// A zero-amount flow never reaches the kernel (no transition exists),
+    /// so it must not be settled or counted — only real commits settle.
+    pub fn is_real(&self) -> bool { self.settle_at != 0 }
+}
+
 pub struct Governance {
     kernel: LaunchKernel,
     attestor: EvidenceAttestor,

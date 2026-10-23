@@ -20,14 +20,21 @@
 //! * **Defaults settle against the locked position** (Carlos's ruling):
 //!   principal is recovered by reducing the defaulter's position; interest is
 //!   forgiven; the defaulter skips their next dividend airdrop.
+//! * **Window rule: extract or reinvest** (Carlos's ruling, logic doc §8.1):
+//!   at their window a holder takes the dividend as cash or compounds it into
+//!   their position (`Config::reinvest_ppm`). The annual obligation is
+//!   discharged either way; compounding is internal bookkeeping, not a cash
+//!   flow — only the cash-paid part of a tranche claims treasury cash.
 //! * **Open decisions stay visible:** the distribute/retain split (D-1) is
 //!   modelled at its all-distributed upper bound, and the dividend-forfeiture
 //!   base (D-3) is a parameter ([`ForfeitureBase`]) whose two values the door
 //!   calibration test prices side by side.
 //! * **Governance is not decoration:** with a [`Governance`] adapter attached,
-//!   every dividend tranche and lending batch must first commit as a Kernel
-//!   transition under the `kernel-policy` launch profile. A flow whose commit
-//!   predicate does not clear does not move money in the simulator either.
+//!   the cash-paid part of every dividend tranche and every lending batch must
+//!   first commit as a Kernel transition under the `kernel-policy` launch
+//!   profile. A flow whose commit predicate does not clear does not move money
+//!   in the simulator either. Reinvested compounding claims no cash and does
+//!   not go through the kernel; the tranche's book-keeping still records it.
 
 pub mod governance;
 
@@ -79,6 +86,12 @@ pub struct Config {
     /// Zero-income stress: pay dividends at this fixed annual rate (ppm of T)
     /// while growth, fees and lending income are switched off by the caller.
     pub dividend_rate_override_ppm: Option<i128>,
+    /// Share of each cohort's members that REINVEST their dividend at their
+    /// window (Carlos's window rule, logic doc §8.1: extract or reinvest):
+    /// the dividend compounds into their position instead of leaving the
+    /// treasury as cash. The annual obligation is discharged either way —
+    /// the book-keeping tracks the whole booked tranche, not just the cash.
+    pub reinvest_ppm: i128,
 }
 
 impl Config {
@@ -99,6 +112,7 @@ impl Config {
             term_months: 2,
             forfeiture_base: ForfeitureBase::PreDefault,
             dividend_rate_override_ppm: None,
+            reinvest_ppm: 0,
         }
     }
     pub fn initial_treasury_micro(&self) -> i128 {
@@ -218,7 +232,12 @@ impl Engine {
         self.year_start_total_micro = self.total_position_micro();
         self.annual_distributable_micro = self.cfg.annual_distributable_micro(self.year_start_total_micro);
         self.annual_rate_ppm = if self.year_start_total_micro > 0 {
-            self.annual_distributable_micro * PPM / self.year_start_total_micro
+            // Rounded to the nearest ppm, not truncated: floor truncation
+            // here shaves up to 1 ppm off the rate every year, which
+            // compounds into a systematic downward bias on multi-year
+            // reinvestment drift (T8 caught it at $227 over 5 years).
+            (self.annual_distributable_micro * PPM + self.year_start_total_micro / 2)
+                / self.year_start_total_micro
         } else { 0 };
         self.paid_this_year_micro = 0;
     }
@@ -236,37 +255,60 @@ impl Engine {
         let cohort_idx = (self.month % 12) as usize;
 
         // ---- 1. Dividend tranche, paid at the beginning of the cohort's month.
-        let mut payout: i128 = 0;
-        for s in &self.cohorts[cohort_idx] {
+        // At their window each holder either EXTRACTS (cash leaves) or
+        // REINVESTS (the dividend compounds into their position — Carlos's
+        // rule). The booked dividend is the whole tranche; only the cash
+        // part claims treasury cash. Governance authorizes the cash-paid
+        // tranche; compounding is an internal position adjustment, no cash
+        // claim, so it does not go through the kernel.
+        let mut booked: i128 = 0;
+        let mut cash_payout: i128 = 0;
+        let mut growers: Vec<Segment> = Vec::new();
+        for s in &mut self.cohorts[cohort_idx] {
             if !s.skip_next_dividend {
-                payout += s.holders_ppm * s.position_micro * self.annual_rate_ppm / (PPM * PPM);
+                let div_per_holder = s.position_micro * self.annual_rate_ppm / PPM;
+                booked += s.holders_ppm * s.position_micro * self.annual_rate_ppm / (PPM * PPM);
+                let rei_holders = mul_ppm(s.holders_ppm, self.cfg.reinvest_ppm);
+                if rei_holders > 0 {
+                    growers.push(Segment {
+                        holders_ppm: rei_holders,
+                        position_micro: s.position_micro + div_per_holder,
+                        skip_next_dividend: false,
+                    });
+                }
+                s.holders_ppm -= rei_holders;
+                cash_payout += s.holders_ppm * div_per_holder / PPM;
             }
+            // A cohort whose members all owe a skip has served it by being
+            // passed over — the flag clears once the window has run.
+            s.skip_next_dividend = false;
         }
-        if payout == 0 {
-            // A cohort whose members all owe a skip has served it by being passed over.
-            for s in &mut self.cohorts[cohort_idx] { s.skip_next_dividend = false; }
-        }
-        if payout > 0 {
+        self.cohorts[cohort_idx].retain(|s| s.holders_ppm > 0);
+        self.cohorts[cohort_idx].extend(growers);
+        if booked > 0 {
             let mut authorized = true;
             let mut auth = None;
             if let Some(g) = gov.as_deref_mut() {
                 let remaining = self.annual_distributable_micro - self.paid_this_year_micro;
-                match g.authorize(kernel_policy::RES_TREASURY_TRANCHE, payout, remaining, self.month, 1)? {
+                match g.authorize(kernel_policy::RES_TREASURY_TRANCHE, cash_payout, remaining, self.month, 1)? {
                     Some(a) => auth = Some(a),
                     None => authorized = false,
                 }
             }
             if authorized {
-                let paid = payout.min(self.cash_micro);
+                let paid = cash_payout.min(self.cash_micro);
                 self.cash_micro -= paid;
                 self.report.dividends_paid_micro += paid;
-                self.report.dividend_shortfall_micro += payout - paid;
-                self.paid_this_year_micro += paid;
-                if paid == payout { self.report.full_tranches_paid += 1; }
-                for s in &mut self.cohorts[cohort_idx] { s.skip_next_dividend = false; }
+                self.report.dividend_shortfall_micro += cash_payout - paid;
+                // The obligation is discharged by extraction AND by
+                // reinvestment alike; the books track the whole tranche.
+                self.paid_this_year_micro += booked;
+                if paid == cash_payout { self.report.full_tranches_paid += 1; }
                 if let (Some(g), Some(a)) = (gov.as_deref_mut(), auth) {
-                    g.settle(&a)?;
-                    self.report.settled_transitions += 1;
+                    if a.is_real() {
+                        g.settle(&a)?;
+                        self.report.settled_transitions += 1;
+                    }
                 }
             } else {
                 self.report.blocked_flows += 1;
