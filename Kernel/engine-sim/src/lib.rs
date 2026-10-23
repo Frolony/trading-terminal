@@ -44,6 +44,7 @@
 
 pub mod governance;
 pub mod per_holder;
+pub mod adversarial;
 
 use governance::Governance;
 
