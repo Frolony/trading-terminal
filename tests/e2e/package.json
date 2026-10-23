@@ -1,0 +1,1 @@
+{"description":"N6.2 E2E regression suite (N1.1-N1.5 + N1.6/N2.1 adjacent) for the Gecko Solana Terminal. Reads deployments only; never signs, never trades.","devDependencies":{"@playwright/test":"^1.49.0"},"name":"gecko-terminal-e2e","private":true,"scripts":{"test:e2e":"playwright test --project=chromium"},"type":"module","version":"1.0.0"}
