@@ -1,4 +1,4 @@
-# N6.2 — E2E regression suite: alert-only CI trigger.
+# N6.2 — E2E regression suite: alert-only CI trigger. (PROPER FIX VARIANT — prepared 2026-10-23, not yet landed)
 #
 # Gating policy (§8.6, decided 2026-10-23 by Carlos): ALERT-ONLY — "just alert me, keep shipping."
 # A failed run must surface as a material report (which tests failed, on which deployment/commit)
@@ -6,12 +6,16 @@
 # deployments, or production promotion — this workflow declares no required-status checks and
 # sets no deployment gates.
 #
-# Triggers (N6.2 prep pack §4, adapted to the §8.6 policy):
-#   - deployment_status: Vercel's GitHub integration fires this when a deployment's status
-#     changes. Only the Production environment is exercised. Preview (pinned) deployment URLs
-#     are gated by Vercel Deployment Protection (SSO login), which CI cannot pass, so the suite
-#     cannot run against preview URLs; production is public, so the suite runs against
-#     https://gecko-solana-terminal.vercel.app after each successful production deployment.
+# Trigger history: the original file triggered on `deployment_status`, on the assumption that
+# Vercel's GitHub integration posts deployment events. Verified 2026-10-23 ~13:47–13:57 CST:
+# it does not — the repo has no GitHub Deployments at all and the workflow recorded zero runs
+# after multiple production deployments. This variant therefore triggers on `push` to main and
+# has the workflow itself confirm, via the Vercel API, that the production deployment for the
+# pushed commit is READY before the suite runs — so the suite tests the deployment it claims
+# to test. Requires one repo secret: VERCEL_TOKEN (a Vercel API token; added by Carlos in
+# GitHub repo Settings → Secrets and variables → Actions — never via chat).
+#
+# Other triggers (unchanged):
 #   - schedule: nightly against production — the feed-drift sentinel. If DexScreener's schema
 #     drifts, the fixture-intercepted T4 tests fail loudly here (alert-only) before anyone
 #     depends on a false green.
@@ -26,7 +30,8 @@
 name: E2E regression (N6.2)
 
 on:
-  deployment_status:
+  push:
+    branches: [main]
   schedule:
     - cron: '17 5 * * *' # 05:17 UTC nightly (~23:17 CST) — production feed-drift sentinel
   workflow_dispatch:
@@ -36,25 +41,18 @@ permissions:
   issues: write # alert-only reporting: file/reopen the e2e-regression issue on failure
 
 concurrency:
-  group: e2e-${{ github.event.deployment.id || github.run_id }}
+  group: e2e-${{ github.sha }}
   cancel-in-progress: false
 
 jobs:
   e2e:
     name: Playwright E2E (production)
-    # deployment_status fires on every status change; only successful PRODUCTION deployments
-    # are exercised (Vercel names the environments "Production"/"Preview").
-    if: >-
-      github.event_name != 'deployment_status' ||
-      (github.event.deployment_status.state == 'success' &&
-       (github.event.deployment.environment == 'Production' ||
-        github.event.deployment.environment == 'production'))
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 55 # up to ~35 min waiting for the deployment + ~15 min suite/install
     env:
       BASE_URL: https://gecko-solana-terminal.vercel.app
-      # Commit under test: the deployed commit on deployment events, the branch head otherwise.
-      UNDER_TEST_SHA: ${{ github.event.deployment.sha || github.sha }}
+      # Commit under test: the pushed commit (push), the branch head otherwise.
+      UNDER_TEST_SHA: ${{ github.sha }}
     steps:
       - uses: actions/checkout@v4
 
@@ -72,9 +70,48 @@ jobs:
         run: npx playwright install --with-deps chromium
         working-directory: tests/e2e
 
-      - name: Settle after deployment
-        if: github.event_name == 'deployment_status'
-        run: sleep 60
+      - name: Wait for this commit's production deployment
+        if: github.event_name == 'push'
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          UNDER_TEST_SHA: ${{ github.sha }}
+        run: |
+          set -u
+          api="https://api.vercel.com/v6/deployments?projectId=prj_hxnJsT45fdz2BmPjaOZBR2078yt4&teamId=team_fHW8WwtE1ZrfVfH5m7ZVTYxp&target=production&limit=10"
+          # On a deployment-side failure, synthesize a minimal Playwright-shaped results file
+          # so the existing report job files the alert issue through the same path as a test
+          # failure (the reporter requires RESULTS_JSON to exist).
+          fail_with_report() {
+            msg="$1"
+            echo "::error::$msg"
+            mkdir -p tests/e2e
+            jq -n --arg msg "$msg" '{suites:[{title:"deployment",file:"deployment",specs:[{title:"Production deployment for the pushed commit reaches READY",outcome:"unexpected",tests:[{results:[{status:"failed",error:{message:$msg}}]}]}],suites:[]}]}' > tests/e2e/playwright-results.json
+            exit 1
+          }
+          if [ -z "${VERCEL_TOKEN:-}" ]; then
+            fail_with_report "VERCEL_TOKEN repo secret is not set, so the workflow cannot confirm the production deployment for $UNDER_TEST_SHA. Add the secret (repo Settings, Secrets and variables, Actions) or switch the trigger strategy."
+          fi
+          deadline=$(( $(date +%s) + 2100 )) # 35 min — slowest observed Vercel build ~25 min
+          while :; do
+            resp=$(curl -s -H "Authorization: Bearer $VERCEL_TOKEN" "$api") || resp=""
+            state=$(printf '%s' "$resp" | jq -r --arg sha "$UNDER_TEST_SHA" '[.deployments[]? | select(.meta.githubCommitSha == $sha)][0] | (.readyState // .state // "NOT_FOUND")' 2>/dev/null || echo "QUERY_FAILED")
+            url=$(printf '%s' "$resp" | jq -r --arg sha "$UNDER_TEST_SHA" '[.deployments[]? | select(.meta.githubCommitSha == $sha)][0] | (.url // "")' 2>/dev/null || echo "")
+            echo "deployment state for $UNDER_TEST_SHA: $state ${url}"
+            case "$state" in
+              READY)
+                echo "Production is serving $UNDER_TEST_SHA — settling 30s for edge propagation."
+                sleep 30
+                break
+                ;;
+              ERROR|CANCELED)
+                fail_with_report "Vercel production deployment for commit $UNDER_TEST_SHA ended in state $state (${url}). The E2E suite did not run; production may still be serving the previous build. See the workflow run log and the Vercel dashboard."
+                ;;
+            esac
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              fail_with_report "Timed out after 35 min waiting for the Vercel production deployment of commit $UNDER_TEST_SHA to reach READY (last seen state: $state). The E2E suite did not run."
+            fi
+            sleep 30
+          done
 
       - name: Run E2E suite
         run: npx playwright test --project=chromium --reporter=line,json,html
@@ -124,8 +161,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RESULTS_JSON: e2e-artifacts/tests/e2e/playwright-results.json
-          UNDER_TEST_SHA: ${{ github.event.deployment.sha || github.sha }}
-          DEPLOY_URL: ${{ github.event.deployment_status.environment_url }}
+          UNDER_TEST_SHA: ${{ github.sha }}
           BASE_URL: https://gecko-solana-terminal.vercel.app
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: node tests/e2e/scripts/ci-issue-report.cjs
@@ -134,6 +170,6 @@ jobs:
         if: needs.e2e.result == 'success'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          UNDER_TEST_SHA: ${{ github.event.deployment.sha || github.sha }}
+          UNDER_TEST_SHA: ${{ github.sha }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: node tests/e2e/scripts/ci-issue-report.cjs --close-on-green
