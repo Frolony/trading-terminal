@@ -14,6 +14,12 @@
 //!   (e.g. lending income $528,000 ratio-exact vs $527,979 printed; the
 //!   printed per-cohort $43,998 × 12 = $527,976 — the $3 gap is a rounding
 //!   slip in the document, flagged in the roadmap, not silently absorbed).
+//! * **Two execution modes.** The aggregate engine (this module) is the pure
+//!   percentage formulation. [`per_holder::HolderEngine`] runs the identical
+//!   mechanics one integer holder at a time — every indivisible-unit quantity
+//!   floored, cohorts split as 83,333/83,334 integers — so the projection
+//!   model's integer-cohort worked examples can be reproduced exactly and the
+//!   adversarial suite (W3.2) can work with real indivisible positions.
 //! * **Monthly cadence, Carlos's timing rule:** dividends are paid at the
 //!   *beginning* of a cohort's month, book-kept monthly against the annual
 //!   obligation; loan interest and portfolio accrual land on the same rhythm.
@@ -37,6 +43,7 @@
 //!   not go through the kernel; the tranche's book-keeping still records it.
 
 pub mod governance;
+pub mod per_holder;
 
 use governance::Governance;
 

@@ -253,3 +253,103 @@ fn t8_dividend_reinvestment_compounds_positions() {
     assert_eq!(r.settled_transitions, 0);
     assert_eq!(r.full_tranches_paid, 1);
 }
+
+/// T9 — Per-holder (integer) mode (W3.1 polish): `HolderEngine` runs the same
+/// mechanics one integer holder at a time. Every indivisible-unit quantity is
+/// floored (a fractional borrower never borrows, a fractional defaulter never
+/// defaults); the two modes must agree within the documented flooring band —
+/// anything wider is a bug in one of them.
+/// (a) Cross-mode agreement at reference settings over 12 months.
+/// (b) The integer cohort split reproduces the projection model's 83,333 figure.
+/// (c) Holder-level defaults mirror T6 ($600 at 12,000 holders).
+/// (d) 5y 50%-reinvestment compounding stays integer and monotone.
+/// (e) Kernel gating behaves identically to T7 under per-holder mode.
+#[test]
+fn t9_per_holder_mode_reproduces_aggregate_math() {
+    use engine_sim::per_holder::HolderEngine;
+
+    // (b) Integer cohort split: exactly 1M holders; the projection model's
+    // 83,333/cohort with the 4-holder remainder on the first four cohorts.
+    let h = HolderEngine::new(Config::reference());
+    assert_eq!(h.total_holders(), 1_000_000);
+    for i in 0..12 {
+        let expect = if i < 4 { 83_334u64 } else { 83_333u64 };
+        assert_eq!(h.cohort_holders(i), expect, "cohort {i}");
+    }
+
+    // (a) Cross-mode: same 12-month reference run, bands from the documented
+    // flooring rules (≤ ~1 holder-month of defaulter rounding per cohort).
+    let mut agg = Engine::new(Config::reference());
+    let ar = agg.run_months(12, None).unwrap();
+    let mut int = HolderEngine::new(Config::reference());
+    let ir = int.run_months(12, None).unwrap();
+    assert_eq!(ir.full_tranches_paid, 12);
+    assert_eq!(ir.dividend_shortfall_micro, 0);
+    assert!((usd(ar.total_income_micro() - ir.total_income_micro())).abs() < 200.0, "income {}", usd(ir.total_income_micro()));
+    assert!((usd(ar.dividends_paid_micro - ir.dividends_paid_micro)).abs() < 200.0, "paid {}", usd(ir.dividends_paid_micro));
+    assert!((usd(ar.max_loans_outstanding_micro - ir.max_loans_outstanding_micro)).abs() < 200.0, "outstanding {}", usd(ir.max_loans_outstanding_micro));
+    assert!((usd(ar.final_total_position_micro - ir.final_total_position_micro)).abs() < 1_000.0, "positions {}", usd(ir.final_total_position_micro));
+    // Per-holder dividend bound, integer: $6.26 per $100 holder ± rounding.
+    assert!((usd(ir.dividends_paid_micro) / 1_000_000.0 - 6.26).abs() < 0.01);
+
+    // (c) T6 mirrored at holder level: 12,000 holders → 1,000 per cohort;
+    // cohort 0's 100 borrowers default 12 → $600 settled against positions.
+    let mut cfg = Config::reference();
+    cfg.holders = 12_000;
+    let mut e = HolderEngine::new(cfg);
+    let before = e.run_months(0, None).unwrap().final_total_position_micro;
+    let r = e.run_months(3, None).unwrap();
+    assert_eq!(before - r.final_total_position_micro, dollars(600));
+    assert!(r.lending_interest_micro > 0, "performers paid interest");
+
+    // (d) 5y at 50% reinvestment (stress, fixed 6.258% rate): positions drift
+    // up monotonically, all integer; final within $1,000 of the continuous-50%
+    // geometric figure. The documented floor-split shortfall (each window
+    // floors every segment's reinvestor count, segments doubling yearly) runs
+    // −$25/−$77/−$188/−$408/−$635 — 5.4 ppm at 5y, the integer-truthful
+    // answer, recorded here with both figures rather than rounded away.
+    let mut cfg = Config::reference();
+    cfg.growth_ppm = 0;
+    cfg.fee_ppm = 0;
+    cfg.uptake_ppm = 0;
+    cfg.delinquency_ppm = 0;
+    cfg.dividend_rate_override_ppm = Some(62_580);
+    cfg.reinvest_ppm = PPM / 2;
+    let t = cfg.initial_treasury_micro();
+    let cfg_agg = cfg.clone();
+    let mut e = HolderEngine::new(cfg);
+    let mut prev = t;
+    let mut last = Report::default();
+    for _ in 0..5 {
+        last = e.run_months(12, None).unwrap();
+        assert!(last.final_total_position_micro > prev, "positions must drift up");
+        prev = last.final_total_position_micro;
+    }
+    let expected = t as f64 / MICRO as f64 * 1.03129f64.powi(5);
+    assert!((usd(last.final_total_position_micro) - expected).abs() < 1_000.0,
+        "5y integer drift {} vs geometric {}", usd(last.final_total_position_micro), expected);
+    // And the two modes stay within the same band of each other.
+    let mut agg2 = Engine::new(cfg_agg);
+    let agg5 = agg2.run_months(60, None).unwrap();
+    assert!((usd(last.final_total_position_micro - agg5.final_total_position_micro)).abs() < 1_000.0,
+        "per-holder vs aggregate 5y");
+
+    // (e) Kernel gating in per-holder mode: 24 transitions settle, nothing
+    // blocked; a stock cap below the tranche blocks the flow, money stays.
+    let mut cfg = Config::reference();
+    cfg.holders = 12_000;
+    let mut plain = HolderEngine::new(cfg.clone());
+    let plain_r = plain.run_months(12, None).unwrap();
+    let mut gov = Governance::new(None).unwrap();
+    let mut gated = HolderEngine::new(cfg.clone());
+    let gated_r = gated.run_months(12, Some(&mut gov)).unwrap();
+    assert_eq!(gated_r.dividends_paid_micro, plain_r.dividends_paid_micro);
+    assert_eq!(gated_r.blocked_flows, 0);
+    assert_eq!(gated_r.settled_transitions, 24);
+    assert_eq!(gov.kernel().history().len(), 24);
+    let mut gov = Governance::new(Some(dollars(10))).unwrap();
+    let mut blocked = HolderEngine::new(cfg);
+    let blocked_r = blocked.run_months(1, Some(&mut gov)).unwrap();
+    assert_eq!(blocked_r.dividends_paid_micro, 0);
+    assert!(blocked_r.blocked_flows >= 1);
+}
