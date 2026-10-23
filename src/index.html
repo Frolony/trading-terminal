@@ -126,6 +126,21 @@ a.wrow{text-decoration:none}
 [data-density="compact"] .chart{height:190px}
 .iconbtn{border:1px solid var(--line);background:var(--panel);color:var(--muted);border-radius:8px;padding:7px 11px;font-size:15px;line-height:1}
 .iconbtn:hover{color:var(--text);border-color:var(--hoverline)}
+/* N5.4 personal dashboard (2026-10-22): header view tabs + dashboard sections. */
+.viewtabs{width:196px;flex:none}
+.viewtabs button{padding:7px 6px;font-size:11px;letter-spacing:.6px;text-transform:uppercase}
+.dashsec{margin-bottom:20px}
+.dashsec:last-child{margin-bottom:0}
+.dashgrid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-bottom:12px}
+.dashstat{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px 12px}
+.dashstat .v{font-size:18px;font-weight:700;letter-spacing:-.4px;margin:4px 0 2px}
+.dashact .arow{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--rowline);font-size:12px}
+.dashact .arow:last-child{border-bottom:0}
+.dashact .arow .t{color:var(--muted);font-size:11px;white-space:nowrap}
+.mchip{font-size:10px;padding:2px 7px;border:1px solid var(--line);border-radius:6px;color:var(--pilltext);background:var(--panel);white-space:nowrap}
+tr.dashmover{cursor:pointer}
+.staleb{font-size:10px;color:var(--amber);border:1px solid var(--warnline);border-radius:5px;padding:1px 6px;margin-left:6px;white-space:nowrap}
+@media(max-width:640px){.dashgrid{grid-template-columns:1fr 1fr}.viewtabs{width:160px}}
 .drawer{position:fixed;inset:0;background:var(--modalbg);z-index:70;display:flex;justify-content:flex-end}
 .drawer[hidden]{display:none}
 .drawer-card{width:min(390px,94vw);height:100%;background:linear-gradient(145deg,var(--panelA),var(--panelB));border-left:1px solid var(--line);display:flex;flex-direction:column;box-shadow:-24px 0 70px #000c}
@@ -177,7 +192,7 @@ a.wrow{text-decoration:none}
 .lwsact.danger{color:var(--red)}
 .lwsrename{flex:1;min-width:0;background:var(--input);border:1px solid var(--inputline);border-radius:6px;color:var(--text);padding:5px 8px;font-size:12px}
 </style></head><body><div class="app">
-<header class="top"><div class="brand"><div class="mark">ɢ</div><div><h1>GECKO TERMINAL</h1><small>Solana market intelligence</small></div></div><div class="topright"><span class="pill">NETWORK&nbsp; / &nbsp;SOLANA</span><span class="status"><i class="dot"></i><span id="feedStatus">CONNECTING DATA</span></span><span class="wwrap"><button id="walletBtn" class="walletbtn" type="button">Connect Wallet</button><div class="wdd" id="walletDd" hidden><div class="eyebrow" id="walletDdName" style="margin-top:8px">Wallet</div><div class="waddr" id="walletDdAddr"></div><div class="walletrow"><span>SOL balance</span><strong id="walletSol">—</strong></div><div class="walletrow"><span>USDC balance</span><strong id="walletUsdc">—</strong></div><div class="walletrow"><span>USDT balance</span><strong id="walletUsdt">—</strong></div><div class="wrowbtn"><button type="button" id="walletCopy">Copy address</button><button type="button" id="walletRetryBal">Retry balances</button></div><div class="wrowbtn"><button type="button" id="walletDisconnect" class="danger">Disconnect</button></div></div></span><span class="pill">PAPER MODE</span><span class="wwrap"><button id="layoutBtn" class="iconbtn" type="button" aria-label="Open layout" title="Layout">▦</button><div class="lpop" id="layoutPop" hidden role="dialog" aria-label="Layout"><div class="lpop-head"><strong>Layout</strong><button class="wclose" id="layoutPopClose" type="button" aria-label="Close layout">×</button></div><div class="lpop-note">Layouts apply to the trading desk (main page). Panels stay in their home column — the arrows reorder panels within each column.</div><div id="layoutPanelList"></div><div class="lpop-hidden" id="layoutHiddenNote" hidden></div><div class="lpop-sec">Workspaces</div><div id="layoutWsList"></div><div class="searchrow" style="margin-top:8px"><input id="layoutWsName" maxlength="40" placeholder="Name this layout" aria-label="Workspace name" autocomplete="off" spellcheck="false"><button id="layoutWsSave" type="button">Save</button></div></div></span><button id="settingsBtn" class="iconbtn" type="button" aria-label="Open settings" title="Settings">⚙</button></div></header>
+<header class="top"><div class="brand"><div class="mark">ɢ</div><div><h1>GECKO TERMINAL</h1><small>Solana market intelligence</small></div></div><div class="topright"><div class="switchrow viewtabs" role="tablist" aria-label="Terminal views"><button type="button" id="tabTerminal" class="active mode" role="tab" aria-selected="true">Terminal</button><button type="button" id="tabDashboard" class="mode" role="tab" aria-selected="false">Dashboard</button></div><span class="pill">NETWORK&nbsp; / &nbsp;SOLANA</span><span class="status"><i class="dot"></i><span id="feedStatus">CONNECTING DATA</span></span><span class="wwrap"><button id="walletBtn" class="walletbtn" type="button">Connect Wallet</button><div class="wdd" id="walletDd" hidden><div class="eyebrow" id="walletDdName" style="margin-top:8px">Wallet</div><div class="waddr" id="walletDdAddr"></div><div class="walletrow"><span>SOL balance</span><strong id="walletSol">—</strong></div><div class="walletrow"><span>USDC balance</span><strong id="walletUsdc">—</strong></div><div class="walletrow"><span>USDT balance</span><strong id="walletUsdt">—</strong></div><div class="wrowbtn"><button type="button" id="walletCopy">Copy address</button><button type="button" id="walletRetryBal">Retry balances</button></div><div class="wrowbtn"><button type="button" id="walletDisconnect" class="danger">Disconnect</button></div></div></span><span class="pill">PAPER MODE</span><span class="wwrap"><button id="layoutBtn" class="iconbtn" type="button" aria-label="Open layout" title="Layout">▦</button><div class="lpop" id="layoutPop" hidden role="dialog" aria-label="Layout"><div class="lpop-head"><strong>Layout</strong><button class="wclose" id="layoutPopClose" type="button" aria-label="Close layout">×</button></div><div class="lpop-note">Layouts apply to the trading desk (main page). Panels stay in their home column — the arrows reorder panels within each column.</div><div id="layoutPanelList"></div><div class="lpop-hidden" id="layoutHiddenNote" hidden></div><div class="lpop-sec">Workspaces</div><div id="layoutWsList"></div><div class="searchrow" style="margin-top:8px"><input id="layoutWsName" maxlength="40" placeholder="Name this layout" aria-label="Workspace name" autocomplete="off" spellcheck="false"><button id="layoutWsSave" type="button">Save</button></div></div></span><button id="settingsBtn" class="iconbtn" type="button" aria-label="Open settings" title="Settings">⚙</button></div></header>
 <div class="stats" data-layout-root>
 <div class="stat"><div class="eyebrow">SOL / USD</div><div class="big" id="statPrice">$—</div><div class="sub" id="statPriceSub">Live market feed</div></div>
 <div class="stat"><div class="eyebrow">24H CHANGE</div><div class="big" id="statChange">—</div><div class="sub">Solana spot market</div></div>
@@ -205,6 +220,7 @@ a.wrow{text-decoration:none}
 <div id="btCfgList" style="margin-top:10px"></div>
 </div></section>
 <section class="panel" data-panel="pairs"><div class="panelhead"><h2>Solana market pairs</h2><div style="display:flex;align-items:center;gap:8px"><button type="button" class="action" id="retryFeed">Retry feed</button><span class="pill" id="pairCount">DISCOVERING</span></div></div><div class="tablewrap"><table><thead><tr><th>Pair / DEX</th><th>Price USD</th><th>24H</th><th>Liquidity</th><th>24H volume</th><th>Trade</th></tr></thead><tbody id="pairs"><tr><td colspan="6" class="empty">Loading live pairs from DexScreener…</td></tr></tbody></table></div></section>
+<section class="panel" data-panel="dashboard" id="dashboardPanel"><div class="panelhead"><h2>Dashboard</h2><span class="pill" id="dashModePill">PAPER</span></div><div class="panelbody"><div class="amounts" id="dashModeChips" role="group" aria-label="Dashboard mode"><button type="button" data-dm="paper" class="on">Paper</button><button type="button" data-dm="live">Live</button></div><div id="dashContent" style="margin-top:12px"><div class="empty">Loading dashboard…</div></div><div class="sub" style="margin-top:10px">P&amp;L uses FIFO cost basis from your paper fills. Paper figures are simulated — no blockchain transaction is ever sent. The dashboard is a read view: it is derived, never stored.</div></div></section>
 <section class="panel"><div class="panelhead"><h2>Token discovery</h2><span class="eyebrow">DEXSCREENER SEARCH</span></div><div class="panelbody"><div class="searchrow"><input id="tokenSearch" placeholder="Search token, ticker or mint address" value="SOL"><button id="searchBtn">Search</button></div><div id="searchResults" class="results"><div class="empty">Search live Solana pairs and add candidates to your watchlist.</div></div></div></section>
 </main><aside class="sidecol" data-layout-root>
 <section class="panel tradepanel" data-panel="ticket"><div class="panelhead"><h2>Order ticket</h2><span class="pill">SIMULATED</span></div><div class="panelbody"><form class="tradeform" id="tradeForm"><div class="moderow"><div class="modelabel">Execution mode</div><div class="switchrow"><button type="button" id="paperModeBtn" class="active mode">Paper</button><button type="button" id="liveModeBtn">Live</button></div></div><div class="switchrow"><button type="button" id="buyBtn" class="active buy">Buy / Long</button><button type="button" id="sellBtn" class="sell">Sell</button></div><div class="field"><label>Trading pair</label><div class="pairbox"><strong id="ticketPairName">SOL / USDC</strong><small id="ticketPairMeta">Waiting for market data…</small></div></div><div class="field"><label>Order type</label><div class="switchrow"><button type="button" id="mktBtn" class="active buy">Market</button><button type="button" id="limBtn" class="sell">Limit</button></div></div><div id="limitFields" hidden><div class="field"><label>Limit price (per <span id="limitBaseSym">SOL</span>, in <span id="limitQuoteSym">USDC</span>)</label><div class="inputwrap"><input id="limitPrice" inputmode="decimal" aria-label="Limit price" placeholder="Waiting for live price…"><span id="limitSpotRef">spot</span></div><div class="amounts" id="limitPresets" style="margin-top:6px"><button type="button" data-lp="-10">−10%</button><button type="button" data-lp="-5">−5%</button><button type="button" data-lp="-1">−1%</button><button type="button" data-lp="1">+1%</button><button type="button" data-lp="5">+5%</button><button type="button" data-lp="10">+10%</button></div><div class="note" id="limitNote" style="text-align:left;margin-top:6px"></div></div><div class="field"><label>Expires</label><div class="amounts" id="expiryPresets"><button type="button" data-exp="1h">1 h</button><button type="button" data-exp="24h" class="on">24 h</button><button type="button" data-exp="7d">7 d</button><button type="button" data-exp="never">No expiry</button></div><label id="expiryAckWrap" hidden style="display:none;margin-top:8px;font-size:11px;color:var(--muted);align-items:center;gap:8px"><input type="checkbox" id="expiryAck" style="width:auto"> I understand this order stays open until filled or cancelled.</label></div><div class="note" style="text-align:left">Limit orders are simulated against the spot feed — fills are not instant and are not guaranteed. Paper only; nothing touches the chain.</div></div><div class="field"><label>Order size</label><div class="inputwrap"><input id="orderAmount" type="number" min="0.0001" step="any" value="100" required><span id="amountUnit">USD</span></div></div><div class="amounts"><button type="button" data-amt="25">$25</button><button type="button" data-amt="100">$100</button><button type="button" data-amt="250">$250</button><button type="button" data-amt="max">MAX</button></div><div class="field"><label>Slippage tolerance</label><div class="amounts" id="slipPresets"><button type="button" data-slip="10">0.1%</button><button type="button" data-slip="50">0.5%</button><button type="button" data-slip="100">1.0%</button></div><div class="inputwrap" style="margin-top:6px"><input id="slippageInput" inputmode="numeric" aria-label="Custom slippage in basis points" placeholder="Custom (bps)"><span>bps</span></div><div class="note" style="text-align:left;margin-top:6px">Presets or custom, in basis points (50 bps = 0.50%). Allowed: 1&ndash;1000 bps (0.01%&ndash;10%). Shared with the /raydium/ page.</div></div><div class="walletrow"><span>Execution price</span><strong id="execPrice">$—</strong></div><div class="walletrow"><span>Estimated quantity</span><strong id="estQty">— SOL</strong></div><div class="walletrow"><span>Available USD</span><strong id="cashAvail">$10,000.00</strong></div><button class="primary" id="submitTrade" type="submit">Buy SOL · Paper</button><div class="note" id="ticketNote">No wallet connected · no real orders or funds</div><div id="reviewSheet" class="review" hidden></div></form></div></section>
@@ -233,7 +249,10 @@ let hadStoredTicketPair=false,defaultPairApplied=false;
 // and additionally requires baseToken.address === WSOL_MINT as
 // defense-in-depth.
 const WSOL_MINT='So11111111111111111111111111111111111111112';
-let price=0,change=0,cash=10000,holdings={},ticketPair={baseMint:WSOL_MINT,baseSymbol:'SOL',quoteSymbol:'USDC',price:0,change24h:null},orders=[],side='buy',marketPairs=[],chartRange='1H';
+/* N5.4: the paper account's starting cash — the single source the N1.1 reset
+   handler and the dashboard's total-P&L both read (pack §1.4: never hardcoded). */
+const PAPER_START_CASH=10000;
+let price=0,change=0,cash=PAPER_START_CASH,holdings={},ticketPair={baseMint:WSOL_MINT,baseSymbol:'SOL',quoteSymbol:'USDC',price:0,change24h:null},orders=[],side='buy',marketPairs=[],chartRange='1H';
 let feedFailures=0,lastMarketAt=0;
 // N4.5 paper limit orders (pure + DOM blocks below): state lives here so the
 // top-level restoreState() call can read it — const/let would be TDZ otherwise.
@@ -367,6 +386,7 @@ function renderWatchlist(){ // header card renders the ACTIVE list
   count.textContent=String(toks.length);
   if(!toks.length){summary.textContent='No tokens saved';return;}
   summary.textContent=toks.slice(0,2).map(t=>{const e=wlEnrich(t);return t.symbol+(e.priceUsd>0?' '+formatPriceUsd(e.priceUsd):'');}).join(' · ')+(toks.length>2?' · +'+(toks.length-2)+' more':'')+(l&&l.name!=='Default'?' · '+l.name:'');
+  paintDashboard(); // N5.4: movers read the watchlists — repaint on membership/feed changes (digest-guarded)
 }
 function wlTokenRow(t){
   const e=wlEnrich(t);
@@ -478,6 +498,273 @@ function openWlMenu(anchor,address,tokenInfo){ // pack §1.3: "save to…" mini-
   const first=m.querySelector('button');if(first)first.focus();
 }
 /*__N53_WATCHLISTS_END__*/
+/*__N54_DASHBOARD_START__*/
+/* N5.4 personal dashboard (2026-10-22). Pack: hidden_files/prep/N5.4-personal-dashboard.md.
+   A read view over the N2.1 paper store + paper fills + N3.2 spot ticks + N5.3
+   watchlists — it assembles data the other packs already produce. Derived, never
+   stored: no new localStorage key. Paper/Live separation follows the N4.3
+   contract (separate portfolios, never merged; reload always lands in Paper).
+   P&L uses FIFO cost basis from filled paper orders (pack §1.4). */
+/*__N54_DASHBOARD_PURE_START__*/
+function fifoBook(fills){
+  // fills: [{side:'buy'|'sell',qty,price}] OLDEST-first → {qty,avgCost,realized}.
+  const lots=[];let realized=0;
+  for(const f of (fills||[])){
+    if(!f)continue;
+    const q=Number(f.qty),p=Number(f.price);
+    if(!(q>0)||!(p>0))continue;
+    if(f.side==='buy'){lots.push({qty:q,price:p});continue;}
+    if(f.side!=='sell')continue;
+    let sell=q;
+    while(sell>0&&lots.length){
+      const lot=lots[0],take=Math.min(lot.qty,sell);
+      realized+=(p-lot.price)*take;
+      lot.qty-=take;sell-=take;
+      if(lot.qty<=1e-12)lots.shift();
+    }
+    // sell>0 with empty lots: short or pruned history — never invent a basis;
+    // the proceeds are counted as realized against zero cost (honest edge case).
+    if(sell>1e-12)realized+=p*sell;
+  }
+  const qty=lots.reduce((s,l)=>s+l.qty,0);
+  const cost=lots.reduce((s,l)=>s+l.qty*l.price,0);
+  return{qty:qty,avgCost:qty>1e-12?cost/qty:null,realized:realized};
+}
+function dbChangeNum(v){return v===null||v===undefined||!Number.isFinite(Number(v))?null:Number(v);}
+function dbSortMovers(rows){
+  // Descending |24h change|; null/unknown change sorts last (N1.4 null-vs-zero); stable.
+  return(rows||[]).map((r,i)=>({r:r,i:i})).sort((a,b)=>{
+    const ca=dbChangeNum(a.r?a.r.change24h:null),cb=dbChangeNum(b.r?b.r.change24h:null);
+    if(ca===null&&cb===null)return a.i-b.i;
+    if(ca===null)return 1;
+    if(cb===null)return -1;
+    const d=Math.abs(cb)-Math.abs(ca);
+    return d!==0?d:(a.i-b.i);
+  }).map(x=>x.r);
+}
+function dbMoney(v,quoteCurrency,solPrice){
+  // Unsigned money for equity/cash/value cells; never throws, never invents.
+  // Sub-cent values keep significant figures (N1.5) — never a bare $0.00.
+  const n=Number(v);
+  if(!Number.isFinite(n))return'—';
+  const a=Math.abs(n);
+  if(quoteCurrency==='SOL'&&solPrice>0){
+    const s=n/solPrice,sa=Math.abs(s);
+    return'◎'+(sa>=0.01?s.toLocaleString('en-US',{minimumFractionDigits:4,maximumFractionDigits:4}):(sa>0?sa.toPrecision(4):'0.0000'));
+  }
+  if(a>0&&a<0.01)return'$'+a.toPrecision(4);
+  return'$'+a.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+}
+function dbSignedMoney(v,quoteCurrency,solPrice){
+  // Signed +$ / -$ (pack §1.4: never bare positives).
+  const n=Number(v);
+  if(!Number.isFinite(n))return'—';
+  const sign=n<0?'-':'+',a=Math.abs(n);
+  if(quoteCurrency==='SOL'&&solPrice>0){
+    const s=a/solPrice;
+    return sign+'◎'+(s>=0.01?s.toLocaleString('en-US',{minimumFractionDigits:4,maximumFractionDigits:4}):(s>0?s.toPrecision(4):'0.0000'));
+  }
+  if(a>0&&a<0.01)return sign+'$'+a.toPrecision(4);
+  return sign+'$'+a.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+}
+/*__N54_DASHBOARD_PURE_END__*/
+let dashMode='paper'; // memory-only; the N4.3 reload contract always lands in Paper
+let dashDigest='\u0000';
+function dashWallet(){return window.__walletState||{connected:false,publicKey:null,balances:null};} // window prop: no TDZ at boot
+function dashQC(){return settings&&settings.quoteCurrency==='SOL'?'SOL':'USD';}
+function wlDefaultList(){const ls=wlLists();return ls.find(l=>l.name==='Default')||ls[0]||null;}
+function dashFills(){
+  // Paper filled orders, oldest-first — the FIFO input (pack §1.4). Cancelled/
+  // expired limit orders never held anything and are excluded.
+  const fills=[];
+  for(let i=orders.length-1;i>=0;i--){
+    const o=orders[i];
+    if(!o||o.mode!=='paper')continue;
+    if(o.status&&o.status!=='filled')continue;
+    if(o.side!=='buy'&&o.side!=='sell')continue;
+    const q=Number(o.qty),p=Number(o.price);
+    if(!(q>0)||!(p>0))continue;
+    fills.push({side:o.side,qty:q,price:p,mint:o.baseMint,symbol:o.baseSymbol});
+  }
+  return fills;
+}
+function dashFifo(){
+  const byMint={};
+  for(const f of dashFills()){(byMint[f.mint]||(byMint[f.mint]={symbol:f.symbol,fills:[]})).fills.push(f);}
+  const out={};
+  for(const m of Object.keys(byMint))out[m]={symbol:byMint[m].symbol,book:fifoBook(byMint[m].fills)};
+  return out;
+}
+function dashHistLabel(e){
+  const sym=(e.pair&&e.pair.baseSymbol)||'TOKEN';
+  const side=String(e.side||'').toUpperCase();
+  const k=e.kind;
+  const what=k==='limit-create'?'limit created':k==='limit-cancel'?'limit cancelled':(k==='limit-fill'||k==='paper-limit-fill')?'limit filled':k==='swap-fill'?'swap filled':'market filled';
+  return side+' '+sym+' · '+what;
+}
+function dashActivity(){
+  const evs=[];
+  try{
+    const h=histLoad();
+    for(const e of (h.paper||[]).slice(0,60))evs.push({ts:Number(e.ts)||0,mode:'paper',label:dashHistLabel(e)});
+    const w=dashWallet(),pk=w.publicKey||window.__walletAddress||null;
+    if(dashMode==='live'&&pk&&h.live&&Array.isArray(h.live[pk]))
+      for(const e of h.live[pk].slice(0,60))evs.push({ts:Number(e.ts)||0,mode:'live',label:dashHistLabel(e)});
+  }catch(_){}
+  try{
+    for(const l of wlLists())for(const t of (l.tokens||[]))
+      evs.push({ts:Number(t.addedAt)||0,mode:'list',label:'Watched '+t.symbol+' → '+l.name});
+  }catch(_){}
+  evs.sort((a,b)=>b.ts-a.ts);
+  return evs.slice(0,20);
+}
+function dashActTime(ts){try{return new Date(ts).toLocaleString(undefined,{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'});}catch(_){return'';}}
+function dashPaperModel(){
+  const fifo=dashFifo(),stale=feedFailures>0;
+  let posValue=0,totalRealized=0;
+  for(const m of Object.keys(fifo))totalRealized+=fifo[m].book.realized;
+  const rows=[];let totalUnreal=0;
+  const mints=Object.keys(holdings).sort((a,b)=>String((holdings[a]||{}).symbol||'').localeCompare(String((holdings[b]||{}).symbol||'')));
+  for(const m of mints){
+    const h=holdings[m],qty=Number(h.qty)||0;
+    const px=Number(h.lastPrice)>0?Number(h.lastPrice):0;
+    const value=qty*px;posValue+=value;
+    const f=fifo[m];let avgCost=null,realized=0,basisNote='';
+    if(f&&Math.abs(f.book.qty-qty)<=1e-9*Math.max(1,qty)){avgCost=f.book.avgCost;realized=f.book.realized;}
+    else if(qty>0){avgCost=Number(h.avgCost)>0?Number(h.avgCost):null;realized=f?f.book.realized:0;basisNote='Cost basis from position average — early fill history was pruned (500-order cap) or migrated.';}
+    const unreal=(avgCost!=null&&px>0)?(px-avgCost)*qty:null;
+    if(unreal!=null)totalUnreal+=unreal;
+    rows.push({mint:m,symbol:h.symbol||'TOKEN',qty:qty,px:px,value:value,avgCost:avgCost,realized:realized,unreal:unreal,basisNote:basisNote,weight:0});
+  }
+  const equity=cash+posValue;
+  for(const r of rows)r.weight=equity>0?r.value/equity:0;
+  return{rows:rows,cash:cash,posValue:posValue,equity:equity,totalRealized:totalRealized,totalUnreal:totalUnreal,total:equity-PAPER_START_CASH,stale:stale,hasFills:Object.keys(fifo).length>0};
+}
+function dashMovers(){
+  const l=wlDefaultList();
+  if(!l||!(l.tokens||[]).length)return{tokens:[],empty:true};
+  const rows=(l.tokens||[]).map(t=>{const e=wlEnrich(t);return{mint:t.mint,symbol:t.symbol,name:t.name,priceUsd:e.priceUsd,change24h:e.change24h,stale:e.stale};});
+  return{tokens:dbSortMovers(rows),empty:false};
+}
+function dashDigestNow(){
+  const parts=[dashMode,dashQC(),String(cash),String(feedFailures>0),'solpx:'+price];
+  const mints=Object.keys(holdings).sort();
+  for(const m of mints){const h=holdings[m];parts.push(m+':'+h.qty+':'+h.lastPrice+':'+h.avgCost);}
+  const ot=orders.length&&orders[0]?orders[0].time:null;
+  parts.push('orders:'+orders.length+':'+(ot?(ot instanceof Date?ot.getTime():String(ot)):'-'));
+  try{const l=wlDefaultList();parts.push('wl:'+(l?l.tokens.map(t=>{const e=wlEnrich(t);return t.mint+':'+e.priceUsd+':'+e.change24h+':'+(e.stale?1:0);}).join(','):'none'));}catch(_){parts.push('wl:?');}
+  const w=dashWallet();parts.push('w:'+(w.connected?1:0)+':'+(w.publicKey||'')+':'+JSON.stringify(w.balances||null));
+  try{parts.push('h:'+histLoad().paper.length);}catch(_){parts.push('h:?');}
+  return parts.join('|');
+}
+function dashStaleB(){return'<span class="staleb" title="Last good price — the market feed is stale (N1.6 semantics)">stale</span>';}
+function dashPaperHtml(){
+  const qc=dashQC(),sp=price>0?price:0,m=dashPaperModel(),acts=dashActivity(),mv=dashMovers();
+  const cls=v=>v>=0?'positive':'negative';
+  let h='<div class="dashsec"><div class="sectiontitle"><h3>Portfolio value</h3><span class="sub">PAPER · simulated'+(m.stale?' · '+dashStaleB():'')+'</span></div>';
+  h+='<div class="dashgrid"><div class="dashstat"><div class="eyebrow">Total equity</div><div class="v">'+dbMoney(m.equity,qc,sp)+'</div><div class="sub">Cash + positions</div></div><div class="dashstat"><div class="eyebrow">Cash</div><div class="v">'+dbMoney(m.cash,qc,sp)+'</div><div class="sub">Paper USD balance</div></div><div class="dashstat"><div class="eyebrow">Position value</div><div class="v">'+dbMoney(m.posValue,qc,sp)+'</div><div class="sub">'+m.rows.length+' asset'+(m.rows.length===1?'':'s')+'</div></div></div>';
+  h+=m.rows.length?'<div class="tablewrap"><table><thead><tr><th>Asset</th><th>Qty</th><th>Price</th><th>Value</th><th>Weight</th></tr></thead><tbody>'+m.rows.map(r=>'<tr><td><strong>'+esc(r.symbol)+'</strong></td><td>'+fmtQty(r.qty)+'</td><td>'+(r.px>0?formatPriceUsd(r.px)+(m.stale?dashStaleB():''):'—')+'</td><td>'+dbMoney(r.value,qc,sp)+'</td><td>'+fmt(r.weight*100,1)+'%</td></tr>').join('')+'</tbody></table></div>':'<div class="empty">No paper positions yet — your holdings will break down here.</div>';
+  h+='</div><div class="dashsec"><div class="sectiontitle"><h3>Profit &amp; loss</h3><span class="sub">FIFO cost basis</span></div>';
+  if(!m.hasFills){
+    h+='<div class="empty">No trades yet — your first paper trade starts the clock.<br><br><button type="button" class="action" data-dash-empty-ticket>Open the order ticket</button></div>';
+  }else{
+    h+='<div class="dashgrid"><div class="dashstat"><div class="eyebrow">Realized</div><div class="v '+cls(m.totalRealized)+'">'+dbSignedMoney(m.totalRealized,qc,sp)+'</div><div class="sub">Closed paper trades</div></div><div class="dashstat"><div class="eyebrow">Unrealized</div><div class="v '+cls(m.totalUnreal)+'">'+dbSignedMoney(m.totalUnreal,qc,sp)+'</div><div class="sub">Open positions vs FIFO basis</div></div><div class="dashstat"><div class="eyebrow">Total return</div><div class="v '+cls(m.total)+'">'+dbSignedMoney(m.total,qc,sp)+'</div><div class="sub">Equity − '+dbMoney(PAPER_START_CASH,qc,sp)+' start</div></div></div>';
+    h+=m.rows.length?'<div class="tablewrap"><table><thead><tr><th>Asset</th><th>Avg cost</th><th>Realized</th><th>Unrealized</th></tr></thead><tbody>'+m.rows.map(r=>'<tr><td><strong>'+esc(r.symbol)+'</strong>'+(r.basisNote?' <span class="staleb" title="'+esc(r.basisNote)+'">avg</span>':'')+'</td><td>'+(r.avgCost!=null?formatPriceUsd(r.avgCost):'—')+'</td><td class="'+cls(r.realized)+'">'+dbSignedMoney(r.realized,qc,sp)+'</td><td class="'+(r.unreal==null?'':cls(r.unreal))+'">'+(r.unreal==null?'—':dbSignedMoney(r.unreal,qc,sp))+'</td></tr>').join('')+'</tbody></table></div>':'<div class="sub">All positions closed — realized P&amp;L above is final for this account.</div>';
+  }
+  h+='</div><div class="dashsec"><div class="sectiontitle"><h3>Recent activity</h3><span class="sub">latest '+acts.length+'</span></div>';
+  h+=acts.length?'<div class="dashact">'+acts.map(a=>'<div class="arow"><span>'+esc(a.label)+'</span><span style="display:flex;align-items:center;gap:8px"><span class="mchip">'+(a.mode==='paper'?'PAPER':a.mode==='live'?'LIVE':'WATCHLIST')+'</span><span class="t">'+esc(dashActTime(a.ts))+'</span></span></div>').join('')+'</div>':'<div class="empty">No activity yet — fills and watchlist adds land here.</div>';
+  h+='</div><div class="dashsec"><div class="sectiontitle"><h3>Watchlist movers</h3><span class="sub">Default list · |24h change|'+(m.stale?' · '+dashStaleB():'')+'</span></div>';
+  if(mv.empty){
+    h+='<div class="empty">Watch tokens from Token discovery to track movers here.</div>';
+  }else{
+    h+='<div class="tablewrap"><table><thead><tr><th>Token</th><th>Price</th><th>24h</th></tr></thead><tbody>'+mv.tokens.map(t=>'<tr class="dashmover" data-mover="'+esc(t.mint)+'" title="Select '+esc(t.symbol)+' in the order ticket"><td><strong>'+esc(t.symbol)+'</strong> <span class="sub">'+esc(t.name||'')+'</span></td><td>'+formatPriceUsd(t.priceUsd)+(t.stale?dashStaleB():'')+'</td><td class="'+(t.change24h===null?'':t.change24h>=0?'positive':'negative')+'">'+(t.change24h===null?'—':(t.change24h>=0?'+':'')+fmt(t.change24h,2)+'%')+'</td></tr>').join('')+'</tbody></table></div><div class="sub" style="margin-top:6px">Click a mover to select it in the order ticket.</div>';
+  }
+  return h+'</div>';
+}
+function dashLiveHtml(){
+  const qc=dashQC(),sp=price>0?price:0,w=dashWallet(),pk=w.publicKey||window.__walletAddress||null;
+  if(!w.connected||!pk){
+    return'<div class="empty">No wallet connected — the live dashboard shows on-chain balances only.<br><br><button type="button" class="action" data-dash-connect>Connect wallet</button><div class="sub" style="margin-top:8px">Connecting is read-only in this build — the terminal never signs or sends anything.</div></div>';
+  }
+  const bal=w.balances||{};
+  const rows=[{sym:'SOL',qty:bal.sol,px:sp},{sym:'USDC',qty:bal.usdc,px:1},{sym:'USDT',qty:bal.usdt,px:1}];
+  let total=0;
+  const body=rows.map(r=>{
+    const q=Number(r.qty),has=Number.isFinite(q);
+    const v=has&&r.px>0?q*r.px:null;if(v!=null)total+=v;
+    return'<tr><td><strong>'+r.sym+'</strong></td><td>'+(has?fmtQty(q):'—')+'</td><td>'+(v!=null?dbMoney(v,qc,sp):'—')+'</td><td>—</td><td><span class="sub">suppressed — no local fill history</span></td></tr>';
+  }).join('');
+  let acts=[];
+  try{const h=histLoad();acts=((h.live||{})[pk]||[]).slice(0,20).map(e=>({ts:Number(e.ts)||0,label:dashHistLabel(e)}));}catch(_){}
+  let h='<div class="dashsec"><div class="sectiontitle"><h3>Live balances</h3><span class="sub">LIVE · '+esc(String(pk).slice(0,4)+'…'+String(pk).slice(-4))+'</span></div>';
+  h+='<div class="dashgrid"><div class="dashstat"><div class="eyebrow">Total value</div><div class="v">'+dbMoney(total,qc,sp)+'</div><div class="sub">On-chain balances</div></div></div>';
+  h+='<div class="tablewrap"><table><thead><tr><th>Asset</th><th>Balance</th><th>Value</th><th>Cost basis</th><th>Unrealized</th></tr></thead><tbody>'+body+'</tbody></table></div>';
+  h+='<div class="sub" style="margin-top:6px">Cost basis is never invented for live holdings — without local fill history it shows “—” and unrealized P&amp;L is suppressed.</div></div>';
+  h+='<div class="dashsec"><div class="sectiontitle"><h3>Live activity</h3><span class="sub">on-chain confirmed only</span></div>';
+  h+=acts.length?'<div class="dashact">'+acts.map(a=>'<div class="arow"><span>'+esc(a.label)+'</span><span style="display:flex;align-items:center;gap:8px"><span class="mchip">LIVE</span><span class="t">'+esc(dashActTime(a.ts))+'</span></span></div>').join('')+'</div>':'<div class="empty">No live trade events for this wallet yet.</div>';
+  return h+'</div>';
+}
+function paintDashboard(force){
+  const body=$('dashContent');if(!body)return;
+  let d='';
+  try{d=dashDigestNow();}catch(_){return;} // state not ready — never throw from a render hook
+  if(!force&&d===dashDigest)return; // pack §2.6: dirty-flag, not timer-driven
+  dashDigest=d;
+  const pill=$('dashModePill');if(pill)pill.textContent=dashMode==='live'?'LIVE':'PAPER';
+  try{body.innerHTML=dashMode==='live'?dashLiveHtml():dashPaperHtml();}catch(e){body.innerHTML='<div class="empty">Dashboard unavailable — '+esc(String((e&&e.message)||e))+'</div>';}
+}
+function setViewTab(dash){
+  const dt=$('tabDashboard'),tt=$('tabTerminal');
+  if(dt){dt.classList.toggle('active',dash);dt.setAttribute('aria-selected',dash?'true':'false');}
+  if(tt){tt.classList.toggle('active',!dash);tt.setAttribute('aria-selected',!dash?'true':'false');}
+}
+function showDashboardView(){
+  setViewTab(true);
+  try{if(layout&&wsHidden('dashboard'))togglePanelVisibility('dashboard');}catch(_){}
+  const el=panelEl('dashboard');
+  if(el)setTimeout(()=>{try{el.scrollIntoView({behavior:'smooth',block:'start'});}catch(_){}},40);
+}
+function wsHidden(id){const ws=activeWorkspace();return ws&&ws.hidden.includes(id);}
+function showTerminalView(){
+  setViewTab(false);
+  try{window.scrollTo({top:0,behavior:'smooth'});}catch(_){}
+}
+function dashMoverSelect(mint){
+  const l=wlDefaultList();if(!l)return;
+  const tok=(l.tokens||[]).find(x=>x.mint===mint);if(!tok)return;
+  const e=wlEnrich(tok);
+  selectTicketPair({baseToken:{address:tok.mint,symbol:tok.symbol,name:tok.name},quoteToken:{symbol:'USDC'},priceUsd:e.priceUsd,priceChange:{h24:e.change24h},dexId:'watchlist'});
+  showTerminalView();
+  const p=panelEl('ticket');
+  if(p)setTimeout(()=>{try{p.scrollIntoView({behavior:'smooth',block:'center'});}catch(_){}},80);
+}
+function dashContentClick(ev){
+  const t=ev.target;
+  const q=sel=>t&&t.closest?t.closest(sel):null;
+  const mv=q('[data-mover]');
+  if(mv){dashMoverSelect(mv.getAttribute('data-mover'));return;}
+  if(q('[data-dash-empty-ticket]')){
+    showTerminalView();
+    const p=panelEl('ticket');if(p)p.scrollIntoView({behavior:'smooth',block:'center'});
+    const amt=$('orderAmount');if(amt)setTimeout(()=>{try{amt.focus();}catch(_){}},380);
+    return;
+  }
+  if(q('[data-dash-connect]')){const wb=$('walletBtn');if(wb)wb.click();}
+}
+function wireDashboard(){
+  const dt=$('tabDashboard'),tt=$('tabTerminal');
+  if(dt)dt.onclick=showDashboardView;
+  if(tt)tt.onclick=showTerminalView;
+  document.querySelectorAll('#dashModeChips button').forEach(b=>b.onclick=()=>{
+    dashMode=b.dataset.dm==='live'?'live':'paper';
+    document.querySelectorAll('#dashModeChips button').forEach(x=>x.classList.toggle('on',x===b));
+    const pill=$('dashModePill');if(pill)pill.textContent=dashMode==='live'?'LIVE':'PAPER';
+    paintDashboard(true);
+  });
+  const dc=$('dashContent');
+  if(dc)dc.addEventListener('click',dashContentClick);
+}
+/*__N54_DASHBOARD_END__*/
 restoreState();
 function toast(s){$('toast').textContent=s;$('toast').classList.add('show');setTimeout(()=>$('toast').classList.remove('show'),2600)}
 function setPrice(p,c){if(p>0)price=p;if(c===null||Number.isFinite(c))change=c;const sign=change>=0?'+':'';$('heroPrice').textContent=price?formatPrice(price):'$—';$('statPrice').textContent=price?formatPrice(price):'$—';$('heroChange').textContent=price?(change===null?'— · 24H':sign+fmt(change,2)+'% · 24H'):'Awaiting market feed';$('heroChange').className=change===null?'':change>=0?'positive':'negative';$('statChange').textContent=price?(change===null?'—':sign+fmt(change,2)+'%'):'—';$('statChange').className='big '+(change===null?'':change>=0?'positive':'negative');$('statPriceSub').textContent=lastMarketAt?'Live spot · refreshed '+new Date(lastMarketAt).toLocaleTimeString():'Waiting for live market data';$('updatedAt').textContent=lastMarketAt?'Updated '+new Date(lastMarketAt).toLocaleTimeString():'Waiting for feed';updatePortfolio();runLimitEngine()} // N4.5: every spot tick also evaluates open paper limit orders
@@ -700,8 +987,8 @@ function applySettingsBoot(){
   fillSizeInput(settings.defaultOrderSize);
 }
 /*__N52_LAYOUT_START__*/
-/* N5.2 customizable layout (2026-10-22): show/hide + reorder the four desk panels
-   (chart, pairs, ticket, watchlist card) and save named workspaces. Panels keep their
+/* N5.2 customizable layout (2026-10-22): show/hide + reorder the desk panels
+   (chart, pairs, dashboard, ticket, watchlist card) and save named workspaces. Panels keep their
    home containers (main column / side column / header stats) — v1 reorders within
    each container; cross-container moves are out of scope (pack non-goals: free-form
    grid). Layouts persist in their own versioned key `gecko-terminal:layout-v1`,
@@ -710,20 +997,26 @@ function applySettingsBoot(){
    separately from SETTINGS_VERSION per the pack's own §5 cross-link). */
 const LAYOUT_KEY='gecko-terminal:layout-v1';
 const LAYOUT_VERSION=1;
-const PANEL_IDS=['chart','pairs','ticket','watchlist'];
-const PANEL_LABELS={chart:'Chart',pairs:'Market pairs',ticket:'Order ticket',watchlist:'Watchlist card'};
+const PANEL_IDS=['chart','pairs','dashboard','ticket','watchlist'];
+const PANEL_LABELS={chart:'Chart',pairs:'Market pairs',dashboard:'Dashboard',ticket:'Order ticket',watchlist:'Watchlist card'};
 /* Pack §1.4: the Trader built-in matches the page's shipped order (chart first in the
    main column, ticket top of the side column); Watcher swaps pairs above chart and
    hides the ticket. */
 const BUILT_IN_WORKSPACES=Object.freeze([
-  {id:'builtin-trader',name:'Trader',builtIn:true,order:['chart','pairs','ticket','watchlist'],hidden:[]},
-  {id:'builtin-watcher',name:'Watcher',builtIn:true,order:['pairs','chart','ticket','watchlist'],hidden:['ticket']},
+  {id:'builtin-trader',name:'Trader',builtIn:true,order:['chart','pairs','dashboard','ticket','watchlist'],hidden:['dashboard']},
+  {id:'builtin-watcher',name:'Watcher',builtIn:true,order:['pairs','chart','dashboard','ticket','watchlist'],hidden:['ticket','dashboard']},
 ]);
 function sanitizeWorkspace(ws){
   ws=ws||{};
-  const ordered=(Array.isArray(ws.order)?ws.order:[]).filter(id=>PANEL_IDS.includes(id));
+  const storedIds=new Set((Array.isArray(ws.order)?ws.order:[]).filter(id=>PANEL_IDS.includes(id)));
+  const ordered=[...storedIds];
   for(const id of PANEL_IDS)if(!ordered.includes(id))ordered.push(id);
   const hidden=(Array.isArray(ws.hidden)?ws.hidden:[]).filter(id=>PANEL_IDS.includes(id));
+  /* N5.4: panels introduced after a workspace was saved (absent from its stored
+     order) default to HIDDEN — an existing workspace never gains a panel it
+     didn't ask for. Fresh reveals happen through the Layout popover or the
+     Dashboard header tab. */
+  for(const id of ordered)if(!storedIds.has(id)&&!hidden.includes(id))hidden.push(id);
   if(ordered.every(id=>hidden.includes(id)))hidden.splice(hidden.indexOf(ordered[0]),1); // never a blank page
   const name=String(ws.name==null?'':ws.name).slice(0,40).trim()||'Workspace';
   return{id:(typeof ws.id==='string'&&ws.id)?ws.id:'ws-'+Date.now().toString(36),name,order:ordered,hidden,builtIn:!!ws.builtIn};
@@ -1274,17 +1567,17 @@ function refreshTicket(){
   }
   $('amountUnit').textContent=settings&&settings.quoteCurrency==='SOL'?'SOL':(tp?tp.quoteSymbol:'USD'); // N5.1: size input unit follows the quote-currency setting
 }
-function updatePortfolio(){const rows=Object.keys(holdings);let posValue=0,totalCost=0;rows.forEach(m=>{const h=holdings[m],px=h.lastPrice>0?h.lastPrice:0;posValue+=h.qty*px;totalCost+=h.qty*h.avgCost;});const equity=cash+posValue,unreal=posValue-totalCost;$('equity').textContent=usd(equity);$('pnlSub').textContent=(equity>=10000?'+':'')+usd(equity-10000)+' total return';$('pnlSub').className='sub '+(equity>=10000?'positive':'negative');$('cashBal').textContent=usd(cash);$('cashAvail').textContent=usd(cash);$('posValue').textContent=usd(posValue);$('unrealized').textContent=(unreal>=0?'+':'')+usd(unreal);$('unrealized').className=unreal>=0?'positive':'negative';$('holdingsList').innerHTML=rows.length?rows.map(m=>{const h=holdings[m],px=h.lastPrice>0?h.lastPrice:0,v=h.qty*px,u=v-h.qty*h.avgCost;return '<div class="walletrow"><span>'+esc(h.symbol)+' · '+fmtQty(h.qty)+'</span><strong>'+usd(v)+' <small class="'+(u>=0?'positive':'negative')+'">'+(u>=0?'+':'')+usd(u)+'</small></strong></div>';}).join(''):'<div class="empty">No paper positions yet.</div>';refreshTicket();saveState()}
+function updatePortfolio(){const rows=Object.keys(holdings);let posValue=0,totalCost=0;rows.forEach(m=>{const h=holdings[m],px=h.lastPrice>0?h.lastPrice:0;posValue+=h.qty*px;totalCost+=h.qty*h.avgCost;});const equity=cash+posValue,unreal=posValue-totalCost;$('equity').textContent=usd(equity);$('pnlSub').textContent=(equity>=PAPER_START_CASH?'+':'')+usd(equity-PAPER_START_CASH)+' total return';$('pnlSub').className='sub '+(equity>=PAPER_START_CASH?'positive':'negative');$('cashBal').textContent=usd(cash);$('cashAvail').textContent=usd(cash);$('posValue').textContent=usd(posValue);$('unrealized').textContent=(unreal>=0?'+':'')+usd(unreal);$('unrealized').className=unreal>=0?'positive':'negative';$('holdingsList').innerHTML=rows.length?rows.map(m=>{const h=holdings[m],px=h.lastPrice>0?h.lastPrice:0,v=h.qty*px,u=v-h.qty*h.avgCost;return '<div class="walletrow"><span>'+esc(h.symbol)+' · '+fmtQty(h.qty)+'</span><strong>'+usd(v)+' <small class="'+(u>=0?'positive':'negative')+'">'+(u>=0?'+':'')+usd(u)+'</small></strong></div>';}).join(''):'<div class="empty">No paper positions yet.</div>';refreshTicket();paintDashboard();saveState()}
 /* N5.3: renderWatchlist lives in the __N53_WATCHLISTS_START__ block (multi-list header card). */
 function setSide(s){hideReview();side=s;$('buyBtn').classList.toggle('active',s==='buy');$('buyBtn').classList.toggle('buy',s==='buy');$('sellBtn').classList.toggle('active',s==='sell');$('sellBtn').classList.toggle('sell',s==='sell');updatePortfolio()}
 $('buyBtn').onclick=()=>setSide('buy');$('sellBtn').onclick=()=>setSide('sell');$('orderAmount').oninput=()=>{hideReview();updatePortfolio();};document.querySelectorAll('[data-amt]').forEach(b=>b.onclick=()=>{hideReview();const v=b.dataset.amt;const tp=ticketPair,pr=ticketPrice(),q=quoteUsd(tp&&tp.quoteSymbol);if(v==='max'){if(side==='buy'){fillSizeInput(maxBuyInput(cash,q)*q);}else{const h=tp&&holdings[tp.baseMint];fillSizeInput(h&&pr>0?maxSellInput(h.qty,pr)*q:0);}}else{fillSizeInput(Number(v));}updatePortfolio()}); // N5.1: presets/MAX fill via fillSizeInput (unit-aware)
 $('tradeForm').onsubmit=e=>{e.preventDefault();if(orderType==='limit')openLimitReview();else openReview();}; // N4.4/N4.5: submit opens the review sheet; the fill/order commits only via confirm
 function renderOrders(){$('orderCount').textContent=orders.length+' ORDERS';$('orders').innerHTML=orders.length?orders.slice(0,6).map(o=>{const bs=o.baseSymbol||'SOL',qs=o.quoteSymbol||'USDC',mode=(o.mode||'paper').toUpperCase();return '<div style="padding:12px 16px;border-bottom:1px solid var(--rowline);display:flex;justify-content:space-between;gap:8px"><div><strong class="'+(o.side==='buy'?'positive':'negative')+'">'+o.side.toUpperCase()+' '+esc(bs)+'/'+esc(qs)+'</strong> <span class="pill" style="font-size:10px;padding:2px 7px">'+mode+'</span>'+(o.type==='limit'?' <span class="pill" style="font-size:10px;padding:2px 7px">LIMIT</span>':'')+(o.status&&o.status!=='filled'?' <span class="pill" style="font-size:10px;padding:2px 7px">'+esc(o.status.toUpperCase())+'</span>':'')+'<div class="sub">'+o.time.toLocaleTimeString()+' · '+fmtQty(o.qty)+' '+esc(bs)+'</div></div><div style="text-align:right"><strong>'+usd(o.amount)+'</strong><div class="sub">@ '+formatPriceUsd(o.price)+'</div></div></div>';}).join(''):'<div class="empty">Your simulated paper orders will appear here.</div>'}
-let resetArmUntil=0,resetLabel=null;$('resetPaper').onclick=()=>{const b=$('resetPaper');if(resetLabel===null)resetLabel=b.textContent;const dirty=orders.length||Object.keys(holdings).length>0||cash!==10000||limitOrders.some(o=>o.status==='open');if(dirty&&Date.now()>resetArmUntil){resetArmUntil=Date.now()+5000;b.textContent='Confirm reset?';toast('This also clears your paper order history. Click again within 5 s to confirm.');setTimeout(()=>{if(Date.now()>=resetArmUntil)b.textContent=resetLabel;},5100);return;}resetArmUntil=0;b.textContent=resetLabel;/* N5.3: watchlists are personal data, not paper state — the reset deliberately leaves them (and settings/layout) untouched. */cash=10000;holdings={};orders=[];limitOrders=[];histClearPaper();histExpanded.clear();renderOrders();renderLimitOrders();renderHistory();updatePortfolio();saveState();toast('Paper account reset — paper order history cleared.');};
+let resetArmUntil=0,resetLabel=null;$('resetPaper').onclick=()=>{const b=$('resetPaper');if(resetLabel===null)resetLabel=b.textContent;const dirty=orders.length||Object.keys(holdings).length>0||cash!==PAPER_START_CASH||limitOrders.some(o=>o.status==='open');if(dirty&&Date.now()>resetArmUntil){resetArmUntil=Date.now()+5000;b.textContent='Confirm reset?';toast('This also clears your paper order history. Click again within 5 s to confirm.');setTimeout(()=>{if(Date.now()>=resetArmUntil)b.textContent=resetLabel;},5100);return;}resetArmUntil=0;b.textContent=resetLabel;/* N5.3: watchlists are personal data, not paper state — the reset deliberately leaves them (and settings/layout) untouched. */cash=PAPER_START_CASH;holdings={};orders=[];limitOrders=[];histClearPaper();histExpanded.clear();renderOrders();renderLimitOrders();renderHistory();updatePortfolio();saveState();toast('Paper account reset — paper order history cleared.');};
 async function searchTokens(){const q=$('tokenSearch').value.trim();saveState();if(!q)return;const box=$('searchResults');box.innerHTML='<div class="empty">Searching DexScreener…</div>';try{const controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),10000);let j;try{const r=await fetch('https://api.dexscreener.com/latest/dex/search?q='+encodeURIComponent(q),{signal:controller.signal});if(!r.ok)throw Error('Search HTTP '+r.status);j=await r.json()}finally{clearTimeout(timeout)}const ps=(j.pairs||[]).filter(p=>p.chainId==='solana'&&p.baseToken?.address&&p.priceUsd).sort((a,b)=>(Number(b.liquidity?.usd)||0)-(Number(a.liquidity?.usd)||0)).slice(0,8);ps.forEach(p=>{try{wlFeedMap.set(p.baseToken.address,{priceUsd:Number(p.priceUsd),change24h:p.priceChange?.h24==null?null:Number(p.priceChange.h24)});}catch(_){}});if(!ps.length){box.innerHTML='<div class="empty">No Solana pairs found for this search.</div>';return}box.innerHTML=ps.map(p=>{const address=p.baseToken.address,added=wlIsIn(wlActiveId(),address),change=p.priceChange?.h24==null||!Number.isFinite(Number(p.priceChange.h24))?null:Number(p.priceChange.h24);return '<div class="result"><div><strong>'+esc(p.baseToken.symbol)+' / '+esc(p.quoteToken.symbol)+'</strong><small>'+esc(p.baseToken.name)+' · '+esc(p.dexId||'DEX')+' · liq '+(p.liquidity?.usd?usd(p.liquidity.usd):'—')+'</small><small>'+esc(address.slice(0,6)+'…'+address.slice(-5))+'</small></div><div style="text-align:right"><strong>'+formatPriceUsd(p.priceUsd)+'</strong><small class="'+(change===null?'':change>=0?'positive':'negative')+'">'+(change===null?'—':(change>=0?'+':'')+fmt(change,2)+'%')+' 24h</small><button class="action" style="margin-top:5px" data-watch="'+esc(address)+'">'+(added?'Added ✓':'Watch')+'</button> <button class="action wlsave" style="margin-top:5px" data-wlsave="'+esc(address)+'" aria-label="Save to a watchlist" title="Save to…">▾</button> <button class="action" style="margin-top:5px" data-trade-addr="'+esc(address)+'">Trade</button></div></div>'}).join('');box.querySelectorAll('[data-trade-addr]').forEach(b=>b.onclick=()=>{const p=ps.find(row=>row.baseToken.address===b.dataset.tradeAddr);if(p)selectTicketPair(p);});box.querySelectorAll('[data-watch]').forEach(b=>b.onclick=()=>{const address=b.dataset.watch,p=ps.find(row=>row.baseToken.address===address),l=wlActiveList();if(!p||!l)return;const res=wlToggle(l.id,wlPairToken(address,p));if(res==='full'){toast('\''+l.name+'\' is full ('+WL_MAX_TOKENS+' tokens). Remove one or start a new list.');return}b.textContent=res==='added'?'Added ✓':'Watch';toast((res==='added'?'Added ':'Removed ')+(p.baseToken.symbol||'token')+(res==='added'?' to ':' from ')+'\''+l.name+'\'.');renderWatchlist();if(!$('wlDrawer').hidden)paintWlDrawer()});
 box.querySelectorAll('[data-wlsave]').forEach(b=>b.onclick=e=>{e.stopPropagation();const address=b.dataset.wlsave,p=ps.find(row=>row.baseToken.address===address);if(!p)return;openWlMenu(b,address,wlPairToken(address,p));})}catch(e){box.innerHTML='<div class="empty">Search timed out or failed. Check your connection and try again.</div>'}}
 $('searchBtn').onclick=searchTokens;$('tokenSearch').onkeydown=e=>{if(e.key==='Enter')searchTokens()};document.querySelectorAll('[data-range]').forEach(b=>{b.classList.toggle('active',b.dataset.range===chartRange);b.onclick=()=>{document.querySelectorAll('[data-range]').forEach(x=>x.classList.remove('active'));b.classList.add('active');chartRange=b.dataset.range||'1H';tickFails=0;tickSkipUntil=0;saveState();toast('Chart range saved. Loading real candles…');loadCandles('range')}});
-wireChartHover();renderOrders();renderWatchlist();document.querySelectorAll('[data-range]').forEach(b=>b.classList.toggle('active',b.dataset.range===chartRange));document.querySelectorAll('#slipPresets button').forEach(b=>b.onclick=()=>onSlipPreset(Number(b.dataset.slip)));$('slippageInput').value=String(slipLoad());$('slippageInput').addEventListener('change',onSlipCustom);paintSlipPresets();applySettingsBoot();applyLayoutBoot();wireWatchlistDrawer(); // N5.1: theme/density attrs, default size, drawer wiring; N5.2: layout panels + workspaces; N5.3: watchlist drawer + header card trigger
+wireChartHover();renderOrders();renderWatchlist();document.querySelectorAll('[data-range]').forEach(b=>b.classList.toggle('active',b.dataset.range===chartRange));document.querySelectorAll('#slipPresets button').forEach(b=>b.onclick=()=>onSlipPreset(Number(b.dataset.slip)));$('slippageInput').value=String(slipLoad());$('slippageInput').addEventListener('change',onSlipCustom);paintSlipPresets();applySettingsBoot();applyLayoutBoot();wireWatchlistDrawer();wireDashboard();paintDashboard(true); // N5.1: theme/density attrs, default size, drawer wiring; N5.2: layout panels + workspaces; N5.3: watchlist drawer + header card trigger; N5.4: dashboard tabs + first paint
 $('retryFeed').onclick=fetchMarket;$('chartFeedStatus').onclick=()=>{if(candleStatus==='stale'||candleStatus==='error'){tickFails=0;tickSkipUntil=0;loadCandles('retry')}};document.addEventListener('visibilitychange',()=>{if(!document.hidden&&price>0)fetchMarket()});$('tokenSearch').oninput=saveState;setPrice(0,0);fetchMarket();searchTokens();setInterval(fetchMarket,30000);
 
 /* N4.4: ticket slippage UI + paper review sheet (DOM wiring). */
