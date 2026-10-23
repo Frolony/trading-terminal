@@ -882,8 +882,25 @@ function formatPrice(v){ // N5.1: quote-currency-aware price display (USD keeps 
   return formatPriceUsd(v);
 }
 function sizeInputUnitUsd(){return settings&&settings.quoteCurrency==='SOL'&&price>0?price:1;} // USD value of one size-input unit
-function ticketSizeUsd(){const el=$('orderAmount');const v=el?Number(el.value):0;return (Number.isFinite(v)?v:0)*sizeInputUnitUsd();} // input → USD, unit-aware
+function ticketSizeUsd(){const el=$('orderAmount');const v=el?Number(el.value):0;const n=Number.isFinite(v)?v:0;
+  // A33 (2026-10-22): the input has been observed holding more precision than it displays
+  // (raw float after quote-currency switches; the writer is unidentified — the only in-page
+  // writer, fillSizeInput, rounds). Normalize the read to the displayed precision so fill
+  // math always uses exactly what the user sees. No-op for already-rounded values.
+  const r=settings&&settings.quoteCurrency==='SOL'?Number(n.toPrecision(6)):Math.round(n*100)/100;
+  return r*sizeInputUnitUsd();} // input → USD, unit-aware
 function fillSizeInput(usd){const el=$('orderAmount');if(!el)return;const u=sizeInputUnitUsd();const v=usd/u;el.value=settings&&settings.quoteCurrency==='SOL'?String(Number(v.toPrecision(6))):v.toFixed(2);} // USD → input units
+function healSizeInput(){ // A33: self-heal — if the held value carries more precision than the display precision, rewrite it rounded. Never disturbs user typing: only trims excess digits, never pads.
+  const el=$('orderAmount');if(!el)return;const cur=el.value;if(cur===''||cur==null)return;
+  const n=Number(cur);if(!Number.isFinite(n))return;
+  if(settings&&settings.quoteCurrency==='SOL'){
+    const want=String(Number(n.toPrecision(6)));
+    if(cur!==want&&String(n).length>want.length)el.value=want;
+  }else{
+    const dec=(cur.split('.')[1]||'').replace(/[^0-9]/g,'').length;
+    if(dec>2)el.value=(Math.round(n*100)/100).toFixed(2);
+  }
+}
 function syncMetaTheme(){const tc=document.querySelector('meta[name="theme-color"]');if(tc)tc.setAttribute('content',settings.theme==='light'?'#f7f8fa':'#0b0d12');const cs=document.querySelector('meta[name="color-scheme"]');if(cs)cs.setAttribute('content',settings.theme);}
 function applySettingsVisual(){ // re-render every price surface; never touches fills, orders, or the paper account
   document.documentElement.dataset.theme=settings.theme;
@@ -1544,6 +1561,7 @@ function syncPricesFromPairs(){ // keep the selected pair + holding valuations o
   if(ticketPair){const row=marketPairs.find(p=>p.baseToken&&p.baseToken.address===ticketPair.baseMint);if(row){const px=Number(row.priceUsd);if(px>0)ticketPair.price=px;const ch=row.priceChange&&row.priceChange.h24;ticketPair.change24h=ch==null||!Number.isFinite(Number(ch))?null:Number(ch);}}
 }
 function refreshTicket(){
+  healSizeInput(); // A33: keep the held size value at display precision (self-heals any raw float)
   const tp=ticketPair,pr=ticketPrice();
   if(!$('ticketPairName'))return;
   $('ticketPairName').textContent=tp?tp.baseSymbol+' / '+tp.quoteSymbol:'—';
