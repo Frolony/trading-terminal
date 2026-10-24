@@ -221,10 +221,10 @@ the brief outline flash marks the landing panel without touching its copy.*/
 </style></head><body><div class="app">
 <header class="top"><div class="brand"><div class="mark">ɢ</div><div><h1>GECKO TERMINAL</h1><small>Solana market intelligence</small></div></div><div class="topright"><div class="switchrow viewtabs" role="tablist" aria-label="Terminal views"><button type="button" id="tabTerminal" class="active mode" role="tab" aria-selected="true">Terminal</button><button type="button" id="tabDashboard" class="mode" role="tab" aria-selected="false">Dashboard</button></div><span class="pill">NETWORK&nbsp; / &nbsp;SOLANA</span><span class="status"><i class="dot"></i><span id="feedStatus" data-testid="feed-badge">CONNECTING DATA</span></span><span class="wwrap"><button id="walletBtn" class="walletbtn" type="button">Connect Wallet</button><span id="syncDot" style="display:none;width:8px;height:8px;border-radius:50%;background:#888;vertical-align:middle;margin-left:2px" title="Sync"></span><div class="wdd" id="walletDd" hidden><div class="eyebrow" id="walletDdName" style="margin-top:8px">Wallet</div><div class="waddr" id="walletDdAddr"></div><div class="walletrow"><span>SOL balance</span><strong id="walletSol">—</strong></div><div class="walletrow"><span>USDC balance</span><strong id="walletUsdc">—</strong></div><div class="walletrow"><span>USDT balance</span><strong id="walletUsdt">—</strong></div><div class="wrowbtn"><button type="button" id="walletCopy">Copy address</button><button type="button" id="walletRetryBal">Retry balances</button></div><div class="wrowbtn"><button type="button" id="walletDisconnect" class="danger">Disconnect</button></div></div></span><span class="pill">PAPER MODE</span><button id="howItWorksLink" class="howlink" type="button" data-testid="how-it-works-link" title="How the terminal handles orders — simulated paper trading and wallet-signed swaps">How this works</button><span class="wwrap"><button id="layoutBtn" class="iconbtn" type="button" aria-label="Open layout" title="Layout">▦</button><div class="lpop" id="layoutPop" hidden role="dialog" aria-label="Layout"><div class="lpop-head"><strong>Layout</strong><button class="wclose" id="layoutPopClose" type="button" aria-label="Close layout">×</button></div><div class="lpop-note">Layouts apply to the trading desk (main page). Drag any panel by its header to move it anywhere — the arrows reorder panels within each column.</div><div id="layoutPanelList"></div><div class="lpop-hidden" id="layoutHiddenNote" hidden></div><div class="lpop-sec">Workspaces</div><div id="layoutWsList"></div><div class="searchrow" style="margin-top:8px"><input id="layoutWsName" maxlength="40" placeholder="Name this layout" aria-label="Workspace name" autocomplete="off" spellcheck="false"><button id="layoutWsSave" type="button">Save</button></div></div></span><button id="resetUiBtn" class="resetuibtn" type="button" data-testid="reset-ui-btn" aria-label="Reset UI layout" title="Reset UI layout — restore every panel to its home position">↺ Reset UI</button><button id="settingsBtn" class="iconbtn" type="button" aria-label="Open settings" title="Settings">⚙</button></div></header>
 <div class="stats" data-layout-root data-root-key="stats">
-<div class="stat"><div class="eyebrow">SOL / USD</div><div class="big" id="statPrice">$—</div><div class="sub" id="statPriceSub">Live market feed</div></div>
-<div class="stat"><div class="eyebrow">24H CHANGE</div><div class="big" id="statChange" data-testid="hero-chg-24h">—</div><div class="sub">Solana spot market</div></div>
-<div class="stat"><div class="eyebrow">PAPER EQUITY</div><div class="big" id="equity">$10,000.00</div><div class="sub" id="pnlSub">Virtual starting balance</div></div>
-<div class="stat" data-panel="watchlist" data-testid="watchlist-card"><div class="eyebrow" data-drag-handle>WATCHLIST</div><div class="big" id="watchlistCount">0</div><div class="sub" id="watchlistSummary">No tokens saved</div></div>
+<div class="stat" data-panel="solstat" data-drag-handle><div class="eyebrow">SOL / USD</div><div class="big" id="statPrice">$—</div><div class="sub" id="statPriceSub">Live market feed</div></div>
+<div class="stat" data-panel="chgstat" data-drag-handle><div class="eyebrow">24H CHANGE</div><div class="big" id="statChange" data-testid="hero-chg-24h">—</div><div class="sub">Solana spot market</div></div>
+<div class="stat" data-panel="equitystat" data-drag-handle><div class="eyebrow">PAPER EQUITY</div><div class="big" id="equity">$10,000.00</div><div class="sub" id="pnlSub">Virtual starting balance</div></div>
+<div class="stat" data-panel="watchlist" data-testid="watchlist-card" data-drag-handle><div class="eyebrow">WATCHLIST</div><div class="big" id="watchlistCount">0</div><div class="sub" id="watchlistSummary">No tokens saved</div></div>
 </div>
 <div class="layout"><main class="maincol" data-layout-root data-root-key="maincol">
 <section class="panel" data-panel="chart"><div class="panelbody"><div class="charthead" data-drag-handle><div class="coinname"><div class="coinicon">◎</div><div><strong>Solana <span id="chartCoinPair" style="color:var(--muted);font-weight:500">SOL</span></strong><small id="chartCoinSub">Native asset · Solana mainnet</small></div></div><div style="text-align:right"><div class="price" id="heroPrice">$—</div><div id="heroChange" class="positive" style="font-size:12px">Fetching market data…</div></div></div><div class="range"><span class="pill" id="chartFeedStatus" style="font-size:11px;align-self:center;cursor:default" title="Chart feed status — click to retry when stale">CHART —</span><button class="active" data-range="1H">1H</button><button data-range="24H">24H</button><button data-range="7D">7D</button><button data-range="30D">30D</button></div><div class="chart" id="chartBox"><svg id="priceChart" viewBox="0 0 900 220" preserveAspectRatio="none" aria-label="SOL price chart"><defs><linearGradient id="fill" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="#42d6a0" stop-opacity=".25"/><stop offset="1" stop-color="#42d6a0" stop-opacity="0"/></linearGradient></defs><g stroke="var(--chartgrid)" stroke-width="1"><path d="M0 35H900M0 85H900M0 135H900M0 185H900"/></g><path id="area" d="" fill="url(#fill)"/><path id="line" d="" fill="none" stroke="#42d6a0" stroke-width="2.5" vector-effect="non-scaling-stroke"/><g id="candles"></g><line id="lastPriceLine" x1="0" x2="900" y1="0" y2="0" stroke="var(--muted)" stroke-width="1" stroke-dasharray="5 4" vector-effect="non-scaling-stroke" visibility="hidden"/></svg><div class="yaxis" id="chartYAxis"></div><div class="readout" id="chartReadout"></div><div class="crosshair" id="chartCross"></div><div class="chartmsg" id="chartMsg" hidden></div></div><div class="chartfoot"><span id="chartCaption">Loading real candles…</span><span id="updatedAt">Waiting for feed</span></div></div></section>
@@ -258,7 +258,7 @@ the brief outline flash marks the landing panel without touching its copy.*/
 <section class="panel" data-panel="portfolio"><div class="panelhead" data-drag-handle><h2>Paper portfolio</h2><span class="eyebrow">LOCAL SESSION</span></div><div class="panelbody"><div class="walletrow"><span>Cash balance</span><strong id="cashBal" data-testid="paper-cash">$10,000.00</strong></div><div id="holdingsList" data-testid="holdings-list"><div class="empty">No paper positions yet.</div></div><div class="walletrow"><span>Position value</span><strong id="posValue">$0.00</strong></div><div class="walletrow"><span>Unrealized P/L</span><strong id="unrealized">$0.00</strong></div><button id="resetPaper" data-testid="reset-btn" style="margin-top:13px;width:100%;padding:8px;background:var(--panel);border:1px solid var(--line);color:var(--btntext);border-radius:7px;font-size:11px">Reset paper account</button></div></section>
 <section class="panel" data-panel="orders"><div class="panelhead" data-drag-handle><h2>Recent orders</h2><span class="eyebrow" id="orderCount">0 ORDERS</span></div><div id="orders" data-testid="orders-list"><div class="empty">Your simulated paper orders will appear here.</div></div></section>
 <section class="panel" data-panel="limits"><div class="panelhead" data-drag-handle><h2>Open limit orders</h2><span class="eyebrow" id="limitOpenCount">0 OPEN</span></div><div id="limitOpen"><div class="empty">No open limit orders. Create one from the Limit tab on the ticket.</div></div><div class="sub" style="padding:0 16px 12px">Simulated on the spot feed — fills are not instant and not guaranteed.</div></section>
-<section class="panel"><div class="panelhead"><div class="histheadrow" style="flex:1"><h2>Trade history</h2><button type="button" class="action" id="histExport">Export CSV</button></div></div><div class="panelbody"><div class="amounts" id="histModeChips"><button type="button" data-hm="all" class="on">All</button><button type="button" data-hm="paper">Paper</button><button type="button" data-hm="live">Live</button></div><div class="hfilt"><select id="histPair" aria-label="Filter history by pair"><option value="all">All pairs</option></select><select id="histKind" aria-label="Filter history by type"><option value="all">All types</option></select><input id="histSig" placeholder="Search signature…" aria-label="Search history by transaction signature" maxlength="88"></div><div id="histLiveBar" class="sub" style="margin-top:8px" hidden></div><div id="historyList" style="margin-top:6px"><div class="empty">No trade events yet.</div></div><div class="sub" style="margin-top:10px">Paper events are device-local. Live events are namespaced by wallet and recorded only after on-chain confirmation. Prices shown are execution prices at fill time — not current quotes.</div></div></section>
+<section class="panel" data-panel="history"><div class="panelhead" data-drag-handle><div class="histheadrow" style="flex:1"><h2>Trade history</h2><button type="button" class="action" id="histExport">Export CSV</button></div></div><div class="panelbody"><div class="amounts" id="histModeChips"><button type="button" data-hm="all" class="on">All</button><button type="button" data-hm="paper">Paper</button><button type="button" data-hm="live">Live</button></div><div class="hfilt"><select id="histPair" aria-label="Filter history by pair"><option value="all">All pairs</option></select><select id="histKind" aria-label="Filter history by type"><option value="all">All types</option></select><input id="histSig" placeholder="Search signature…" aria-label="Search history by transaction signature" maxlength="88"></div><div id="histLiveBar" class="sub" style="margin-top:8px" hidden></div><div id="historyList" style="margin-top:6px"><div class="empty">No trade events yet.</div></div><div class="sub" style="margin-top:10px">Paper events are device-local. Live events are namespaced by wallet and recorded only after on-chain confirmation. Prices shown are execution prices at fill time — not current quotes.</div></div></section>
 <section class="panel" data-panel="execpath" id="execPathPanel" tabindex="-1" aria-label="Execution path"><div class="panelhead" data-drag-handle><h2>Execution path</h2><span class="pill">HOW IT WORKS</span></div><div class="panelbody" id="execPathBody"></div></section>
 </aside></div><footer class="foot"><span>GECKO TERMINAL · SOLANA WATCH DESK · PROTOTYPE 0.1</span><span>Market data via public DexScreener API and CoinGecko · paper trading only</span></footer></div><div class="wmodal" id="walletModal" hidden><div class="wmodal-card" role="dialog" aria-modal="true" aria-labelledby="wmodalTitle"><div class="wmodal-head"><div><h3 id="wmodalTitle">Connect a wallet</h3><small>Solana mainnet · read-only in this build</small></div><button class="wclose" id="walletModalClose" type="button" aria-label="Close">×</button></div><div class="wmodal-body" id="walletModalBody"><div class="wnote loading">Loading wallet adapters…</div></div></div></div>
 <div class="drawer" id="settingsDrawer" hidden><div class="drawer-card" role="dialog" aria-modal="true" aria-labelledby="settingsTitle"><div class="drawer-head"><div><h3 id="settingsTitle">Settings</h3><small>Preferences · saved on this device</small></div><button class="wclose" id="settingsClose" type="button" aria-label="Close settings">×</button></div><div class="drawer-body" id="settingsBody"><!-- N5.2 appends further sections here; N5.1 owns the Terminal section. --></div></div></div>
@@ -1124,8 +1124,9 @@ function applySettingsBoot(){
 }
 /*__N52_LAYOUT_START__*/
 /* N5.2 customizable layout (2026-10-22): show/hide + reorder the desk panels
-   (N5.9: all 11 — chart, Strategy Lab, pairs, dashboard, discovery, ticket,
-   portfolio, orders, limits, execpath, watchlist card) and save named workspaces. Panels keep their
+   (N5.9: all 15 — chart, Strategy Lab, pairs, dashboard, discovery, ticket,
+   portfolio, orders, limits, history, execpath, the three stat cards,
+   watchlist card) and save named workspaces. Panels keep their
    home containers (main column / side column / header stats); N5.6 superseded
    the v1 within-container limit with cross-container placement by place+rank.
    Layouts persist in their own versioned key `gecko-terminal:layout-v1`,
@@ -1146,29 +1147,39 @@ const LAYOUT_KEY='gecko-terminal:layout-v1';
    workspace could have hidden them deliberately; hiding them on upgrade
    would have made visible content vanish. The N5.4 rule still stands for
    genuinely new panels: sanitizeWorkspace hides ids absent from a stored
-   order; the migration below only unhides these six, on v1/v2 stores. */
-const LAYOUT_VERSION=3;
+   order; the migration below only unhides these six, on v1/v2 stores.
+   N5.9 part 2 (same day, Carlos's widened scope): LAYOUT_VERSION 4 — the
+   last unenrolled section (Trade history) and the three top stat cards
+   (solstat, chgstat, equitystat) join, and the watchlist card's grab area
+   widens from its eyebrow to the whole card. Migration rule, version-aware:
+   v1/v2 stores unhide all ten newly-enrolled ids (none could have been
+   hidden deliberately before enrollment); v3 stores unhide ONLY the four
+   part-2 ids (the six were enrollable in v3, so a v3 hide of one of them
+   is a deliberate user choice and must survive); v4 stores load natively. */
+const LAYOUT_VERSION=4;
 /* N5.9 ids unhidden by the v1/v2 migration (see above). */
 const N59_MIGRATED_IDS=['lab','discovery','portfolio','orders','limits','execpath'];
+/* N5.9 part-2 ids: unhidden by the v1/v2/v3 migrations (see above). */
+const N59B_MIGRATED_IDS=['history','solstat','chgstat','equitystat'];
 const ROOT_KEYS=['stats','maincol','sidecol'];
 /* N5.6: true home containers, grounded in the shipped DOM (the prep pack's
    "watchlist,dashboard → stats" line was a slip — dashboard ships in maincol).
    v1→v2 migration derives place from this map so existing arrangements survive. */
-/* N5.9: all 11 panels. PANEL_IDS order is the shipped order: it must stay
-   consistent with the per-root shipped sequences (maincol: chart, lab,
-   pairs, dashboard, discovery; sidecol: ticket, portfolio, orders, limits,
-   execpath; stats: watchlist) or renderPanelPlacement's rank sort will
-   reorder the page on boot. Trade history is the one section NOT enrolled
-   (not in A48's six); it stays a fixed sidecol node. */
-const PANEL_HOME={chart:'maincol',lab:'maincol',pairs:'maincol',dashboard:'maincol',discovery:'maincol',ticket:'sidecol',portfolio:'sidecol',orders:'sidecol',limits:'sidecol',execpath:'sidecol',watchlist:'stats'};
-const PANEL_IDS=['chart','lab','pairs','dashboard','discovery','ticket','portfolio','orders','limits','execpath','watchlist'];
-const PANEL_LABELS={chart:'Chart',lab:'Strategy Lab',pairs:'Market pairs',dashboard:'Dashboard',discovery:'Token discovery',ticket:'Order ticket',portfolio:'Paper portfolio',orders:'Recent orders',limits:'Open limit orders',execpath:'Execution path',watchlist:'Watchlist card'};
+/* N5.9: all 15 desk sections are panels (part 2 enrolls the last four).
+   PANEL_IDS order is the shipped order: it must stay consistent with the
+   per-root shipped sequences (maincol: chart, lab, pairs, dashboard,
+   discovery; sidecol: ticket, portfolio, orders, limits, history, execpath;
+   stats: solstat, chgstat, equitystat, watchlist) or renderPanelPlacement's
+   rank sort will reorder the page on boot. */
+const PANEL_HOME={chart:'maincol',lab:'maincol',pairs:'maincol',dashboard:'maincol',discovery:'maincol',ticket:'sidecol',portfolio:'sidecol',orders:'sidecol',limits:'sidecol',history:'sidecol',execpath:'sidecol',solstat:'stats',chgstat:'stats',equitystat:'stats',watchlist:'stats'};
+const PANEL_IDS=['chart','lab','pairs','dashboard','discovery','ticket','portfolio','orders','limits','history','execpath','solstat','chgstat','equitystat','watchlist'];
+const PANEL_LABELS={chart:'Chart',lab:'Strategy Lab',pairs:'Market pairs',dashboard:'Dashboard',discovery:'Token discovery',ticket:'Order ticket',portfolio:'Paper portfolio',orders:'Recent orders',limits:'Open limit orders',history:'Trade history',execpath:'Execution path',solstat:'SOL/USD stat',chgstat:'24H change stat',equitystat:'Paper equity stat',watchlist:'Watchlist card'};
 /* Pack §1.4: the Trader built-in matches the page's shipped order (chart first in the
    main column, ticket top of the side column); Watcher swaps pairs above chart and
    hides the ticket. */
 const BUILT_IN_WORKSPACES=Object.freeze([
-  {id:'builtin-trader',name:'Trader',builtIn:true,order:['chart','lab','pairs','dashboard','discovery','ticket','portfolio','orders','limits','execpath','watchlist'],hidden:['dashboard'],place:{chart:'maincol',lab:'maincol',pairs:'maincol',dashboard:'maincol',discovery:'maincol',ticket:'sidecol',portfolio:'sidecol',orders:'sidecol',limits:'sidecol',execpath:'sidecol',watchlist:'stats'}},
-  {id:'builtin-watcher',name:'Watcher',builtIn:true,order:['pairs','lab','chart','dashboard','discovery','ticket','portfolio','orders','limits','execpath','watchlist'],hidden:['ticket','dashboard'],place:{chart:'maincol',lab:'maincol',pairs:'maincol',dashboard:'maincol',discovery:'maincol',ticket:'sidecol',portfolio:'sidecol',orders:'sidecol',limits:'sidecol',execpath:'sidecol',watchlist:'stats'}},
+  {id:'builtin-trader',name:'Trader',builtIn:true,order:['chart','lab','pairs','dashboard','discovery','ticket','portfolio','orders','limits','history','execpath','solstat','chgstat','equitystat','watchlist'],hidden:['dashboard'],place:{chart:'maincol',lab:'maincol',pairs:'maincol',dashboard:'maincol',discovery:'maincol',ticket:'sidecol',portfolio:'sidecol',orders:'sidecol',limits:'sidecol',history:'sidecol',execpath:'sidecol',solstat:'stats',chgstat:'stats',equitystat:'stats',watchlist:'stats'}},
+  {id:'builtin-watcher',name:'Watcher',builtIn:true,order:['pairs','lab','chart','dashboard','discovery','ticket','portfolio','orders','limits','history','execpath','solstat','chgstat','equitystat','watchlist'],hidden:['ticket','dashboard'],place:{chart:'maincol',lab:'maincol',pairs:'maincol',dashboard:'maincol',discovery:'maincol',ticket:'sidecol',portfolio:'sidecol',orders:'sidecol',limits:'sidecol',history:'sidecol',execpath:'sidecol',solstat:'stats',chgstat:'stats',equitystat:'stats',watchlist:'stats'}},
 ]);
 function sanitizeWorkspace(ws){
   ws=ws||{};
@@ -1199,13 +1210,19 @@ function loadLayout(raw){
      the stored order kept, so the per-container arrangement is preserved.
      N5.9: v3 stores load natively; v1/v2 stores migrate as above AND unhide
      the six N5.9 ids (they were visible sections before enrollment — see the
-     LAYOUT_VERSION comment). A v3 store's hidden list is never rewritten. */
-  if(parsed&&(parsed.version===LAYOUT_VERSION||parsed.version===2||parsed.version===1)){
+     LAYOUT_VERSION comment). A v3 store's hidden list is never rewritten.
+     N5.9 part 2: v4 stores load natively; v1/v2 stores unhide all ten
+     newly-enrolled ids; v3 stores unhide ONLY the four part-2 ids (a v3
+     hide of one of the six is a deliberate user choice and must survive). */
+  if(parsed&&(parsed.version===LAYOUT_VERSION||parsed.version===3||parsed.version===2||parsed.version===1)){
     const migrate=parsed.version!==LAYOUT_VERSION;
     const migrateV1=parsed.version===1;
     custom=(Array.isArray(parsed.workspaces)?parsed.workspaces:[]).map(ws=>{
       const clean=sanitizeWorkspace(migrateV1?Object.assign({},ws,{place:migrateV1Place()}):ws);
-      if(migrate)clean.hidden=clean.hidden.filter(id=>!N59_MIGRATED_IDS.includes(id));
+      if(migrate){
+        const unhide=parsed.version===3?N59B_MIGRATED_IDS:N59_MIGRATED_IDS.concat(N59B_MIGRATED_IDS);
+        clean.hidden=clean.hidden.filter(id=>!unhide.includes(id));
+      }
       return clean;
     }).filter(w=>!w.builtIn);
     if(typeof parsed.activeWorkspaceId==='string'&&parsed.activeWorkspaceId)activeId=parsed.activeWorkspaceId;
@@ -1224,8 +1241,8 @@ function panelEl(id){return document.querySelector('[data-panel="'+id+'"]');}
    captured on the FIRST placement call — before any panel has moved, the DOM
    still carries the shipped order (applyLayoutBoot is the first caller). Panel
    slots in the snapshot are the positions panels return to; non-panel
-   the non-panel Trade history section never moves, so it stays exactly
-   where it shipped (N5.9: the other six sections are panels now). The old slot technique anchored extras at the first
+   every root child is now a panel (N5.9 part 2); the snapshot's node
+   branch stays for sections added later. The old slot technique anchored extras at the first
    panel slot of a root, so after a Reset UI from a mangled state (maincol
    holding only the hidden dashboard) chart/pairs clustered ~900 px below
    their shipped spots — order-correct, but reading as "disappeared" below
@@ -1238,7 +1255,8 @@ function renderPanelPlacement(ws){
      data-root-key matches; within each root, panels sort by the global order
      rank. DOM-node moves only — ticket input, chart canvas and feed
      subscriptions survive cross-container moves exactly as they survived
-     v1 slot swaps. The one non-layoutable panel (Trade history) never moves. */
+     v1 slot swaps. Every root child is a panel now (N5.9 part 2); the
+     snapshot's node branch stays for sections added later. */
   const rank=id=>{const i=ws.order.indexOf(id);return i<0?PANEL_IDS.length:i;};
   const byRoot={};
   PANEL_IDS.forEach(id=>{
@@ -1484,8 +1502,8 @@ function applyLayoutBoot(){
    built-in: on Trader/Watcher it forks first (same fork-on-edit rule as every
    other layout edit), then overwrites the fork. Two-click confirm mirrors the
    paper-account reset pattern so it cannot fire by accident. */
-/* N5.9: Reset UI restores all 11 panels, in shipped order, all visible. */
-const SHIPPED_LAYOUT_ORDER=['chart','lab','pairs','dashboard','discovery','ticket','portfolio','orders','limits','execpath','watchlist'];
+/* N5.9: Reset UI restores all 15 panels, in shipped order, all visible. */
+const SHIPPED_LAYOUT_ORDER=['chart','lab','pairs','dashboard','discovery','ticket','portfolio','orders','limits','history','execpath','solstat','chgstat','equitystat','watchlist'];
 let resetUiArmUntil=0,resetUiLabel=null;
 function resetUiToDefault(){
   const f=forkActiveWorkspace();const ws=f.ws;
