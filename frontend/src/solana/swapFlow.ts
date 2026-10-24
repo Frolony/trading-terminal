@@ -209,6 +209,24 @@ export function poolFeeNote(raw: unknown): string | null {
   return null;
 }
 
+// ---------------------------------------------------------------------------
+// N4.8 (2026-10-23) — pre-wallet fee transparency for the /raydium/ quote panel.
+// The network fee is unknowable before a transaction exists: it is estimated
+// at review-sheet open via getFeeForMessage on the BUILT transaction (N4.4).
+// The pre-wallet panel must therefore state WHEN the estimate appears, never
+// a number. Pool fees reuse the N4.4 tolerant reader (poolFeeNote), so the
+// pre-wallet note and the wallet-gated review sheet read the same quote field
+// and can never contradict each other.
+// ---------------------------------------------------------------------------
+
+/** Copy for the pre-wallet fee section of the /raydium/ quote panel (N4.8). */
+export const PREWALLET_FEES_COPY = {
+  /** Section heading rendered above the two fee rows. */
+  sectionHeading: 'FEES',
+  /** Network-fee line: honest about when the estimate appears; invents nothing. */
+  networkFee: 'Estimated at review — shown before you sign',
+} as const;
+
 /**
  * Shared slippage store — one store, two render sites (pack §3.1.1).
  * The / ticket (src/index.html) and the /raydium/ panel (SwapPanel.tsx) both

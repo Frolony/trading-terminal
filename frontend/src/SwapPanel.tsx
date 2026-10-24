@@ -29,7 +29,7 @@
 import {useEffect} from 'react';
 import {useWallet} from '@solana/wallet-adapter-react';
 import type {VersionedTransaction} from '@solana/web3.js';
-import {COPY as SWAP_COPY,SAFETY_COPY,DEFAULT_SLIPPAGE_BPS,explorerUrl,impactBand,impactNotice,isQuoteFresh,isRejectionError,lamportsToSol,MAX_SLIPPAGE_BPS,MIN_SLIPPAGE_BPS,parseSlippageInput,poolFeeNote,readSharedSlippage,SLIPPAGE_PRESETS_BPS,solPriceUsdFromQuote,writeSharedSlippage} from './solana/swapFlow';
+import {COPY as SWAP_COPY,SAFETY_COPY,DEFAULT_SLIPPAGE_BPS,explorerUrl,impactBand,impactNotice,isQuoteFresh,isRejectionError,lamportsToSol,MAX_SLIPPAGE_BPS,MIN_SLIPPAGE_BPS,parseSlippageInput,poolFeeNote,PREWALLET_FEES_COPY,readSharedSlippage,SLIPPAGE_PRESETS_BPS,solPriceUsdFromQuote,writeSharedSlippage} from './solana/swapFlow';
 import type {PrepareState,ImpactBand} from './solana/swapFlow';
 // N4.6 (2026-10-22): live swap-fill events land in the shared trade-history store
 // (same schema as the home page's History panel) — written ONLY after on-chain
@@ -249,6 +249,12 @@ return(<div className="shell">
 </div>
 <p className="slippage-hint">{slippageHint}</p>
 {quote?(<div className="quote-details"><div className="quote-row"><span>Estimated output</span><strong>{formatBaseUnits(quote.outputAmount,quote.outputDecimals)} {quote.outputSymbol}</strong></div><div className="quote-row"><span>Minimum after slippage</span><strong>{formatBaseUnits(quote.minimumOut,quote.outputDecimals)} {quote.outputSymbol}</strong></div><div className="quote-row"><span>Route legs</span><strong>{quote.routeLegs}</strong></div><div className="quote-row"><span>Price impact</span><strong>{quote.priceImpactPct===null?'—':quote.priceImpactPct+'%'}</strong></div><div className="quote-row"><span>Quote age</span><strong>{quoteAge}s · auto-refreshes every 25s</strong></div></div>):null}
+{/* N4.8 (2026-10-23) — pre-wallet fee transparency. The network fee cannot be computed before a
+    transaction exists, so the panel states honestly WHEN the estimate appears (at review, before
+    signing) instead of inventing a number. The pool-fee note reuses the N4.4 tolerant reader
+    (poolFeeNote) — the same function the wallet-gated review sheet uses on its own quote — so the
+    two can never contradict each other. */}
+{quote?(<div><p className="eyebrow">{PREWALLET_FEES_COPY.sectionHeading}</p><div className="quote-details"><div className="quote-row"><span>Network fee</span><strong>{PREWALLET_FEES_COPY.networkFee}</strong></div><div className="quote-row"><span>Pool fees</span><strong>{poolFeeNote(quote.raw)??SAFETY_COPY.poolFeesHonest}</strong></div></div></div>):null}
 {reviewQuote&&phase!=='confirmed'?(
 <div className="review-sheet" role="dialog" aria-label={SWAP_COPY.reviewTitle}>
 <div style={{display:'flex',alignItems:'center',gap:'10px',flexWrap:'wrap'}}><h3 style={{margin:0}}>{SWAP_COPY.reviewTitle}</h3><span style={{fontSize:'11px',fontWeight:700,color:'#ff8f8f',border:'1px solid #7a2e2e',borderRadius:'999px',padding:'3px 10px',background:'#2a1414'}}>{SAFETY_COPY.liveChip}</span></div>
