@@ -87,6 +87,15 @@
 //! proposer's additions, as the kernel does — the set's shape (frozen
 //! at registration, reported against, never extended) does not change.
 //! The TransitionRecord gains `constraints` (SPACE 114 → 382).
+//! This increment adds `submit_objectives_check` (design §4.1): an
+//! Evaluator reports the independent objectives verdict (a bool) while
+//! the transition is Registered or Planning; the report overwrites the
+//! TransitionRecord's `objectives_ok` flag (SPACE 382 → 383). The
+//! OBJECTIVES bit at commit is `require_objectives && !objectives_ok` —
+//! at launch the policy does not require objectives, so the bit is
+//! clear regardless, but the flag is recorded now so a policy
+//! transition that does require it is judged on a real report, never
+//! on an assumed default.
 //! Nothing here is deployed: NO devnet deployment in W4.3, NO mainnet step
 //! exists in W4. No instruction here moves value.
 //!
@@ -317,7 +326,9 @@ pub mod treasury_program {
     /// §1.1, bit 10). The frozen constraint set, plans, rounds, and
     /// signals are stored on this record by later lifecycle
     /// instructions; this slice creates the record with the planning
-    /// deadline unset (0) until `open_planning` sets it. The payer's key
+    /// deadline unset (0) until `open_planning` sets it, and
+    /// `objectives_ok` false until `submit_objectives_check` reports.
+    /// The payer's key
     /// is recorded as the proposer: the kernel records the proposer at
     /// registration (`kernel.rs` `register_transition`), and
     /// `open_planning` below admits only that proposer or an Admin.
@@ -341,6 +352,7 @@ pub mod treasury_program {
         record.planning_deadline = 0;
         record.plan_count = 0;
         record.round_count = 1;
+        record.objectives_ok = false;
         record.constraints = constraint_ids
             .iter()
             .map(|id| ConstraintEntry {
@@ -593,6 +605,47 @@ pub mod treasury_program {
         });
         Ok(())
     }
+
+    /// Governance lifecycle (design §4.1): submit an objectives check.
+    ///
+    /// Mirrors the kernel's `report_objectives` in check order:
+    /// Evaluator role first (`Unauthorized` otherwise — the kernel's
+    /// `need(caller, Role::Evaluator)`), then Registered-or-Planning
+    /// state (`BadState` otherwise). The report is an independent
+    /// Evaluator verdict — a bool on the TransitionRecord, never
+    /// derived from plan fields (design §1.1, bit 2) — and it
+    /// overwrites: a later report replaces the earlier verdict, and
+    /// the OBJECTIVES bit at commit judges the final flag
+    /// (`require_objectives && !objectives_ok`). At launch the policy
+    /// does not require objectives, so the bit is clear with or
+    /// without a report; recording the flag now is what keeps a future
+    /// requiring policy honest. The caller binding is structural, as
+    /// with constraint reports: the AgentRecord must match the signer
+    /// (`AgentMismatch` otherwise). No new account is created: the flag
+    /// lives on the TransitionRecord (design §3), so a check is one
+    /// account write.
+    pub fn submit_objectives_check(
+        ctx: Context<SubmitObjectivesCheck>,
+        transition_id: u64,
+        ok: bool,
+    ) -> Result<()> {
+        let _ = transition_id;
+        let caller_key = ctx.accounts.caller.key();
+        let record = &ctx.accounts.agent_record;
+        require!(
+            record.agent == caller_key,
+            TreasuryError::AgentMismatch
+        );
+        let transition = &mut ctx.accounts.transition_record;
+        can_submit_objectives_check(record.is_evaluator, transition.state)?;
+        transition.objectives_ok = ok;
+        emit!(ObjectivesReported {
+            transition_id: transition.transition_id,
+            evaluator: caller_key,
+            ok,
+        });
+        Ok(())
+    }
 }
 
 /// Who may open planning, as a pure check (design §4.1, kernel
@@ -752,6 +805,23 @@ pub fn can_submit_constraint_report(
     Ok(())
 }
 
+/// Who may submit an objectives check, as a pure check (design §4.1,
+/// kernel `report_objectives`, in the kernel's check order minus the
+/// caller binding, which is structural — PDA seeds plus the
+/// AgentRecord match): the caller must hold the Evaluator role, and
+/// the transition must be Registered or Planning. The verdict itself
+/// is a bool and needs no validation — any bool is a real verdict, and
+/// a later report overwrites it, so the OBJECTIVES bit judges the
+/// final flag at commit.
+pub fn can_submit_objectives_check(is_evaluator: bool, state: u8) -> Result<()> {
+    require!(is_evaluator, TreasuryError::Unauthorized);
+    require!(
+        state == STATE_REGISTERED || state == STATE_PLANNING,
+        TreasuryError::BadState
+    );
+    Ok(())
+}
+
 /// Write one report into a frozen set: the entry must exist (an unknown
 /// id is an error, never an append — the set is frozen), and the status
 /// must be a real status code. Re-reporting overwrites: the CONSTRAINTS
@@ -798,6 +868,19 @@ pub struct ConstraintReported {
     pub evaluator: Pubkey,
     pub constraint_id: [u8; 32],
     pub status: u8,
+}
+
+/// Event for [`treasury_program::submit_objectives_check`] (design
+/// §4.1): the transition, the reporting Evaluator, and the verdict as
+/// submitted — the authorization context the design requires on every
+/// event. The OBJECTIVES bit is judged at commit over the final flag
+/// (and only when the transition type's policy requires objectives),
+/// never from this event alone.
+#[event]
+pub struct ObjectivesReported {
+    pub transition_id: u64,
+    pub evaluator: Pubkey,
+    pub ok: bool,
 }
 
 /// Event for [`treasury_program::submit_signal`] (design §4.1): the
@@ -1152,8 +1235,8 @@ pub struct ConstraintEntry {
 ///
 /// Per-transition kernel state lives here, serialized (design §1.2:
 /// load → call → store). This slice carries the manifest inputs, the
-/// recorded proposer, the state, the plan count, the round count, and
-/// the frozen constraint set; the objectives flag, rounds/signals,
+/// recorded proposer, the state, the plan count, the round count, the
+/// frozen constraint set, and the objectives flag; rounds/signals,
 /// per-transition exceptions, reconciled flag, and realized hash are
 /// added by the lifecycle instructions that own them — each field lands
 /// with the instruction that writes it, not before.
@@ -1184,6 +1267,13 @@ pub struct TransitionRecord {
     /// `submit_constraint_report`, never extended after registration.
     /// Each entry is 32 (id) + 1 (status) bytes.
     pub constraints: Vec<ConstraintEntry>,
+    /// The independent objectives verdict (kernel `objectives_ok`):
+    /// false at registration, overwritten by each
+    /// `submit_objectives_check` report. The OBJECTIVES bit at commit
+    /// is `require_objectives && !objectives_ok` — at launch the
+    /// policy does not require objectives, so the bit is clear
+    /// regardless, but the flag is recorded, not assumed.
+    pub objectives_ok: bool,
     /// The transition's declared next hash (commit/commitment anchor).
     pub declared_hash: [u8; 32],
     /// PDA bump for the `["transition", id]` seeds.
@@ -1192,8 +1282,8 @@ pub struct TransitionRecord {
 
 impl TransitionRecord {
     /// 8 (discriminator) + 8 + 1 + 32 + 8 + 8 + 8 + 4 + 4
-    /// + (4 + 8 × 33) + 32 + 1 = 382.
-    pub const SPACE: usize = 8 + 8 + 1 + 32 + 8 + 8 + 8 + 4 + 4 + 268 + 32 + 1;
+    /// + (4 + 8 × 33) + 1 + 32 + 1 = 383.
+    pub const SPACE: usize = 8 + 8 + 1 + 32 + 8 + 8 + 8 + 4 + 4 + 268 + 1 + 32 + 1;
 }
 
 /// Maximum claims per plan (design §3: a plan is a capacity-claims
@@ -1308,6 +1398,23 @@ pub struct SubmitSignal<'info> {
     pub caller: Signer<'info>,
     /// Rent sysvar, required by the `init` constraint.
     pub system_program: Program<'info, System>,
+}
+
+/// Accounts for [`treasury_program::submit_objectives_check`].
+#[derive(Accounts)]
+#[instruction(transition_id: u64)]
+pub struct SubmitObjectivesCheck<'info> {
+    /// The reporting agent's record (must exist and be bound to the
+    /// signer; the Evaluator role is the gate enforced here).
+    #[account(seeds = [b"agent", caller.key().as_ref()], bump = agent_record.bump)]
+    pub agent_record: Account<'info, AgentRecord>,
+    /// The transition record to check against (Registered or
+    /// Planning). No new account: the verdict overwrites the flag on
+    /// this record in place (design §3).
+    #[account(mut, seeds = [b"transition", transition_id.to_le_bytes().as_ref()], bump = transition_record.bump)]
+    pub transition_record: Account<'info, TransitionRecord>,
+    /// The reporting Evaluator (signer; pays no rent here).
+    pub caller: Signer<'info>,
 }
 
 /// Accounts for [`treasury_program::submit_constraint_report`].
@@ -1490,11 +1597,12 @@ mod tests {
     #[test]
     fn observation_and_transition_spaces_match_fields() {
         assert_eq!(Observation::SPACE, 105);
-        // 382: the proposer key (32) joined with open_planning, the
+        // 383: the proposer key (32) joined with open_planning, the
         // plan count (4) with submit_plan, the round count (4) with
-        // submit_signal, and the frozen constraint set (4 + 8 x 33)
-        // with submit_constraint_report.
-        assert_eq!(TransitionRecord::SPACE, 382);
+        // submit_signal, the frozen constraint set (4 + 8 x 33)
+        // with submit_constraint_report, and the objectives flag (1)
+        // with submit_objectives_check.
+        assert_eq!(TransitionRecord::SPACE, 383);
         assert_eq!(MAX_CONSTRAINTS, 8);
         assert_eq!(STATUS_PASS, 0);
         assert_eq!(STATUS_FAIL, 1);
@@ -1521,6 +1629,27 @@ mod tests {
         assert!(base(true, STATE_REGISTERED, false, STATUS_PASS).is_err());
         // A status code outside 0..=2 is not a status.
         assert!(base(true, STATE_REGISTERED, true, 3).is_err());
+    }
+
+    #[test]
+    fn submit_objectives_check_gate_matrix() {
+        // Caller binding is structural (AgentRecord match in the
+        // handler), so the helper takes no caller argument. The
+        // verdict itself is a bool and needs no validation — any bool
+        // is a real verdict, and a later report overwrites it.
+        let base =
+            |evaluator: bool, state: u8| can_submit_objectives_check(evaluator, state);
+        // The clean cases pass: Evaluator, Registered or Planning.
+        assert!(base(true, STATE_REGISTERED).is_ok());
+        assert!(base(true, STATE_PLANNING).is_ok());
+        // A non-Evaluator is refused first, whatever else holds.
+        assert!(base(false, STATE_REGISTERED).is_err());
+        assert!(base(false, STATE_PLANNING).is_err());
+        // Wrong state refuses (Committed, Settled, Rejected, Expired).
+        assert!(base(true, STATE_COMMITTED).is_err());
+        assert!(base(true, STATE_SETTLED).is_err());
+        assert!(base(true, STATE_REJECTED).is_err());
+        assert!(base(true, STATE_EXPIRED).is_err());
     }
 
     #[test]
@@ -1652,6 +1781,7 @@ mod tests {
                 id: [5u8; 32],
                 status: STATUS_UNAVAILABLE,
             }],
+            objectives_ok: false,
             declared_hash: [9u8; 32],
             bump: 255,
         };
@@ -1660,6 +1790,7 @@ mod tests {
         assert_eq!(record.planning_deadline, 0);
         assert_eq!(record.plan_count, 0);
         assert_eq!(record.round_count, 1);
+        assert!(!record.objectives_ok);
         assert_eq!(record.constraints.len(), 1);
         assert_eq!(record.constraints[0].status, STATUS_UNAVAILABLE);
         assert_eq!(record.observation_id, 3);

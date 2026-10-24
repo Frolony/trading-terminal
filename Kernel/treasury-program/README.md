@@ -53,7 +53,14 @@ ids, all Unavailable at registration; TransitionRecord SPACE 114 →
 registration; when PolicyRecords land, registration derives the
 mandatory part from the transition type's policy and unions the
 proposer's additions, as the kernel does.
-`submit_objectives_check` and the remaining lifecycle instructions are next.
++ `submit_objectives_check` (Evaluator-only, Registered-or-Planning,
+independent bool verdict, never derived from plan fields; overwrites
+the TransitionRecord's `objectives_ok` flag, false at registration;
+TransitionRecord SPACE 382 → 383). The OBJECTIVES bit at commit is
+`require_objectives && !objectives_ok` — at launch the policy does not
+require objectives, so the bit is clear regardless, but the flag is
+recorded now so a requiring policy is judged on a real report.
+`advance_round` and the remaining lifecycle instructions are next.
 
 **Design:** `files/OWN_IDL_DESIGN.md` (W4.1, validated and revised
 2026-10-24; W4.3 GO given by Carlos 2026-10-24 ~03:39 CST). Placement C: the
