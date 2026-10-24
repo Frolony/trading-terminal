@@ -201,16 +201,22 @@ tr.dashmover{cursor:pointer}
 .lwsact:hover{border-color:var(--hoverline);color:var(--text)}
 .lwsact.danger{color:var(--red)}
 .lwsrename{flex:1;min-width:0;background:var(--input);border:1px solid var(--inputline);border-radius:6px;color:var(--text);padding:5px 8px;font-size:12px}
+/*N5.6 free drag-and-drop (2026-10-23): Pointer-Events drag handles. touch-action:none on the handle only, so a drag starting on a header never fights page scroll; everything else scrolls normally (the touch fallback, alongside the popover arrows).*/
+[data-drag-handle]{cursor:grab;touch-action:none;user-select:none;-webkit-user-select:none}
+.panel.dragging,.stat.dragging{opacity:.55;box-shadow:0 12px 32px rgba(0,0,0,.55);position:relative;z-index:60}
+body.panel-dragging,body.panel-dragging [data-drag-handle]{cursor:grabbing}
+body.panel-dragging{user-select:none;-webkit-user-select:none}
+.drop-line{height:3px;border-radius:2px;background:#42d6a0;margin:6px 4px;box-shadow:0 0 8px rgba(66,214,160,.55);pointer-events:none}
 </style></head><body><div class="app">
-<header class="top"><div class="brand"><div class="mark">ɢ</div><div><h1>GECKO TERMINAL</h1><small>Solana market intelligence</small></div></div><div class="topright"><div class="switchrow viewtabs" role="tablist" aria-label="Terminal views"><button type="button" id="tabTerminal" class="active mode" role="tab" aria-selected="true">Terminal</button><button type="button" id="tabDashboard" class="mode" role="tab" aria-selected="false">Dashboard</button></div><span class="pill">NETWORK&nbsp; / &nbsp;SOLANA</span><span class="status"><i class="dot"></i><span id="feedStatus" data-testid="feed-badge">CONNECTING DATA</span></span><span class="wwrap"><button id="walletBtn" class="walletbtn" type="button">Connect Wallet</button><div class="wdd" id="walletDd" hidden><div class="eyebrow" id="walletDdName" style="margin-top:8px">Wallet</div><div class="waddr" id="walletDdAddr"></div><div class="walletrow"><span>SOL balance</span><strong id="walletSol">—</strong></div><div class="walletrow"><span>USDC balance</span><strong id="walletUsdc">—</strong></div><div class="walletrow"><span>USDT balance</span><strong id="walletUsdt">—</strong></div><div class="wrowbtn"><button type="button" id="walletCopy">Copy address</button><button type="button" id="walletRetryBal">Retry balances</button></div><div class="wrowbtn"><button type="button" id="walletDisconnect" class="danger">Disconnect</button></div></div></span><span class="pill">PAPER MODE</span><span class="wwrap"><button id="layoutBtn" class="iconbtn" type="button" aria-label="Open layout" title="Layout">▦</button><div class="lpop" id="layoutPop" hidden role="dialog" aria-label="Layout"><div class="lpop-head"><strong>Layout</strong><button class="wclose" id="layoutPopClose" type="button" aria-label="Close layout">×</button></div><div class="lpop-note">Layouts apply to the trading desk (main page). Panels stay in their home column — the arrows reorder panels within each column.</div><div id="layoutPanelList"></div><div class="lpop-hidden" id="layoutHiddenNote" hidden></div><div class="lpop-sec">Workspaces</div><div id="layoutWsList"></div><div class="searchrow" style="margin-top:8px"><input id="layoutWsName" maxlength="40" placeholder="Name this layout" aria-label="Workspace name" autocomplete="off" spellcheck="false"><button id="layoutWsSave" type="button">Save</button></div></div></span><button id="settingsBtn" class="iconbtn" type="button" aria-label="Open settings" title="Settings">⚙</button></div></header>
-<div class="stats" data-layout-root>
+<header class="top"><div class="brand"><div class="mark">ɢ</div><div><h1>GECKO TERMINAL</h1><small>Solana market intelligence</small></div></div><div class="topright"><div class="switchrow viewtabs" role="tablist" aria-label="Terminal views"><button type="button" id="tabTerminal" class="active mode" role="tab" aria-selected="true">Terminal</button><button type="button" id="tabDashboard" class="mode" role="tab" aria-selected="false">Dashboard</button></div><span class="pill">NETWORK&nbsp; / &nbsp;SOLANA</span><span class="status"><i class="dot"></i><span id="feedStatus" data-testid="feed-badge">CONNECTING DATA</span></span><span class="wwrap"><button id="walletBtn" class="walletbtn" type="button">Connect Wallet</button><div class="wdd" id="walletDd" hidden><div class="eyebrow" id="walletDdName" style="margin-top:8px">Wallet</div><div class="waddr" id="walletDdAddr"></div><div class="walletrow"><span>SOL balance</span><strong id="walletSol">—</strong></div><div class="walletrow"><span>USDC balance</span><strong id="walletUsdc">—</strong></div><div class="walletrow"><span>USDT balance</span><strong id="walletUsdt">—</strong></div><div class="wrowbtn"><button type="button" id="walletCopy">Copy address</button><button type="button" id="walletRetryBal">Retry balances</button></div><div class="wrowbtn"><button type="button" id="walletDisconnect" class="danger">Disconnect</button></div></div></span><span class="pill">PAPER MODE</span><span class="wwrap"><button id="layoutBtn" class="iconbtn" type="button" aria-label="Open layout" title="Layout">▦</button><div class="lpop" id="layoutPop" hidden role="dialog" aria-label="Layout"><div class="lpop-head"><strong>Layout</strong><button class="wclose" id="layoutPopClose" type="button" aria-label="Close layout">×</button></div><div class="lpop-note">Layouts apply to the trading desk (main page). Drag any panel by its header to move it anywhere — the arrows reorder panels within each column.</div><div id="layoutPanelList"></div><div class="lpop-hidden" id="layoutHiddenNote" hidden></div><div class="lpop-sec">Workspaces</div><div id="layoutWsList"></div><div class="searchrow" style="margin-top:8px"><input id="layoutWsName" maxlength="40" placeholder="Name this layout" aria-label="Workspace name" autocomplete="off" spellcheck="false"><button id="layoutWsSave" type="button">Save</button></div></div></span><button id="settingsBtn" class="iconbtn" type="button" aria-label="Open settings" title="Settings">⚙</button></div></header>
+<div class="stats" data-layout-root data-root-key="stats">
 <div class="stat"><div class="eyebrow">SOL / USD</div><div class="big" id="statPrice">$—</div><div class="sub" id="statPriceSub">Live market feed</div></div>
 <div class="stat"><div class="eyebrow">24H CHANGE</div><div class="big" id="statChange" data-testid="hero-chg-24h">—</div><div class="sub">Solana spot market</div></div>
 <div class="stat"><div class="eyebrow">PAPER EQUITY</div><div class="big" id="equity">$10,000.00</div><div class="sub" id="pnlSub">Virtual starting balance</div></div>
-<div class="stat" data-panel="watchlist" data-testid="watchlist-card"><div class="eyebrow">WATCHLIST</div><div class="big" id="watchlistCount">0</div><div class="sub" id="watchlistSummary">No tokens saved</div></div>
+<div class="stat" data-panel="watchlist" data-testid="watchlist-card"><div class="eyebrow" data-drag-handle>WATCHLIST</div><div class="big" id="watchlistCount">0</div><div class="sub" id="watchlistSummary">No tokens saved</div></div>
 </div>
-<div class="layout"><main class="maincol" data-layout-root>
-<section class="panel" data-panel="chart"><div class="panelbody"><div class="charthead"><div class="coinname"><div class="coinicon">◎</div><div><strong>Solana <span id="chartCoinPair" style="color:var(--muted);font-weight:500">SOL</span></strong><small id="chartCoinSub">Native asset · Solana mainnet</small></div></div><div style="text-align:right"><div class="price" id="heroPrice">$—</div><div id="heroChange" class="positive" style="font-size:12px">Fetching market data…</div></div></div><div class="range"><span class="pill" id="chartFeedStatus" style="font-size:11px;align-self:center;cursor:default" title="Chart feed status — click to retry when stale">CHART —</span><button class="active" data-range="1H">1H</button><button data-range="24H">24H</button><button data-range="7D">7D</button><button data-range="30D">30D</button></div><div class="chart" id="chartBox"><svg id="priceChart" viewBox="0 0 900 220" preserveAspectRatio="none" aria-label="SOL price chart"><defs><linearGradient id="fill" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="#42d6a0" stop-opacity=".25"/><stop offset="1" stop-color="#42d6a0" stop-opacity="0"/></linearGradient></defs><g stroke="var(--chartgrid)" stroke-width="1"><path d="M0 35H900M0 85H900M0 135H900M0 185H900"/></g><path id="area" d="" fill="url(#fill)"/><path id="line" d="" fill="none" stroke="#42d6a0" stroke-width="2.5" vector-effect="non-scaling-stroke"/><g id="candles"></g><line id="lastPriceLine" x1="0" x2="900" y1="0" y2="0" stroke="var(--muted)" stroke-width="1" stroke-dasharray="5 4" vector-effect="non-scaling-stroke" visibility="hidden"/></svg><div class="yaxis" id="chartYAxis"></div><div class="readout" id="chartReadout"></div><div class="crosshair" id="chartCross"></div><div class="chartmsg" id="chartMsg" hidden></div></div><div class="chartfoot"><span id="chartCaption">Loading real candles…</span><span id="updatedAt">Waiting for feed</span></div></div></section>
+<div class="layout"><main class="maincol" data-layout-root data-root-key="maincol">
+<section class="panel" data-panel="chart"><div class="panelbody"><div class="charthead" data-drag-handle><div class="coinname"><div class="coinicon">◎</div><div><strong>Solana <span id="chartCoinPair" style="color:var(--muted);font-weight:500">SOL</span></strong><small id="chartCoinSub">Native asset · Solana mainnet</small></div></div><div style="text-align:right"><div class="price" id="heroPrice">$—</div><div id="heroChange" class="positive" style="font-size:12px">Fetching market data…</div></div></div><div class="range"><span class="pill" id="chartFeedStatus" style="font-size:11px;align-self:center;cursor:default" title="Chart feed status — click to retry when stale">CHART —</span><button class="active" data-range="1H">1H</button><button data-range="24H">24H</button><button data-range="7D">7D</button><button data-range="30D">30D</button></div><div class="chart" id="chartBox"><svg id="priceChart" viewBox="0 0 900 220" preserveAspectRatio="none" aria-label="SOL price chart"><defs><linearGradient id="fill" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="#42d6a0" stop-opacity=".25"/><stop offset="1" stop-color="#42d6a0" stop-opacity="0"/></linearGradient></defs><g stroke="var(--chartgrid)" stroke-width="1"><path d="M0 35H900M0 85H900M0 135H900M0 185H900"/></g><path id="area" d="" fill="url(#fill)"/><path id="line" d="" fill="none" stroke="#42d6a0" stroke-width="2.5" vector-effect="non-scaling-stroke"/><g id="candles"></g><line id="lastPriceLine" x1="0" x2="900" y1="0" y2="0" stroke="var(--muted)" stroke-width="1" stroke-dasharray="5 4" vector-effect="non-scaling-stroke" visibility="hidden"/></svg><div class="yaxis" id="chartYAxis"></div><div class="readout" id="chartReadout"></div><div class="crosshair" id="chartCross"></div><div class="chartmsg" id="chartMsg" hidden></div></div><div class="chartfoot"><span id="chartCaption">Loading real candles…</span><span id="updatedAt">Waiting for feed</span></div></div></section>
 <section class="panel"><div class="panelhead"><h2>Strategy Lab</h2><span class="eyebrow">BACKTEST BEFORE YOU DEPLOY</span></div><div class="panelbody">
 <p class="labintro">Run one of the Playbook's top-10 schemes over real historical daily bars with the same house-rule accounting the Playbook used (fill-at-close, long-only, 0.26%/side fees, 95% deploy). <strong style="color:var(--text)">Playbook edges are historical measurements — never promises.</strong> Every scheme is a fresh experiment on the data you select.</p>
 <div class="bthead">Scheme</div>
@@ -233,11 +239,11 @@ tr.dashmover{cursor:pointer}
 <div class="sub" style="margin-bottom:4px">Deploy pins a configuration and tracks it against new daily bars. Simulated — no real funds, nothing on-chain.</div>
 <div id="btDeployList" style="margin-top:10px"></div>
 </div></section>
-<section class="panel" data-panel="pairs"><div class="panelhead"><h2>Solana market pairs</h2><div style="display:flex;align-items:center;gap:8px"><button type="button" class="action" id="retryFeed" data-testid="retry-btn">Retry feed</button><span class="pill" id="pairCount">DISCOVERING</span></div></div><div class="tablewrap"><table><thead><tr><th>Pair / DEX</th><th>Price USD</th><th>24H</th><th>Liquidity</th><th>24H volume</th><th>Trade</th></tr></thead><tbody id="pairs" data-testid="pairs-table"><tr><td colspan="6" class="empty">Loading live pairs from DexScreener…</td></tr></tbody></table></div></section>
-<section class="panel" data-panel="dashboard" id="dashboardPanel"><div class="panelhead"><h2>Dashboard</h2><span class="pill" id="dashModePill">PAPER</span></div><div class="panelbody"><div class="amounts" id="dashModeChips" role="group" aria-label="Dashboard mode"><button type="button" data-dm="paper" class="on">Paper</button><button type="button" data-dm="live">Live</button></div><div id="dashContent" style="margin-top:12px"><div class="empty">Loading dashboard…</div></div><div class="sub" style="margin-top:10px">P&amp;L uses FIFO cost basis from your paper fills. Paper figures are simulated — no blockchain transaction is ever sent. The dashboard is a read view: it is derived, never stored.</div></div></section>
+<section class="panel" data-panel="pairs"><div class="panelhead" data-drag-handle><h2>Solana market pairs</h2><div style="display:flex;align-items:center;gap:8px"><button type="button" class="action" id="retryFeed" data-testid="retry-btn">Retry feed</button><span class="pill" id="pairCount">DISCOVERING</span></div></div><div class="tablewrap"><table><thead><tr><th>Pair / DEX</th><th>Price USD</th><th>24H</th><th>Liquidity</th><th>24H volume</th><th>Trade</th></tr></thead><tbody id="pairs" data-testid="pairs-table"><tr><td colspan="6" class="empty">Loading live pairs from DexScreener…</td></tr></tbody></table></div></section>
+<section class="panel" data-panel="dashboard" id="dashboardPanel"><div class="panelhead" data-drag-handle><h2>Dashboard</h2><span class="pill" id="dashModePill">PAPER</span></div><div class="panelbody"><div class="amounts" id="dashModeChips" role="group" aria-label="Dashboard mode"><button type="button" data-dm="paper" class="on">Paper</button><button type="button" data-dm="live">Live</button></div><div id="dashContent" style="margin-top:12px"><div class="empty">Loading dashboard…</div></div><div class="sub" style="margin-top:10px">P&amp;L uses FIFO cost basis from your paper fills. Paper figures are simulated — no blockchain transaction is ever sent. The dashboard is a read view: it is derived, never stored.</div></div></section>
 <section class="panel"><div class="panelhead"><h2>Token discovery</h2><span class="eyebrow">DEXSCREENER SEARCH</span></div><div class="panelbody"><div class="searchrow"><input id="tokenSearch" placeholder="Search token, ticker or mint address" value="SOL"><button id="searchBtn">Search</button></div><div id="searchResults" class="results" data-testid="search-results"><div class="empty">Search live Solana pairs and add candidates to your watchlist.</div></div></div></section>
-</main><aside class="sidecol" data-layout-root>
-<section class="panel tradepanel" data-panel="ticket"><div class="panelhead"><h2>Order ticket</h2><span class="pill">SIMULATED</span></div><div class="panelbody"><form class="tradeform" id="tradeForm"><div class="moderow"><div class="modelabel">Execution mode</div><div class="switchrow"><button type="button" id="paperModeBtn" class="active mode">Paper</button><button type="button" id="liveModeBtn">Live</button></div></div><div class="switchrow"><button type="button" id="buyBtn" class="active buy">Buy / Long</button><button type="button" id="sellBtn" class="sell">Sell</button></div><div class="field"><label>Trading pair</label><div class="pairbox"><strong id="ticketPairName">SOL / USDC</strong><small id="ticketPairMeta">Waiting for market data…</small></div></div><div class="field"><label>Order type</label><div class="switchrow"><button type="button" id="mktBtn" class="active buy">Market</button><button type="button" id="limBtn" class="sell">Limit</button></div></div><div id="limitFields" hidden><div class="field"><label>Limit price (per <span id="limitBaseSym">SOL</span>, in <span id="limitQuoteSym">USDC</span>)</label><div class="inputwrap"><input id="limitPrice" inputmode="decimal" aria-label="Limit price" placeholder="Waiting for live price…"><span id="limitSpotRef">spot</span></div><div class="amounts" id="limitPresets" style="margin-top:6px"><button type="button" data-lp="-10">−10%</button><button type="button" data-lp="-5">−5%</button><button type="button" data-lp="-1">−1%</button><button type="button" data-lp="1">+1%</button><button type="button" data-lp="5">+5%</button><button type="button" data-lp="10">+10%</button></div><div class="note" id="limitNote" style="text-align:left;margin-top:6px"></div></div><div class="field"><label>Expires</label><div class="amounts" id="expiryPresets"><button type="button" data-exp="1h">1 h</button><button type="button" data-exp="24h" class="on">24 h</button><button type="button" data-exp="7d">7 d</button><button type="button" data-exp="never">No expiry</button></div><label id="expiryAckWrap" hidden style="display:none;margin-top:8px;font-size:11px;color:var(--muted);align-items:center;gap:8px"><input type="checkbox" id="expiryAck" style="width:auto"> I understand this order stays open until filled or cancelled.</label></div><div class="note" style="text-align:left">Limit orders are simulated against the spot feed — fills are not instant and are not guaranteed. Paper only; nothing touches the chain.</div></div><div class="field"><label>Order size</label><div class="inputwrap"><input id="orderAmount" data-testid="order-size-input" type="number" min="0.0001" step="any" value="100" required><span id="amountUnit">USD</span></div></div><div class="amounts"><button type="button" data-amt="25">$25</button><button type="button" data-amt="100">$100</button><button type="button" data-amt="250">$250</button><button type="button" data-amt="max" data-testid="max-btn">MAX</button></div><div class="field"><label>Slippage tolerance</label><div class="amounts" id="slipPresets"><button type="button" data-slip="10">0.1%</button><button type="button" data-slip="50">0.5%</button><button type="button" data-slip="100">1.0%</button></div><div class="inputwrap" style="margin-top:6px"><input id="slippageInput" inputmode="numeric" aria-label="Custom slippage in basis points" placeholder="Custom (bps)"><span>bps</span></div><div class="note" style="text-align:left;margin-top:6px">Presets or custom, in basis points (50 bps = 0.50%). Allowed: 1&ndash;1000 bps (0.01%&ndash;10%). Shared with the /raydium/ page.</div></div><div class="walletrow"><span>Execution price</span><strong id="execPrice">$—</strong></div><div class="walletrow"><span>Estimated quantity</span><strong id="estQty">— SOL</strong></div><div class="walletrow"><span>Available USD</span><strong id="cashAvail">$10,000.00</strong></div><button class="primary" id="submitTrade" type="submit">Buy SOL · Paper</button><div class="note" id="ticketNote">No wallet connected · no real orders or funds</div><div id="reviewSheet" class="review" hidden></div></form></div></section>
+</main><aside class="sidecol" data-layout-root data-root-key="sidecol">
+<section class="panel tradepanel" data-panel="ticket"><div class="panelhead" data-drag-handle><h2>Order ticket</h2><span class="pill">SIMULATED</span></div><div class="panelbody"><form class="tradeform" id="tradeForm"><div class="moderow"><div class="modelabel">Execution mode</div><div class="switchrow"><button type="button" id="paperModeBtn" class="active mode">Paper</button><button type="button" id="liveModeBtn">Live</button></div></div><div class="switchrow"><button type="button" id="buyBtn" class="active buy">Buy / Long</button><button type="button" id="sellBtn" class="sell">Sell</button></div><div class="field"><label>Trading pair</label><div class="pairbox"><strong id="ticketPairName">SOL / USDC</strong><small id="ticketPairMeta">Waiting for market data…</small></div></div><div class="field"><label>Order type</label><div class="switchrow"><button type="button" id="mktBtn" class="active buy">Market</button><button type="button" id="limBtn" class="sell">Limit</button></div></div><div id="limitFields" hidden><div class="field"><label>Limit price (per <span id="limitBaseSym">SOL</span>, in <span id="limitQuoteSym">USDC</span>)</label><div class="inputwrap"><input id="limitPrice" inputmode="decimal" aria-label="Limit price" placeholder="Waiting for live price…"><span id="limitSpotRef">spot</span></div><div class="amounts" id="limitPresets" style="margin-top:6px"><button type="button" data-lp="-10">−10%</button><button type="button" data-lp="-5">−5%</button><button type="button" data-lp="-1">−1%</button><button type="button" data-lp="1">+1%</button><button type="button" data-lp="5">+5%</button><button type="button" data-lp="10">+10%</button></div><div class="note" id="limitNote" style="text-align:left;margin-top:6px"></div></div><div class="field"><label>Expires</label><div class="amounts" id="expiryPresets"><button type="button" data-exp="1h">1 h</button><button type="button" data-exp="24h" class="on">24 h</button><button type="button" data-exp="7d">7 d</button><button type="button" data-exp="never">No expiry</button></div><label id="expiryAckWrap" hidden style="display:none;margin-top:8px;font-size:11px;color:var(--muted);align-items:center;gap:8px"><input type="checkbox" id="expiryAck" style="width:auto"> I understand this order stays open until filled or cancelled.</label></div><div class="note" style="text-align:left">Limit orders are simulated against the spot feed — fills are not instant and are not guaranteed. Paper only; nothing touches the chain.</div></div><div class="field"><label>Order size</label><div class="inputwrap"><input id="orderAmount" data-testid="order-size-input" type="number" min="0.0001" step="any" value="100" required><span id="amountUnit">USD</span></div></div><div class="amounts"><button type="button" data-amt="25">$25</button><button type="button" data-amt="100">$100</button><button type="button" data-amt="250">$250</button><button type="button" data-amt="max" data-testid="max-btn">MAX</button></div><div class="field"><label>Slippage tolerance</label><div class="amounts" id="slipPresets"><button type="button" data-slip="10">0.1%</button><button type="button" data-slip="50">0.5%</button><button type="button" data-slip="100">1.0%</button></div><div class="inputwrap" style="margin-top:6px"><input id="slippageInput" inputmode="numeric" aria-label="Custom slippage in basis points" placeholder="Custom (bps)"><span>bps</span></div><div class="note" style="text-align:left;margin-top:6px">Presets or custom, in basis points (50 bps = 0.50%). Allowed: 1&ndash;1000 bps (0.01%&ndash;10%). Shared with the /raydium/ page.</div></div><div class="walletrow"><span>Execution price</span><strong id="execPrice">$—</strong></div><div class="walletrow"><span>Estimated quantity</span><strong id="estQty">— SOL</strong></div><div class="walletrow"><span>Available USD</span><strong id="cashAvail">$10,000.00</strong></div><button class="primary" id="submitTrade" type="submit">Buy SOL · Paper</button><div class="note" id="ticketNote">No wallet connected · no real orders or funds</div><div id="reviewSheet" class="review" hidden></div></form></div></section>
 <section class="panel"><div class="panelhead"><h2>Paper portfolio</h2><span class="eyebrow">LOCAL SESSION</span></div><div class="panelbody"><div class="walletrow"><span>Cash balance</span><strong id="cashBal" data-testid="paper-cash">$10,000.00</strong></div><div id="holdingsList" data-testid="holdings-list"><div class="empty">No paper positions yet.</div></div><div class="walletrow"><span>Position value</span><strong id="posValue">$0.00</strong></div><div class="walletrow"><span>Unrealized P/L</span><strong id="unrealized">$0.00</strong></div><button id="resetPaper" data-testid="reset-btn" style="margin-top:13px;width:100%;padding:8px;background:var(--panel);border:1px solid var(--line);color:var(--btntext);border-radius:7px;font-size:11px">Reset paper account</button></div></section>
 <section class="panel"><div class="panelhead"><h2>Recent orders</h2><span class="eyebrow" id="orderCount">0 ORDERS</span></div><div id="orders" data-testid="orders-list"><div class="empty">Your simulated paper orders will appear here.</div></div></section>
 <section class="panel"><div class="panelhead"><h2>Open limit orders</h2><span class="eyebrow" id="limitOpenCount">0 OPEN</span></div><div id="limitOpen"><div class="empty">No open limit orders. Create one from the Limit tab on the ticket.</div></div><div class="sub" style="padding:0 16px 12px">Simulated on the spot feed — fills are not instant and not guaranteed.</div></section>
@@ -1027,16 +1033,26 @@ function applySettingsBoot(){
    independent of the N2.1 paper store and N5.1 settings — same rationale as N5.1's
    separate key (N1.1's paper reset never touches layout; layoutVersion versions
    separately from SETTINGS_VERSION per the pack's own §5 cross-link). */
+/* N5.6 free drag-and-drop (2026-10-23, Carlos's §8.7 directive): LAYOUT_VERSION 2 —
+   workspaces gain place:{panelId:rootKey}; v1 stores migrate place from PANEL_HOME
+   (order kept, so the per-container arrangement is preserved bit-for-bit);
+   renderPanelPlacement() replaces renderPanelOrder() and places panels
+   cross-container by place+rank. */
 const LAYOUT_KEY='gecko-terminal:layout-v1';
-const LAYOUT_VERSION=1;
+const LAYOUT_VERSION=2;
+const ROOT_KEYS=['stats','maincol','sidecol'];
+/* N5.6: true home containers, grounded in the shipped DOM (the prep pack's
+   "watchlist,dashboard → stats" line was a slip — dashboard ships in maincol).
+   v1→v2 migration derives place from this map so existing arrangements survive. */
+const PANEL_HOME={chart:'maincol',pairs:'maincol',dashboard:'maincol',ticket:'sidecol',watchlist:'stats'};
 const PANEL_IDS=['chart','pairs','dashboard','ticket','watchlist'];
 const PANEL_LABELS={chart:'Chart',pairs:'Market pairs',dashboard:'Dashboard',ticket:'Order ticket',watchlist:'Watchlist card'};
 /* Pack §1.4: the Trader built-in matches the page's shipped order (chart first in the
    main column, ticket top of the side column); Watcher swaps pairs above chart and
    hides the ticket. */
 const BUILT_IN_WORKSPACES=Object.freeze([
-  {id:'builtin-trader',name:'Trader',builtIn:true,order:['chart','pairs','dashboard','ticket','watchlist'],hidden:['dashboard']},
-  {id:'builtin-watcher',name:'Watcher',builtIn:true,order:['pairs','chart','dashboard','ticket','watchlist'],hidden:['ticket','dashboard']},
+  {id:'builtin-trader',name:'Trader',builtIn:true,order:['chart','pairs','dashboard','ticket','watchlist'],hidden:['dashboard'],place:{chart:'maincol',pairs:'maincol',dashboard:'maincol',ticket:'sidecol',watchlist:'stats'}},
+  {id:'builtin-watcher',name:'Watcher',builtIn:true,order:['pairs','chart','dashboard','ticket','watchlist'],hidden:['ticket','dashboard'],place:{chart:'maincol',pairs:'maincol',dashboard:'maincol',ticket:'sidecol',watchlist:'stats'}},
 ]);
 function sanitizeWorkspace(ws){
   ws=ws||{};
@@ -1050,37 +1066,65 @@ function sanitizeWorkspace(ws){
      Dashboard header tab. */
   for(const id of ordered)if(!storedIds.has(id)&&!hidden.includes(id))hidden.push(id);
   if(ordered.every(id=>hidden.includes(id)))hidden.splice(hidden.indexOf(ordered[0]),1); // never a blank page
+  /* N5.6: place map — every panel gets a valid root key; unknown keys fall back
+     to the true home container. Hidden panels keep their placement (unhide
+     returns the panel to its container). */
+  const rawPlace=(ws&&ws.place&&typeof ws.place==='object')?ws.place:{};
+  const place={};
+  for(const id of PANEL_IDS)place[id]=ROOT_KEYS.includes(rawPlace[id])?rawPlace[id]:PANEL_HOME[id];
   const name=String(ws.name==null?'':ws.name).slice(0,40).trim()||'Workspace';
-  return{id:(typeof ws.id==='string'&&ws.id)?ws.id:'ws-'+Date.now().toString(36),name,order:ordered,hidden,builtIn:!!ws.builtIn};
+  return{id:(typeof ws.id==='string'&&ws.id)?ws.id:'ws-'+Date.now().toString(36),name,order:ordered,hidden,place,builtIn:!!ws.builtIn};
 }
 function loadLayout(raw){
   let parsed={};
   try{parsed=JSON.parse(raw||'{}')||{};}catch(_){parsed={};}
   let custom=[],activeId='builtin-trader';
-  if(parsed&&parsed.version===LAYOUT_VERSION){
-    custom=(Array.isArray(parsed.workspaces)?parsed.workspaces:[]).map(sanitizeWorkspace).filter(w=>!w.builtIn);
+  /* N5.6: v2 stores load natively; v1 stores migrate place from PANEL_HOME with
+     the stored order kept, so the per-container arrangement is preserved. */
+  if(parsed&&(parsed.version===LAYOUT_VERSION||parsed.version===1)){
+    const migrateV1=parsed.version===1;
+    custom=(Array.isArray(parsed.workspaces)?parsed.workspaces:[]).map(ws=>sanitizeWorkspace(migrateV1?Object.assign({},ws,{place:migrateV1Place()}):ws)).filter(w=>!w.builtIn);
     if(typeof parsed.activeWorkspaceId==='string'&&parsed.activeWorkspaceId)activeId=parsed.activeWorkspaceId;
   }
-  const workspaces=BUILT_IN_WORKSPACES.map(w=>({id:w.id,name:w.name,builtIn:true,order:[...w.order],hidden:[...w.hidden]})).concat(custom);
+  const workspaces=BUILT_IN_WORKSPACES.map(w=>({id:w.id,name:w.name,builtIn:true,order:[...w.order],hidden:[...w.hidden],place:Object.assign({},w.place)})).concat(custom);
   const active=workspaces.find(w=>w.id===activeId)||workspaces[0];
   return{version:LAYOUT_VERSION,workspaces,activeWorkspaceId:active.id};
 }
+function migrateV1Place(){const p={};for(const id of PANEL_IDS)p[id]=PANEL_HOME[id];return p;}
 let layout=null; // {version, workspaces, activeWorkspaceId} — set by applyLayoutBoot
 let wsSeq=0;
 function activeWorkspace(){return layout.workspaces.find(w=>w.id===layout.activeWorkspaceId)||layout.workspaces[0];}
 function saveLayout(){try{localStorage.setItem(LAYOUT_KEY,JSON.stringify({version:LAYOUT_VERSION,activeWorkspaceId:layout.activeWorkspaceId,workspaces:layout.workspaces.filter(w=>!w.builtIn)}));}catch(_){}}
 function panelEl(id){return document.querySelector('[data-panel="'+id+'"]');}
-function renderPanelOrder(order){
-  // Reorder existing DOM nodes within each home container (pack §3 wiring note:
-  // appendChild-style moves preserve ticket input state, chart canvas and feed
-  // subscriptions). Containers with <2 layoutable panels are untouched.
-  const rank=id=>{const i=order.indexOf(id);return i<0?PANEL_IDS.length:i;};
+function renderPanelPlacement(ws){
+  /* N5.6: panels are placed by ws.place[panelId] into the root whose
+     data-root-key matches; within each root, panels sort by the global order
+     rank. DOM-node moves only (comment-placeholder slot technique, no
+     destroy/recreate) — ticket input, chart canvas and feed subscriptions
+     survive cross-container moves exactly as they survived v1 slot swaps.
+     Non-layoutable panels (Strategy Lab, discovery, portfolio, …) never move. */
+  const rank=id=>{const i=ws.order.indexOf(id);return i<0?PANEL_IDS.length:i;};
+  const byRoot={};
+  PANEL_IDS.forEach(id=>{
+    const key=(ws.place&&ROOT_KEYS.includes(ws.place[id]))?ws.place[id]:PANEL_HOME[id];
+    (byRoot[key]=byRoot[key]||[]).push(id);
+  });
+  Object.keys(byRoot).forEach(key=>byRoot[key].sort((a,b)=>rank(a)-rank(b)));
   document.querySelectorAll('[data-layout-root]').forEach(root=>{
+    const key=root.getAttribute('data-root-key');
+    const wanted=(byRoot[key]||[]).map(panelEl).filter(Boolean);
     const kids=[...root.children].filter(el=>el.getAttribute&&PANEL_IDS.includes(el.getAttribute('data-panel')));
-    if(kids.length<2)return;
+    if(!kids.length&&!wanted.length)return;
     const slots=kids.map(k=>{const ph=document.createComment('layout-slot');k.replaceWith(ph);return ph;});
-    kids.sort((a,b)=>rank(a.getAttribute('data-panel'))-rank(b.getAttribute('data-panel')));
-    slots.forEach((ph,i)=>ph.replaceWith(kids[i]));
+    /* Extras (a panel moved INTO this root) anchor after the previously placed
+       panel — never after a slot, because replaceWith detaches used slots and
+       after() on a detached node is a silent no-op (the panel would vanish). */
+    wanted.forEach((p,i)=>{
+      if(i<slots.length)slots[i].replaceWith(p);
+      else if(i>0)wanted[i-1].after(p);
+      else root.appendChild(p);
+    });
+    for(let i=wanted.length;i<slots.length;i++)slots[i].remove();
   });
 }
 function applyPanelVisibility(hidden){
@@ -1089,7 +1133,7 @@ function applyPanelVisibility(hidden){
 function setActiveWorkspace(id){
   const ws=layout.workspaces.find(w=>w.id===id);if(!ws)return false;
   layout.activeWorkspaceId=ws.id;
-  renderPanelOrder(ws.order);
+  renderPanelPlacement(ws);
   applyPanelVisibility(ws.hidden);
   saveLayout();
   paintLayoutPop();
@@ -1106,7 +1150,7 @@ function forkActiveWorkspace(){
   // and switches to it — built-ins are never mutated in place.
   const src=activeWorkspace();
   if(!src.builtIn)return{ws:src,forked:false};
-  const copy=sanitizeWorkspace({id:'ws-'+Date.now().toString(36)+'-'+(wsSeq++),name:uniqueWsName(src.name+' (custom)'),order:[...src.order],hidden:[...src.hidden],builtIn:false});
+  const copy=sanitizeWorkspace({id:'ws-'+Date.now().toString(36)+'-'+(wsSeq++),name:uniqueWsName(src.name+' (custom)'),order:[...src.order],hidden:[...src.hidden],place:Object.assign({},src.place),builtIn:false});
   layout.workspaces.push(copy);
   layout.activeWorkspaceId=copy.id;
   return{ws:copy,forked:true};
@@ -1137,7 +1181,7 @@ function saveWorkspaceAs(name){
   if(!clean){toast('Name this layout first.');return false;}
   if(layout.workspaces.some(w=>w.name.toLowerCase()===clean.toLowerCase())){toast('A layout named "'+clean+'" already exists.');return false;}
   const src=activeWorkspace();
-  const ws=sanitizeWorkspace({id:'ws-'+Date.now().toString(36)+'-'+(wsSeq++),name:clean,order:[...src.order],hidden:[...src.hidden],builtIn:false});
+  const ws=sanitizeWorkspace({id:'ws-'+Date.now().toString(36)+'-'+(wsSeq++),name:clean,order:[...src.order],hidden:[...src.hidden],place:Object.assign({},src.place),builtIn:false});
   layout.workspaces.push(ws);
   setActiveWorkspace(ws.id);
   toast('Layout saved.');
@@ -1255,12 +1299,179 @@ function applyLayoutBoot(){
   try{raw=localStorage.getItem(LAYOUT_KEY);}catch(_){raw=null;}
   layout=loadLayout(raw); // corrupt/missing/version-mismatch → built-ins, Trader active (never a blank page)
   const ws=activeWorkspace();
-  renderPanelOrder(ws.order);
+  renderPanelPlacement(ws);
   applyPanelVisibility(ws.hidden);
   saveLayout();
   wireLayoutPop();
+  wirePanelDrag(); /* N5.6: free drag-and-drop wiring */
 }
 /*__N52_LAYOUT_END__*/
+/*__N56_DRAG_START__*/
+/* N5.6 free drag-and-drop panel layout (2026-10-23, Carlos's §8.7 directive):
+   grab any desk panel by its header ([data-drag-handle]) and drop it into any
+   [data-layout-root] column, cross-container. Pointer Events give one code path
+   for mouse + touch (HTML5 DnD is desktop-only and needs a touch polyfill); the
+   handle's touch-action:none (CSS) keeps a drag from fighting page scroll, and
+   scrolling from anywhere else still works — that plus the Layout popover
+   arrows is the touch/keyboard fallback. A 6 px movement threshold keeps plain
+   clicks working and keeps header buttons/inputs (pairs Retry) from ever
+   starting a drag. While dragging, a .drop-line insertion indicator marks the
+   landing slot; the panel node itself never moves until commit, so cancel is
+   trivial and nothing is ever destroyed/recreated — ticket input, chart canvas
+   and feed subscriptions survive. Commit forks built-in workspaces (fork-on-edit,
+   same as the v1 edit path), updates place+order, saves, repaints the popover
+   and toasts. Escape/pointercancel cancels. The pointerup click that ends a
+   real drag is swallowed (exactly one, capture phase) so it can't toggle
+   anything (e.g. the watchlist card's drawer). */
+const DRAG_THRESHOLD_PX=6;
+let dragState=null; /* {panelId,handle,startX,startY,dragging,originParent,originNext,dropRoot,dropIndex,pointerId} | null */
+let dropLineEl=null;
+let suppressClickAfterDrag=false;
+function dragPanelId(handle){const p=handle&&handle.closest?handle.closest('[data-panel]'):null;return p?p.getAttribute('data-panel'):null;}
+function isInteractiveTarget(t){return!!(t&&t.closest&&t.closest('button,input,select,textarea,a,label,[contenteditable="true"],[data-no-drag]'));}
+function armPanelDrag(e){
+  suppressClickAfterDrag=false; /* a new press bounds any stale swallow flag */
+  if(e.pointerType==='mouse'&&e.button!==0)return; /* left-button drags only for mouse */
+  const handle=e.target&&e.target.closest?e.target.closest('[data-drag-handle]'):null;
+  if(!handle||isInteractiveTarget(e.target))return; /* header buttons/inputs never arm a drag */
+  const panelId=dragPanelId(handle);
+  if(!panelId||!PANEL_IDS.includes(panelId))return;
+  dragState={panelId:panelId,handle:handle,startX:e.clientX,startY:e.clientY,dragging:false,originParent:null,originNext:null,dropRoot:null,dropIndex:0,pointerId:e.pointerId};
+}
+function layoutRootAt(x,y){
+  const roots=document.querySelectorAll('[data-layout-root]');
+  for(let i=0;i<roots.length;i++){const b=roots[i].getBoundingClientRect();if(x>=b.left&&x<=b.right&&y>=b.top&&y<=b.bottom)return roots[i];}
+  return null;
+}
+function dragSlotPanels(root){
+  /* Visible layoutable panels of a root, excluding the dragged panel and any
+     drop indicator. Hidden panels are display:none and excluded from the index
+     math (pack §7) — they keep their stored placement regardless. */
+  const ws=activeWorkspace();
+  const dragId=dragState&&dragState.dragging?dragState.panelId:null;
+  return[...root.children].filter(el=>{
+    if(!el.getAttribute||!PANEL_IDS.includes(el.getAttribute('data-panel')))return false;
+    const id=el.getAttribute('data-panel');
+    if(id===dragId||ws.hidden.includes(id))return false;
+    if(el.classList&&el.classList.contains('drop-line'))return false;
+    return true;
+  });
+}
+function dropIndexFor(root,y){
+  const kids=dragSlotPanels(root);
+  for(let i=0;i<kids.length;i++){const b=kids[i].getBoundingClientRect();if(y<b.top+b.height/2)return i;}
+  return kids.length;
+}
+function showDropLine(root,idx){
+  if(!dropLineEl){dropLineEl=document.createElement('div');dropLineEl.className='drop-line';}
+  hideDropLine();
+  const kids=dragSlotPanels(root);
+  const at=Math.max(0,Math.min(idx,kids.length));
+  if(at<kids.length)kids[at].before(dropLineEl);
+  else if(kids.length)kids[kids.length-1].after(dropLineEl);
+  else root.appendChild(dropLineEl);
+}
+function hideDropLine(){if(dropLineEl&&dropLineEl.parentNode)dropLineEl.parentNode.removeChild(dropLineEl);}
+function startPanelDrag(d){
+  d.dragging=true;
+  const panel=panelEl(d.panelId);
+  if(panel){d.originParent=panel.parentNode;d.originNext=panel.nextSibling;panel.classList.add('dragging');}
+  try{d.handle.setPointerCapture(d.pointerId);}catch(_){}
+  if(document.body)document.body.classList.add('panel-dragging');
+}
+function endPanelDragVisual(d){
+  const panel=panelEl(d.panelId);
+  if(panel)panel.classList.remove('dragging');
+  if(document.body)document.body.classList.remove('panel-dragging');
+  hideDropLine();
+  try{if(d.handle.hasPointerCapture&&d.handle.hasPointerCapture(d.pointerId))d.handle.releasePointerCapture(d.pointerId);}catch(_){}
+}
+function movePanelDrag(d,x,y){
+  const root=layoutRootAt(x,y);
+  if(!root){d.dropRoot=null;hideDropLine();return;}
+  d.dropRoot=root;
+  d.dropIndex=dropIndexFor(root,y);
+  showDropLine(root,d.dropIndex);
+}
+function visiblePanelsOf(rootKey){
+  const root=document.querySelector('[data-root-key="'+rootKey+'"]');
+  const ws=activeWorkspace();
+  if(!root)return[];
+  return[...root.children]
+    .filter(el=>el.getAttribute&&PANEL_IDS.includes(el.getAttribute('data-panel')))
+    .map(el=>el.getAttribute('data-panel'))
+    .filter(id=>!ws.hidden.includes(id));
+}
+function commitPanelDrag(d,panelId,targetRootKey,dropIdx){
+  /* Rebuild the global order rank so each root's panels sort into the new
+     visual sequence (container-grouped, roots in DOM order — the popover
+     arrows keep their v1 within-container behavior). Hidden panels trail
+     their container's visible ones and keep their stored place. */
+  const f=forkActiveWorkspace();const ws=f.ws,forked=f.forked;
+  ws.place[panelId]=targetRootKey;
+  const newOrder=[];
+  ROOT_KEYS.forEach(key=>{
+    let vis=visiblePanelsOf(key).filter(id=>id!==panelId);
+    if(key===targetRootKey){const at=Math.max(0,Math.min(dropIdx,vis.length));vis.splice(at,0,panelId);}
+    const hid=PANEL_IDS.filter(id=>id!==panelId&&ws.place[id]===key&&ws.hidden.includes(id));
+    hid.sort((a,b)=>ws.order.indexOf(a)-ws.order.indexOf(b));
+    newOrder.push(...vis,...hid);
+  });
+  PANEL_IDS.forEach(id=>{if(!newOrder.includes(id))newOrder.push(id);});
+  ws.order=newOrder;
+  setActiveWorkspace(ws.id);
+  toast(forked?'Saved as a copy — rename it in Layouts.':'Layout saved.');
+}
+function onPanelDragMove(e){
+  const d=dragState;if(!d||e.pointerId!==d.pointerId)return;
+  if(!d.dragging){
+    if(Math.hypot(e.clientX-d.startX,e.clientY-d.startY)<DRAG_THRESHOLD_PX)return;
+    startPanelDrag(d);
+  }
+  movePanelDrag(d,e.clientX,e.clientY);
+}
+function onPanelDragUp(e){
+  const d=dragState;if(!d||e.pointerId!==d.pointerId)return;
+  dragState=null;
+  if(!d.dragging)return; /* plain click — the browser dispatches it normally */
+  /* The release point is authoritative: refresh the drop target from it (a
+     flick outside any root after hovering a drop zone cancels, as the
+     vanished indicator already told the user). */
+  movePanelDrag(d,e.clientX,e.clientY);
+  const root=d.dropRoot,idx=d.dropIndex;
+  endPanelDragVisual(d);
+  suppressClickAfterDrag=true; /* swallow the pointerup's click (exactly one, capture phase) */
+  if(!root)return; /* released outside any drop zone: cancel silently */
+  const key=root.getAttribute('data-root-key');
+  if(!key||!ROOT_KEYS.includes(key))return;
+  commitPanelDrag(d,d.panelId,key,idx);
+}
+function cancelPanelDrag(){
+  const d=dragState;if(!d)return;
+  dragState=null;
+  if(!d.dragging)return;
+  endPanelDragVisual(d);
+  /* Defensive: the node never moves until commit, but restore it to its
+     origin slot if anything moved it. */
+  const panel=panelEl(d.panelId);
+  if(panel&&d.originParent&&panel.parentNode!==d.originParent){
+    if(d.originNext&&d.originNext.parentNode===d.originParent)d.originParent.insertBefore(panel,d.originNext);
+    else d.originParent.appendChild(panel);
+  }
+}
+function wirePanelDrag(){
+  document.addEventListener('pointerdown',armPanelDrag);
+  document.addEventListener('pointermove',onPanelDragMove);
+  document.addEventListener('pointerup',onPanelDragUp);
+  document.addEventListener('pointercancel',e=>{const d=dragState;if(d&&e.pointerId===d.pointerId)cancelPanelDrag();});
+  /* Capture phase so a mid-drag Escape cancels before the popover's own
+     Escape handler (bubble) can close anything. */
+  document.addEventListener('keydown',e=>{const d=dragState;if(e.key==='Escape'&&d&&d.dragging){e.stopPropagation();cancelPanelDrag();}},true);
+  /* A real drag ends with a click on the handle — swallow exactly one so it
+     can't toggle anything (e.g. the watchlist card's drawer). */
+  document.addEventListener('click',e=>{if(suppressClickAfterDrag){suppressClickAfterDrag=false;e.stopPropagation();e.preventDefault();}},true);
+}
+/*__N56_DRAG_END__*/
 function slipImpactBand(pct){ // mirrors swapFlow.impactBand (pack §3.2.2 ladder)
   if(pct===null||!Number.isFinite(pct)||pct<0)return'unknown';
   if(pct<1)return'low';if(pct<5)return'elevated';if(pct<=15)return'high';return'blocked';
