@@ -19,6 +19,7 @@
 //! candidates score 0.75–0.95.
 
 use crate::dictionary::{Dictionary, HopKind, Venue, VenueHit};
+use crate::position_state::{CloseReading, PositionLedger};
 use crate::reconstruct::{NetEffect, Workflow};
 
 /// Below this confidence, a candidate is demoted to Unclassified.
@@ -187,6 +188,10 @@ fn distinct_venues(hits: &[Option<VenueHit>]) -> Vec<Venue> {
 ///    closed (or reduced — the stateless limit, see
 ///    [`position_close_candidate`]). Evaluated before PositionOpen because
 ///    the naive one-sided-net reading mislabels a close leg as an open.
+///    When called through [`classify_with_ledger`] with a ledger supplied,
+///    a `PositionClose` verdict's rationale is annotated with the ledger's
+///    full / partial / unknown reading for that position — the annotation
+///    refines the sentence, it never changes the label or the confidence.
 /// 5. [`Label::PositionOpen`] (net reading) — a user wallet with a
 ///    one-sided outflow net answers the tracer's core question ("did anyone
 ///    take a real position?") directly. The inflow side of that reading is
@@ -205,6 +210,33 @@ fn distinct_venues(hits: &[Option<VenueHit>]) -> Vec<Venue> {
 /// only decides ties and overlaps. The sealed verdict enforces the
 /// unclassified guarantee either way.
 pub fn classify(dict: &Dictionary, wf: &Workflow) -> Verdict {
+    classify_with_ledger(dict, wf, None)
+}
+
+/// Classify one workflow with an optional cross-window position ledger
+/// ([`crate::position_state`]).
+///
+/// Identical to [`classify`] when `ledger` is `None`. When a ledger is
+/// supplied and the winning candidate is [`Label::PositionClose`], the
+/// verdict's rationale gains the ledger's reading for that position —
+/// full close, partial removal, or not determinable — and NOTHING else
+/// changes: same label, same confidence. The annotation is evidence
+/// attached to the sentence, not an upgrade of the verdict, because the
+/// ledger is only as complete as the history it was fed. Pipeline order:
+/// the caller feeds the workflow's own legs to the ledger BEFORE calling
+/// (adds from earlier windows, this window's removal legs included), so
+/// the reading is the POST-window state — a close leg consulted before
+/// being fed would read as a partial removal of a still-open position.
+/// A multi-mint close workflow has no single position key and gets no
+/// annotation.
+/// The position key is `(receiver, pool, mint)`: the receiver is the first
+/// hop's `to` (the arm guarantees one receiver), the pool is the first
+/// hop's `from`, and the mint must be the same on every leg.
+pub fn classify_with_ledger(
+    dict: &Dictionary,
+    wf: &Workflow,
+    ledger: Option<&PositionLedger>,
+) -> Verdict {
     let hits = recognize_all(dict, wf);
     let net = NetEffect::of(wf);
     let evidence: Vec<String> = wf.hops.iter().map(|h| h.signature.clone()).collect();
@@ -218,7 +250,7 @@ pub fn classify(dict: &Dictionary, wf: &Workflow) -> Verdict {
         hits.iter().map(|h| h.map(|v| v.hop)).collect();
     let recognized = hits.iter().any(|h| h.is_some());
 
-    let candidate: Option<(Label, f64, String)> = mm_unwind_candidate(&hop_kinds_aligned, wf)
+    let mut candidate: Option<(Label, f64, String)> = mm_unwind_candidate(&hop_kinds_aligned, wf)
         .or_else(|| wash_candidate(wf, &net))
         .or_else(|| treasury_candidate(wf, &hits, &has_venue))
         .or_else(|| position_close_candidate(&hop_kinds_aligned, wf, &venues))
@@ -228,6 +260,30 @@ pub fn classify(dict: &Dictionary, wf: &Workflow) -> Verdict {
         .or_else(|| market_maker_candidate(&hop_kinds, wf, recognized))
         .or_else(|| incentive_farming_candidate(&hop_kinds_aligned, wf, recognized))
         .or_else(|| liquidity_candidate(&hop_kinds, wf));
+
+    // Ledger annotation: PositionClose verdicts only, rationale only.
+    if let (Some(ledger), Some((Label::PositionClose, _, rationale))) =
+        (ledger, candidate.as_mut())
+    {
+        if let (Some(first), Some(receiver)) = (wf.hops.first(), wf.hops.first().map(|h| h.to.as_str())) {
+            let pool = first.from.as_str();
+            let single_mint = wf.hops.iter().all(|h| h.mint == first.mint);
+            if single_mint {
+                let note = match ledger.close_reading(receiver, pool, &first.mint) {
+                    CloseReading::Full => {
+                        "; position ledger: full close — recorded adds fully removed across windows"
+                    }
+                    CloseReading::Partial => {
+                        "; position ledger: partial removal — position remains open across windows"
+                    }
+                    CloseReading::Unknown => {
+                        "; position ledger: no complete add history — full vs partial not determinable"
+                    }
+                };
+                rationale.push_str(note);
+            }
+        }
+    }
 
     Verdict::seal(wf.id, candidate, evidence, net)
 }
@@ -376,9 +432,14 @@ fn treasury_candidate(
 /// certainty needs cross-window position state (an open ledger carried
 /// across windows), which this stateless classifier does not keep. The
 /// label therefore means "removal legs returned funds to this wallet", at
-/// 0.75, not "this wallet's position is provably zero". The gate still
-/// holds on real labeled mainnet routes; this limit is the next W6.2 item
-/// after them, not a reason to leave the arm dead.
+/// 0.75, not "this wallet's position is provably zero" — UNLESS the caller
+/// classified through [`classify_with_ledger`] with a ledger that reads
+/// Full for this position, in which case the verdict's rationale says so
+/// explicitly (the label and confidence are still the removal-legs
+/// reading; the annotation is the ledger's statement, not a verdict
+/// upgrade). The gate still holds on real labeled mainnet routes; the
+/// ledger consult's full-vs-partial readings are validated there, not
+/// here.
 fn position_close_candidate(
     hop_kinds_aligned: &[Option<HopKind>],
     wf: &Workflow,

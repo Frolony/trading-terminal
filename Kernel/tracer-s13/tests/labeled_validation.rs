@@ -29,14 +29,18 @@
 //!   is the honest reading of that fixture, and the close reading needs
 //!   removal legs alone. The [`WfExpect::KnownLimitation`] variant is
 //!   retained for future pinned gaps; no case currently uses it.
-//!   Remaining limit, stated not hidden: the stateless classifier cannot
-//!   distinguish a full close from a partial removal (both are removal legs
-//!   to one wallet) — full-close certainty needs cross-window position
-//!   state, a W6.2 follow-up after mainnet validation.
+//!   Remaining limit, stated not hidden: the cross-window position ledger
+//!   (fifth pass, `src/position_state.rs`) now gives the machine the state
+//!   the stateless classifier lacked — a `PositionClose` verdict classified
+//!   through `classify_with_ledger` carries the ledger's full / partial /
+//!   unknown reading in its rationale, label and confidence unchanged — but
+//!   that consult is validated only on synthetic histories so far. Its
+//!   full-vs-partial readings on real routes are a gate item alongside the
+//!   mainnet routes below.
 //!
 //! The W6.2 gate stays CLOSED after this pass: no label is user-facing
-//! until real labeled mainnet routes validate the corpus (plus the
-//! partial-vs-full close limit above).
+//! until real labeled mainnet routes validate the corpus (plus the ledger
+//! consult's readings on real routes).
 
 use tracer_s13::attestation::{
     attest, AttestationLabel, AttestationRecord, CausalTime, RealizedEvent,
@@ -422,12 +426,12 @@ fn w62_labeled_route_validation_corpus() {
     println!("--- summary: {passed}/{total} cases passed ---");
     println!("--- known limitations (launch-gate blockers, pinned above) ---");
     if gate_blockers.is_empty() {
-        println!("  [none — all pinned gaps resolved; gate held by mainnet routes + the partial-vs-full close limit]");
+        println!("  [none — all pinned gaps resolved; gate held by mainnet routes + ledger consult on real routes]");
     }
     for (name, note) in &gate_blockers {
         println!("  [BLOCKER] {name}: {note}");
     }
-    println!("--- gate: CLOSED. Remaining: real labeled mainnet routes (+ stateless partial-vs-full close limit). ---");
+    println!("--- gate: CLOSED. Remaining: real labeled mainnet routes (+ position-ledger consult validated on real routes). ---");
     println!("=== end of W6.2 validation report ===");
 
     assert!(

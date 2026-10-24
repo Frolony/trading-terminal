@@ -53,8 +53,9 @@
 //! ## Gate status after this pass
 //!
 //! The devnet-swarm half of W6.2 is DONE. The W6.2 gate stays CLOSED:
-//! remaining are real labeled mainnet routes (plus the stateless
-//! partial-vs-full close limit). The MM-unwind overlap and the
+//! remaining are real labeled mainnet routes (plus the position-ledger
+//! consult validated on real routes — the ledger foundation landed in the
+//! fifth pass, synthetic histories only). The MM-unwind overlap and the
 //! PositionClose dead arm have since been resolved at the classifier.
 //! No label is user-facing.
 
@@ -406,7 +407,7 @@ fn swarm_ground_truth_workflows() {
         }
     }
     println!("--- summary: {passed}/{} cases passed ---", corpus.len());
-    println!("--- gate: STILL CLOSED. Devnet-swarm half landed; remaining: real labeled mainnet routes (+ stateless partial-vs-full close limit). No label is user-facing. ---");
+    println!("--- gate: STILL CLOSED. Devnet-swarm half landed; remaining: real labeled mainnet routes (+ position-ledger consult validated on real routes). No label is user-facing. ---");
     println!("=== end of W6.2 validation report ===");
 
     assert!(

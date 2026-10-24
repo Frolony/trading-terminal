@@ -34,6 +34,15 @@
 //!    the claimed time (post-dated), or a certified hash that is not the
 //!    realized outcome's. The unclassified guarantee applies here too: no
 //!    realized event on record means no verdict, not fraud.
+//! 6. **Cross-window position state** ([`position_state`], W6.2 fifth pass):
+//!    a ledger of observed liquidity adds/removes per `(wallet, pool,
+//!    mint)`, so a removal leg can be read as a full close, a partial
+//!    reduction, or "not determinable" — a removal with no add history, or
+//!    one exceeding the recorded adds, reads Unknown, never a guessed
+//!    close. [`classify::classify_with_ledger`] annotates a `PositionClose`
+//!    verdict's rationale with the ledger reading and changes neither the
+//!    label nor the confidence; full-vs-partial on real mainnet routes is
+//!    still a W6.2 gate item.
 //!
 //! ## Deliberate limits of this increment
 //!
@@ -62,6 +71,7 @@ pub mod reconstruct;
 pub mod classify;
 pub mod summary;
 pub mod attestation;
+pub mod position_state;
 
 pub use dictionary::{default_dictionary, Dictionary, HopKind, Venue, VenueHit, VENUE_DICTIONARY};
 pub use ingest::TransferEvent;
@@ -72,3 +82,4 @@ pub use attestation::{
     attest, attestation_headline, AttestationClassification, AttestationLabel,
     AttestationRecord, AttestationVerdict, CausalTime, RealizedEvent,
 };
+pub use position_state::{CloseReading, PositionLedger, PositionStatus};

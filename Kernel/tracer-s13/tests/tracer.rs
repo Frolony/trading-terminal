@@ -5,9 +5,10 @@
 //! dictionary recognizes, classification carries confidence AND evidence,
 //! and the unclassified guarantee holds — no labeled verdict below 0.70.
 
-use tracer_s13::classify::{classify, Label, Verdict, CONFIDENCE_THRESHOLD};
+use tracer_s13::classify::{classify, classify_with_ledger, Classification, Label, Verdict, CONFIDENCE_THRESHOLD};
 use tracer_s13::dictionary::{default_dictionary, HopKind, Venue};
 use tracer_s13::ingest::{ingest, TransferEvent};
+use tracer_s13::position_state::PositionLedger;
 use tracer_s13::reconstruct::{reconstruct, NetEffect, Workflow};
 use tracer_s13::{headline, reconstruct as rc};
 
@@ -601,4 +602,107 @@ fn t37_close_guard_receiver_sends_onward_not_close() {
     assert_eq!(verdicts.len(), 1, "the two legs are one workflow");
     let v = &verdicts[0];
     assert_ne!(v.label(), Some(Label::PositionClose), "routed removal is not a close");
+}
+
+// W6.2 fifth pass — cross-window position ledger consult. The ledger is
+// fed the position's add history in an earlier window; the close leg
+// arrives in this window. The consult annotates the PositionClose
+// verdict's rationale with the ledger reading and changes NEITHER the
+// label NOR the confidence — the annotation is evidence, not an upgrade.
+fn run_with_ledger(events: Vec<TransferEvent>, ledger: &PositionLedger) -> Vec<Verdict> {
+    let dict = default_dictionary();
+    let ingested = ingest(events).expect("test events must ingest");
+    reconstruct(&ingested)
+        .iter()
+        .map(|wf| classify_with_ledger(&dict, wf, Some(ledger)))
+        .collect()
+}
+
+fn rationale(v: &Verdict) -> String {
+    match &v.classification {
+        Classification::Labeled { rationale, .. } => rationale.clone(),
+        Classification::Unclassified { reason } => reason.clone(),
+    }
+}
+
+// T38 — ledger full close: the recorded adds are fully removed, so the
+// verdict's rationale says "full close" — while the label stays
+// PositionClose at exactly 0.75, the removal-legs reading, un-upgraded.
+// Pipeline order matters and is the point: the caller feeds the window's
+// legs to the ledger FIRST (adds from earlier windows, this window's
+// removal leg included), and the consult reads the post-window state.
+#[test]
+fn t38_ledger_full_close_annotates_without_upgrading() {
+    let mut ledger = PositionLedger::new();
+    ledger.record_add("user2", "pool1", "SOL", 1_999_000_000);
+    ledger.record_remove("user2", "pool1", "SOL", 1_999_000_000);
+    let verdicts = run_with_ledger(
+        vec![ev("sig0", 780, 0, "pool1", "user2", "SOL", 1_999_000_000, "P_clmm", "decreaseLiquidity", 5000)],
+        &ledger,
+    );
+    assert_eq!(verdicts.len(), 1);
+    let v = &verdicts[0];
+    assert_eq!(v.label(), Some(Label::PositionClose));
+    assert_eq!(v.confidence(), 0.75, "annotation is not a confidence upgrade");
+    assert!(
+        rationale(v).contains("position ledger: full close"),
+        "rationale must carry the ledger reading: {}",
+        rationale(v)
+    );
+}
+
+// T39 — ledger partial removal: the recorded adds exceed the removal, so
+// the rationale says the position remains open — the label is still the
+// removal-legs PositionClose, not a claim that anything closed.
+#[test]
+fn t39_ledger_partial_removal_annotates_as_open() {
+    let mut ledger = PositionLedger::new();
+    ledger.record_add("user2", "pool1", "SOL", 2_000_000_000);
+    ledger.record_remove("user2", "pool1", "SOL", 1_999_000_000);
+    let verdicts = run_with_ledger(
+        vec![ev("sig0", 790, 0, "pool1", "user2", "SOL", 1_999_000_000, "P_clmm", "decreaseLiquidity", 5000)],
+        &ledger,
+    );
+    assert_eq!(verdicts.len(), 1);
+    let v = &verdicts[0];
+    assert_eq!(v.label(), Some(Label::PositionClose));
+    assert_eq!(v.confidence(), 0.75);
+    assert!(
+        rationale(v).contains("position ledger: partial removal"),
+        "rationale must carry the ledger reading: {}",
+        rationale(v)
+    );
+}
+
+// T40 — ledger unknown: no add history was fed (the removal leg itself
+// IS fed, so the Unknown is the fail-closed rule firing, not an
+// unfed-ledger artifact) — so the consult must say "not determinable"
+// rather than guess a full close — and the plain stateless classify path
+// must carry no ledger annotation at all.
+#[test]
+fn t40_ledger_unknown_without_history_and_stateless_unannotated() {
+    let mut ledger = PositionLedger::new();
+    ledger.record_remove("user2", "pool1", "SOL", 1_999_000_000);
+    let events = vec![ev(
+        "sig0", 800, 0, "pool1", "user2", "SOL", 1_999_000_000, "P_clmm", "decreaseLiquidity", 5000,
+    )];
+    let verdicts = run_with_ledger(events.clone(), &ledger);
+    // (The plain path below re-runs the same events without a ledger.)
+    assert_eq!(verdicts.len(), 1);
+    let v = &verdicts[0];
+    assert_eq!(v.label(), Some(Label::PositionClose));
+    assert_eq!(v.confidence(), 0.75);
+    assert!(
+        rationale(v).contains("position ledger: no complete add history"),
+        "unknown must be stated, never guessed: {}",
+        rationale(v)
+    );
+    let plain = run(events);
+    assert_eq!(plain.len(), 1);
+    assert_eq!(plain[0].label(), Some(Label::PositionClose));
+    assert!(
+        !rationale(&plain[0]).contains("position ledger"),
+        "stateless classify is byte-identical behavior: {}",
+        rationale(&plain[0])
+    );
 }
