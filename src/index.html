@@ -1110,9 +1110,17 @@ function renderPanelPlacement(ws){
     (byRoot[key]=byRoot[key]||[]).push(id);
   });
   Object.keys(byRoot).forEach(key=>byRoot[key].sort((a,b)=>rank(a)-rank(b)));
+  /* Resolve every panel element BEFORE any root is processed: each root's pass
+     detaches panels that later roots still want, and querySelector cannot find
+     a detached node — the old per-root lazy lookup silently dropped
+     cross-container panels (N5.6 acceptance 2026-10-23: the chart vanished when
+     dropped into the side column, and the persisted layout then broke init on
+     reload). */
+  const els={};
+  PANEL_IDS.forEach(id=>{const el=panelEl(id);if(el)els[id]=el;});
   document.querySelectorAll('[data-layout-root]').forEach(root=>{
     const key=root.getAttribute('data-root-key');
-    const wanted=(byRoot[key]||[]).map(panelEl).filter(Boolean);
+    const wanted=(byRoot[key]||[]).map(id=>els[id]).filter(Boolean);
     const kids=[...root.children].filter(el=>el.getAttribute&&PANEL_IDS.includes(el.getAttribute('data-panel')));
     if(!kids.length&&!wanted.length)return;
     const slots=kids.map(k=>{const ph=document.createComment('layout-slot');k.replaceWith(ph);return ph;});
@@ -1402,6 +1410,15 @@ function visiblePanelsOf(rootKey){
     .map(el=>el.getAttribute('data-panel'))
     .filter(id=>!ws.hidden.includes(id));
 }
+function isNoOpDrop(panelId,key,idx){
+  /* The drop index is computed against the root's visible panels EXCLUDING the
+     dragged panel (dragSlotPanels), while the DOM still holds the pre-drag
+     order — reinserting at idx reproduces the current sequence exactly when
+     idx equals the panel's present index. A same-spot drop must not fork the
+     workspace, toast, or save (N5.6 acceptance 2026-10-23: an Escape-cancelled
+     drag that released at its origin spuriously forked "Trader (custom)"). */
+  return visiblePanelsOf(key).indexOf(panelId)===idx;
+}
 function commitPanelDrag(d,panelId,targetRootKey,dropIdx){
   /* Rebuild the global order rank so each root's panels sort into the new
      visual sequence (container-grouped, roots in DOM order — the popover
@@ -1432,18 +1449,22 @@ function onPanelDragMove(e){
 }
 function onPanelDragUp(e){
   const d=dragState;if(!d||e.pointerId!==d.pointerId)return;
-  dragState=null;
-  if(!d.dragging)return; /* plain click — the browser dispatches it normally */
+  if(!d.dragging){dragState=null;return;} /* plain click — the browser dispatches it normally */
   /* The release point is authoritative: refresh the drop target from it (a
      flick outside any root after hovering a drop zone cancels, as the
-     vanished indicator already told the user). */
+     vanished indicator already told the user). NOTE: dragState must still be
+     set for this refresh — dropIndexFor excludes the dragged panel via
+     dragState, exactly as the on-screen indicator did; nulling first would
+     include the panel in its own index math and shift the landing slot. */
   movePanelDrag(d,e.clientX,e.clientY);
+  dragState=null;
   const root=d.dropRoot,idx=d.dropIndex;
   endPanelDragVisual(d);
   suppressClickAfterDrag=true; /* swallow the pointerup's click (exactly one, capture phase) */
   if(!root)return; /* released outside any drop zone: cancel silently */
   const key=root.getAttribute('data-root-key');
   if(!key||!ROOT_KEYS.includes(key))return;
+  if(isNoOpDrop(d.panelId,key,idx))return; /* dropped back at its own slot: no fork, no toast, no save */
   commitPanelDrag(d,d.panelId,key,idx);
 }
 function cancelPanelDrag(){
