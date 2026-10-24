@@ -165,6 +165,25 @@ enforcement in handlers, `grant_capability` (AgentRecord holdings),
 `set_capacity` (CapacityStock accounts, closing the COMPAT interim),
 then §4.2 treasury.
 
+**This increment wires per-type policy enforcement into the lifecycle
+handlers (design §4.1)** and closes the first of the interims above:
+`open_planning`, `submit_plan`, `submit_signal`, and `advance_round`
+now take the transition type's PolicyRecord (seeds-bound to the
+TransitionRecord's `transition_type`, so a stranger's policy cannot be
+substituted) and read their caps from it — planning window, plan cap,
+round cap — instead of the launch constants. Installed launch values
+equal those constants, so no behavior changes on transitions under a
+launch policy. IDL: instructions 21 (unchanged count — the four
+instructions gain the `policy_record` account), accounts 9, errors 32.
+Program host tests 47 → 48 (per-type caps govern the pure gates at
+non-launch values). Remaining interims: `commit`'s mask inputs (quorum,
+confidence, minimum observation confidence, objectives requirement)
+still read the launch policy — the mask-input wiring is the next
+policy increment; the CAPABILITY bit's holdings still await
+`grant_capability`; post-genesis policy changes remain the execution
+of a committed `treasury.policy.v1` transition. Next:
+`grant_capability`, `set_capacity`, then §4.2 treasury.
+
 **Design:** `files/OWN_IDL_DESIGN.md` (W4.1, validated and revised
 2026-10-24; W4.3 GO given by Carlos 2026-10-24 ~03:39 CST). Placement C: the
 kernel crate compiled into the program, the full 13-bit `commit_fail_mask`

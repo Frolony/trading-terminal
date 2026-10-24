@@ -265,6 +265,21 @@
 //! fresh authority signature — the amendment execution is a later
 //! increment, and this genesis-direct install does not pretend
 //! otherwise.
+//! This increment closes the first of those two interims: per-type
+//! policy enforcement in the lifecycle handlers. `open_planning`,
+//! `submit_plan`, `submit_signal`, and `advance_round` now take the
+//! transition type's PolicyRecord (seeds-bound to the record's
+//! `transition_type`, so a stranger's policy cannot be substituted)
+//! and read their caps from it — the planning window, the plan cap,
+//! and the round cap — instead of the launch constants. The installed
+//! launch values equal those constants, so no behavior changes on any
+//! transition registered under a launch policy; a type whose policy is
+//! later amended is governed by its own record from then on. The
+//! remaining interim is `commit`'s mask inputs (quorum, confidence,
+//! minimum observation confidence, objectives requirement), which
+//! still read the launch policy — the mask-input wiring is the next
+//! policy increment, and the CAPABILITY bit's holdings still await
+//! `grant_capability`.
 //! Nothing here is deployed: NO devnet deployment in W4.3, NO mainnet step
 //! exists in W4. No instruction here moves value.
 //!
@@ -578,9 +593,9 @@ pub mod treasury_program {
     /// proposer or an Admin may call it, the state must be Registered
     /// (the kernel's `set_state` allows Registered → Planning and
     /// nothing else into Planning), and the deadline is `now +
-    /// planning_window` from the launch policy (the carried genesis
-    /// parameter in `kernel_bridge`; design §9 — its seconds value is a
-    /// parameter, not a ruling). Time comes from the Clock sysvar, never
+    /// planning_window` from the transition type's PolicyRecord
+    /// (seeds-bound to the record's type; design §9 — the seconds
+    /// value is a parameter, not a ruling). Time comes from the Clock sysvar, never
     /// a client timestamp. Program-layer note, stated plainly: the
     /// caller must present their AgentRecord, because Admin status lives
     /// only there — a proposer who has never been registered as an agent
@@ -606,7 +621,7 @@ pub mod treasury_program {
         )?;
         let now = ctx.accounts.clock.unix_timestamp;
         transition.planning_deadline =
-            planning_deadline(now, kernel_bridge::PLANNING_WINDOW)?;
+            planning_deadline(now, ctx.accounts.policy_record.planning_window)?;
         transition.state = STATE_PLANNING;
         Ok(())
     }
@@ -617,7 +632,7 @@ pub mod treasury_program {
     /// and before the deadline (`PlanningClosed` otherwise — the kernel
     /// returns `PlanningClosed` for both a non-Planning state and a
     /// lapsed deadline), the agent active (`NotEligible`), room under
-    /// `max_plans` from the launch policy (`TooManyPlans`), and a plan
+    /// the transition type's PolicyRecord `max_plans` (`TooManyPlans`), and a plan
     /// expiry in the future (`BadWindow`). The kernel's plan-agent ==
     /// caller rule is enforced structurally, not by a returned error:
     /// the `PlanRecord` PDA seeds bind the plan to the signer, and the
@@ -668,7 +683,7 @@ pub mod treasury_program {
             now,
             transition.planning_deadline,
             transition.plan_count,
-            kernel_bridge::launch_policy().max_plans,
+            ctx.accounts.policy_record.max_plans,
             expires_at,
         )?;
         let hash = claims_hash(&claims);
@@ -698,7 +713,7 @@ pub mod treasury_program {
     /// 1_000_000 raw is 1.0 and anything above it is out of range),
     /// Registered-or-Planning state (`BadState` otherwise — signals are
     /// accepted in both states, exactly as the kernel allows), the
-    /// round index under `max_rounds` from the launch policy
+    /// round index under the transition type's PolicyRecord `max_rounds`
     /// (`RoundsExhausted`), the round matching the transition's
     /// current round (`BadState` — a stale round index names a PDA
     /// that is not the live round), and the agent active (`NotEligible`;
@@ -751,7 +766,7 @@ pub mod treasury_program {
             transition.state,
             support,
             round,
-            kernel_bridge::launch_policy().max_rounds,
+            ctx.accounts.policy_record.max_rounds,
             transition.round_count.checked_sub(1).unwrap_or(0),
         )?;
         // Round aggregates, maintained on-chain so `advance_round`
@@ -883,7 +898,7 @@ pub mod treasury_program {
     /// non-zero (`RoundEmpty` otherwise; a round of only zero-weight
     /// signals is empty in the kernel's sense, and this gate refuses
     /// it exactly as the kernel does) — and room must remain under
-    /// `max_rounds` from the launch policy (`RoundsExhausted`
+    /// the transition type's PolicyRecord `max_rounds` (`RoundsExhausted`
     /// otherwise; the empty check precedes the exhaustion check, as
     /// in the kernel). The caller is permissionless, as in the kernel
     /// (the kernel ignores its caller): no AgentRecord is required,
@@ -902,7 +917,7 @@ pub mod treasury_program {
             transition.state,
             transition.current_round_total,
             transition.round_count,
-            kernel_bridge::launch_policy().max_rounds,
+            ctx.accounts.policy_record.max_rounds,
         )?;
         transition.prev_round_mean =
             round_mean(transition.current_round_weighted, transition.current_round_total)?;
@@ -2946,6 +2961,13 @@ pub struct OpenPlanning<'info> {
     /// The transition record to move Registered → Planning.
     #[account(mut, seeds = [b"transition", transition_id.to_le_bytes().as_ref()], bump = transition_record.bump)]
     pub transition_record: Account<'info, TransitionRecord>,
+    /// The transition type's policy — seeds-bound to the record's
+    /// `transition_type`, so the planning window read here is the
+    /// governing type's own, never a stranger's policy. A missing
+    /// policy fails validation, fail-closed (registration already
+    /// requires it, so every live transition has one).
+    #[account(seeds = [b"policy", transition_record.transition_type.as_ref()], bump = policy_record.bump)]
+    pub policy_record: Account<'info, PolicyRecord>,
     /// The caller (proposer or Admin). Pays no rent here.
     pub caller: Signer<'info>,
     /// Clock sysvar: the planning deadline is judged on-chain.
@@ -3211,6 +3233,11 @@ pub struct SubmitPlan<'info> {
     /// The transition record to plan against (must be Planning).
     #[account(mut, seeds = [b"transition", transition_id.to_le_bytes().as_ref()], bump = transition_record.bump)]
     pub transition_record: Account<'info, TransitionRecord>,
+    /// The transition type's policy — seeds-bound to the record's
+    /// `transition_type`; its `max_plans` is the cap this instruction
+    /// enforces, never a stranger's policy and never a constant.
+    #[account(seeds = [b"policy", transition_record.transition_type.as_ref()], bump = policy_record.bump)]
+    pub policy_record: Account<'info, PolicyRecord>,
     /// PlanRecord PDA, seeds `["plan", transition_id, caller]`.
     /// One-time init: a second plan from the same agent fails and
     /// changes no state (Duplicate in the design taxonomy).
@@ -3288,6 +3315,11 @@ pub struct SubmitSignal<'info> {
     /// The transition record to signal against (Registered or Planning).
     #[account(mut, seeds = [b"transition", transition_id.to_le_bytes().as_ref()], bump = transition_record.bump)]
     pub transition_record: Account<'info, TransitionRecord>,
+    /// The transition type's policy — seeds-bound to the record's
+    /// `transition_type`; its `max_rounds` is the cap this instruction
+    /// enforces, never a stranger's policy and never a constant.
+    #[account(seeds = [b"policy", transition_record.transition_type.as_ref()], bump = policy_record.bump)]
+    pub policy_record: Account<'info, PolicyRecord>,
     /// SignalRecord PDA, seeds `["signal", transition_id, round, caller]`.
     /// One-time init: a second signal from the same agent in the same
     /// round fails and changes no state (AlreadySignalled in the
@@ -3318,6 +3350,11 @@ pub struct AdvanceRound<'info> {
     /// record (design §3).
     #[account(mut, seeds = [b"transition", transition_id.to_le_bytes().as_ref()], bump = transition_record.bump)]
     pub transition_record: Account<'info, TransitionRecord>,
+    /// The transition type's policy — seeds-bound to the record's
+    /// `transition_type`; its `max_rounds` is the cap this instruction
+    /// enforces, never a stranger's policy and never a constant.
+    #[account(seeds = [b"policy", transition_record.transition_type.as_ref()], bump = policy_record.bump)]
+    pub policy_record: Account<'info, PolicyRecord>,
     /// The caller (signer; pays no rent here). Permissionless, as in
     /// the kernel — the kernel ignores its advance_round caller, and
     /// no AgentRecord is required, so revision timing cannot be gated
@@ -4830,5 +4867,92 @@ mod tests {
             })
             .collect();
         assert!(validate_policy(500_000, 3, 4, &mandatory, &many).is_err());
+    }
+
+    #[test]
+    fn per_type_policy_values_govern_the_lifecycle_gates() {
+        // A PolicyRecord whose caps differ from the launch constants:
+        // the lifecycle gates must follow the record, not the launch
+        // values. The handlers pass exactly these fields to the pure
+        // gates (and the IDL carries the policy_record account on all
+        // four instructions), so this test plus the IDL check is the
+        // wiring evidence for the slice.
+        let policy = PolicyRecord {
+            transition_type: [3; 32],
+            quorum_required: 1_000_000,
+            confidence_threshold: 500_000,
+            min_obs_confidence: 500_000,
+            require_objectives: false,
+            planning_window: 999,
+            max_rounds: 1,
+            max_plans: 2,
+            mandatory_constraints: vec![],
+            required_capabilities: vec![],
+            bump: 0,
+        };
+        assert!(validate_policy(
+            policy.confidence_threshold,
+            policy.max_rounds,
+            policy.max_plans,
+            &policy.mandatory_constraints,
+            &policy.required_capabilities,
+        )
+        .is_ok());
+        // The deadline is now + the record's window, not the launch one.
+        assert_eq!(planning_deadline(1_000, policy.planning_window).unwrap(), 1_999);
+        assert_ne!(
+            policy.planning_window,
+            kernel_bridge::PLANNING_WINDOW,
+            "test fixture must differ from the launch window or it proves nothing"
+        );
+        // Plan cap: 2 plans already submitted refuses at max 2,
+        // admits at the launch max 4.
+        assert!(can_submit_plan(
+            true,
+            STATE_PLANNING,
+            1_000,
+            1_999,
+            2,
+            policy.max_plans,
+            2_000,
+        )
+        .is_err());
+        assert!(can_submit_plan(
+            true,
+            STATE_PLANNING,
+            1_000,
+            1_999,
+            2,
+            kernel_bridge::launch_policy().max_plans,
+            2_000,
+        )
+        .is_ok());
+        // Round cap: round 1 is exhausted at max 1, live at max 3.
+        assert!(can_submit_signal(
+            true,
+            STATE_PLANNING,
+            500_000,
+            1,
+            policy.max_rounds,
+            1,
+        )
+        .is_err());
+        assert!(can_submit_signal(
+            true,
+            STATE_PLANNING,
+            500_000,
+            1,
+            kernel_bridge::launch_policy().max_rounds,
+            1,
+        )
+        .is_ok());
+        assert!(can_advance_round(STATE_PLANNING, 1, 1, policy.max_rounds).is_err());
+        assert!(can_advance_round(
+            STATE_PLANNING,
+            1,
+            1,
+            kernel_bridge::launch_policy().max_rounds,
+        )
+        .is_ok());
     }
 }
