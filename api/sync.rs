@@ -86,13 +86,18 @@ fn challenge_message(nonce: &str, issued_at: u64) -> String {
 }
 
 fn random_nonce() -> String {
-    // 24 bytes from /dev/urandom, hex-encoded. Fallback is time-derived and
-    // still unique per (pubkey, second) in practice; challenges also expire
-    // in 5 minutes and are single-use, so a weak fallback cannot be replayed
-    // across windows.
-    if let Ok(bytes) = std::fs::read("/dev/urandom") {
-        if bytes.len() >= 24 {
-            return hex_encode(&bytes[..24]);
+    // Read EXACTLY 24 bytes: std::fs::read() loops to EOF, and /dev/urandom
+    // never EOFs — the naive form hangs the function forever (caught live
+    // 2026-10-24: the production challenge endpoint timed out on every call
+    // while the validation-only paths answered instantly). read_exact
+    // returns after 24 bytes. Fallback is time-derived and still unique per
+    // (pubkey, second) in practice; challenges also expire in 5 minutes and
+    // are single-use, so a weak fallback cannot be replayed across windows.
+    use std::io::Read;
+    if let Ok(mut f) = std::fs::File::open("/dev/urandom") {
+        let mut buf = [0u8; 24];
+        if f.read_exact(&mut buf).is_ok() {
+            return hex_encode(&buf);
         }
     }
     let t = now_ms();
@@ -731,5 +736,16 @@ mod tests {
         assert!(pubkey_bytes("So11111111111111111111111111111111111111112").is_some());
         assert!(pubkey_bytes("not-a-pubkey").is_none());
         assert!(pubkey_bytes("So1111111111111111111111111111111111111111").is_none());
+    }
+
+    #[test]
+    fn random_nonce_returns_promptly_and_is_hex() {
+        // Regression test for the live hang: the naive fs::read(/dev/urandom)
+        // form never returns (urandom has no EOF). This must complete.
+        let a = random_nonce();
+        let b = random_nonce();
+        assert_eq!(a.len(), 48, "24 bytes hex-encoded");
+        assert!(a.chars().all(|c| c.is_ascii_hexdigit()));
+        assert_ne!(a, b, "two nonces differ");
     }
 }
