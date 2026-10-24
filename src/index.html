@@ -218,8 +218,61 @@ the brief outline flash marks the landing panel without touching its copy.*/
 #execPathPanel.execflash{outline:2px solid var(--green);outline-offset:3px;border-radius:14px;animation:execflash 1.6s ease-out}
 @keyframes execflash{0%{box-shadow:0 0 0 4px rgba(66,214,160,.35)}100%{box-shadow:0 0 0 0 transparent}}
 @media(prefers-reduced-motion:reduce){#execPathPanel.execflash{animation:none}}
+/* N2.6 (A55) Manage-Wallets card pattern (2026-10-24): the wallet menu is a
+   finished surface, not a debug panel. Cards carry air + hierarchy; every
+   button inside the menu is app-styled (the old roster buttons had no CSS
+   at all and rendered as browser defaults); the Sync line is a proper
+   label/value flex row so long stage wording can never print on top of
+   the label; names/addresses truncate with ellipsis instead of wrapping
+   mid-string. Behaviors underneath are untouched (N2.3/N2.4/N2.5/N4.10/
+   N4.11/N4.12). */
+.wdd{width:340px;padding:12px 14px 14px}
+.wdd button{border:1px solid var(--line);background:var(--btnbg);color:var(--btntext);border-radius:7px;padding:7px 10px;font-size:11px}
+.wdd button:hover{border-color:var(--hoverline);color:var(--text)}
+.wdd button.danger{color:var(--red);border-color:#472a35;background:#281820}
+.wdd button.wfull{width:100%}
+.wactive-card{border:1px solid var(--line);border-radius:12px;padding:12px;margin:4px 0 10px;background:var(--panel2)}
+.wcard-top{display:flex;align-items:flex-start;gap:10px}
+.wavatar{flex:0 0 auto;width:36px;height:36px;border-radius:50%;background:#1d2b36;color:var(--lime);display:grid;place-items:center;font-weight:800;font-size:14px}
+.wcard-meta{flex:1;min-width:0}
+.wcard-name{font-size:13px;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.wdd button.waddr{display:block;width:100%;min-width:0;margin-top:2px;padding:0;border:0;background:transparent;color:var(--muted);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.wdd button.waddr:hover{color:var(--text);border-color:transparent}
+.wsyncrow{display:flex;gap:8px;align-items:flex-start;margin-top:10px}
+.wsync-label{flex:0 0 auto;color:var(--muted);font-size:12px}
+.wsync-value{flex:1;min-width:0;font-size:12px;overflow-wrap:anywhere}
+.wdd button.wfull{margin-top:8px}
+.wchip{flex:0 0 auto;font-size:10px;font-weight:650;letter-spacing:.2px;border:1px solid var(--line);border-radius:20px;padding:3px 8px;white-space:nowrap}
+.wchip.chip-ok{color:var(--green);border-color:var(--okline)}
+.wchip.chip-warn{color:var(--amber);border-color:var(--warnline)}
+.wchip.chip-err{color:var(--red);border-color:var(--errline)}
+.wchip.chip-off{color:var(--muted)}
+.wbal-card{border:1px solid var(--line);border-radius:12px;padding:4px 12px 10px;margin-bottom:10px}
+.wbal-card .walletrow{padding:9px 0}
+.wbal-card .walletrow strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.wdd .wrowbtn{display:flex;gap:8px;margin-top:10px}
+.wdd .wrowbtn button{flex:1}
+.wdd .wrowbtn.wbottom{flex-wrap:wrap}
+.wdd .wrowbtn.wbottom button.wfull{flex:1 1 100%}
+.wdd .wrowbtn.wbottom button.danger{flex:1}
+.wroster-head{font-size:10px;letter-spacing:1.2px;text-transform:uppercase;color:var(--muted);margin:12px 0 6px}
+.wcard{display:flex;gap:10px;padding:10px 12px;border:1px solid var(--line);border-radius:12px;margin-bottom:8px;background:var(--panel);cursor:pointer;align-items:flex-start}
+.wcard:hover{border-color:var(--hoverline)}
+.wcard.active{border-color:var(--green);box-shadow:0 0 0 1px var(--green)}
+.wcard-main{flex:1;min-width:0}
+.wcard-title{display:flex;align-items:center;gap:6px}
+.wcard-title .wcard-name{flex:1}
+.wcard-addr{display:block;color:var(--muted);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:1px}
+.wcard .wchip{margin-top:6px;display:inline-block}
+.wcard-side{flex:0 0 auto;text-align:right;display:flex;flex-direction:column;gap:6px;align-items:flex-end}
+.wcard-total{font-size:12px;font-weight:700;white-space:nowrap}
+.wcard-total.muted{color:var(--muted);font-weight:400}
+.wcard-side button{padding:4px 8px;font-size:10px;white-space:nowrap}
+.wcard-side .wactive{font-size:10px;font-weight:700;color:var(--green)}
+.wrename-input{flex:1;min-width:0;background:var(--input);border:1px solid var(--inputline);border-radius:6px;color:var(--text);padding:4px 6px;font-size:12px}
+.wrename-save{padding:4px 8px;font-size:11px}
 </style></head><body><div class="app">
-<header class="top"><div class="brand"><div class="mark">T</div><div><h1>TURNPOOL</h1><small>Solana market intelligence</small></div></div><div class="topright"><div class="switchrow viewtabs" role="tablist" aria-label="Terminal views"><button type="button" id="tabTerminal" class="active mode" role="tab" aria-selected="true">Terminal</button><button type="button" id="tabDashboard" class="mode" role="tab" aria-selected="false">Dashboard</button></div><span class="pill">NETWORK&nbsp; / &nbsp;SOLANA</span><span class="status"><i class="dot"></i><span id="feedStatus" data-testid="feed-badge">CONNECTING DATA</span></span><span class="wwrap"><button id="walletBtn" class="walletbtn" type="button">Connect Wallet</button><span id="syncDot" style="display:none;width:8px;height:8px;border-radius:50%;background:#888;vertical-align:middle;margin-left:2px" title="Sync"></span><div class="wdd" id="walletDd" hidden><div class="eyebrow" id="walletDdName" style="margin-top:8px">Wallet</div><div class="waddr" id="walletDdAddr"></div><div class="walletrow"><span>Sync</span><strong id="walletSyncLine">Sync off</strong><button type="button" id="walletSyncTapBtn" hidden>Sign in to sync</button></div><div class="walletrow"><span>SOL balance</span><strong id="walletSol">—</strong></div><div class="walletrow"><span>USDC balance</span><strong id="walletUsdc">—</strong></div><div class="walletrow"><span>USDT balance</span><strong id="walletUsdt">—</strong></div><div class="wrowbtn"><button type="button" id="walletCopy">Copy address</button><button type="button" id="walletRetryBal">Retry balances</button></div><div id="walletRoster"></div><div class="wrowbtn"><button type="button" id="walletAddBtn">Connect another wallet</button><button type="button" id="walletDisconnect" class="danger">Disconnect active wallet</button></div></div></span><span class="pill">PAPER MODE</span><button id="howItWorksLink" class="howlink" type="button" data-testid="how-it-works-link" title="How the terminal handles orders — simulated paper trading and wallet-signed swaps">How this works</button><span class="wwrap"><button id="layoutBtn" class="iconbtn" type="button" aria-label="Open layout" title="Layout">▦</button><div class="lpop" id="layoutPop" hidden role="dialog" aria-label="Layout"><div class="lpop-head"><strong>Layout</strong><button class="wclose" id="layoutPopClose" type="button" aria-label="Close layout">×</button></div><div class="lpop-note">Layouts apply to the trading desk (main page). Drag any panel by its header to move it anywhere — the arrows reorder panels within each column.</div><div id="layoutPanelList"></div><div class="lpop-hidden" id="layoutHiddenNote" hidden></div><div class="lpop-sec">Workspaces</div><div id="layoutWsList"></div><div class="searchrow" style="margin-top:8px"><input id="layoutWsName" maxlength="40" placeholder="Name this layout" aria-label="Workspace name" autocomplete="off" spellcheck="false"><button id="layoutWsSave" type="button">Save</button></div></div></span><button id="resetUiBtn" class="resetuibtn" type="button" data-testid="reset-ui-btn" aria-label="Reset UI layout" title="Reset UI layout — restore every panel to its home position">↺ Reset UI</button><button id="settingsBtn" class="iconbtn" type="button" aria-label="Open settings" title="Settings">⚙</button></div></header>
+<header class="top"><div class="brand"><div class="mark">T</div><div><h1>TURNPOOL</h1><small>Solana market intelligence</small></div></div><div class="topright"><div class="switchrow viewtabs" role="tablist" aria-label="Terminal views"><button type="button" id="tabTerminal" class="active mode" role="tab" aria-selected="true">Terminal</button><button type="button" id="tabDashboard" class="mode" role="tab" aria-selected="false">Dashboard</button></div><span class="pill">NETWORK&nbsp; / &nbsp;SOLANA</span><span class="status"><i class="dot"></i><span id="feedStatus" data-testid="feed-badge">CONNECTING DATA</span></span><span class="wwrap"><button id="walletBtn" class="walletbtn" type="button">Connect Wallet</button><span id="syncDot" style="display:none;width:8px;height:8px;border-radius:50%;background:#888;vertical-align:middle;margin-left:2px" title="Sync"></span><div class="wdd" id="walletDd" hidden><div class="wactive-card"><div class="wcard-top"><span class="wavatar" id="walletDdAvatar">W</span><div class="wcard-meta"><div class="wcard-name" id="walletDdName">Wallet</div><button type="button" class="waddr" id="walletDdAddr" title="Copy address"></button></div><span class="wchip chip-off" id="walletSyncChip">Sync off</span></div><div class="wsyncrow"><span class="wsync-label">Sync</span><span class="wsync-value" id="walletSyncLine">Sync off</span></div><button type="button" class="wfull" id="walletSyncTapBtn" hidden>Sign in to sync</button></div><div class="wbal-card"><div class="walletrow"><span>SOL balance</span><strong id="walletSol">—</strong></div><div class="walletrow"><span>USDC balance</span><strong id="walletUsdc">—</strong></div><div class="walletrow"><span>USDT balance</span><strong id="walletUsdt">—</strong></div><div class="wrowbtn"><button type="button" id="walletCopy">Copy address</button><button type="button" id="walletRetryBal">Retry balances</button></div></div><div id="walletRoster"></div><div class="wrowbtn wbottom"><button type="button" class="wfull" id="walletAddBtn">+ Add New Wallet</button><button type="button" id="walletDisconnect" class="danger">Disconnect active wallet</button></div></div></span><span class="pill">PAPER MODE</span><button id="howItWorksLink" class="howlink" type="button" data-testid="how-it-works-link" title="How the terminal handles orders — simulated paper trading and wallet-signed swaps">How this works</button><span class="wwrap"><button id="layoutBtn" class="iconbtn" type="button" aria-label="Open layout" title="Layout">▦</button><div class="lpop" id="layoutPop" hidden role="dialog" aria-label="Layout"><div class="lpop-head"><strong>Layout</strong><button class="wclose" id="layoutPopClose" type="button" aria-label="Close layout">×</button></div><div class="lpop-note">Layouts apply to the trading desk (main page). Drag any panel by its header to move it anywhere — the arrows reorder panels within each column.</div><div id="layoutPanelList"></div><div class="lpop-hidden" id="layoutHiddenNote" hidden></div><div class="lpop-sec">Workspaces</div><div id="layoutWsList"></div><div class="searchrow" style="margin-top:8px"><input id="layoutWsName" maxlength="40" placeholder="Name this layout" aria-label="Workspace name" autocomplete="off" spellcheck="false"><button id="layoutWsSave" type="button">Save</button></div></div></span><button id="resetUiBtn" class="resetuibtn" type="button" data-testid="reset-ui-btn" aria-label="Reset UI layout" title="Reset UI layout — restore every panel to its home position">↺ Reset UI</button><button id="settingsBtn" class="iconbtn" type="button" aria-label="Open settings" title="Settings">⚙</button></div></header>
 <div class="stats" data-layout-root data-root-key="stats">
 <div class="stat" data-panel="solstat" data-drag-handle><div class="eyebrow">SOL / USD</div><div class="big" id="statPrice">$—</div><div class="sub" id="statPriceSub">Live market feed</div></div>
 <div class="stat" data-panel="chgstat" data-drag-handle><div class="eyebrow">24H CHANGE</div><div class="big" id="statChange" data-testid="hero-chg-24h">—</div><div class="sub">Solana spot market</div></div>
@@ -352,7 +405,7 @@ function syncStatusText(){if(syncState.status==='offline'&&syncState.stage&&SYNC
    sign-in was already in flight — the messenger lied while the mechanism
    worked. syncSetStatus() itself paints on every transition, so an open
    menu also updates in place when auth completes, is declined, or clears. */
-function syncSetStatus(s,stage){syncState.status=s;if(s==='offline'||s==='tap'){if(stage!==undefined)syncState.stage=stage;}else{syncState.stage=null;}try{const dot=$('syncDot');if(dot){if(s==='off'){dot.style.display='none';}else{dot.style.display='inline-block';dot.style.background=s==='synced'?'#6fbf6f':(s==='syncing'||s==='tap')?'#e0a83c':'#d9534f';}dot.title=syncStatusText();}const wb=$('walletBtn');if(wb)wb.title=s==='off'?'Connect Wallet':syncStatusText();const ln=$('walletSyncLine');if(ln)ln.textContent=syncStatusText();const tb=$('walletSyncTapBtn');if(tb)tb.hidden=s!=='tap';}catch(_){}}
+function syncSetStatus(s,stage){syncState.status=s;if(s==='offline'||s==='tap'){if(stage!==undefined)syncState.stage=stage;}else{syncState.stage=null;}try{const dot=$('syncDot');if(dot){if(s==='off'){dot.style.display='none';}else{dot.style.display='inline-block';dot.style.background=s==='synced'?'#6fbf6f':(s==='syncing'||s==='tap')?'#e0a83c':'#d9534f';}dot.title=syncStatusText();}const wb=$('walletBtn');if(wb)wb.title=s==='off'?'Connect Wallet':syncStatusText();const ln=$('walletSyncLine');if(ln)ln.textContent=syncStatusText();const tb=$('walletSyncTapBtn');if(tb)tb.hidden=s!=='tap';/* N2.6 (A55): the active-card sync chip is a SHORT rendering of this same syncState.status — never a second source. And a modal left open across a sync transition repaints, so its roster chips cannot go stale (the 15:30/16:20 screenshots showed the modal roster still saying 'signing in…' after the menu line had already failed). */const chip=$('walletSyncChip');if(chip){chip.textContent=s==='synced'?'Sync on':s==='syncing'?'Signing in…':s==='tap'?'Tap to sign in':s==='offline'?'Sync failed':'Sync off';chip.className='wchip chip-'+(s==='synced'?'ok':(s==='syncing'||s==='tap')?'warn':s==='offline'?'err':'off');}try{const m=$('walletModal');if(m&&!m.hidden&&typeof paintWalletModal==='function')paintWalletModal();}catch(_){}}catch(_){}}
 function paintWalletSync(){try{syncSetStatus(syncState.status||'off');}catch(_){}}
 function syncB64(bytes){let s='';const CH=0x8000;for(let i=0;i<bytes.length;i+=CH){s+=String.fromCharCode.apply(null,bytes.subarray(i,i+CH));}return btoa(s);}
 function syncPost(body){const c=new AbortController(),t=setTimeout(()=>c.abort(),10000);const h={'content-type':'application/json'};if(syncState.token)h['Authorization']='Bearer '+syncState.token;return fetch('/api/sync',{method:'POST',headers:h,body:JSON.stringify(body),signal:c.signal}).then(r=>r.json()).catch(()=>({ok:false,error:'sync_unavailable'})).finally(()=>clearTimeout(t));}
@@ -3140,6 +3193,10 @@ function renderWalletDd(){
   set('walletSol',wallet.balances.sol,'SOL',wallet.balErr.sol);
   set('walletUsdc',wallet.balances.usdc,'USDC',wallet.balErr.usdc);
   set('walletUsdt',wallet.balances.usdt,'USDT',wallet.balErr.usdt);
+  /* N2.6: the active card's name/avatar follow the (possibly renamed)
+     display label. Guarded so extracted-function harnesses that do not
+     ship walletDisplayName still run (they fall back to wallet.name). */
+  try{const dn=(typeof walletDisplayName==='function'?walletDisplayName(wallet.publicKey,wallet.name):(wallet.name||'Wallet'));const nm=$('walletDdName');if(nm)nm.textContent=dn;const av=$('walletDdAvatar');if(av)av.textContent=(dn||'W').slice(0,1).toUpperCase();const ad=$('walletDdAddr');if(ad)ad.title='Copy address — '+String(wallet.publicKey||'');}catch(_){}
   paintWalletSync(); // N2.5: the menu's only repaint path also repaints sync — no repaint can leave a stale Sync line behind
   renderWalletRoster();
 }
@@ -3152,18 +3209,75 @@ function renderWalletDd(){
    wallet stays connected in its extension; only the active wallet syncs. */
 function walletRosterFind(pk){if(!pk)return null;for(const e of wallet.roster){if(e.pubkey===pk)return e;}return null;}
 function walletRosterHasAdapter(a){if(!a)return false;for(const e of wallet.roster){if(e.adapter===a)return true;}return false;}
-function walletRosterSyncShort(entry){
-  if(wallet.publicKey!==entry.pubkey)return 'Sync off';
+/* N2.6 (A55): ONE status source for the roster and the menu Sync line.
+   walletRosterSyncShort is the short rendering of syncState.status for the
+   ACTIVE wallet (background wallets never sync, so they honestly read
+   'Sync off'); the menu's long line (syncStatusText) spells out the same
+   status. A failed wallet can therefore never read 'signing in…' in one
+   place and 'failed' in another — both paint from syncState at render
+   time, and syncSetStatus repaints an open modal on every transition. */
+function walletSyncShortFor(pk){
+  if(wallet.publicKey!==pk)return 'Sync off';
   if(syncState.status==='synced')return 'Sync on';
   if(syncState.status==='syncing')return 'Sync — signing in…';
   if(syncState.status==='offline')return 'Sync failed';
   if(syncState.status==='tap')return 'Tap to sign in';
   return 'Sync off';
 }
+function walletSyncChipClassFor(pk){
+  if(wallet.publicKey!==pk)return 'off';
+  if(syncState.status==='synced')return 'ok';
+  if(syncState.status==='syncing'||syncState.status==='tap')return 'warn';
+  if(syncState.status==='offline')return 'err';
+  return 'off';
+}
+function walletRosterSyncShort(entry){return walletSyncShortFor(entry.pubkey);}
+/* N2.6 STRETCH: per-wallet display labels, device-local by pubkey
+   (his reference shows custom labels like 'botty'). Defaults to the
+   wallet app name; never sent anywhere — localStorage only. */
+const WALLET_NAMES_KEY='gecko-terminal:wallet-names:v1';
+let walletNameMap=null;
+function walletLoadNames(){if(walletNameMap)return walletNameMap;walletNameMap={};try{const raw=localStorage.getItem(WALLET_NAMES_KEY);if(raw){const j=JSON.parse(raw);if(j&&typeof j==='object')walletNameMap=j;}}catch(e){}return walletNameMap;}
+function walletDisplayName(pk,fallback){if(!pk)return fallback||'Wallet';const m=walletLoadNames();const v=m[pk];return (typeof v==='string'&&v.trim())?v.trim():(fallback||'Wallet');}
+function walletSetName(pk,label){if(!pk)return false;const l=String(label||'').trim().slice(0,40);if(!l)return false;const m=walletLoadNames();m[pk]=l;try{localStorage.setItem(WALLET_NAMES_KEY,JSON.stringify(m));}catch(e){}return true;}
+/* N2.6: card total = SOL at the live spot price + USDC/USDT at $1. Only
+   when all three balances are loaded numbers; otherwise null, and the
+   card renders the honest 'Balances not loaded' placeholder — never a
+   partial sum dressed up as a total. */
+function walletCardTotalUsd(entry){
+  const b=entry&&entry.balances;if(!b)return null;
+  /* Number(null) is 0 — a null balance must fail, not price as $0. */
+  const bad=(v)=>v===null||v===undefined||!Number.isFinite(Number(v));
+  if(bad(b.sol)||bad(b.usdc)||bad(b.usdt))return null;
+  const sol=Number(b.sol),usdc=Number(b.usdc),usdt=Number(b.usdt);
+  const p=(typeof price!=='undefined'?price:0);if(!(p>0))return null;
+  return sol*p+usdc+usdt;
+}
 function walletRosterRowHtml(entry){
   const active=wallet.publicKey===entry.pubkey;
-  const btn=active?'<span class="wactive">Active</span>':'<button type="button" data-roster-switch="'+esc(entry.pubkey)+'">Switch to active</button>';
-  return '<div class="wroster-row"><span class="wname">'+esc(entry.name||'Wallet')+'<small>'+esc(truncateAddr(entry.pubkey))+' · '+walletRosterSyncShort(entry)+'</small></span>'+btn+'<button type="button" data-roster-disconnect="'+esc(entry.pubkey)+'">Disconnect</button></div>';
+  const dn=walletDisplayName(entry.pubkey,entry.name);
+  const total=walletCardTotalUsd(entry);
+  const totalHtml=total===null?'<span class="wcard-total muted">Balances not loaded</span>':'<span class="wcard-total">$'+fmt(total,2)+'</span>';
+  const switchHtml=active?'<span class="wactive">Active</span>':'<button type="button" data-roster-switch="'+esc(entry.pubkey)+'">Switch to active</button>';
+  return '<div class="wcard'+(active?' active':'')+'" data-roster-card="'+esc(entry.pubkey)+'"><span class="wavatar">'+esc((dn||'W').slice(0,1).toUpperCase())+'</span><span class="wcard-main"><span class="wcard-title"><span class="wcard-name">'+esc(dn)+'</span><button type="button" data-wallet-rename="'+esc(entry.pubkey)+'" title="Rename this wallet">✎</button></span><span class="wcard-addr">'+esc(truncateAddr(entry.pubkey))+'</span><span class="wchip chip-'+walletSyncChipClassFor(entry.pubkey)+'">'+esc(walletRosterSyncShort(entry))+'</span></span><span class="wcard-side">'+totalHtml+switchHtml+'<button type="button" data-roster-disconnect="'+esc(entry.pubkey)+'" title="Disconnect '+esc(dn)+'">Disconnect</button></span></div>';
+}
+function walletStartRename(pk,el){
+  try{
+    const card=(el&&el.closest)?el.closest('[data-roster-card]'):document.querySelector('[data-roster-card="'+pk+'"]');if(!card)return;
+    const nm=card.querySelector('.wcard-name');if(!nm)return;
+    const cur=walletDisplayName(pk,'Wallet');
+    nm.innerHTML='';
+    const inp=document.createElement('input');inp.className='wrename-input';inp.value=cur;inp.maxLength=40;
+    const sv=document.createElement('button');sv.type='button';sv.className='wrename-save';sv.setAttribute('data-wallet-rename-save',pk);sv.textContent='✓';
+    nm.appendChild(inp);nm.appendChild(sv);inp.focus();inp.select();
+  }catch(e){}
+}
+function walletCommitRename(pk,el){
+  try{
+    const card=(el&&el.closest)?el.closest('[data-roster-card]'):document.querySelector('[data-roster-card="'+pk+'"]');if(!card)return;
+    const inp=card.querySelector('.wrename-input');if(!inp)return;
+    if(walletSetName(pk,inp.value)){renderWalletRoster();renderWalletDd();toast('Wallet renamed.');}
+  }catch(e){}
 }
 function renderWalletRoster(){
   const el=$('walletRoster');if(!el)return;
@@ -3296,10 +3410,17 @@ function bindWalletUi(){
   document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!modal.hidden)closeWalletModal();});
   document.addEventListener('click',e=>{const dd=$('walletDd');if(!dd.hidden&&!e.target.closest('.wwrap'))dd.hidden=true;});
   body.addEventListener('click',e=>{
+    const rn=e.target.closest?e.target.closest('[data-wallet-rename]'):null;
+    if(rn){walletStartRename(rn.dataset.walletRename,rn);return;}
+    const rns=e.target.closest?e.target.closest('[data-wallet-rename-save]'):null;
+    if(rns){walletCommitRename(rns.dataset.walletRenameSave,rns);return;}
     const sw=e.target.closest?e.target.closest('[data-roster-switch]'):null;
     if(sw){setWalletActive(sw.dataset.rosterSwitch);closeWalletModal();return;}
     const dc=e.target.closest?e.target.closest('[data-roster-disconnect]'):null;
     if(dc){disconnectWallet(dc.dataset.rosterDisconnect).then(()=>{try{if(!$('walletModal').hidden)paintWalletModal();}catch(_){}});return;}
+    /* N2.6: clicking a card (not one of its buttons) switches active. */
+    const card=e.target.closest?e.target.closest('[data-roster-card]'):null;
+    if(card&&!(e.target.closest&&e.target.closest('button'))){setWalletActive(card.dataset.rosterCard);closeWalletModal();return;}
     const rb=e.target.closest?e.target.closest('[data-wallet]'):null;
     if(rb){const a=(wallet._connectables&&wallet._connectables[rb.dataset.wallet])||(wallet._adapters||[]).find(x=>x.name===rb.dataset.wallet);if(a){connectWallet(a);return;}}
     if(e.target.closest&&e.target.closest('#walletLibRetry')){wallet._adapters=null;wallet._stdApi=null;wallet._stdList=[];openWalletModal();}
@@ -3307,12 +3428,21 @@ function bindWalletUi(){
   $('walletDisconnect').onclick=()=>disconnectWallet();
   $('walletAddBtn').onclick=()=>openWalletModal();
   $('walletDd').addEventListener('click',e=>{
+    const rn=e.target.closest?e.target.closest('[data-wallet-rename]'):null;
+    if(rn){walletStartRename(rn.dataset.walletRename,rn);return;}
+    const rns=e.target.closest?e.target.closest('[data-wallet-rename-save]'):null;
+    if(rns){walletCommitRename(rns.dataset.walletRenameSave,rns);return;}
     const sw=e.target.closest?e.target.closest('[data-roster-switch]'):null;
     if(sw){setWalletActive(sw.dataset.rosterSwitch);return;}
     const dc=e.target.closest?e.target.closest('[data-roster-disconnect]'):null;
     if(dc){disconnectWallet(dc.dataset.rosterDisconnect);return;}
+    /* N2.6: clicking a card (not one of its buttons) switches active. */
+    const card=e.target.closest?e.target.closest('[data-roster-card]'):null;
+    if(card&&!(e.target.closest&&e.target.closest('button'))){setWalletActive(card.dataset.rosterCard);return;}
   });
-  $('walletCopy').onclick=()=>{const pk=wallet.publicKey;if(!pk)return;if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(pk).then(()=>toast('Address copied.'),()=>toast('Copy failed — select the address manually.'));}else toast('Copy not available in this browser.');};
+  const walletCopyAddress=()=>{const pk=wallet.publicKey;if(!pk)return;if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(pk).then(()=>toast('Address copied.'),()=>toast('Copy failed — select the address manually.'));}else toast('Copy not available in this browser.');};
+  $('walletCopy').onclick=walletCopyAddress;
+  $('walletDdAddr').onclick=walletCopyAddress;
   $('walletRetryBal').onclick=()=>refreshWalletBalances();
   /* N4.12 (A54): the tap button re-runs auth as a fresh user gesture — a
      failure on this path reports as a real 'offline' failure, never back
