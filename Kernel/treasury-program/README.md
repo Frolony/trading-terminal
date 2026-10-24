@@ -262,6 +262,34 @@ amendment gate matrix incl. replay-refused and inexact-settle
 refused). The §4.1 lifecycle instruction set is now complete in
 code — governance inputs, lifecycle, and post-genesis execution.
 Next: §4.2 treasury.
+**This increment adds `initialize_treasury` (design §4.2)** — the
+first §4.2 instruction — in the transition-executed form the
+design row requires, not a genesis-direct multisig call (§10's
+no-single-key-authority rule: the treasury's birth state must
+itself be a Settled transition's execution). Permissionless
+executor pays rent for the three new accounts: `TreasuryState`
+(PDA `["treasury"]`, SPACE 57: total, 50/25/25 sleeves, retained
+float, threshold B), `LendingBook` (PDA `["lending-book"]`, SPACE
+21: outstanding + active-loan count), `FeeVault` (PDA
+`["fee-vault"]`, SPACE 17: collected total). All values start at
+zero and threshold B starts unset (D-2) — the launch gate cannot
+commit until a governed path sets it, which is the intended state.
+The gate is Settled + canonical `TREASURY_INIT_TYPE` (SHA-256 of
+`treasury.init.v1`) + the FeeVault key equaling `Config.fee_vault`
+(a genesis obligation: the genesis authority must pass the
+`["fee-vault"]` PDA at `initialize_config`, or init refuses with
+`VaultMismatch` rather than running with two "vaults"). No
+exact-settle requirement (the init's effect is parameter-free, so
+no declared payload exists to diverge from) and no execution flag
+(the `init` constraints are the one-time guarantee). The stage
+flag stays on Config only; the three capacity stocks stay
+`set_capacity`'s job and are not touched here. IDL: instructions
+25 → 26 (incl. `initialize_treasury`), accounts 10 → 13
+(`TreasuryState`, `LendingBook`, `FeeVault`), errors 36 → 38
+(`InitMismatch`, `VaultMismatch`). Program host tests 55 → 59
+(type id recomputed from the string, the init gate matrix, the
+sleeve-split sum identity, the three SPACE checks). Next, in
+design order: `launch_stage2` / `open_window`.
 
 **Design:** `files/OWN_IDL_DESIGN.md` (W4.1, validated and revised
 2026-10-24; W4.3 GO given by Carlos 2026-10-24 ~03:39 CST). Placement C: the

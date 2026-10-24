@@ -345,6 +345,41 @@
 //! roll the policy back. The genesis-direct `policy_transition`
 //! install stays genesis-only in form; after genesis, this is the
 //! only path that changes a PolicyRecord.
+//! This increment adds `initialize_treasury` (design §4.2), the first
+//! §4.2 instruction, in the transition-executed form the design row
+//! requires — NOT a genesis-direct multisig call. The design row
+//! names `treasury.init.v1` as the authorizing transition, and §10's
+//! no-single-key-authority rule is the reason: the treasury's birth
+//! state must itself be the execution of a Settled kernel transition,
+//! not a fresh multisig signature acting alone (the genesis-direct
+//! form was considered and rejected on exactly that ground). The
+//! executor is permissionless and pays the rent for the three new
+//! accounts; the authority is the settled transition, as with
+//! `apply_policy_amendment`. Two deliberate differences from that
+//! instruction, both from the init's parameter-free shape: (1) no
+//! exact-settle requirement — the init's effect is fixed (zero
+//! balances, unset threshold B), so there is no declared payload for
+//! an inexact settle to diverge from; Settled + canonical type is
+//! the whole binding. (2) no one-time execution flag — the Anchor
+//! `init` constraint is the one-time guarantee: a second settled
+//! init transition, or a replay of the first, fails at account
+//! creation and changes no state. The three capacity stocks are NOT
+//! created here: `set_capacity` (slice 18) is their installer, and a
+//! second init path would collide with it; a window transition
+//! cannot commit without its stocks anyway (COMPAT fails on a
+//! missing stock, fail-closed), so no ordering between
+//! `set_capacity` and this instruction is enforced. The stage flag
+//! is NOT duplicated onto TreasuryState: it lives on Config (set at
+//! genesis, flipped by `launch_stage2`), one source of truth.
+//! The FeeVault binding is fail-closed and genesis-obligating: the
+//! vault account created here must key-equal `Config.fee_vault`, so
+//! the genesis authority must pass the `["fee-vault"]` PDA as
+//! `fee_vault` at `initialize_config` — a wrong genesis value
+//! refuses init visibly (`VaultMismatch`) rather than running with
+//! two different "vaults", and there is no Config-update path to
+//! paper over it. Threshold B (D-2) starts unset (0): until a
+//! governed path sets it, `launch_stage2` can never commit, which
+//! is the design's intended state, not a gap.
 //! Nothing here is deployed: NO devnet deployment in W4.3, NO mainnet step
 //! exists in W4. No instruction here moves value.
 //!
@@ -429,6 +464,42 @@ pub fn movable_liquidity(treasury: u128) -> u128 {
 /// Maximum lending-book outstanding at 100% uptake: T/12.
 pub fn max_outstanding(treasury: u128) -> u128 {
     treasury * (CASH_SLEEVE_PPM as u128) / PPM / 3
+}
+
+/// Canonical transition-type id for `treasury.init.v1`: SHA-256 of
+/// the bytes `treasury.init.v1`. Only a Settled transition of this
+/// type authorizes `initialize_treasury` — the domain tag is
+/// machine-checkable, not a naming convention in client code, exactly
+/// as `POLICY_TRANSITION_TYPE` is for amendments.
+pub const TREASURY_INIT_TYPE: [u8; 32] = [
+    116, 167, 130, 118, 19, 78, 9, 62, 70, 91, 124, 207, 146, 13, 252, 203,
+    41, 105, 101, 71, 5, 249, 233, 78, 114, 250, 85, 94, 229, 225, 62, 47,
+];
+
+/// Bonds sleeve, 50% of T (50/25/25 portfolio, Carlos's 2026-10-22
+/// revision). Together with [`CASH_SLEEVE_PPM`] (25%) and
+/// [`ARB_SLEEVE_PPM`] (25%) it sums to the whole treasury.
+pub const BONDS_SLEEVE_PPM: u64 = 500_000;
+
+/// Arbitrage-bot sleeve, 25% of T (50/25/25 portfolio).
+pub const ARB_SLEEVE_PPM: u64 = 250_000;
+
+/// The 50/25/25 sleeve split of a treasury total, as (cash, bonds,
+/// arb) in the caller's units. Cash and arb take their floored
+/// shares; bonds absorbs the remainder (`total - cash - arb`), so
+/// the three sleeves sum to exactly `total` even for totals not
+/// divisible by 4 — the remainder is never created or destroyed.
+/// Window flows use this rule when they (re)populate sleeve
+/// balances; `TreasuryState` stores the resulting ledger, it does
+/// not recompute it. Computed in u128 so no u64 total can overflow
+/// the intermediate products; each share is at most `total`, so the
+/// narrowing casts cannot wrap.
+pub fn split_sleeves(total: u64) -> (u64, u64, u64) {
+    let t = total as u128;
+    let cash = t * (CASH_SLEEVE_PPM as u128) / PPM;
+    let arb = t * (ARB_SLEEVE_PPM as u128) / PPM;
+    let bonds = t - cash - arb;
+    (cash as u64, bonds as u64, arb as u64)
 }
 
 #[program]
@@ -2124,6 +2195,73 @@ pub mod treasury_program {
         });
         Ok(())
     }
+
+    /// Treasury genesis (design §4.2): create the treasury's birth
+    /// state from a Settled `treasury.init.v1` transition.
+    ///
+    /// This is NOT a genesis-direct multisig call, deliberately: the
+    /// design row names `treasury.init.v1` as the authorizing
+    /// transition, and §10's no-single-key-authority rule means the
+    /// treasury's birth state must itself be a settled transition's
+    /// execution. The executor is permissionless — the authority is
+    /// the settled transition, not this key — and pays the rent for
+    /// the three new accounts. The gate is
+    /// [`can_initialize_treasury`]: Settled state, then the
+    /// canonical init type, then the FeeVault binding (the created
+    /// vault's key must equal `Config.fee_vault`, set at
+    /// `initialize_config`). No exact-settle requirement: the
+    /// init's effect is fixed, so there is no declared payload an
+    /// inexact settle could diverge from — unlike
+    /// `apply_policy_amendment`, where supplied values are bound to
+    /// the declared hash. No execution flag on the transition: the
+    /// Anchor `init` constraints make this one-time by
+    /// construction, and a second attempt fails at account creation
+    /// and changes no state.
+    ///
+    /// Initial values are all zero: total, sleeves, retained float,
+    /// lending-book outstanding, fee-vault collections — and
+    /// threshold B unset (0, D-2). Zero is the honest genesis state:
+    /// the treasury holds nothing until window flows move value,
+    /// and the launch gate cannot commit until a governed path sets
+    /// B. The stage flag stays on Config (Stage 1 from
+    /// `initialize_config`); this instruction does not duplicate it.
+    /// The three capacity stocks are installed separately by
+    /// `set_capacity` and are not touched here.
+    pub fn initialize_treasury(
+        ctx: Context<InitializeTreasury>,
+        transition_id: u64,
+    ) -> Result<()> {
+        let source = &ctx.accounts.transition_record;
+        can_initialize_treasury(
+            source.state,
+            source.transition_type,
+            ctx.accounts.fee_vault.key() == ctx.accounts.config.fee_vault,
+        )?;
+        let state = &mut ctx.accounts.treasury_state;
+        state.total_raw = 0;
+        state.cash_raw = 0;
+        state.bonds_raw = 0;
+        state.arb_raw = 0;
+        state.retained_float_raw = 0;
+        state.backing_threshold_ppm = 0;
+        state.bump = ctx.bumps.treasury_state;
+        let book = &mut ctx.accounts.lending_book;
+        book.outstanding_raw = 0;
+        book.active_loans = 0;
+        book.bump = ctx.bumps.lending_book;
+        let vault = &mut ctx.accounts.fee_vault;
+        vault.collected_raw = 0;
+        vault.bump = ctx.bumps.fee_vault;
+        emit!(TreasuryInitialized {
+            transition_id,
+            commit_index: source.commit_index,
+            treasury_state: ctx.accounts.treasury_state.key(),
+            lending_book: ctx.accounts.lending_book.key(),
+            fee_vault: ctx.accounts.fee_vault.key(),
+            executor: ctx.accounts.executor.key(),
+        });
+        Ok(())
+    }
 }
 
 /// Who may open planning, as a pure check (design §4.1, kernel
@@ -3132,6 +3270,30 @@ pub fn can_apply_policy_amendment(
     Ok(())
 }
 
+/// The `initialize_treasury` gate, as a pure check (design §4.2):
+/// Settled state first, then the canonical `treasury.init.v1`
+/// type, then the FeeVault binding (the created vault's key equals
+/// `Config.fee_vault`). Order mirrors
+/// [`can_apply_policy_amendment`]: the general failure first, the
+/// bindings last. Deliberately no exact-settle check: the init's
+/// effect is parameter-free, so no declared payload exists for an
+/// inexact settle to diverge from — the binding is Settled + type
+/// + vault, and re-execution is refused by the `init` constraints,
+/// not by a flag.
+pub fn can_initialize_treasury(
+    state: u8,
+    source_type: [u8; 32],
+    vault_matches: bool,
+) -> Result<()> {
+    require!(state == STATE_SETTLED, TreasuryError::BadState);
+    require!(
+        source_type == TREASURY_INIT_TYPE,
+        TreasuryError::InitMismatch
+    );
+    require!(vault_matches, TreasuryError::VaultMismatch);
+    Ok(())
+}
+
 /// Event for [`treasury_program::submit_constraint_report`] (design
 /// §4.1): the transition, the reporting Evaluator, and the report as
 /// submitted — the authorization context the design requires on every
@@ -3286,6 +3448,22 @@ pub struct PolicyInstalled {
 pub struct PolicyAmended {
     pub transition_id: u64,
     pub target_type: [u8; 32],
+    pub executor: Pubkey,
+}
+
+/// Event for [`treasury_program::initialize_treasury`] (design
+/// §4.2, §6): the authorizing transition (id + commit index — the
+/// authorization context) and the three created accounts. The
+/// genesis exception does not apply here: unlike
+/// `initialize_config`, a chain already exists, so this event names
+/// its transition like every other non-genesis event.
+#[event]
+pub struct TreasuryInitialized {
+    pub transition_id: u64,
+    pub commit_index: u64,
+    pub treasury_state: Pubkey,
+    pub lending_book: Pubkey,
+    pub fee_vault: Pubkey,
     pub executor: Pubkey,
 }
 
@@ -4066,6 +4244,78 @@ impl CapacityStock {
     pub const SPACE: usize = 8 + 2 + 8 + 1;
 }
 
+/// Treasury state (design §3, §4.2) — the treasury's ledger, created
+/// by `initialize_treasury` at zero and moved only by window flows.
+/// Sleeve balances are the stored ledger, not recomputed views: window
+/// flows populate them with [`split_sleeves`]. The stage flag is
+/// deliberately NOT here — it lives on Config, one source of truth.
+/// Threshold B is 0 (unset) at init: until a governed path sets it,
+/// `launch_stage2` can never commit (D-2, intended state).
+#[account]
+pub struct TreasuryState {
+    /// Total treasury value T, kernel fixed-point raw.
+    pub total_raw: u64,
+    /// Cash sleeve balance (25% of T at the 50/25/25 split).
+    pub cash_raw: u64,
+    /// Bonds sleeve balance (50% of T).
+    pub bonds_raw: u64,
+    /// Arbitrage-bot sleeve balance (25% of T).
+    pub arb_raw: u64,
+    /// Retained-income float (D-1, timing retention): the unpaid
+    /// balance of the annual dividend obligation, earmarked for the
+    /// year's remaining tranches, never free surplus.
+    pub retained_float_raw: u64,
+    /// Stage 2 backing threshold B in parts-per-million of
+    /// (supply × price); 0 means unset (D-2 open).
+    pub backing_threshold_ppm: u64,
+    /// PDA bump for the `["treasury"]` seeds.
+    pub bump: u8,
+}
+
+impl TreasuryState {
+    /// 8 (discriminator) + 6 × 8 + 1.
+    pub const SPACE: usize = 8 + 8 + 8 + 8 + 8 + 8 + 8 + 1;
+}
+
+/// Lending book (design §3, §4.2) — aggregate only. Individual loans
+/// live on HolderRecords (principal + maturity); this account tracks
+/// the book total the T/12 cap is judged against (60-day terms at
+/// pilot, so outstanding spans 2 cohorts).
+#[account]
+pub struct LendingBook {
+    /// Total outstanding principal, kernel fixed-point raw.
+    pub outstanding_raw: u64,
+    /// Number of active loans (bookkeeping; the cap judges the total,
+    /// not the count).
+    pub active_loans: u32,
+    /// PDA bump for the `["lending-book"]` seeds.
+    pub bump: u8,
+}
+
+impl LendingBook {
+    /// 8 (discriminator) + 8 + 4 + 1.
+    pub const SPACE: usize = 8 + 8 + 4 + 1;
+}
+
+/// Fee vault (design §3, §4.2) — the 73 bps single flow's collection
+/// ledger (D-5). This is a program-owned data account, not a token
+/// account: `collect_fees` reconciles its collected total against
+/// the window transition's declared total, and a shortfall is an
+/// inexact settle, visible, never a silent gap. Its key must equal
+/// `Config.fee_vault` (see `initialize_treasury`).
+#[account]
+pub struct FeeVault {
+    /// Total fees collected, kernel fixed-point raw.
+    pub collected_raw: u64,
+    /// PDA bump for the `["fee-vault"]` seeds.
+    pub bump: u8,
+}
+
+impl FeeVault {
+    /// 8 (discriminator) + 8 + 1.
+    pub const SPACE: usize = 8 + 8 + 1;
+}
+
 /// Accounts for [`treasury_program::submit_signal`].
 #[derive(Accounts)]
 #[instruction(transition_id: u64, round: u32)]
@@ -4413,6 +4663,56 @@ pub struct ApplyPolicyAmendment<'info> {
     pub executor: Signer<'info>,
 }
 
+/// Accounts for [`treasury_program::initialize_treasury`].
+#[derive(Accounts)]
+#[instruction(transition_id: u64)]
+pub struct InitializeTreasury<'info> {
+    /// Program configuration PDA — read for the FeeVault binding
+    /// (`fee_vault` must equal the created vault's key).
+    #[account(seeds = [b"config"], bump = config.bump)]
+    pub config: Account<'info, Config>,
+    /// The Settled `treasury.init.v1` transition authorizing the
+    /// init (read-only: no flag is written — the `init` constraints
+    /// below are the one-time guarantee).
+    #[account(seeds = [b"transition", transition_id.to_le_bytes().as_ref()], bump = transition_record.bump)]
+    pub transition_record: Account<'info, TransitionRecord>,
+    /// Treasury state PDA, seeds `["treasury"]`. One-time init.
+    #[account(
+        init,
+        payer = executor,
+        space = TreasuryState::SPACE,
+        seeds = [b"treasury"],
+        bump
+    )]
+    pub treasury_state: Account<'info, TreasuryState>,
+    /// Lending book PDA, seeds `["lending-book"]`. One-time init.
+    #[account(
+        init,
+        payer = executor,
+        space = LendingBook::SPACE,
+        seeds = [b"lending-book"],
+        bump
+    )]
+    pub lending_book: Account<'info, LendingBook>,
+    /// Fee vault PDA, seeds `["fee-vault"]`. One-time init; the
+    /// handler requires its key to equal `config.fee_vault`.
+    #[account(
+        init,
+        payer = executor,
+        space = FeeVault::SPACE,
+        seeds = [b"fee-vault"],
+        bump
+    )]
+    pub fee_vault: Account<'info, FeeVault>,
+    /// Permissionless executor (signer; pays rent for the three new
+    /// accounts). The authority is the settled transition, not this
+    /// key.
+    #[account(mut)]
+    pub executor: Signer<'info>,
+    /// Rent sysvar, required by the `init` constraints.
+    pub system_program: Program<'info, System>,
+}
+
 /// Accounts for [`treasury_program::set_capacity`].
 #[derive(Accounts)]
 #[instruction(resource_id: u16)]
@@ -4653,6 +4953,19 @@ pub enum TreasuryError {
     /// binding.
     #[msg("Policy amendment does not match its settled policy transition.")]
     AmendmentMismatch,
+    /// A treasury init does not match its authorizing transition:
+    /// the source transition's type is not the canonical
+    /// `treasury.init.v1` type. The init is never executed on a
+    /// transition of another type.
+    #[msg("Treasury init does not match a settled treasury.init.v1 transition.")]
+    InitMismatch,
+    /// The FeeVault account created at treasury init does not
+    /// key-equal `Config.fee_vault`. The genesis authority must
+    /// pass the `["fee-vault"]` PDA as `fee_vault` at
+    /// `initialize_config`; a wrong genesis value refuses init
+    /// visibly instead of running with two different "vaults".
+    #[msg("FeeVault account does not match the Config fee_vault.")]
+    VaultMismatch,
 }
 
 #[cfg(test)]
@@ -6202,5 +6515,59 @@ mod tests {
             ),
             0
         );
+    }
+
+    #[test]
+    fn treasury_init_type_id_is_sha256_of_domain_tag() {
+        // The canonical type id is recomputed from the string, not
+        // trusted as a literal — the same discipline as the policy
+        // type id. (Cross-checked: this hash function reproduces the
+        // existing POLICY_TRANSITION_TYPE bytes for its own tag.)
+        let computed =
+            anchor_lang::solana_program::hash::hash(b"treasury.init.v1").to_bytes();
+        assert_eq!(TREASURY_INIT_TYPE, computed);
+        assert_ne!(TREASURY_INIT_TYPE, POLICY_TRANSITION_TYPE);
+    }
+
+    #[test]
+    fn treasury_init_gate_matrix() {
+        // Settled + canonical type + vault bound: passes.
+        can_initialize_treasury(STATE_SETTLED, TREASURY_INIT_TYPE, true)
+            .expect("settled init transition authorizes init");
+        // Any non-Settled state refuses first, whatever the rest is.
+        assert!(can_initialize_treasury(STATE_COMMITTED, TREASURY_INIT_TYPE, true).is_err());
+        assert!(can_initialize_treasury(STATE_PLANNING, TREASURY_INIT_TYPE, true).is_err());
+        // A settled transition of another type is not an init source.
+        assert!(can_initialize_treasury(STATE_SETTLED, POLICY_TRANSITION_TYPE, true).is_err());
+        assert!(can_initialize_treasury(STATE_SETTLED, [0; 32], true).is_err());
+        // A vault key that does not match Config.fee_vault refuses.
+        assert!(can_initialize_treasury(STATE_SETTLED, TREASURY_INIT_TYPE, false).is_err());
+    }
+
+    #[test]
+    fn treasury_sleeve_split_sums_exactly() {
+        // 50/25/25 at the $100M reference scale (raw units).
+        assert_eq!(split_sleeves(100_000_000), (25_000_000, 50_000_000, 25_000_000));
+        // Zero splits to zero.
+        assert_eq!(split_sleeves(0), (0, 0, 0));
+        // Odd total: floored cash/arb, bonds absorbs the remainder,
+        // and the sleeves sum to exactly the total — nothing created
+        // or destroyed by rounding.
+        let (cash, bonds, arb) = split_sleeves(101);
+        assert_eq!((cash, arb), (25, 25));
+        assert_eq!(bonds, 51);
+        assert_eq!(cash + bonds + arb, 101);
+        // The sleeve constants sum to the whole treasury.
+        assert_eq!(
+            CASH_SLEEVE_PPM + BONDS_SLEEVE_PPM + ARB_SLEEVE_PPM,
+            1_000_000
+        );
+    }
+
+    #[test]
+    fn treasury_account_spaces_match_fields() {
+        assert_eq!(TreasuryState::SPACE, 57);
+        assert_eq!(LendingBook::SPACE, 21);
+        assert_eq!(FeeVault::SPACE, 17);
     }
 }
