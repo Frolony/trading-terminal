@@ -114,17 +114,17 @@ anything else is `PlanMismatch`, never a partial mask. Honest interims,
 stated in the code: CapacityStock accounts do not exist yet, so COMPAT
 is judged against the empty stock set (a plan with claims fails,
 fail-closed; an empty-claim plan fits vacuously and can commit);
-EXCEPTIONS is clear because no exception records exist yet, and
-CAPABILITY is clear because no transition type carries requirements yet
-— both bits are computed, and their inputs land with their owning
-instructions. Recording lineage required one honest change to an earlier
+EXCEPTIONS is fed by the transition's live `unresolved_blocking`
+count, and CAPABILITY is clear because no transition type carries
+requirements yet — both bits are computed, and their inputs land with
+their owning instructions. Recording lineage required one honest change to an earlier
 slice: `register_transition` now takes the manifest's parent index and
 parent hash and freezes them on the record (SPACE 408 → 448). New errors
 `CommitFailed`, `ObservationMismatch`, `PlanMismatch`, IDL errors
 21 → 24, instructions 13 → 14, accounts 6 → 7. Program host tests
 31 → 34.
-`record_evidence`, `settle`, exceptions, `policy_transition`,
-`reject_transition`, `expire_transition` are next, in design order.
+`policy_transition`, `reject_transition`, `expire_transition` are
+next, in design order.
 
 **Design:** `files/OWN_IDL_DESIGN.md` (W4.1, validated and revised
 2026-10-24; W4.3 GO given by Carlos 2026-10-24 ~03:39 CST). Placement C: the
@@ -205,3 +205,19 @@ Context accounts on exit but not remaining accounts. No new account
 type. IDL: instructions 15 → 16 (incl. `settle`), accounts 8,
 errors 24 → 27 (`UnknownAgent`, `NotParticipant`,
 `SettleAccountsMismatch`). Program host tests 36 → 39.
+**This increment adds `raise_exception` / `resolve_exception`
+(design §4.1)** and wires the EXCEPTIONS bit to live inputs:
+exceptions are per-transition records on the TransitionRecord
+(SPACE 488 → 768: the set, 4 + 8 × 34 bytes, plus the
+`unresolved_blocking` count), raised only by an Evaluator while the
+transition is Registered, Planning, or Committable, with dispositions
+in the kernel's order (Informational, Review, Block, Emergency; Block
+and Emergency count toward `unresolved_blocking`). Resolve mirrors
+the kernel exactly: no state gate (resolving after commit cannot
+rewrite the decided mask) and re-resolution is a no-op success that
+never double-decrements. `commit` now reads the record's live count
+instead of the hard-coded 0 the earlier slices carried as an interim.
+IDL: instructions 16 → 18 (incl. both exception instructions),
+accounts 8 (no new account type), errors 27 → 31
+(`DuplicateException`, `UnknownException`, `InvalidDisposition`,
+`TooManyExceptions`). Program host tests 39 → 41.

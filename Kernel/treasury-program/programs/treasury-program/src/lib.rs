@@ -171,12 +171,12 @@
 //! performs, so a plan with claims fails COMPAT (fail-closed) while an
 //! empty-claim plan fits vacuously and can commit; when stocks land,
 //! the handler passes them to the same `fits_capacity` helper. The
-//! EXCEPTIONS bit is clear because no exception records exist yet
-//! (`raise_exception` / `resolve_exception` land next); the CAPABILITY
-//! bit is clear because no transition type carries required capabilities
-//! yet (`require_capability` lands with PolicyRecords) — both bits are
-//! computed, not assumed away, and their inputs land with their owning
-//! instructions. Recording lineage required one honest change to an
+//! EXCEPTIONS bit is fed by the transition's live `unresolved_blocking`
+//! count (`raise_exception` / `resolve_exception`, this slice); the
+//! CAPABILITY bit is clear because no transition type carries required
+//! capabilities yet (`require_capability` lands with PolicyRecords) —
+//! both bits are computed, not assumed away, and their inputs land with
+//! their owning instructions. Recording lineage required one honest change to an
 //! earlier slice: `register_transition` now takes the manifest's parent
 //! index and parent hash and freezes them on the record — lineage inputs
 //! are manifest inputs, frozen at registration, judged at commit — so
@@ -220,6 +220,22 @@
 //! existing AgentRecords (passed as remaining accounts, classified by
 //! discriminator, with the plan set complete — the commit slice's
 //! completeness discipline, applied here to both sets).
+//! This increment adds `raise_exception` / `resolve_exception`
+//! (design §4.1) and wires the EXCEPTIONS bit to live inputs:
+//! exceptions are per-transition records on the TransitionRecord
+//! (SPACE 488 → 768), raised only by an Evaluator while the transition
+//! is Registered, Planning, or Committable — a blocking exception on a
+//! Committable transition is a pre-commit veto, and only its resolution
+//! lets the transition commit — with dispositions in the kernel's order
+//! (Informational, Review, Block, Emergency; Block and Emergency count
+//! toward `unresolved_blocking`). Resolve mirrors the kernel exactly,
+//! including its two properties a stricter program would hide: it has
+//! no state gate (resolving after commit cannot rewrite the mask already
+//! decided, and resolving a rejected or expired transition is bookkeeping
+//! only), and re-resolving an already-resolved exception is a no-op
+//! success that neither double-decrements nor errors. `commit` now
+//! reads the record's live `unresolved_blocking` instead of the
+//! hard-coded 0 the earlier slices carried as an interim.
 //! Nothing here is deployed: NO devnet deployment in W4.3, NO mainnet step
 //! exists in W4. No instruction here moves value.
 //!
@@ -509,6 +525,8 @@ pub mod treasury_program {
         record.parent_hash = parent_hash;
         record.commit_index = 0;
         record.realized_hash = [0; 32];
+        record.exceptions = Vec::new();
+        record.unresolved_blocking = 0;
         record.bump = ctx.bumps.transition_record;
         Ok(())
     }
@@ -1019,7 +1037,7 @@ pub mod treasury_program {
             confidence_threshold: policy.confidence_threshold.raw(),
             reconciled: transition.reconciled,
             fits,
-            unresolved_blocking: 0,
+            unresolved_blocking: transition.unresolved_blocking,
             obs_timestamp: ctx.accounts.observation.timestamp,
             obs_expiry: ctx.accounts.observation.expiry,
             obs_confidence: ctx.accounts.observation.confidence,
@@ -1345,6 +1363,138 @@ pub mod treasury_program {
         });
         Ok(())
     }
+
+    /// Governance lifecycle (design §4.1): raise an exception on a
+    /// transition.
+    ///
+    /// Mirrors the kernel's `raise_exception` in check order:
+    /// Evaluator role first (`Unauthorized` otherwise — the kernel's
+    /// `need(caller, Role::Evaluator)`), then the state gate
+    /// (`BadState` unless Registered, Planning, or Committable — the
+    /// kernel's pre-commit states; a Committed transition cannot gain
+    /// a new exception, and a Settled/Rejected/Expired one cannot
+    /// either), then the disposition code (`InvalidDisposition`
+    /// outside 0..=3, in the kernel's `Disposition` order:
+    /// Informational, Review, Block, Emergency), then the duplicate
+    /// rule (`DuplicateException` — the kernel's `Duplicate`, returned
+    /// here rather than enforced by PDA creation, since exceptions
+    /// live on the TransitionRecord, not in their own accounts), then
+    /// the account-size bound (`TooManyExceptions` at 8 — the same
+    /// bound shape as the frozen constraint set, and the only
+    /// program-layer addition to the kernel's rule; the kernel's map
+    /// is unbounded, an on-chain account is not). On success the
+    /// entry is appended unresolved and, for a Block or Emergency
+    /// disposition, `unresolved_blocking` increments (checked, never
+    /// wrapping) — the count `commit` feeds to the EXCEPTIONS bit.
+    /// Raising a blocking exception on a Committable transition is a
+    /// pre-commit veto by construction: the transition cannot commit
+    /// until the exception resolves. The caller binding is structural,
+    /// as with constraint reports: the AgentRecord must match the
+    /// signer (`AgentMismatch` otherwise). No Clock is taken: the
+    /// kernel's `tick` has no program counterpart (the program keeps
+    /// no kernel-time state, as with settle), and no exception rule
+    /// is time-judged.
+    pub fn raise_exception(
+        ctx: Context<RaiseException>,
+        transition_id: u64,
+        exception_id: [u8; 32],
+        disposition: u8,
+    ) -> Result<()> {
+        let _ = transition_id;
+        let caller_key = ctx.accounts.caller.key();
+        let record = &ctx.accounts.agent_record;
+        require!(
+            record.agent == caller_key,
+            TreasuryError::AgentMismatch
+        );
+        let transition = &mut ctx.accounts.transition_record;
+        can_raise_exception(
+            record.is_evaluator,
+            transition.state,
+            disposition,
+            transition.exceptions.iter().any(|e| e.id == exception_id),
+            transition.exceptions.len(),
+        )?;
+        let blocking = is_blocking_disposition(disposition);
+        transition.exceptions.push(ExceptionEntry {
+            id: exception_id,
+            disposition,
+            resolved: false,
+        });
+        if blocking {
+            transition.unresolved_blocking = transition
+                .unresolved_blocking
+                .checked_add(1)
+                .ok_or(TreasuryError::Overflow)?;
+        }
+        emit!(ExceptionRaised {
+            transition_id: transition.transition_id,
+            evaluator: caller_key,
+            exception_id,
+            disposition,
+            blocking,
+        });
+        Ok(())
+    }
+
+    /// Governance lifecycle (design §4.1): resolve an exception on a
+    /// transition.
+    ///
+    /// Mirrors the kernel's `resolve_exception` exactly, including
+    /// the two properties a stricter program would hide: there is NO
+    /// state gate in the kernel — only the Evaluator role
+    /// (`Unauthorized` otherwise) and the exception's existence
+    /// (`UnknownException` otherwise) are checked — so this handler
+    /// imposes none either. Resolving after commit cannot rewrite the
+    /// mask already decided at commit (the EXCEPTIONS bit was judged
+    /// then, from the count at that moment), and resolving on a
+    /// Rejected or Expired transition changes a record nothing will
+    /// ever commit — bookkeeping, not authority. Re-resolving an
+    /// already-resolved exception is a no-op success, exactly as in
+    /// the kernel: the entry stays resolved and the count does not
+    /// decrement twice (a double decrement would undercount the
+    /// remaining blockers and weaken the bit). A first resolution of
+    /// a Block or Emergency exception decrements `unresolved_blocking`
+    /// (checked, never wrapping below zero); Informational and Review
+    /// exceptions never counted, so resolving them moves no count.
+    /// The caller binding is structural, as with raise: the
+    /// AgentRecord must match the signer.
+    pub fn resolve_exception(
+        ctx: Context<ResolveException>,
+        transition_id: u64,
+        exception_id: [u8; 32],
+    ) -> Result<()> {
+        let _ = transition_id;
+        let caller_key = ctx.accounts.caller.key();
+        let record = &ctx.accounts.agent_record;
+        require!(
+            record.agent == caller_key,
+            TreasuryError::AgentMismatch
+        );
+        let transition = &mut ctx.accounts.transition_record;
+        can_resolve_exception(
+            record.is_evaluator,
+            transition.exceptions.iter().any(|e| e.id == exception_id),
+        )?;
+        for entry in transition.exceptions.iter_mut() {
+            if entry.id == exception_id && !entry.resolved {
+                entry.resolved = true;
+                if is_blocking_disposition(entry.disposition) {
+                    transition.unresolved_blocking = transition
+                        .unresolved_blocking
+                        .checked_sub(1)
+                        .ok_or(TreasuryError::Overflow)?;
+                }
+                break;
+            }
+        }
+        emit!(ExceptionResolved {
+            transition_id: transition.transition_id,
+            evaluator: caller_key,
+            exception_id,
+        });
+        Ok(())
+    }
 }
 
 /// Who may open planning, as a pure check (design §4.1, kernel
@@ -1501,6 +1651,69 @@ pub fn can_submit_constraint_report(
         status <= STATUS_UNAVAILABLE,
         TreasuryError::InvalidConstraintStatus
     );
+    Ok(())
+}
+
+/// Whether a disposition counts toward `unresolved_blocking` (kernel
+/// `raise_exception`: `d >= Disposition::Block`). Informational (0)
+/// and Review (1) never block; Block (2) and Emergency (3) do. The
+/// caller must already have validated the code range — an out-of-range
+/// code is not a disposition at all, and this function must not be
+/// asked to classify it (the raise gate rejects it first).
+pub fn is_blocking_disposition(disposition: u8) -> bool {
+    disposition >= DISPOSITION_BLOCK
+}
+
+/// Who may raise an exception, as a pure check (design §4.1, kernel
+/// `raise_exception`, in the kernel's check order minus the caller
+/// binding, which is structural — PDA seeds plus the AgentRecord
+/// match): the caller must hold the Evaluator role, the transition
+/// must be Registered, Planning, or Committable (the kernel's
+/// pre-commit states — a Committed transition cannot gain an
+/// exception, since the mask was already judged), the disposition
+/// code must be a kernel `Disposition` (0..=3), the id must not
+/// already be raised on this transition, and room must remain under
+/// `MAX_EXCEPTIONS` (the program-layer account bound; the kernel's
+/// map is unbounded, but an on-chain record is not). The duplicate
+/// check precedes the capacity check: an id already raised is refused
+/// as a duplicate whatever the count, never as a capacity failure.
+pub fn can_raise_exception(
+    is_evaluator: bool,
+    state: u8,
+    disposition: u8,
+    already_raised: bool,
+    exception_count: usize,
+) -> Result<()> {
+    require!(is_evaluator, TreasuryError::Unauthorized);
+    require!(
+        state == STATE_REGISTERED || state == STATE_PLANNING || state == STATE_COMMITTABLE,
+        TreasuryError::BadState
+    );
+    require!(
+        disposition <= DISPOSITION_EMERGENCY,
+        TreasuryError::InvalidDisposition
+    );
+    require!(!already_raised, TreasuryError::DuplicateException);
+    require!(
+        exception_count < MAX_EXCEPTIONS,
+        TreasuryError::TooManyExceptions
+    );
+    Ok(())
+}
+
+/// Who may resolve an exception, as a pure check (design §4.1, kernel
+/// `resolve_exception`): the caller must hold the Evaluator role,
+/// and the id must have been raised on this transition. There is
+/// deliberately NO state gate here — the kernel imposes none, and
+/// this helper mirrors it: resolving after commit cannot rewrite a
+/// decided mask, and resolving a rejected or expired transition is
+/// bookkeeping only. Whether the entry is already resolved is not a
+/// gate either — re-resolution is a no-op success in the kernel, and
+/// the handler keeps it one by only decrementing on the first
+/// resolution.
+pub fn can_resolve_exception(is_evaluator: bool, exception_known: bool) -> Result<()> {
+    require!(is_evaluator, TreasuryError::Unauthorized);
+    require!(exception_known, TreasuryError::UnknownException);
     Ok(())
 }
 
@@ -1754,7 +1967,8 @@ pub struct CommitInputs<'a> {
     /// by the caller over the stock set that exists today).
     pub fits: bool,
     /// Unresolved blocking exceptions on this transition (kernel
-    /// `unresolved_blocking`; 0 until exceptions land).
+    /// `unresolved_blocking`; the TransitionRecord's live count,
+    /// maintained by `raise_exception` / `resolve_exception`).
     pub unresolved_blocking: u32,
     /// Observation timestamp (kernel observation `timestamp`).
     pub obs_timestamp: i64,
@@ -1836,8 +2050,8 @@ pub fn commit_fail_mask(inputs: &CommitInputs) -> u32 {
         mask |= MASK_COMPAT;
     }
     // EXCEPTIONS: per-transition, blocking dispositions only; the
-    // caller passes the unresolved-blocking count, 0 until exceptions
-    // land — the bit is computed, not skipped.
+    // caller passes the transition's live unresolved-blocking count
+    // — the bit is computed, not skipped.
     if inputs.unresolved_blocking != 0 {
         mask |= MASK_EXCEPTIONS;
     }
@@ -2037,6 +2251,30 @@ pub struct Settled {
     pub commit_index: u64,
     pub realized_hash: [u8; 32],
     pub exact: bool,
+}
+
+/// Event for [`treasury_program::raise_exception`] (design §4.1): the
+/// transition, the raising Evaluator, the exception id, its
+/// disposition, and whether it blocks (Block/Emergency) — the fact
+/// `commit` will judge through `unresolved_blocking`.
+#[event]
+pub struct ExceptionRaised {
+    pub transition_id: u64,
+    pub evaluator: Pubkey,
+    pub exception_id: [u8; 32],
+    pub disposition: u8,
+    pub blocking: bool,
+}
+
+/// Event for [`treasury_program::resolve_exception`] (design §4.1):
+/// the transition, the resolving Evaluator, and the exception id.
+/// A re-resolution emits the same event again — the event records
+/// the call, not a state change, since re-resolution is a no-op.
+#[event]
+pub struct ExceptionResolved {
+    pub transition_id: u64,
+    pub evaluator: Pubkey,
+    pub exception_id: [u8; 32],
 }
 
 /// One settle attribution: an agent and its reputation delta (kernel
@@ -2410,6 +2648,40 @@ pub struct ConstraintEntry {
     pub status: u8,
 }
 
+/// Maximum exceptions on one transition (design §3: exceptions are
+/// per-transition records on the TransitionRecord). An account-size
+/// bound, not a kernel rule — the kernel's map is unbounded, but an
+/// on-chain record is not; 8 mirrors the frozen-set bound, and
+/// raising it is a SPACE change, not a policy change.
+pub const MAX_EXCEPTIONS: usize = 8;
+
+/// Disposition codes, in the kernel's `Disposition` order
+/// (Informational, Review, Block, Emergency). Only Block and
+/// Emergency count toward `unresolved_blocking` (kernel
+/// `raise_exception`: `d >= Disposition::Block`).
+pub const DISPOSITION_INFORMATIONAL: u8 = 0;
+pub const DISPOSITION_REVIEW: u8 = 1;
+pub const DISPOSITION_BLOCK: u8 = 2;
+pub const DISPOSITION_EMERGENCY: u8 = 3;
+
+/// One entry of a transition's per-transition exception set: the
+/// kernel's `ExceptionId` ([u8; 32]) plus its disposition and whether
+/// it has resolved. Raised by `raise_exception` (Evaluator only,
+/// pre-commit states), resolved by `resolve_exception` (Evaluator
+/// only, any state — the kernel imposes no state gate on resolve);
+/// only unresolved Block/Emergency entries count toward the
+/// record's `unresolved_blocking`, which `commit` feeds to the
+/// EXCEPTIONS bit.
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ExceptionEntry {
+    /// The exception's id (kernel `ExceptionId`).
+    pub id: [u8; 32],
+    /// Disposition: one of the `DISPOSITION_*` codes.
+    pub disposition: u8,
+    /// Whether `resolve_exception` has resolved this entry.
+    pub resolved: bool,
+}
+
 /// One kernel transition's on-chain record (design §3 `TransitionRecord`,
 /// first fields).
 ///
@@ -2417,10 +2689,11 @@ pub struct ConstraintEntry {
 /// load → call → store). This slice carries the manifest inputs, the
 /// recorded proposer, the state, the plan count, the round count, the
 /// current-round aggregates, the previous-round mean, the frozen
-/// constraint set, the objectives flag, and the reconciled flag;
-/// per-transition exceptions and the realized hash are added by the
-/// lifecycle instructions that own them — each field lands with the
-/// instruction that writes it, not before.
+/// constraint set, the objectives flag, the reconciled flag, and —
+/// as of this slice — the per-transition exception set with its
+/// unresolved-blocking count, which `commit` feeds to the EXCEPTIONS
+/// bit; each field lands with the instruction that writes it, not
+/// before.
 #[account]
 pub struct TransitionRecord {
     /// Caller-chosen id (PDA seed component).
@@ -2494,14 +2767,25 @@ pub struct TransitionRecord {
     /// hash the transition settled against, equal to the
     /// EvidenceRecord's hash by the settle gate.
     pub realized_hash: [u8; 32],
+    /// The per-transition exception set (design §3): raised by
+    /// `raise_exception`, resolved by `resolve_exception`, never
+    /// extended after the transition leaves its pre-commit states.
+    /// Each entry is 32 (id) + 1 (disposition) + 1 (resolved) bytes.
+    pub exceptions: Vec<ExceptionEntry>,
+    /// Unresolved blocking exceptions on this transition (kernel
+    /// `unresolved_blocking`): Block/Emergency entries raised and not
+    /// yet resolved. `commit` feeds this count to the EXCEPTIONS bit;
+    /// a non-zero count refuses every commit until resolved.
+    pub unresolved_blocking: u32,
     /// PDA bump for the `["transition", id]` seeds.
     pub bump: u8,
 }
 
 impl TransitionRecord {
     /// 8 (discriminator) + 8 + 1 + 32 + 8 + 8 + 8 + 4 + 4
-    /// + 8 + 8 + 8 + (4 + 8 × 33) + 1 + 1 + 32 + 8 + 32 + 8 + 32 + 1 = 488.
-    pub const SPACE: usize = 8 + 8 + 1 + 32 + 8 + 8 + 8 + 4 + 4 + 8 + 8 + 8 + 268 + 1 + 1 + 32 + 8 + 32 + 8 + 32 + 1;
+    /// + 8 + 8 + 8 + (4 + 8 × 33) + 1 + 1 + 32 + 8 + 32 + 8 + 32
+    /// + (4 + 8 × 34) + 4 + 1 = 768.
+    pub const SPACE: usize = 8 + 8 + 1 + 32 + 8 + 8 + 8 + 4 + 4 + 8 + 8 + 8 + 268 + 1 + 1 + 32 + 8 + 32 + 8 + 32 + 276 + 4 + 1;
 }
 
 /// Maximum claims per plan (design §3: a plan is a capacity-claims
@@ -2803,6 +3087,42 @@ pub struct SubmitObjectivesCheck<'info> {
     pub caller: Signer<'info>,
 }
 
+/// Accounts for [`treasury_program::raise_exception`].
+#[derive(Accounts)]
+#[instruction(transition_id: u64)]
+pub struct RaiseException<'info> {
+    /// The raising agent's record (must exist and be bound to the
+    /// signer; the Evaluator role is the gate enforced here).
+    #[account(seeds = [b"agent", caller.key().as_ref()], bump = agent_record.bump)]
+    pub agent_record: Account<'info, AgentRecord>,
+    /// The transition record to raise against (Registered, Planning,
+    /// or Committable). No new account: the exception mutates this
+    /// record's per-transition set in place (design §3).
+    #[account(mut, seeds = [b"transition", transition_id.to_le_bytes().as_ref()], bump = transition_record.bump)]
+    pub transition_record: Account<'info, TransitionRecord>,
+    /// The raising Evaluator (signer; pays no rent here).
+    pub caller: Signer<'info>,
+}
+
+/// Accounts for [`treasury_program::resolve_exception`].
+#[derive(Accounts)]
+#[instruction(transition_id: u64)]
+pub struct ResolveException<'info> {
+    /// The resolving agent's record (must exist and be bound to the
+    /// signer; the Evaluator role is the gate enforced here).
+    #[account(seeds = [b"agent", caller.key().as_ref()], bump = agent_record.bump)]
+    pub agent_record: Account<'info, AgentRecord>,
+    /// The transition record to resolve against. No state gate is
+    /// imposed here (the kernel imposes none on resolve) — the
+    /// record is written in place, its exception entry marked
+    /// resolved and its blocking count decremented on first
+    /// resolution only.
+    #[account(mut, seeds = [b"transition", transition_id.to_le_bytes().as_ref()], bump = transition_record.bump)]
+    pub transition_record: Account<'info, TransitionRecord>,
+    /// The resolving Evaluator (signer; pays no rent here).
+    pub caller: Signer<'info>,
+}
+
 /// Accounts for [`treasury_program::submit_constraint_report`].
 #[derive(Accounts)]
 #[instruction(transition_id: u64)]
@@ -2965,6 +3285,23 @@ pub enum TreasuryError {
     /// agent set must match the attributed set exactly.
     #[msg("Remaining settle accounts do not match this settle's agent set.")]
     SettleAccountsMismatch,
+    /// The exception id is already raised on this transition — the
+    /// kernel's `Duplicate`. A raised exception is never raised
+    /// twice; resolve it, or raise a different id.
+    #[msg("Exception already raised on this transition.")]
+    DuplicateException,
+    /// The exception id was never raised on this transition — the
+    /// kernel's `UnknownException`. Only a raised exception can
+    /// resolve.
+    #[msg("Unknown exception: not raised on this transition.")]
+    UnknownException,
+    /// The disposition code is not a kernel `Disposition` (0 =
+    /// Informational, 1 = Review, 2 = Block, 3 = Emergency).
+    #[msg("Invalid disposition: 0 = Informational, 1 = Review, 2 = Block, 3 = Emergency.")]
+    InvalidDisposition,
+    /// The transition already holds `MAX_EXCEPTIONS` exceptions (8).
+    #[msg("Too many exceptions: at most 8 per transition.")]
+    TooManyExceptions,
 }
 
 #[cfg(test)]
@@ -3036,13 +3373,64 @@ mod tests {
         // (8 + 8) plus the previous-round mean (8) with advance_round,
         // the reconciled flag (1) with reconcile, and the lineage
         // inputs (8 + 32) with commit, and the commit index (8) plus
-        // the realized hash (32) with settle.
-        assert_eq!(TransitionRecord::SPACE, 488);
+        // the realized hash (32) with settle, and the exception set
+        // (4 + 8 x 34) plus the unresolved-blocking count (4) with
+        // raise_exception / resolve_exception.
+        assert_eq!(TransitionRecord::SPACE, 768);
         assert_eq!(DeclaredChain::SPACE, 49);
         assert_eq!(MAX_CONSTRAINTS, 8);
+        assert_eq!(MAX_EXCEPTIONS, 8);
         assert_eq!(STATUS_PASS, 0);
         assert_eq!(STATUS_FAIL, 1);
         assert_eq!(STATUS_UNAVAILABLE, 2);
+        assert_eq!(DISPOSITION_INFORMATIONAL, 0);
+        assert_eq!(DISPOSITION_REVIEW, 1);
+        assert_eq!(DISPOSITION_BLOCK, 2);
+        assert_eq!(DISPOSITION_EMERGENCY, 3);
+    }
+
+    #[test]
+    fn raise_exception_gate_matrix() {
+        // Kernel check order: Evaluator, pre-commit state, valid
+        // disposition, not already raised, room under MAX_EXCEPTIONS.
+        let base = |evaluator: bool, state: u8, disp: u8, raised: bool, count: usize| {
+            can_raise_exception(evaluator, state, disp, raised, count)
+        };
+        // Clean cases pass in all three pre-commit states, for
+        // blocking and non-blocking dispositions alike.
+        assert!(base(true, STATE_REGISTERED, DISPOSITION_INFORMATIONAL, false, 0).is_ok());
+        assert!(base(true, STATE_PLANNING, DISPOSITION_BLOCK, false, 3).is_ok());
+        assert!(base(true, STATE_COMMITTABLE, DISPOSITION_EMERGENCY, false, 7).is_ok());
+        // A non-Evaluator is refused first, whatever else holds.
+        assert!(base(false, STATE_REGISTERED, DISPOSITION_BLOCK, false, 0).is_err());
+        // Committed, Settled, Rejected, Expired cannot gain an exception.
+        assert!(base(true, STATE_COMMITTED, DISPOSITION_BLOCK, false, 0).is_err());
+        assert!(base(true, STATE_SETTLED, DISPOSITION_BLOCK, false, 0).is_err());
+        assert!(base(true, STATE_REJECTED, DISPOSITION_BLOCK, false, 0).is_err());
+        assert!(base(true, STATE_EXPIRED, DISPOSITION_BLOCK, false, 0).is_err());
+        // A code outside 0..=3 is not a disposition.
+        assert!(base(true, STATE_REGISTERED, 4, false, 0).is_err());
+        // An id already raised is a duplicate, never a new entry.
+        assert!(base(true, STATE_REGISTERED, DISPOSITION_BLOCK, true, 0).is_err());
+        // A full set refuses a ninth exception.
+        assert!(base(true, STATE_REGISTERED, DISPOSITION_BLOCK, false, 8).is_err());
+        // The blocking table follows the kernel's `d >= Block`.
+        assert!(!is_blocking_disposition(DISPOSITION_INFORMATIONAL));
+        assert!(!is_blocking_disposition(DISPOSITION_REVIEW));
+        assert!(is_blocking_disposition(DISPOSITION_BLOCK));
+        assert!(is_blocking_disposition(DISPOSITION_EMERGENCY));
+    }
+
+    #[test]
+    fn resolve_exception_gate_matrix() {
+        // Kernel resolve: Evaluator + existence, and deliberately
+        // no state gate — the helper takes no state argument, so a
+        // caller cannot smuggle one in later.
+        assert!(can_resolve_exception(true, true).is_ok());
+        // A non-Evaluator is refused first.
+        assert!(can_resolve_exception(false, true).is_err());
+        // An id never raised is unknown, never resolved.
+        assert!(can_resolve_exception(true, false).is_err());
     }
 
     #[test]
@@ -3297,6 +3685,8 @@ mod tests {
             parent_hash: [0; 32],
             commit_index: 0,
             realized_hash: [0; 32],
+            exceptions: vec![],
+            unresolved_blocking: 0,
             bump: 255,
         };
         assert_eq!(record.state, STATE_REGISTERED);
