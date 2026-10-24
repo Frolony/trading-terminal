@@ -473,5 +473,40 @@ IDL: instructions 28 → 29 (incl. `enroll`), accounts 14 → 15
 (`HolderRecord`), errors 43 → 45 (`NotCurrentWindow`,
 `InvalidPosition`). Program host tests 64 → 68 (cohort rotation,
 the enroll gate matrix, the roster-chain properties, the SPACE
-check). Next, in design order: the window's execution family
-(`pay_tranche` first, per the pinned protocol).
+check).
+**This increment adds `pay_tranche` (design §4.2)** — the fifth
+§4.2 instruction and the window protocol's first execution step:
+it answers the question the `enroll` slice left open — executions
+ride a Committed window flow transition (a Settled gate would
+refuse every real payout, a pre-commit gate would pay uncommitted
+funds) — of the canonical `treasury.window.v1` type, for a holder
+whose cohort is this window's rotation slot. Operator-settled
+under the standing authorization (§5): the operator signs, must
+hold an active AgentRecord with the new `OPERATOR_SETTLE`
+capability id (SHA-256 of `operator.settle`, recomputed from the
+string in the host tests like the transition-type ids), and the
+holder's standing authorization must still be true — a revoked
+authorization refuses. One payout per holder per window, enforced
+by the new `tranche_paid` flag on the HolderRecord (SPACE 99 →
+100, set at enroll, set here, refusing a second payout); a zero
+amount refuses, since it would mark the slot paid while paying
+nothing. Honest scope, stated in the handler docs, not buried:
+this slice records the payout as accrual bookkeeping
+(`accrued_dividend_raw` += amount) and emits `TranchePaid` with
+the committed transition's authorization context — it does NOT
+move tokens (the program holds no token accounts yet) and does
+NOT yet verify the amount against the Committed transition's
+declared payout schedule (§5.2), because that check needs the
+payout-schedule encoding no account carries yet; the token
+disbursement step (vault transfer + retained-float debit) lands
+with the schedule verification, not before it, and this
+instruction must not be read as a disbursement. The
+`RES_TREASURY_TRANCHE` claim is the commit-time claim, debited
+at commit, not re-debited here. IDL: instructions 29 → 30
+(incl. `pay_tranche`), accounts 15 (no new account type),
+errors 45 → 49 (`TrancheMismatch`, `AuthorizationRevoked`,
+`TrancheAlreadyPaid`, `InvalidAmount`). Program host tests
+68 → 70 (the operator-settle id recomputation, the pay-tranche
+gate matrix, the SPACE check). Next, in design order: `borrow`
+(then `settle_default`, which settles the loans `borrow`
+creates), then the rest of the window's execution family.

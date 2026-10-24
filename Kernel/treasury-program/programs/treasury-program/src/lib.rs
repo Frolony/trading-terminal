@@ -547,6 +547,17 @@ pub const TREASURY_WINDOW_TYPE: [u8; 32] = [
     121, 164, 9, 39, 178, 22, 107, 67, 20, 222, 160, 106, 231, 127, 207,
 ];
 
+/// Operator-settlement capability id (design §5): SHA-256 of the
+/// bytes `operator.settle`. The payout instructions check this id
+/// against the operator's AgentRecord capabilities — "Operator" is
+/// an agent class holding a capability, never a role and never a
+/// named key — so the id is machine-checkable, not a convention in
+/// client code, exactly as the transition-type ids are.
+pub const OPERATOR_SETTLE: [u8; 32] = [
+    72, 124, 97, 111, 249, 107, 133, 84, 171, 144, 180, 21, 142, 58, 188, 30,
+    25, 51, 152, 11, 111, 68, 99, 175, 120, 72, 162, 74, 234, 38, 52, 101,
+];
+
 /// Bonds sleeve, 50% of T (50/25/25 portfolio, Carlos's 2026-10-22
 /// revision). Together with [`CASH_SLEEVE_PPM`] (25%) and
 /// [`ARB_SLEEVE_PPM`] (25%) it sums to the whole treasury.
@@ -2541,6 +2552,7 @@ pub mod treasury_program {
         record.skip_next_dividend = false;
         record.standing_authorization = true;
         record.authorization_window = window_id;
+        record.tranche_paid = false;
         record.bump = ctx.bumps.holder_record;
         window.roster_hash = roster_hash_update(
             window.roster_hash,
@@ -2555,6 +2567,95 @@ pub mod treasury_program {
             roster_hash: window.roster_hash,
             transition_id: window.source_transition_id,
             commit_index: window.source_commit_index,
+        });
+        Ok(())
+    }
+
+    /// Dividend tranche payout (design §4.2, §5, §6): the window's
+    /// execution family, first in the pinned protocol order — the
+    /// beginning-of-month payout, in the same moment the new loan
+    /// windows open (D-1: the operating dividend, allocated in full
+    /// over the 12 beginning-of-month slots).
+    ///
+    /// The gate answers the question the `enroll` slice left open:
+    /// executions ride a Committed window flow transition — the
+    /// transition must be Committed (executions happen after commit
+    /// and before settle, so a Settled gate would refuse every real
+    /// payout and a pre-commit gate would pay uncommitted funds).
+    /// Its type must be the canonical `treasury.window.v1` type, and
+    /// the holder's cohort must be this window's rotation slot
+    /// (`window_id` mod 12). A payout names its window by address
+    /// (the HolderRecord PDA seeds), never by claim.
+    ///
+    /// Operator-settled under the standing authorization (§5): the
+    /// operator is the signer, must hold an active AgentRecord with
+    /// the `OPERATOR_SETTLE` capability, and the holder's standing
+    /// authorization must still be true (a revoked authorization
+    /// refuses — revocation takes effect at the next window
+    /// boundary, so a mid-window revocation does not tear this
+    /// window's in-flight batch, but this instruction never pays
+    /// against a revoked authorization). The operator is an agent
+    /// class holding a capability, never a named key.
+    ///
+    /// Idempotency: one payout per holder per window. The
+    /// `tranche_paid` flag on the HolderRecord is set here and
+    /// refuses a second payout — a double payout would double-pay
+    /// the slot dividend, and the flag, not the operator's memory,
+    /// is what prevents it. A zero amount refuses: a zero payout
+    /// would mark the slot paid while paying nothing.
+    ///
+    /// Honest scope, stated plainly: this slice records the payout
+    /// as accrual bookkeeping (`accrued_dividend_raw` += amount, the
+    /// §3 "accrued unpaid dividend") and emits `TranchePaid` with
+    /// the committed transition's authorization context. It does
+    /// NOT move tokens — the program holds no token accounts yet —
+    /// and it does NOT yet verify the amount against the Committed
+    /// transition's declared payout schedule (§5.2): that check
+    /// needs the payout-schedule encoding the window transition's
+    /// declared hash commits to, which no account carries yet.
+    /// Until that encoding lands, the amount is operator-supplied
+    /// and the window transition's settle `exact` check cannot
+    /// cover per-holder amounts — so this instruction must not be
+    /// read as a disbursement, and the token disbursement step
+    /// (vault transfer + retained-float debit) lands with the
+    /// schedule verification, not before it. The
+    /// `RES_TREASURY_TRANCHE` capacity claim the design row names
+    /// is the commit-time claim, debited at commit by the kernel's
+    /// capacity machinery, not re-debited here.
+    pub fn pay_tranche(
+        ctx: Context<PayTranche>,
+        transition_id: u64,
+        window_id: u64,
+        holder: Pubkey,
+        amount_raw: u64,
+    ) -> Result<()> {
+        can_pay_tranche(
+            ctx.accounts.transition_record.state,
+            ctx.accounts.transition_record.transition_type,
+            ctx.accounts.holder_record.cohort,
+            window_id,
+            ctx.accounts.holder_record.standing_authorization,
+            ctx.accounts.operator_record.active,
+            ctx.accounts
+                .operator_record
+                .capabilities
+                .contains(&OPERATOR_SETTLE),
+            ctx.accounts.holder_record.tranche_paid,
+            amount_raw,
+        )?;
+        let record = &mut ctx.accounts.holder_record;
+        record.accrued_dividend_raw = record
+            .accrued_dividend_raw
+            .checked_add(amount_raw)
+            .ok_or(TreasuryError::Overflow)?;
+        record.tranche_paid = true;
+        emit!(TranchePaid {
+            window_id,
+            holder,
+            amount_raw,
+            transition_id,
+            commit_index: ctx.accounts.transition_record.commit_index,
+            declared_hash: ctx.accounts.transition_record.declared_hash,
         });
         Ok(())
     }
@@ -3670,6 +3771,47 @@ pub fn can_enroll(window_id: u64, window_count: u64, position_raw: u64) -> Resul
     Ok(())
 }
 
+/// The `pay_tranche` gate, as a pure check (design §4.2, §5): the
+/// window flow transition must be Committed — executions ride
+/// commit, before settle — and of the canonical window type, the
+/// holder's cohort must be this window's rotation slot, the
+/// standing authorization must still hold, the operator must be an
+/// active agent holding `OPERATOR_SETTLE`, the slot must be unpaid,
+/// and the amount must be positive. Order mirrors
+/// [`can_open_window`]: the transition binding first, the
+/// amount rule last. A Settled transition refuses here: payouts
+/// execute before settle, and a payout after settle would pay
+/// outside the window's executed set that settle attests.
+pub fn can_pay_tranche(
+    state: u8,
+    transition_type: [u8; 32],
+    holder_cohort: u64,
+    window_id: u64,
+    standing_authorization: bool,
+    operator_active: bool,
+    operator_has_settle: bool,
+    tranche_paid: bool,
+    amount_raw: u64,
+) -> Result<()> {
+    require!(state == STATE_COMMITTED, TreasuryError::BadState);
+    require!(
+        transition_type == TREASURY_WINDOW_TYPE
+            && holder_cohort == enroll_cohort(window_id),
+        TreasuryError::TrancheMismatch
+    );
+    require!(
+        standing_authorization,
+        TreasuryError::AuthorizationRevoked
+    );
+    require!(
+        operator_active && operator_has_settle,
+        TreasuryError::Unauthorized
+    );
+    require!(!tranche_paid, TreasuryError::TrancheAlreadyPaid);
+    require!(amount_raw != 0, TreasuryError::InvalidAmount);
+    Ok(())
+}
+
 /// A window's rotation slot (design §4.2, D-1): the 12-slot
 /// rotation, so the slot is the window id mod 12. The window id
 /// itself is the unique lock-cycle identifier and is never reduced
@@ -3914,6 +4056,23 @@ pub struct HolderEnrolled {
     pub roster_hash: [u8; 32],
     pub transition_id: u64,
     pub commit_index: u64,
+}
+
+/// Event for [`treasury_program::pay_tranche`] (design §4.2, §6):
+/// the window, the holder, the slot dividend recorded, and the
+/// authorization context — the Committed window flow transition's
+/// id, commit index, and declared hash. The amount here is the
+/// accrual recorded, not a token disbursement: the program holds
+/// no token accounts yet, and the disbursement step lands with
+/// the declared-schedule verification (see the handler docs).
+#[event]
+pub struct TranchePaid {
+    pub window_id: u64,
+    pub holder: Pubkey,
+    pub amount_raw: u64,
+    pub transition_id: u64,
+    pub commit_index: u64,
+    pub declared_hash: [u8; 32],
 }
 
 /// Capacity stock installed (design §4.1): the `set_capacity` event,
@@ -4865,13 +5024,17 @@ pub struct HolderRecord {
     /// The window in which the standing authorization was granted
     /// (the enroll window at creation).
     pub authorization_window: u64,
+    /// Slot-dividend payout flag: false at enroll, set by the
+    /// window's first `pay_tranche` for this holder and refusing
+    /// every later one — one payout per holder per window.
+    pub tranche_paid: bool,
     /// PDA bump for the `["holder", window_id, holder]` seeds.
     pub bump: u8,
 }
 
 impl HolderRecord {
-    /// 8 (discriminator) + 32 + 6 × 8 + 1 + 1 + 8 + 1.
-    pub const SPACE: usize = 8 + 32 + 8 + 8 + 8 + 8 + 8 + 8 + 1 + 1 + 8 + 1;
+    /// 8 (discriminator) + 32 + 6 × 8 + 1 + 1 + 8 + 1 + 1.
+    pub const SPACE: usize = 8 + 32 + 8 + 8 + 8 + 8 + 8 + 8 + 1 + 1 + 8 + 1 + 1;
 }
 
 /// Accounts for [`treasury_program::submit_signal`].
@@ -5372,6 +5535,36 @@ pub struct Enroll<'info> {
     pub system_program: Program<'info, System>,
 }
 
+/// Accounts for [`treasury_program::pay_tranche`].
+#[derive(Accounts)]
+#[instruction(transition_id: u64, window_id: u64, holder: Pubkey, amount_raw: u64)]
+pub struct PayTranche<'info> {
+    /// The settling operator (signer). Not a named key: execution
+    /// is capability-gated, and the record below is what the gate
+    /// reads. Pays no rent here — no account is created.
+    pub operator: Signer<'info>,
+    /// The operator's agent record, seeds-bound to the signer.
+    /// Must be active and hold `OPERATOR_SETTLE` (design §5).
+    #[account(seeds = [b"agent", operator.key().as_ref()], bump = operator_record.bump)]
+    pub operator_record: Account<'info, AgentRecord>,
+    /// The window flow transition, seeds-bound to its id. Must be
+    /// Committed and of the canonical window type — the authority
+    /// for this payout, not the operator's discretion.
+    #[account(seeds = [b"transition", transition_id.to_le_bytes().as_ref()], bump = transition_record.bump)]
+    pub transition_record: Account<'info, TransitionRecord>,
+    /// The window being paid, seeds-bound to its id. Read-only
+    /// here: payouts move neither the roster nor the snapshot —
+    /// but the account's presence binds the payout to an opened
+    /// window, not to a bare id.
+    #[account(seeds = [b"window", window_id.to_le_bytes().as_ref()], bump = window_state.bump)]
+    pub window_state: Account<'info, WindowState>,
+    /// The holder's record for this window, seeds-bound to the
+    /// window and the holder. Mutated: the accrual and the
+    /// one-payout flag live here.
+    #[account(mut, seeds = [b"holder", window_id.to_le_bytes().as_ref(), holder.as_ref()], bump = holder_record.bump)]
+    pub holder_record: Account<'info, HolderRecord>,
+}
+
 /// Accounts for [`treasury_program::set_capacity`].
 #[derive(Accounts)]
 #[instruction(resource_id: u16)]
@@ -5664,6 +5857,26 @@ pub enum TreasuryError {
     /// a roster entry with no funds behind it.
     #[msg("Enrollment position must be positive: a zero lock is not an entry.")]
     InvalidPosition,
+    /// A pay_tranche does not match its window: the authorizing
+    /// transition is not a canonical `treasury.window.v1` transition,
+    /// or the holder's cohort is not this window's rotation slot.
+    /// A payout names its window by address, never by claim.
+    #[msg("Pay-tranche window mismatch: authorizing transition is not a treasury.window.v1 transition, or the holder's cohort is not this window's rotation slot.")]
+    TrancheMismatch,
+    /// The holder's standing settlement authorization is revoked:
+    /// no operator-settled payout pays against a revoked
+    /// authorization (design §5).
+    #[msg("Standing settlement authorization is revoked: no operator-settled payout against a revoked authorization.")]
+    AuthorizationRevoked,
+    /// The holder's slot dividend for this window is already paid:
+    /// one payout per holder per window, enforced by the record's
+    /// flag, not by the operator's memory.
+    #[msg("Tranche already paid: one dividend payout per holder per window.")]
+    TrancheAlreadyPaid,
+    /// A pay_tranche pays nothing: a zero amount would mark the
+    /// slot paid while paying nothing.
+    #[msg("Tranche amount must be positive: a zero payout would mark the slot paid while paying nothing.")]
+    InvalidAmount,
 }
 
 #[cfg(test)]
@@ -7422,6 +7635,86 @@ mod tests {
 
     #[test]
     fn holder_record_space_matches_fields() {
-        assert_eq!(HolderRecord::SPACE, 99);
+        assert_eq!(HolderRecord::SPACE, 100);
+    }
+
+    #[test]
+    fn operator_settle_id_is_sha256_of_its_tag() {
+        // Same discipline as the transition-type ids: the capability
+        // id is recomputed from the string, never a trusted literal.
+        assert_eq!(
+            OPERATOR_SETTLE,
+            anchor_lang::solana_program::hash::hash(b"operator.settle").to_bytes()
+        );
+    }
+
+    #[test]
+    fn pay_tranche_gate_matrix() {
+        // Happy path: Committed window transition, this window's
+        // slot, live authorization, active operator holding the
+        // capability, unpaid slot, positive amount.
+        can_pay_tranche(
+            STATE_COMMITTED,
+            TREASURY_WINDOW_TYPE,
+            1,
+            13,
+            true,
+            true,
+            true,
+            false,
+            626,
+        )
+        .expect("committed window payout passes");
+        // Pre-commit and post-commit states refuse: payouts ride
+        // commit, before settle.
+        for state in [
+            STATE_COMMITTABLE,
+            STATE_SETTLED,
+            STATE_REJECTED,
+            STATE_EXPIRED,
+        ] {
+            assert!(can_pay_tranche(
+                state, TREASURY_WINDOW_TYPE, 1, 13, true, true, true, false, 626
+            )
+            .is_err());
+        }
+        // Wrong transition type, and a cohort that is not this
+        // window's slot (13 mod 12 = 1), both refuse as a mismatch.
+        assert!(can_pay_tranche(
+            STATE_COMMITTED, TREASURY_LAUNCH_TYPE, 1, 13, true, true, true, false, 626
+        )
+        .is_err());
+        assert!(can_pay_tranche(
+            STATE_COMMITTED, TREASURY_WINDOW_TYPE, 2, 13, true, true, true, false, 626
+        )
+        .is_err());
+        // Revoked standing authorization refuses, even for a
+        // Committed transition: §5 never pays against revocation.
+        assert!(can_pay_tranche(
+            STATE_COMMITTED, TREASURY_WINDOW_TYPE, 1, 13, false, true, true, false, 626
+        )
+        .is_err());
+        // An inactive operator, and an active operator without the
+        // capability, both refuse: the gate is capability + active.
+        assert!(can_pay_tranche(
+            STATE_COMMITTED, TREASURY_WINDOW_TYPE, 1, 13, true, false, true, false, 626
+        )
+        .is_err());
+        assert!(can_pay_tranche(
+            STATE_COMMITTED, TREASURY_WINDOW_TYPE, 1, 13, true, true, false, false, 626
+        )
+        .is_err());
+        // A second payout for the same holder-window refuses: one
+        // payout per holder per window, enforced by the flag.
+        assert!(can_pay_tranche(
+            STATE_COMMITTED, TREASURY_WINDOW_TYPE, 1, 13, true, true, true, true, 626
+        )
+        .is_err());
+        // A zero amount refuses: it would mark the slot paid while
+        // paying nothing.
+        assert!(can_pay_tranche(
+            STATE_COMMITTED, TREASURY_WINDOW_TYPE, 1, 13, true, true, true, false, 0
+        )
+        .is_err());
     }
 }
