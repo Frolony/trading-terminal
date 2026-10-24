@@ -1,4 +1,15 @@
-# N6.2 — E2E regression suite: alert-only CI trigger. (PROPER FIX VARIANT v4 — prepared 2026-10-23 ~15:5x CST, supersedes v3 posted as commit 14122437)
+# N6.2 — E2E regression suite: alert-only CI trigger. (PROPER FIX VARIANT v5 — prepared 2026-10-23 ~22:57 CST, supersedes v4 posted as commit 1faeb77d)
+#
+# v5 change (the only functional delta from v4): the "Run E2E suite" step now receives
+# VERCEL_AUTOMATION_BYPASS_SECRET from the GitHub Actions repo secrets. Carlos decided
+# 2026-10-23 ~22:57 CST to relax bot protection for CI after issue #8 proved the GitHub
+# Actions runner was being served Vercel's Security Checkpoint interstitial (403s, app
+# never loaded) instead of the app — T5.1/T5.2's failures were a CI-reachability problem,
+# not product bugs. tests/e2e/playwright.config.js reads this env var and, only when it
+# is present, sends the x-vercel-protection-bypass + x-vercel-set-bypass-cookie headers
+# on every request. The secret VALUE lives only in Vercel (project Settings → Deployment
+# Protection → Protection Bypass for Automation) and in the GitHub repo's Actions secrets
+# — it is never committed, never in this file, and the repo is public.
 #
 # v4 change (the only functional delta from v3): the deployment-wait poll now
 # distinguishes an UNAUTHORIZED token from a deployment that is genuinely not
@@ -165,6 +176,9 @@ jobs:
         working-directory: tests/e2e
         env:
           PLAYWRIGHT_JSON_OUTPUT_NAME: playwright-results.json
+          # v5: Protection Bypass for Automation — playwright.config.js turns this into
+          # the x-vercel-protection-bypass headers (see the v5 header note).
+          VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
 
       - name: Upload report artifacts
         if: always()
