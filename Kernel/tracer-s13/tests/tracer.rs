@@ -221,3 +221,152 @@ fn t21_dictionary_tiers() {
     let hit = d.recognize("anything", "pay_tranche").unwrap();
     assert_eq!(hit.venue, Venue::TreasuryProgram);
 }
+// ---------------------------------------------------------------------------
+// W6.1.2 — attestation-timing detection (T22–T27, Carlos's 2026-10-22 addendum).
+//
+// Helpers for the (event, attestation) pairs the detectors judge.
+// ---------------------------------------------------------------------------
+
+use tracer_s13::attestation::{
+    attest, attestation_headline, AttestationLabel, AttestationRecord, AttestationVerdict,
+    CausalTime, RealizedEvent,
+};
+
+fn realized(id: &str, hash: &str, slot: u64, index: u32) -> RealizedEvent {
+    RealizedEvent {
+        id: id.to_string(),
+        hash: hash.to_string(),
+        realized_at: CausalTime::at(slot, index),
+        signature: format!("event-sig-{id}"),
+    }
+}
+
+fn attestation(
+    attester: &str,
+    event_id: &str,
+    certified_hash: &str,
+    certified_at: (u64, u32),
+    signed_at: (u64, u32),
+) -> AttestationRecord {
+    AttestationRecord {
+        attester: attester.to_string(),
+        event_id: event_id.to_string(),
+        certified_hash: certified_hash.to_string(),
+        certified_at: CausalTime::at(certified_at.0, certified_at.1),
+        signed_at: CausalTime::at(signed_at.0, signed_at.1),
+        signature: format!("att-sig-{attester}-{event_id}"),
+    }
+}
+
+// T22 — pre-certification: signed before the certified event existed. The
+// verification-theater pattern — structural impossibility, not a judgment
+// call. Primary label is PreCertification; the premature-claim finding is
+// preserved in the appendix, not hidden.
+#[test]
+fn t22_precertification_detected() {
+    let e = realized("ev-1", "h1", 1000, 0);
+    let rec = attestation("attesterA", "ev-1", "h1", (900, 5), (900, 5));
+    let v = attest(Some(&e), &rec);
+    assert_eq!(v.label(), Some(AttestationLabel::PreCertification));
+    assert!(v.confidence() >= CONFIDENCE_THRESHOLD);
+    assert!(!v.is_guess());
+    assert_eq!(v.evidence.len(), 2, "event + attestation signatures");
+    // The backdated claim is a second, real finding — recorded, not lost.
+    assert!(
+        v.findings.iter().any(|f| f.contains("predates the realized outcome")),
+        "premature-claim finding in the appendix: {:?}",
+        v.findings
+    );
+    let h = attestation_headline(&v);
+    assert!(h.contains("Pre-certification"), "headline names the anomaly: {h}");
+    assert!(h.contains("attesterA"), "headline names the attester: {h}");
+}
+
+// T23 — post-dated: the signature actually issued after its own claimed
+// certification time — "post dated the thing they were verifying."
+#[test]
+fn t23_postdated_detected() {
+    let e = realized("ev-2", "h2", 1000, 0);
+    // Claims it certified at (1100, 0), but the signature envelope is
+    // (1200, 3) — after the event, but later than claimed.
+    let rec = attestation("attesterB", "ev-2", "h2", (1100, 0), (1200, 3));
+    let v = attest(Some(&e), &rec);
+    assert_eq!(v.label(), Some(AttestationLabel::PostDated));
+    assert!(v.confidence() >= CONFIDENCE_THRESHOLD);
+    let h = attestation_headline(&v);
+    assert!(h.contains("Post-dated attestation"), "headline: {h}");
+}
+
+// T24 — hash mismatch: timing is fine, but the certified hash is not the
+// realized outcome's hash — settle-after-realized violated on the evidence.
+#[test]
+fn t24_hash_mismatch_detected() {
+    let e = realized("ev-3", "h3", 1000, 0);
+    let rec = attestation("attesterC", "ev-3", "hX", (1100, 2), (1100, 2));
+    let v = attest(Some(&e), &rec);
+    assert_eq!(v.label(), Some(AttestationLabel::HashMismatch));
+    assert!(v.confidence() >= CONFIDENCE_THRESHOLD);
+    let h = attestation_headline(&v);
+    assert!(h.contains("Hash mismatch"), "headline: {h}");
+    assert!(h.contains("hX"), "headline shows the wrong certified hash: {h}");
+}
+
+// T25 — valid attestation: signed after the realized outcome, claimed time
+// inside the causal envelope, hash matches. Labeled ValidAttestation, not a
+// guess — the class exonerates as well as accuses.
+#[test]
+fn t25_valid_attestation_labeled() {
+    let e = realized("ev-4", "h4", 1000, 0);
+    let rec = attestation("attesterD", "ev-4", "h4", (1100, 2), (1100, 2));
+    let v = attest(Some(&e), &rec);
+    assert_eq!(v.label(), Some(AttestationLabel::ValidAttestation));
+    assert!(v.confidence() >= CONFIDENCE_THRESHOLD);
+    assert!(!v.is_guess());
+    assert!(v.findings.is_empty(), "no anomalies, no findings: {:?}", v.findings);
+    let h = attestation_headline(&v);
+    assert!(h.contains("Valid attestation"), "headline: {h}");
+}
+
+// T26 — unknown event: no realized event on record. Unclassified with the
+// reason stated — the machine does NOT turn "cannot verify" into a fraud
+// verdict.
+#[test]
+fn t26_unknown_event_is_unclassified_not_fraud() {
+    let rec = attestation("attesterE", "ev-never-seen", "h9", (1100, 2), (1100, 2));
+    let v = attest(None, &rec);
+    assert_eq!(v.label(), None, "no label without a realized event");
+    assert!(v.is_guess());
+    assert_eq!(v.evidence.len(), 1, "only the attestation signature");
+    let h = attestation_headline(&v);
+    assert!(h.contains("Unclassified attestation"), "headline: {h}");
+    assert!(h.contains("no realized event on record"), "reason stated: {h}");
+    assert!(h.contains("not a fraud verdict"), "the no-fraud discipline is in the copy: {h}");
+}
+
+// T27 — the seal: a candidate below the threshold cannot become a label
+// (0.69 → Unclassified with the shortfall stated; 0.70 keeps the label).
+// Mirrors T18's seal test for workflows.
+#[test]
+fn t27_attestation_seal_demotes_subthreshold() {
+    let low = AttestationVerdict::seal(
+        "ev-6".to_string(),
+        "attesterF".to_string(),
+        Some((AttestationLabel::PostDated, 0.69, "thin envelope evidence".to_string())),
+        vec![],
+        vec!["sig".to_string()],
+    );
+    assert_eq!(low.label(), None);
+    assert!(low.is_guess());
+    let h = attestation_headline(&low);
+    assert!(h.contains("0.69"), "shortfall stated: {h}");
+    assert!(h.contains("below the 0.70 threshold"), "threshold named: {h}");
+
+    let at_edge = AttestationVerdict::seal(
+        "ev-6".to_string(),
+        "attesterF".to_string(),
+        Some((AttestationLabel::PostDated, 0.70, "edge".to_string())),
+        vec![],
+        vec!["sig".to_string()],
+    );
+    assert_eq!(at_edge.label(), Some(AttestationLabel::PostDated));
+}

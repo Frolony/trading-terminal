@@ -25,6 +25,14 @@
 //!    count. Plumbing (zero net position change) is demoted below real
 //!    position-taking: the headline answers *did anyone take a real position,
 //!    and did they keep it?*
+//! 5. **Attestation-timing anomaly detection** ([`attestation`], Carlos's
+//!    2026-10-22 addendum): given a realized event and the attestation that
+//!    claims to certify it, detect the timing shapes that prove the claim
+//!    impossible — signed before the event existed (pre-certification),
+//!    claimed time before the event (premature claim), actually signed after
+//!    the claimed time (post-dated), or a certified hash that is not the
+//!    realized outcome's. The unclassified guarantee applies here too: no
+//!    realized event on record means no verdict, not fraud.
 //!
 //! ## Deliberate limits of this increment
 //!
@@ -37,8 +45,9 @@
 //!   id scores higher than a family-name-only match. No mainnet program ids
 //!   are baked in here — they must be pinned from observed deployments, not
 //!   from memory.
-//! * The attestation-timing detection class (Carlos's 2026-10-22 addendum) and
-//!   the incentive-farming / market-maker classes land in the W6.2 increment.
+//! * The attestation-timing detection class (Carlos's 2026-10-22 addendum)
+//!   landed as a first-class class in W6.1.2 ([`attestation`]); the
+//!   incentive-farming / market-maker classes land in the W6.2 increment.
 //! * This is inference machinery with a published error posture, not a
 //!   fact source. A wrong "wash" label is a false accusation — validation
 //!   against known labeled routes precedes any user-facing claim (W6.2 gate).
@@ -48,9 +57,14 @@ pub mod ingest;
 pub mod reconstruct;
 pub mod classify;
 pub mod summary;
+pub mod attestation;
 
 pub use dictionary::{default_dictionary, Dictionary, HopKind, Venue, VenueHit, VENUE_DICTIONARY};
 pub use ingest::TransferEvent;
 pub use reconstruct::{NetEffect, Workflow, reconstruct};
 pub use classify::{Classification, Label, Verdict, CONFIDENCE_THRESHOLD};
 pub use summary::headline;
+pub use attestation::{
+    attest, attestation_headline, AttestationClassification, AttestationLabel,
+    AttestationRecord, AttestationVerdict, CausalTime, RealizedEvent,
+};
