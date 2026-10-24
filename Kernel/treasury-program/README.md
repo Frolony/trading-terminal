@@ -510,3 +510,38 @@ errors 45 → 49 (`TrancheMismatch`, `AuthorizationRevoked`,
 gate matrix, the SPACE check). Next, in design order: `borrow`
 (then `settle_default`, which settles the loans `borrow`
 creates), then the rest of the window's execution family.
+**This increment adds `borrow` (design §4.2)** — the sixth
+§4.2 instruction and the window protocol's second execution step
+(after the beginning-of-month tranche): holder-signed intent, not
+operator-settled — the borrower signs, and the HolderRecord PDA
+seeds bind the record to the signer, so a holder borrows only
+against their own locked position in this window. Like the tranche
+gate, it rides a Committed window flow transition of the canonical
+`treasury.window.v1` type (a Settled gate would refuse every real
+loan, a pre-commit gate would lend uncommitted funds). One active
+loan per holder per window, enforced by a nonzero
+`loan_principal_raw` refusing — the loan `settle_default` settles
+is this loan, and a second concurrent loan would tangle that
+settlement. Two caps, both ratio-exact: the per-holder cap (up to
+$50 per $100 position, floored — 10,001 positions cap at 5,000) and
+the book cap (the new outstanding must stay within T/12 of the
+window's period-start snapshot total, 60-day terms spanning 2
+cohorts — judged against the snapshot, not the live total, so a
+mid-window balance move cannot inflate this window's book cap).
+Maturity is Clock time plus 60 days (pilot terms only; 90-day
+terms need the term-aware cap and Carlos's ruling), rate 12%
+carried on the `LoanIssued` event with the committed transition's
+authorization context. Honest scope, as in `pay_tranche`: this
+slice records the loan as bookkeeping (principal + maturity on the
+HolderRecord, outstanding + count on the LendingBook) — it does
+NOT move tokens (the program holds no token accounts yet), the
+`RES_LENDING_BOOK` claim is the commit-time claim debited at
+commit, and the cash-sleeve disbursement of principal (D-3: loans
+are from cash in treasury) lands with the disbursement step, not
+before it. IDL: instructions 30 → 31 (incl. `borrow`), accounts
+15 (no new account type), errors 49 → 54 (`BorrowMismatch`,
+`LoanAlreadyActive`, `InvalidLoanAmount`, `LoanExceedsPosition`,
+`BookCapExceeded`). Program host tests 70 → 71 (the borrow gate
+matrix). Next, in design order: `settle_default` (which settles
+the loans `borrow` creates), then the rest of the window's
+execution family.

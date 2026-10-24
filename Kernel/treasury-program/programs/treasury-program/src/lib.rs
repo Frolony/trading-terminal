@@ -2659,6 +2659,94 @@ pub mod treasury_program {
         });
         Ok(())
     }
+
+    /// Lending (design §4.2): the window's execution family, after
+    /// the beginning-of-month tranche in the pinned protocol order.
+    /// Holder-signed intent — unlike `pay_tranche`, this is not
+    /// operator-settled: the borrower signs, and the HolderRecord
+    /// PDA seeds bind the record to the signer, so a holder can
+    /// borrow only against their own locked position in this window.
+    ///
+    /// The gate, like the tranche gate, rides a Committed window
+    /// flow transition of the canonical `treasury.window.v1` type —
+    /// executions happen after commit and before settle, so a
+    /// Settled gate would refuse every real loan and a pre-commit
+    /// gate would lend uncommitted funds. One active loan per
+    /// holder per window: a nonzero `loan_principal_raw` refuses
+    /// (the loan `settle_default` settles is this loan; a second
+    /// concurrent loan would tangle the default settlement).
+    ///
+    /// Two caps, both ratio-exact, both judged here, not at commit
+    /// time alone: the per-holder cap — up to $50 per $100 position
+    /// (`MAX_LOAN_TO_POSITION_PPM`, 50%) — and the book cap — the
+    /// new outstanding must stay within `max_outstanding` of the
+    /// window's period-start snapshot total (T/12 at 60-day terms,
+    /// math doc §4: outstanding spans 2 cohorts, so 1/3 of the 25%
+    /// cash sleeve). The snapshot, not the live treasury total, is
+    /// the cap basis: a mid-window balance move cannot inflate this
+    /// window's book cap (design §7 — cap increases never inflate
+    /// current snapshots). Terms at pilot are 60 days only
+    /// (design §4.2): maturity is `now` from the Clock sysvar plus
+    /// `LOAN_TERM_DAYS`, never a client timestamp. Rate 12%
+    /// (Carlos, final 2026-10-22), carried on the event.
+    ///
+    /// Honest scope, stated plainly as in `pay_tranche`: this slice
+    /// records the loan as bookkeeping — principal + maturity on
+    /// the HolderRecord, outstanding + count on the LendingBook —
+    /// and emits `LoanIssued` with the committed transition's
+    /// authorization context. It does NOT move tokens — the program
+    /// holds no token accounts yet — and the `RES_LENDING_BOOK`
+    /// capacity claim the design row names is the commit-time
+    /// claim, debited at commit by the kernel's capacity machinery,
+    /// not re-debited here. The token disbursement step (cash-sleeve
+    /// payment of principal, per D-3's "loans are from cash in
+    /// treasury") lands with the disbursement step, not before it,
+    /// and this instruction must not be read as a payout.
+    pub fn borrow(
+        ctx: Context<Borrow>,
+        transition_id: u64,
+        window_id: u64,
+        amount_raw: u64,
+    ) -> Result<()> {
+        can_borrow(
+            ctx.accounts.transition_record.state,
+            ctx.accounts.transition_record.transition_type,
+            ctx.accounts.holder_record.window_id,
+            window_id,
+            ctx.accounts.holder_record.loan_principal_raw,
+            ctx.accounts.holder_record.position_raw,
+            amount_raw,
+            ctx.accounts.lending_book.outstanding_raw,
+            ctx.accounts.window_state.snapshot_total_raw,
+        )?;
+        let maturity = Clock::get()?
+            .unix_timestamp
+            .checked_add((LOAN_TERM_DAYS as i64) * 86_400)
+            .ok_or(TreasuryError::Overflow)?;
+        let record = &mut ctx.accounts.holder_record;
+        record.loan_principal_raw = amount_raw;
+        record.loan_maturity = maturity;
+        let book = &mut ctx.accounts.lending_book;
+        book.outstanding_raw = book
+            .outstanding_raw
+            .checked_add(amount_raw)
+            .ok_or(TreasuryError::Overflow)?;
+        book.active_loans = book
+            .active_loans
+            .checked_add(1)
+            .ok_or(TreasuryError::Overflow)?;
+        emit!(LoanIssued {
+            window_id,
+            holder: ctx.accounts.holder.key(),
+            amount_raw,
+            rate_ppm: LOAN_RATE_PPM,
+            maturity,
+            transition_id,
+            commit_index: ctx.accounts.transition_record.commit_index,
+            declared_hash: ctx.accounts.transition_record.declared_hash,
+        });
+        Ok(())
+    }
 }
 
 /// Who may open planning, as a pure check (design §4.1, kernel
@@ -3812,6 +3900,54 @@ pub fn can_pay_tranche(
     Ok(())
 }
 
+/// The `borrow` gate, as a pure check (design §4.2): the window
+/// flow transition must be Committed and of the canonical window
+/// type, and the holder's record must belong to this window (the
+/// PDA seeds enforce the same binding on-chain; the helper checks
+/// it explicitly so the matrix tests the rule, not the seeds).
+/// One active loan per holder per window; a positive amount; the
+/// per-holder cap (50% of the locked position, ratio-exact in
+/// u128 so no u64 position can overflow the intermediate); and
+/// the book cap — the new outstanding must stay within
+/// `max_outstanding` of the window's period-start snapshot total
+/// (T/12 at 60-day terms). Order mirrors [`can_pay_tranche`]:
+/// the transition binding first, the amount rules next, the
+/// aggregate book cap last — a loan that would breach the book
+/// refuses even when it is legal for the holder alone.
+pub fn can_borrow(
+    state: u8,
+    transition_type: [u8; 32],
+    record_window_id: u64,
+    window_id: u64,
+    existing_loan_raw: u64,
+    position_raw: u64,
+    amount_raw: u64,
+    book_outstanding_raw: u64,
+    snapshot_total_raw: u64,
+) -> Result<()> {
+    require!(state == STATE_COMMITTED, TreasuryError::BadState);
+    require!(
+        transition_type == TREASURY_WINDOW_TYPE && record_window_id == window_id,
+        TreasuryError::BorrowMismatch
+    );
+    require!(
+        existing_loan_raw == 0,
+        TreasuryError::LoanAlreadyActive
+    );
+    require!(amount_raw != 0, TreasuryError::InvalidLoanAmount);
+    let max_loan = (position_raw as u128 * MAX_LOAN_TO_POSITION_PPM as u128 / PPM) as u64;
+    require!(
+        amount_raw <= max_loan,
+        TreasuryError::LoanExceedsPosition
+    );
+    require!(
+        book_outstanding_raw as u128 + amount_raw as u128
+            <= max_outstanding(snapshot_total_raw as u128),
+        TreasuryError::BookCapExceeded
+    );
+    Ok(())
+}
+
 /// A window's rotation slot (design §4.2, D-1): the 12-slot
 /// rotation, so the slot is the window id mod 12. The window id
 /// itself is the unique lock-cycle identifier and is never reduced
@@ -4070,6 +4206,26 @@ pub struct TranchePaid {
     pub window_id: u64,
     pub holder: Pubkey,
     pub amount_raw: u64,
+    pub transition_id: u64,
+    pub commit_index: u64,
+    pub declared_hash: [u8; 32],
+}
+
+/// Event for [`treasury_program::borrow`] (design §4.2, §6): the
+/// window, the holder, the loan principal recorded, the 12% rate
+/// and the 60-day maturity — plus the authorization context, the
+/// Committed window flow transition's id, commit index, and
+/// declared hash. The amount here is the loan recorded, not a
+/// token disbursement: the program holds no token accounts yet,
+/// and the disbursement step lands separately (see the handler
+/// docs).
+#[event]
+pub struct LoanIssued {
+    pub window_id: u64,
+    pub holder: Pubkey,
+    pub amount_raw: u64,
+    pub rate_ppm: u64,
+    pub maturity: i64,
     pub transition_id: u64,
     pub commit_index: u64,
     pub declared_hash: [u8; 32],
@@ -5565,6 +5721,38 @@ pub struct PayTranche<'info> {
     pub holder_record: Account<'info, HolderRecord>,
 }
 
+/// Accounts for [`treasury_program::borrow`].
+#[derive(Accounts)]
+#[instruction(transition_id: u64, window_id: u64, amount_raw: u64)]
+pub struct Borrow<'info> {
+    /// The borrowing holder (signer). Holder-signed intent, not
+    /// operator-settled: the record below is seeds-bound to this
+    /// signer, so a holder borrows only against their own lock.
+    pub holder: Signer<'info>,
+    /// The window flow transition, seeds-bound to its id. Must be
+    /// Committed and of the canonical window type — the authority
+    /// for this loan, not the holder's discretion over the caps.
+    #[account(seeds = [b"transition", transition_id.to_le_bytes().as_ref()], bump = transition_record.bump)]
+    pub transition_record: Account<'info, TransitionRecord>,
+    /// The window being borrowed in, seeds-bound to its id.
+    /// Read-only here except as the cap basis: its period-start
+    /// snapshot total sizes the book cap, and payouts move neither
+    /// the roster nor the snapshot.
+    #[account(seeds = [b"window", window_id.to_le_bytes().as_ref()], bump = window_state.bump)]
+    pub window_state: Account<'info, WindowState>,
+    /// The holder's record for this window, seeds-bound to the
+    /// window and the signer. Mutated: principal + maturity live
+    /// here, and a nonzero principal is what refuses a second
+    /// concurrent loan.
+    #[account(mut, seeds = [b"holder", window_id.to_le_bytes().as_ref(), holder.key().as_ref()], bump = holder_record.bump)]
+    pub holder_record: Account<'info, HolderRecord>,
+    /// The lending book PDA — mutated: outstanding and active-loan
+    /// count move here, and nowhere else, so the T/12 cap is judged
+    /// against one aggregate, not per-holder sums.
+    #[account(mut, seeds = [b"lending-book"], bump = lending_book.bump)]
+    pub lending_book: Account<'info, LendingBook>,
+}
+
 /// Accounts for [`treasury_program::set_capacity`].
 #[derive(Accounts)]
 #[instruction(resource_id: u16)]
@@ -5877,6 +6065,31 @@ pub enum TreasuryError {
     /// slot paid while paying nothing.
     #[msg("Tranche amount must be positive: a zero payout would mark the slot paid while paying nothing.")]
     InvalidAmount,
+    /// A borrow does not match its window: the authorizing
+    /// transition is not a canonical `treasury.window.v1` transition,
+    /// or the holder's record belongs to another window. A loan
+    /// names its window by address, never by claim.
+    #[msg("Borrow window mismatch: authorizing transition is not a treasury.window.v1 transition, or the holder's record belongs to another window.")]
+    BorrowMismatch,
+    /// The holder already has an active loan in this window: one
+    /// loan per holder per window, so a default settlement always
+    /// settles exactly one loan against exactly one position.
+    #[msg("Loan already active: one loan per holder per window; settle or default the existing loan first.")]
+    LoanAlreadyActive,
+    /// A borrow borrows nothing: a zero loan would set a maturity
+    /// and count an active loan while lending nothing.
+    #[msg("Loan amount must be positive: a zero loan would set a maturity while lending nothing.")]
+    InvalidLoanAmount,
+    /// The loan exceeds half the holder's locked position: up to
+    /// $50 per $100 position (design §4.2), no more, whatever the
+    /// book's remaining headroom.
+    #[msg("Loan exceeds half the holder's locked position: up to $50 per $100 position.")]
+    LoanExceedsPosition,
+    /// The loan would push the lending book past its cap: the new
+    /// outstanding must stay within T/12 of the window's
+    /// period-start snapshot total (60-day terms, math doc §4).
+    #[msg("Lending book cap exceeded: the new outstanding would pass T/12 of the window's period-start total.")]
+    BookCapExceeded,
 }
 
 #[cfg(test)]
@@ -7716,5 +7929,100 @@ mod tests {
             STATE_COMMITTED, TREASURY_WINDOW_TYPE, 1, 13, true, true, true, false, 0
         )
         .is_err());
+    }
+
+    #[test]
+    fn borrow_gate_matrix() {
+        // Happy path: Committed window transition, the holder's own
+        // window, no existing loan, amount exactly half the
+        // position ($50 per $100), book far below the T/12 cap
+        // (snapshot 100,000,000 -> cap 8,333,333).
+        can_borrow(
+            STATE_COMMITTED, TREASURY_WINDOW_TYPE, 13, 13, 0, 10_000, 5_000, 0,
+            100_000_000,
+        )
+        .expect("committed window loan at the position cap passes");
+        // Pre-commit and post-commit states refuse: loans ride
+        // commit, before settle.
+        for state in [
+            STATE_COMMITTABLE,
+            STATE_SETTLED,
+            STATE_REJECTED,
+            STATE_EXPIRED,
+        ] {
+            assert!(can_borrow(
+                state, TREASURY_WINDOW_TYPE, 13, 13, 0, 10_000, 5_000, 0,
+                100_000_000
+            )
+            .is_err());
+        }
+        // Wrong transition type, and a record belonging to another
+        // window, both refuse as a mismatch.
+        assert!(can_borrow(
+            STATE_COMMITTED, TREASURY_LAUNCH_TYPE, 13, 13, 0, 10_000, 5_000, 0,
+            100_000_000
+        )
+        .is_err());
+        assert!(can_borrow(
+            STATE_COMMITTED, TREASURY_WINDOW_TYPE, 12, 13, 0, 10_000, 5_000, 0,
+            100_000_000
+        )
+        .is_err());
+        // A second concurrent loan refuses: one loan per holder per
+        // window, whatever the caps allow.
+        assert!(can_borrow(
+            STATE_COMMITTED, TREASURY_WINDOW_TYPE, 13, 13, 1_000, 10_000, 5_000, 0,
+            100_000_000
+        )
+        .is_err());
+        // A zero amount refuses: it would set a maturity and count
+        // an active loan while lending nothing.
+        assert!(can_borrow(
+            STATE_COMMITTED, TREASURY_WINDOW_TYPE, 13, 13, 0, 10_000, 0, 0,
+            100_000_000
+        )
+        .is_err());
+        // Above half the position refuses, even with book headroom;
+        // the odd-position floor is exact: 10,001 -> max 5,000.
+        assert!(can_borrow(
+            STATE_COMMITTED, TREASURY_WINDOW_TYPE, 13, 13, 0, 10_000, 5_001, 0,
+            100_000_000
+        )
+        .is_err());
+        can_borrow(
+            STATE_COMMITTED, TREASURY_WINDOW_TYPE, 13, 13, 0, 10_001, 5_000, 0,
+            100_000_000,
+        )
+        .expect("odd position floors the half cap, it does not round up");
+        assert!(can_borrow(
+            STATE_COMMITTED, TREASURY_WINDOW_TYPE, 13, 13, 0, 10_001, 5_001, 0,
+            100_000_000
+        )
+        .is_err());
+        // Book cap: outstanding at the cap refuses any further loan;
+        // one unit below the cap admits exactly one unit. The cap is
+        // the snapshot's T/12 (100,000,000 -> 8,333,333), not the
+        // holder's position.
+        assert!(can_borrow(
+            STATE_COMMITTED, TREASURY_WINDOW_TYPE, 13, 13, 0, 10_000, 1, 8_333_333,
+            100_000_000
+        )
+        .is_err());
+        can_borrow(
+            STATE_COMMITTED, TREASURY_WINDOW_TYPE, 13, 13, 0, 10_000, 1, 8_333_332,
+            100_000_000,
+        )
+        .expect("one unit of book headroom admits a one-unit loan");
+        // A small snapshot caps the book small, even for a large
+        // position: snapshot 1,200 -> cap 100, so a 101 loan refuses
+        // on the book cap while passing the position cap.
+        assert!(can_borrow(
+            STATE_COMMITTED, TREASURY_WINDOW_TYPE, 13, 13, 0, 10_000, 101, 0, 1_200
+        )
+        .is_err());
+        can_borrow(
+            STATE_COMMITTED, TREASURY_WINDOW_TYPE, 13, 13, 0, 10_000, 100, 0, 1_200,
+        )
+        .expect("a loan at the small-snapshot book cap passes");
     }
 }
