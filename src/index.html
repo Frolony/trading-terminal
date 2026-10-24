@@ -1116,6 +1116,7 @@ function applySettingsBoot(){
   document.documentElement.dataset.theme=settings.theme;
   document.documentElement.dataset.density=settings.density;
   syncMetaTheme();
+  const ph=$('pairsPriceHead');if(ph)ph.textContent=pairsPriceHeadText(); // A21 follow-up: header unit correct from first paint, even before the first feed tick (boot never calls renderPairs, so a feed-less load kept the static "Price USD")
   if(!fillDefaultSizeInput())bootSizePending=true; // N7.6: the live price is not up yet — defer the unit-aware boot fill to the first feed beat
 }
 /*__N52_LAYOUT_START__*/
