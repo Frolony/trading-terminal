@@ -26,6 +26,30 @@ function trimLamports(lamports: number): string {
   return (lamports / 1_000_000_000).toFixed(9).replace(/\.?0+$/, '');
 }
 
+/** N4.11 (A49): same balance resilience as the main page — the swap page rides
+ * the same public mainnet RPC. Only transient failures retry (429 / 5xx /
+ * timeout / rate-limit / network text, or code -32005): at most 3 attempts
+ * with 400 ms / 1200 ms backoff. A non-transient error fails fast, and the
+ * caller learns whether the failure was transient (solBusy/tokenBusy) so the
+ * panel can say 'RPC busy — retry' instead of a bare 'unavailable'. */
+function isTransientBalanceError(e: unknown): boolean {
+  const m = String((e as { message?: unknown } | null)?.message ?? e ?? '').toLowerCase();
+  if (m.includes('429') || /5\d\d/.test(m)) return true;
+  if (m.includes('timed out') || m.includes('timeout') || m.includes('abort')) return true;
+  if (m.includes('rate limit') || m.includes('too many requests') || m.includes('-32005')) return true;
+  if (m.includes('failed to fetch') || m.includes('network')) return true;
+  return (e as { code?: unknown } | null)?.code === -32005;
+}
+async function withBalanceRetry<T>(fn: () => Promise<T>): Promise<T> {
+  const delays = [0, 400, 1200];
+  let lastErr: unknown = null;
+  for (let i = 0; i < 3; i++) {
+    if (i) await new Promise((r) => setTimeout(r, delays[i]));
+    try { return await fn(); } catch (e) { lastErr = e; if (!isTransientBalanceError(e) || i === 2) throw e; }
+  }
+  throw lastErr;
+}
+
 /** Sum of uiAmount strings, trimmed (RPC already trims; the sum needs it). */
 function trimTokenSum(total: number): string {
   return total.toFixed(9).replace(/\.?0+$/, '');
@@ -224,19 +248,20 @@ export function useRaydiumSwap() {
      * getTokenAccountsByOwner/jsonParsed summed uiAmountString.
      */
     fetchPostSwapBalances: useCallback(
-      async (outputMint: string): Promise<{ sol: string | null; token: string | null }> => {
-        const out: { sol: string | null; token: string | null } = { sol: null, token: null };
+      async (outputMint: string): Promise<{ sol: string | null; token: string | null; solBusy: boolean; tokenBusy: boolean }> => {
+        const out: { sol: string | null; token: string | null; solBusy: boolean; tokenBusy: boolean } = { sol: null, token: null, solBusy: false, tokenBusy: false };
         if (!publicKey) return out;
         try {
-          out.sol = trimLamports(await connection.getBalance(publicKey));
-        } catch {
-          /* stays null → panel renders "unavailable" */
+          out.sol = trimLamports(await withBalanceRetry(() => connection.getBalance(publicKey)));
+        } catch (e) {
+          /* stays null → panel renders the busy copy when transient, else "unavailable" */
+          out.solBusy = isTransientBalanceError(e);
         }
         try {
-          const accounts = await connection.getParsedTokenAccountsByOwner(
+          const accounts = await withBalanceRetry(() => connection.getParsedTokenAccountsByOwner(
             publicKey,
             { mint: new PublicKey(outputMint) },
-          );
+          ));
           let total = 0;
           let seen = false;
           for (const entry of accounts.value) {
@@ -248,8 +273,9 @@ export function useRaydiumSwap() {
             }
           }
           out.token = seen ? trimTokenSum(total) : null;
-        } catch {
-          /* stays null → panel renders "unavailable" */
+        } catch (e) {
+          /* stays null → panel renders the busy copy when transient, else "unavailable" */
+          out.tokenBusy = isTransientBalanceError(e);
         }
         return out;
       },

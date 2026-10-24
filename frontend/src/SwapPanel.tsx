@@ -61,7 +61,7 @@ const swapHelpers=useRaydiumSwap();
 const [reviewQuote,setReviewQuote]=useState<QuoteResult|null>(null);
 const [phase,setPhase]=useState<'idle'|'signing'|'pending'|'confirmed'|'failed'>('idle');
 const [activeSig,setActiveSig]=useState<string|null>(null);
-const [postBalances,setPostBalances]=useState<{sol:string|null;token:string|null}|null>(null);
+const [postBalances,setPostBalances]=useState<{sol:string|null;token:string|null;solBusy?:boolean;tokenBusy?:boolean}|null>(null);
 function clearSwapState(){setReviewQuote(null);setPhase('idle');setActiveSig(null);setPostBalances(null);clearPrepare();}
 function onPairChange(id:string){setPairId(id);clearSwapState();reset();}
 function onToggleReverse(){setReverse(r=>!r);clearSwapState();reset();}
@@ -187,7 +187,7 @@ async function onConfirmSwap(){
       setPhase('confirmed');setQuote(null);
       setMessage(SWAP_COPY.confirmed+' — details and post-swap balances below.');
       try{setPostBalances(await swapHelpers.fetchPostSwapBalances(toSign.outputMint));}
-      catch{setPostBalances({sol:null,token:null});}
+      catch{setPostBalances({sol:null,token:null,solBusy:false,tokenBusy:false});}
     }else{
       recordTradeEvent(buildSwapFillEvent(Object.assign({},histInput,{status:'failed' as const,error:'Swap failed on-chain: '+onChainErr})));
       setPhase('failed');
@@ -301,8 +301,9 @@ return(<div className="shell">
 <p className="sig-line">View on explorer: <a href={explorerUrl(activeSig)} target="_blank" rel="noreferrer">{activeSig}</a></p>
 {postBalances?(
 <div className="quote-details">
-<div className="quote-row"><span>SOL balance</span><strong>{postBalances.sol===null?'unavailable':postBalances.sol+' SOL'}</strong></div>
-<div className="quote-row"><span>{reviewQuote?reviewQuote.outputSymbol:'Output token'} balance</span><strong>{postBalances.token===null?'unavailable':postBalances.token}</strong></div>
+<div className="quote-row"><span>SOL balance</span><strong>{postBalances.sol===null?(postBalances.solBusy?'RPC busy — retry':'unavailable'):postBalances.sol+' SOL'}</strong></div>
+<div className="quote-row"><span>{reviewQuote?reviewQuote.outputSymbol:'Output token'} balance</span><strong>{postBalances.token===null?(postBalances.tokenBusy?'RPC busy — retry':'unavailable'):postBalances.token}</strong></div>
+{(postBalances.sol===null||postBalances.token===null)&&reviewQuote?(<div className="wallet-row"><button type="button" className="btn" onClick={()=>{void swapHelpers.fetchPostSwapBalances(reviewQuote.outputMint).then(setPostBalances);}} disabled={busy}>Retry balances</button></div>):null}
 </div>):null}
 <div className="wallet-row"><button type="button" className="btn btn-primary" onClick={()=>{clearSwapState();void onQuote();}} disabled={busy}>New quote</button></div>
 </div>):null}

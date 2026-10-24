@@ -3058,15 +3058,25 @@ async function rpcCall(method,params){
     return j.result;
   }finally{clearTimeout(t);}
 }
-async function getSolBalance(pk){const res=await rpcCall('getBalance',[pk]);return res.value/1e9;}
+/* N4.11 (A49): wallet-balance resilience. The public mainnet RPC is
+   rate-limit-prone in bursts, so a single failed call must not blank a
+   balance as a bare 'unavailable'. Only TRANSIENT failures retry (HTTP 429 /
+   5xx, aborts/timeouts, rate-limit text, -32005): at most 3 attempts with
+   400 ms / 1200 ms backoff. A non-transient error fails fast. The caller
+   records the class per asset (see refreshWalletBalances), never a
+   shared boolean, so one token failing cannot blank the others. */
+function isTransientRpcError(e){const m=String((e&&e.message)||e||'').toLowerCase();if(m.indexOf('rpc http 429')>=0)return true;if(/rpc http 5\d\d/.test(m))return true;if(m.indexOf('abort')>=0||m.indexOf('timed out')>=0||m.indexOf('timeout')>=0)return true;if(m.indexOf('rate limit')>=0||m.indexOf('too many requests')>=0||m.indexOf('-32005')>=0)return true;if(m.indexOf('failed to fetch')>=0||m.indexOf('network')>=0)return true;return false;}
+function rpcSleep(ms){return new Promise(r=>setTimeout(r,ms));}
+async function rpcCallWithRetry(method,params){let lastErr=null;const delays=[0,400,1200];for(let i=0;i<3;i++){if(i)await rpcSleep(delays[i]);try{return await rpcCall(method,params);}catch(e){lastErr=e;if(!isTransientRpcError(e)||i===2)throw e;}}throw lastErr;}
+async function getSolBalance(pk){const res=await rpcCallWithRetry('getBalance',[pk]);return res.value/1e9;}
 async function getSplBalance(pk,mint){
-  const res=await rpcCall('getTokenAccountsByOwner',[pk,{mint},{encoding:'jsonParsed',commitment:'confirmed'}]);
+  const res=await rpcCallWithRetry('getTokenAccountsByOwner',[pk,{mint},{encoding:'jsonParsed',commitment:'confirmed'}]);
   let total=0;((res&&res.value)||[]).forEach(a=>{const info=a.account&&a.account.data&&a.account.data.parsed&&a.account.data.parsed.info;const amt=info&&info.tokenAmount;if(amt&&Number.isFinite(Number(amt.uiAmount)))total+=Number(amt.uiAmount);});
   return total;
 }
 function balText(v,sym){if(v===null||v===undefined||!Number.isFinite(Number(v)))return'—';return fmt(Number(v),sym==='SOL'?4:2)+' '+sym;}
 function renderWalletDd(){
-  const set=(id,v,sym,err)=>{const el=$(id);if(wallet.balLoading){el.textContent='…';el.title='';}else if(err){el.textContent='unavailable';el.title='Balance unavailable — use Retry balances';}else{el.textContent=balText(v,sym);el.title='';}};
+  const set=(id,v,sym,err)=>{const el=$(id);if(wallet.balLoading){el.textContent='…';el.title='';}else if(err==='busy'&&v!==null&&v!==undefined){el.textContent=balText(v,sym)+' (stale)';el.title='RPC busy — showing last good value · use Retry balances';}else if(err==='busy'){el.textContent='RPC busy — retry';el.title='Public RPC is busy or rate-limited — use Retry balances';}else if(err){el.textContent='unavailable';el.title='Balance could not load — use Retry balances';}else{el.textContent=balText(v,sym);el.title='';}};
   set('walletSol',wallet.balances.sol,'SOL',wallet.balErr.sol);
   set('walletUsdc',wallet.balances.usdc,'USDC',wallet.balErr.usdc);
   set('walletUsdt',wallet.balances.usdt,'USDT',wallet.balErr.usdt);
@@ -3153,13 +3163,14 @@ async function connectWallet(a){
 }
 async function refreshWalletBalances(){
   if(!wallet.connected||!wallet.publicKey||wallet.balLoading)return;
-  wallet.balLoading=true;wallet.balErr={};renderWalletDd();
+  wallet.balLoading=true;renderWalletDd();
   const pk=wallet.publicKey;
-  const mark=(key)=>{wallet.balErr[key]=true;return null;};
+  const prev={sol:wallet.balances.sol,usdc:wallet.balances.usdc,usdt:wallet.balances.usdt};
+  const load=async(key,fn)=>{try{const v=await fn();if(!wallet.connected||wallet.publicKey!==pk)return prev[key];wallet.balErr[key]=null;return v;}catch(e){if(!wallet.connected||wallet.publicKey!==pk)return prev[key];wallet.balErr[key]=isTransientRpcError(e)?'busy':'failed';return prev[key];}};
   const results=await Promise.all([
-    getSolBalance(pk).catch(()=>mark('sol')),
-    getSplBalance(pk,WALLET_USDC_MINT).catch(()=>mark('usdc')),
-    getSplBalance(pk,WALLET_USDT_MINT).catch(()=>mark('usdt'))
+    load('sol',()=>getSolBalance(pk)),
+    load('usdc',()=>getSplBalance(pk,WALLET_USDC_MINT)),
+    load('usdt',()=>getSplBalance(pk,WALLET_USDT_MINT))
   ]);
   if(!wallet.connected||wallet.publicKey!==pk){wallet.balLoading=false;return;} // disconnected mid-flight
   wallet.balances={sol:results[0],usdc:results[1],usdt:results[2]};wallet.balLoading=false;const entry=walletRosterFind(pk);if(entry){entry.balances=wallet.balances;entry.balErr=wallet.balErr;}
