@@ -581,3 +581,52 @@ errors 54 → 58 (`DefaultMismatch`, `NoActiveLoan`,
 `LoanNotMatured`, `DefaultExceedsPosition`). Program host tests
 71 → 72 (the settle-default gate matrix). Next, in design order:
 `exit`, then the whale schedule, then §4.3 distribution.
+**This increment adds `exit` (design §4.2)** — the eighth
+§4.2 instruction, and the window protocol's extraction step
+(after the tranche and maturing-loan settlements, before
+reinvest). Holder-signed intent, deliberately not
+operator-settled: the holder exits their own locked position
+(PDA seeds bind the record to the signer), and design §5's
+standing authorization covers claim executions — `exit` is
+not among them, so no operator authority is invented for
+it. The gate rides a Committed window flow transition of
+the canonical `treasury.window.v1` type, as in `borrow` /
+`settle_default`. The allowance reading, stated plainly:
+the penalty-free portion is the holder's accrued unpaid
+dividend on this record — the math doc's per-period
+penalty-free amount is the holder's share of period income,
+and the accrued dividend is that share as recorded here.
+At or below it, the exit pays at par and touches no
+principal; above it, the excess comes out of the position
+and pays the 12% penalty floor on the excess only (D-4
+curve shape above the floor is open), withheld from the
+payout — the `Exited` event carries `penalty_raw` and net
+`paid_raw`, and the penalty is not an extra position
+reduction. The D-10 hard bound is enforced twice: no
+single order may exceed L = T/6 of the window's
+period-start snapshot total, and the order must fit the
+WindowState's remaining exit stock, debited by the gross
+amount here — repeated sub-L orders sum against one
+period budget. The `RES_EXIT_WINDOW` capacity claim is
+the commit-time claim (kernel debit at commit); the
+WindowState stock debited here is the execution-time
+ledger for the same bound. This slice closes the carried
+`settle_default` guard: an exit must not drop the position
+below an outstanding loan, or a legitimate settlement
+would meet `DefaultExceedsPosition` instead — the floor
+is inclusive (an exit down to exactly the loan passes).
+No one-exit-per-window flag: repeated exits are the
+aggregate case the stock exists for. The D-3 skip flag
+names a future slot's dividend and does not gate an exit
+of this window's position. Honest scope, as in the
+sibling slices: bookkeeping only (accrued consumed
+first, position reduced by the excess, exit stock
+debited), no token movement yet. IDL: instructions 32 →
+33 (incl. `exit`), accounts 15 (no new account type),
+errors 58 → 64 (`ExitMismatch`, `InvalidExitAmount`,
+`ExitExceedsLiquidity`, `ExitExceedsPosition`,
+`ExitBelowLoan`, `ExitStockExhausted`). Program host tests
+72 → 73 (the exit gate matrix, incl. the floored penalty
+and the inclusive loan floor). Next, in design order:
+the whale schedule (`schedule_whale_exit` /
+`execute_whale_tranche`), then §4.3 distribution.

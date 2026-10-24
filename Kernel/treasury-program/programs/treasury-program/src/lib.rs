@@ -2848,6 +2848,116 @@ pub mod treasury_program {
         });
         Ok(())
     }
+
+    /// Exit (design §4.2): the window protocol's extraction step,
+    /// after the tranche and maturing-loan settlements, before
+    /// reinvest in the pinned protocol order. Holder-signed
+    /// intent — unlike `pay_tranche`, this is not
+    /// operator-settled: the holder exits their own locked
+    /// position, the HolderRecord PDA seeds bind the record to
+    /// the signer, and design §5's standing authorization covers
+    /// claim executions (`pay_tranche`,
+    /// `execute_whale_tranche`, `collect_fees`) — `exit` is not
+    /// among them, so no operator authority is invented for it.
+    ///
+    /// The gate rides a Committed window flow transition of the
+    /// canonical `treasury.window.v1` type, as in `borrow` and
+    /// `settle_default`. The allowance reading, stated plainly
+    /// because the design row names it in one line ("the
+    /// holder's accrued unpaid dividend plus principal
+    /// releasable under their lock schedule"): the penalty-free
+    /// portion of an exit is the holder's accrued unpaid
+    /// dividend on this record — the math doc's per-period
+    /// penalty-free amount is the holder's share of period
+    /// income, and the accrued dividend is that share as
+    /// recorded here. An exit at or below the accrued dividend
+    /// pays at par and touches no principal. Above it, the
+    /// excess comes out of the locked position and pays the
+    /// 12% penalty floor on the excess only (D-4 curve shape
+    /// above the floor is open; the floor is what this slice
+    /// prices). The penalty is withheld from the payout — it
+    /// is not an extra position reduction — so the event
+    /// carries `penalty_raw` and the net `paid_raw`.
+    ///
+    /// The D-10 hard bound is enforced twice, on purpose: no
+    /// single order may exceed one period's movable liquidity
+    /// L = T/6 (judged on the window's period-start snapshot
+    /// total, never a live total), AND the order must fit the
+    /// WindowState's remaining exit stock, which this
+    /// instruction debits by the gross amount — repeated
+    /// sub-L orders in one period cannot drain more than L
+    /// in total. The `RES_EXIT_WINDOW` capacity claim is the
+    /// commit-time claim, debited at commit by the kernel's
+    /// capacity machinery; the WindowState stock debited here
+    /// is the execution-time ledger for that same bound.
+    ///
+    /// The carried `settle_default` guard, closed here: an
+    /// exit must not drop the position below an outstanding
+    /// loan, or a legitimate settlement would refuse on
+    /// `DefaultExceedsPosition` instead of settling. There is
+    /// no one-exit-per-window flag — repeated exits are
+    /// exactly the aggregate case the exit stock exists for;
+    /// each is bounded, and the stock is the sum. The D-3
+    /// skip flag names a future slot's dividend; it does not
+    /// gate an exit of this window's position.
+    ///
+    /// Honest scope, as in `pay_tranche` / `borrow` /
+    /// `settle_default`: this slice records the exit as
+    /// bookkeeping — accrued dividend consumed first,
+    /// position reduced by the excess, exit stock debited —
+    /// and does NOT move tokens (the program holds no token
+    /// accounts yet). The token disbursement step lands
+    /// separately, and this instruction must not be read as
+    /// a payout.
+    pub fn exit(
+        ctx: Context<Exit>,
+        transition_id: u64,
+        window_id: u64,
+        amount_raw: u64,
+    ) -> Result<()> {
+        let (penalty_raw, paid_raw) = can_exit(
+            ctx.accounts.transition_record.state,
+            ctx.accounts.transition_record.transition_type,
+            ctx.accounts.holder_record.window_id,
+            window_id,
+            amount_raw,
+            ctx.accounts.holder_record.accrued_dividend_raw,
+            ctx.accounts.holder_record.position_raw,
+            ctx.accounts.holder_record.loan_principal_raw,
+            ctx.accounts.window_state.snapshot_total_raw,
+            ctx.accounts.window_state.exit_stock_raw,
+        )?;
+        let accrued_before = ctx.accounts.holder_record.accrued_dividend_raw;
+        let from_accrued = accrued_before.min(amount_raw);
+        let excess = amount_raw - from_accrued;
+        let record = &mut ctx.accounts.holder_record;
+        record.accrued_dividend_raw = record
+            .accrued_dividend_raw
+            .checked_sub(from_accrued)
+            .ok_or(TreasuryError::Overflow)?;
+        record.position_raw = record
+            .position_raw
+            .checked_sub(excess)
+            .ok_or(TreasuryError::Overflow)?;
+        let position_after = record.position_raw;
+        let window = &mut ctx.accounts.window_state;
+        window.exit_stock_raw = window
+            .exit_stock_raw
+            .checked_sub(amount_raw)
+            .ok_or(TreasuryError::Overflow)?;
+        emit!(Exited {
+            window_id,
+            holder: ctx.accounts.holder.key(),
+            amount_raw,
+            penalty_raw,
+            paid_raw,
+            position_after_raw: position_after,
+            transition_id,
+            commit_index: ctx.accounts.transition_record.commit_index,
+            declared_hash: ctx.accounts.transition_record.declared_hash,
+        });
+        Ok(())
+    }
 }
 
 /// Who may open planning, as a pure check (design §4.1, kernel
@@ -4094,6 +4204,68 @@ pub fn can_settle_default(
     Ok(())
 }
 
+/// The `exit` gate, as a pure check (design §4.2, D-10, D-4):
+/// the window flow transition must be Committed and of the
+/// canonical window type, and the holder's record must belong
+/// to this window (the PDA seeds enforce the same binding
+/// on-chain; the helper checks it explicitly so the matrix
+/// tests the rule, not the seeds). Returns
+/// `(penalty_raw, paid_raw)`: the penalty-free allowance is
+/// the accrued unpaid dividend — an exit at or below it pays
+/// at par, the excess comes out of the locked position and
+/// pays the 12% floor on the excess only, withheld from the
+/// payout. Order mirrors `can_borrow`: the transition
+/// binding first, the per-order D-10 bound (amount ≤ L from
+/// the period-start snapshot total) next, the holder-local
+/// position and loan-floor rules after it, the aggregate
+/// exit-stock bound last — a legal-for-the-holder exit still
+/// refuses when the window's remaining stock cannot cover
+/// it, and repeated sub-L exits sum against that stock.
+/// Penalty math is u128, floored, so no u64 amount can
+/// overflow the intermediate and the floor is exact (an
+/// excess of 10,001 prices at 1,200, not 1,201).
+pub fn can_exit(
+    state: u8,
+    transition_type: [u8; 32],
+    record_window_id: u64,
+    window_id: u64,
+    amount_raw: u64,
+    accrued_dividend_raw: u64,
+    position_raw: u64,
+    loan_principal_raw: u64,
+    snapshot_total_raw: u64,
+    exit_stock_raw: u64,
+) -> Result<(u64, u64)> {
+    require!(state == STATE_COMMITTED, TreasuryError::BadState);
+    require!(
+        transition_type == TREASURY_WINDOW_TYPE && record_window_id == window_id,
+        TreasuryError::ExitMismatch
+    );
+    require!(amount_raw != 0, TreasuryError::InvalidExitAmount);
+    require!(
+        amount_raw as u128 <= movable_liquidity(snapshot_total_raw as u128),
+        TreasuryError::ExitExceedsLiquidity
+    );
+    let from_accrued = accrued_dividend_raw.min(amount_raw);
+    let excess = amount_raw - from_accrued;
+    require!(
+        excess <= position_raw,
+        TreasuryError::ExitExceedsPosition
+    );
+    require!(
+        position_raw as u128 - excess as u128 >= loan_principal_raw as u128,
+        TreasuryError::ExitBelowLoan
+    );
+    require!(
+        amount_raw <= exit_stock_raw,
+        TreasuryError::ExitStockExhausted
+    );
+    let penalty_raw =
+        (excess as u128 * PENALTY_FLOOR_PPM as u128 / PPM) as u64;
+    let paid_raw = amount_raw - penalty_raw;
+    Ok((penalty_raw, paid_raw))
+}
+
 /// A window's rotation slot (design §4.2, D-1): the 12-slot
 /// rotation, so the slot is the window id mod 12. The window id
 /// itself is the unique lock-cycle identifier and is never reduced
@@ -4392,6 +4564,27 @@ pub struct DefaultSettled {
     pub holder: Pubkey,
     pub principal_raw: u64,
     pub position_before_raw: u64,
+    pub transition_id: u64,
+    pub commit_index: u64,
+    pub declared_hash: [u8; 32],
+}
+
+/// Event for [`treasury_program::exit`] (design §4.2, §6, D-10,
+/// D-4): the window, the holder, the gross amount requested,
+/// the 12%-floor penalty withheld on the excess over the
+/// accrued dividend, the net paid amount, and the position
+/// remaining after the exit — plus the authorization context,
+/// the Committed window flow transition's id, commit index,
+/// and declared hash. The exit here is bookkeeping, not a
+/// token movement: the program holds no token accounts yet.
+#[event]
+pub struct Exited {
+    pub window_id: u64,
+    pub holder: Pubkey,
+    pub amount_raw: u64,
+    pub penalty_raw: u64,
+    pub paid_raw: u64,
+    pub position_after_raw: u64,
     pub transition_id: u64,
     pub commit_index: u64,
     pub declared_hash: [u8; 32],
@@ -5958,6 +6151,37 @@ pub struct SettleDefault<'info> {
     pub lending_book: Account<'info, LendingBook>,
 }
 
+/// Accounts for [`treasury_program::exit`].
+#[derive(Accounts)]
+#[instruction(transition_id: u64, window_id: u64, amount_raw: u64)]
+pub struct Exit<'info> {
+    /// The exiting holder (signer). Holder-signed intent, not
+    /// operator-settled: the record below is seeds-bound to
+    /// this signer, so a holder exits only their own lock, and
+    /// design §5's standing authorization is not stretched to
+    /// cover an instruction it does not name.
+    pub holder: Signer<'info>,
+    /// The window flow transition, seeds-bound to its id. Must be
+    /// Committed and of the canonical window type — the
+    /// authority for this exit, not the holder's discretion
+    /// over the caps.
+    #[account(seeds = [b"transition", transition_id.to_le_bytes().as_ref()], bump = transition_record.bump)]
+    pub transition_record: Account<'info, TransitionRecord>,
+    /// The window being exited in, seeds-bound to its id.
+    /// Mutated: its remaining exit stock is debited by the
+    /// gross exit amount, so repeated sub-L exits sum against
+    /// one period budget. Its period-start snapshot total is
+    /// the D-10 per-order bound's basis.
+    #[account(mut, seeds = [b"window", window_id.to_le_bytes().as_ref()], bump = window_state.bump)]
+    pub window_state: Account<'info, WindowState>,
+    /// The holder's record for this window, seeds-bound to the
+    /// window and the signer. Mutated: accrued dividend
+    /// consumed first, position reduced by the excess over
+    /// the dividend, never below an outstanding loan.
+    #[account(mut, seeds = [b"holder", window_id.to_le_bytes().as_ref(), holder.key().as_ref()], bump = holder_record.bump)]
+    pub holder_record: Account<'info, HolderRecord>,
+}
+
 /// Accounts for [`treasury_program::set_capacity`].
 #[derive(Accounts)]
 #[instruction(resource_id: u16)]
@@ -6316,6 +6540,40 @@ pub enum TreasuryError {
     /// must prevent a position dropping below an outstanding loan.
     #[msg("Default exceeds position: the settled principal must fit inside the holder's locked position.")]
     DefaultExceedsPosition,
+    /// An exit does not match its window: the authorizing
+    /// transition is not a canonical `treasury.window.v1`
+    /// transition, or the holder's record belongs to another
+    /// window. An exit names its authority by type, never by
+    /// claim.
+    #[msg("Exit window mismatch: authorizing transition is not a treasury.window.v1 transition, or the holder's record belongs to another window.")]
+    ExitMismatch,
+    /// An exit amount must be positive: a zero exit would
+    /// debit nothing while consuming a window execution.
+    #[msg("Exit amount must be positive.")]
+    InvalidExitAmount,
+    /// A single exit order exceeds one period's movable
+    /// liquidity (D-10 hard bound): no order, whale tranche
+    /// included, may exceed L = T/6 of the window's
+    /// period-start total. Position size stretches the
+    /// schedule, it never enlarges an order.
+    #[msg("Exit exceeds one period's movable liquidity: no single exit order may exceed L = T/6.")]
+    ExitExceedsLiquidity,
+    /// The exit's excess over the accrued dividend exceeds
+    /// the holder's locked position: an exit cannot extract
+    /// principal the holder does not hold.
+    #[msg("Exit exceeds position: the excess over the accrued dividend must fit inside the locked position.")]
+    ExitExceedsPosition,
+    /// The exit would drop the holder's position below an
+    /// outstanding loan: a later default settlement would
+    /// then refuse on DefaultExceedsPosition instead of
+    /// settling, so the exit refuses first.
+    #[msg("Exit would drop the position below an outstanding loan.")]
+    ExitBelowLoan,
+    /// The window's remaining exit stock cannot cover this
+    /// exit: repeated sub-L exits sum against one period
+    /// budget, and this order would pass it.
+    #[msg("Exit stock exhausted: the window's remaining exit stock cannot cover this exit.")]
+    ExitStockExhausted,
 }
 
 #[cfg(test)]
@@ -8326,5 +8584,144 @@ mod tests {
             1_000
         )
         .is_err());
+    }
+
+    #[test]
+    fn exit_gate_matrix() {
+        // Argument order: state, type, record window, window,
+        // amount, accrued dividend, position, loan, snapshot
+        // total, remaining exit stock. Snapshot 600,000 gives
+        // L = 100,000, so the D-10 bound never binds these
+        // small exits except where a case says so.
+        // Happy path, at par: an exit at exactly the accrued
+        // dividend pays in full, penalty zero, position intact.
+        assert_eq!(
+            can_exit(
+                STATE_COMMITTED, TREASURY_WINDOW_TYPE, 13, 13, 1_000, 1_000, 10_000, 0,
+                600_000, 100_000
+            )
+            .expect("an at-par exit passes"),
+            (0, 1_000)
+        );
+        // A smaller at-par exit also pays in full.
+        assert_eq!(
+            can_exit(
+                STATE_COMMITTED, TREASURY_WINDOW_TYPE, 13, 13, 500, 1_000, 10_000, 0,
+                600_000, 100_000
+            )
+            .expect("a partial at-par exit passes"),
+            (0, 500)
+        );
+        // Happy path, excess: 5,000 against a 1,000 dividend
+        // takes 4,000 from the position and pays 12% on the
+        // excess only: penalty 480, net 4,520.
+        assert_eq!(
+            can_exit(
+                STATE_COMMITTED, TREASURY_WINDOW_TYPE, 13, 13, 5_000, 1_000, 10_000, 0,
+                600_000, 100_000
+            )
+            .expect("an excess exit passes"),
+            (480, 4_520)
+        );
+        // Full extraction: dividend plus the whole position,
+        // penalty on the position only: 10,000 excess -> 1,200.
+        assert_eq!(
+            can_exit(
+                STATE_COMMITTED, TREASURY_WINDOW_TYPE, 13, 13, 11_000, 1_000, 10_000, 0,
+                600_000, 100_000
+            )
+            .expect("a full-position exit passes"),
+            (1_200, 9_800)
+        );
+        // Penalty floor is exact, not rounded up: excess
+        // 10,001 prices at 1,200 (1,200.12 floored), net 8,801.
+        assert_eq!(
+            can_exit(
+                STATE_COMMITTED, TREASURY_WINDOW_TYPE, 13, 13, 10_001, 0, 10_001, 0,
+                600_000, 100_000
+            )
+            .expect("the penalty floor is exact"),
+            (1_200, 8_801)
+        );
+        // Pre-commit and post-commit states refuse: exits ride
+        // commit, before settle.
+        for state in [
+            STATE_COMMITTABLE,
+            STATE_SETTLED,
+            STATE_REJECTED,
+            STATE_EXPIRED,
+        ] {
+            assert!(can_exit(
+                state, TREASURY_WINDOW_TYPE, 13, 13, 1_000, 1_000, 10_000, 0, 600_000,
+                100_000
+            )
+            .is_err());
+        }
+        // Wrong transition type, and a record belonging to
+        // another window, both refuse as a mismatch.
+        assert!(can_exit(
+            STATE_COMMITTED, TREASURY_LAUNCH_TYPE, 13, 13, 1_000, 1_000, 10_000, 0,
+            600_000, 100_000
+        )
+        .is_err());
+        assert!(can_exit(
+            STATE_COMMITTED, TREASURY_WINDOW_TYPE, 12, 13, 1_000, 1_000, 10_000, 0,
+            600_000, 100_000
+        )
+        .is_err());
+        // A zero amount refuses: it would consume a window
+        // execution while exiting nothing.
+        assert!(can_exit(
+            STATE_COMMITTED, TREASURY_WINDOW_TYPE, 13, 13, 0, 1_000, 10_000, 0, 600_000,
+            100_000
+        )
+        .is_err());
+        // D-10 per-order bound: snapshot 60,000 gives L =
+        // 10,000, so a 10,001 order refuses even with stock
+        // headroom; exactly L passes.
+        assert!(can_exit(
+            STATE_COMMITTED, TREASURY_WINDOW_TYPE, 13, 13, 10_001, 0, 20_000, 0, 60_000,
+            10_000
+        )
+        .is_err());
+        can_exit(
+            STATE_COMMITTED, TREASURY_WINDOW_TYPE, 13, 13, 10_000, 0, 20_000, 0, 60_000,
+            10_000,
+        )
+        .expect("an order exactly at L passes");
+        // Aggregate stock bound: stock 4,999 refuses a 5,000
+        // order that passes every holder-local rule; stock
+        // exactly 5,000 admits it.
+        assert!(can_exit(
+            STATE_COMMITTED, TREASURY_WINDOW_TYPE, 13, 13, 5_000, 1_000, 10_000, 0,
+            600_000, 4_999
+        )
+        .is_err());
+        can_exit(
+            STATE_COMMITTED, TREASURY_WINDOW_TYPE, 13, 13, 5_000, 1_000, 10_000, 0,
+            600_000, 5_000,
+        )
+        .expect("an exit exactly at the remaining stock passes");
+        // Excess above the position refuses: 12,000 against a
+        // 1,000 dividend needs 11,000 of a 10,000 position.
+        assert!(can_exit(
+            STATE_COMMITTED, TREASURY_WINDOW_TYPE, 13, 13, 12_000, 1_000, 10_000, 0,
+            600_000, 100_000
+        )
+        .is_err());
+        // Loan floor: a 5,000 loan leaves 5,000 of position
+        // unexitable. A 7,000 exit (6,000 excess, 4,000 left)
+        // refuses; a 6,000 exit (5,000 excess, exactly the
+        // loan) passes — the floor is inclusive.
+        assert!(can_exit(
+            STATE_COMMITTED, TREASURY_WINDOW_TYPE, 13, 13, 7_000, 1_000, 10_000, 5_000,
+            600_000, 100_000
+        )
+        .is_err());
+        can_exit(
+            STATE_COMMITTED, TREASURY_WINDOW_TYPE, 13, 13, 6_000, 1_000, 10_000, 5_000,
+            600_000, 100_000,
+        )
+        .expect("an exit down to exactly the outstanding loan passes");
     }
 }
