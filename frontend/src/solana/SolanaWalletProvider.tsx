@@ -11,7 +11,8 @@
 //   Wallet Standard-compatible wallet to sign.' — implies Wallet Standard-only detection, hence an empty
 //   wallets array rather than explicit adapters).
 // UNEVIDENCED (flagged): RPC endpoint 'https://api.mainnet-beta.solana.com' (default mainnet-beta, never
-//   observed in the deployed source); autoConnect enabled (inferred, not observed).
+//   observed in the deployed source); autoConnect was inferred enabled, now
+//   explicitly OFF per N4.9/A44 (2026-10-24).
 // N4.2 (2026-10-22): the empty adapter array (Wallet Standard-only detection) left the modal with zero
 //   wallet options in browsers without Wallet-Standard-registered wallets (the A10 QA failure).
 //   Now registers the same explicit adapters the `/` page's N4.1 modal discovers via the adapter
@@ -26,11 +27,14 @@ import { PhantomWalletAdapter, SolflareWalletAdapter } from '@solana/wallet-adap
 
 const MAINNET_ENDPOINT = 'https://api.mainnet-beta.solana.com';
 
+// N4.9 (2026-10-24, A44): autoConnect is OFF — a wallet connects only on an
+// explicit user click, matching the `/` page. Previously `autoConnect` silently
+// reconnected on page load.
 export function SolanaWalletProvider({ children }: { children: ReactNode }) {
   const wallets = useMemo(() => [new PhantomWalletAdapter(), new SolflareWalletAdapter()], []);
   return (
     <ConnectionProvider endpoint={MAINNET_ENDPOINT}>
-      <WalletProvider wallets={wallets} autoConnect>
+      <WalletProvider wallets={wallets} autoConnect={false}>
         <WalletModalProvider>{children}</WalletModalProvider>
       </WalletProvider>
     </ConnectionProvider>

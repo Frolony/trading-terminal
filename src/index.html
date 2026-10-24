@@ -2827,8 +2827,18 @@ function histExportCsv(){
 // N2.1 paper state is untouched. Balances use raw JSON-RPC (getBalance +
 // getTokenAccountsByOwner/jsonParsed) against WALLET_RPC_ENDPOINT, a config
 // constant the N5.1 settings panel will surface.
+// N4.9 (2026-10-24, A43/A44): Wallet Standard discovery joins the adapters —
+// any wallet registered via the wallet-standard event protocol renders as a
+// connectable row (adapters keep their names: a standard wallet sharing an
+// adapter name is deduped to the adapter row). readyState is re-evaluated
+// every time the modal opens and on readyStateChange/register events while
+// it is open, so a wallet injecting after page load becomes connectable
+// without a reload. A standard wallet that cannot sign the sync challenge
+// (no solana:signMessage feature) still connects for balances; sync then
+// reports unavailable instead of failing the connect.
 const WALLET_RPC_ENDPOINT='https://api.mainnet-beta.solana.com'; // = the project's configured ConnectionProvider endpoint (frontend/src/solana/SolanaWalletProvider.tsx); N5.1 will make it a setting
 const WADAPTER_CDN='https://esm.sh/@solana/wallet-adapter-wallets@0.19';
+const WSTANDARD_CDN='https://esm.sh/@wallet-standard/app@1.1.1'; // N4.9: same version already in the frontend tree (transitive dep of wallet-adapter); lazy-loaded with the adapters, failure falls back to adapters-only
 const WALLET_USDC_MINT='EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'; // frontend/src/solana/tokens.ts
 const WALLET_USDT_MINT='Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB'; // frontend/src/solana/tokens.ts
 const wallet={connected:false,publicKey:null,name:null,icon:null,adapter:null,balances:{sol:null,usdc:null,usdt:null},balErr:{},balLoading:false,_adapters:null,_connecting:false};
@@ -2841,6 +2851,16 @@ function walletRowHtml(a,kind){
   if(kind==='install')return '<a class="wrow" href="'+esc(a.url||'#')+'" target="_blank" rel="noopener">'+walletIconHtml(a)+'<span class="wname">'+esc(a.name)+'<small>Not detected · install the '+esc(a.name)+' extension</small></span><span class="wgo">Get →</span></a>';
   return '<button type="button" class="wrow" data-wallet="'+esc(a.name)+'">'+walletIconHtml(a)+'<span class="wname">'+esc(a.name)+'<small>Detected in this browser · click to connect</small></span><span class="wgo">Connect →</span></button>';
 }
+function walletAttachAdapterListeners(){
+  if(wallet._listenersAttached)return;wallet._listenersAttached=true;
+  (wallet._adapters||[]).forEach(a=>{try{if(a&&typeof a.on==='function')a.on('readyStateChange',()=>{try{if(!$('walletModal').hidden)paintWalletModal();}catch(e){}});}catch(e){}});
+  try{
+    if(wallet._stdApi&&typeof wallet._stdApi.on==='function'){
+      wallet._stdApi.on('register',()=>{try{walletRefreshStdList();if(!$('walletModal').hidden)paintWalletModal();}catch(e){}});
+      wallet._stdApi.on('unregister',()=>{try{walletRefreshStdList();if(!$('walletModal').hidden)paintWalletModal();}catch(e){}});
+    }
+  }catch(e){}
+}
 async function ensureWalletAdapters(){
   if(wallet._adapters)return wallet._adapters;
   const mod=await import(WADAPTER_CDN);
@@ -2850,8 +2870,78 @@ async function ensureWalletAdapters(){
   if(!list.length)throw new Error('no adapters exported');
   wallet._adapters=list;return list;
 }
+/* N4.9 Wallet Standard discovery: a registered wallet is eligible when it
+   speaks Solana — a solana:* chain or a solana:* feature. The shim exposes
+   the adapter surface the rest of the page already uses (connect/disconnect/
+   publicKey.toBase58/signMessage); a missing solana:signMessage feature
+   throws only when sync asks for it, never at connect time. */
+function stdWalletEligible(w){
+  if(!w||!w.name||!w.features)return false;
+  const chains=w.chains||[];
+  if(chains.some(c=>typeof c==='string'&&c.indexOf('solana:')===0))return true;
+  return Object.keys(w.features).some(k=>k.indexOf('solana:')===0);
+}
+function stdWalletAdapter(w){
+  const shim={name:w.name,icon:w.icon||null,url:null,readyState:'Installed',_std:w,_account:null,publicKey:null,
+    async connect(){
+      const f=w.features&&w.features['standard:connect'];
+      if(!f||typeof f.connect!=='function')throw new Error('standard:connect unavailable');
+      const res=await f.connect();
+      const accounts=(res&&res.accounts)||[];
+      const acc=accounts.find(a=>a&&a.chains&&(a.chains.indexOf('solana:mainnet')>=0||a.chains.some(c=>c.indexOf('solana:')===0)))||accounts[0];
+      if(!acc||!acc.address)throw new Error('no solana account');
+      shim._account=acc;shim.publicKey={toBase58:()=>acc.address};return shim;
+    },
+    async disconnect(){
+      try{const f=w.features&&w.features['standard:disconnect'];if(f&&typeof f.disconnect==='function')await f.disconnect();}catch(e){}
+      shim._account=null;shim.publicKey=null;
+    },
+    async signMessage(message){
+      const f=w.features&&w.features['solana:signMessage'];
+      if(!f||typeof f.signMessage!=='function')throw new Error('solana:signMessage unavailable');
+      const r=await f.signMessage({message:message,account:shim._account});
+      if(!r||!r.signature)throw new Error('no signature');
+      return r.signature;
+    }};
+  return shim;
+}
+function walletRefreshStdList(){
+  try{wallet._stdList=(wallet._stdApi?wallet._stdApi.get():[]).filter(stdWalletEligible);}catch(e){wallet._stdList=[];}
+  wallet._stdShims={};(wallet._stdList||[]).forEach(w=>{wallet._stdShims[w.name]=stdWalletAdapter(w);});
+}
+async function ensureStdWallets(){
+  if(wallet._stdApi)return wallet._stdApi;
+  const mod=await import(WSTANDARD_CDN);
+  if(!mod||typeof mod.getWallets!=='function')throw new Error('no getWallets');
+  wallet._stdApi=mod.getWallets();walletRefreshStdList();return wallet._stdApi;
+}
+/* Merge rule (N4.9): adapters first; a standard wallet whose name matches an
+   adapter row is deduped to the adapter (one row per wallet, never two).
+   Returns the same {installed, installable} shape as classifyWallets, and
+   records every connectable row in wallet._connectables for the click
+   handler. Re-run on every modal open: readyState is read fresh each time. */
+function walletModalRows(){
+  const c=classifyWallets(wallet._adapters);
+  const installed=c.installed.slice(),installable=c.installable.slice();
+  const seen={};installed.forEach(a=>{seen[a.name]=true;});installable.forEach(a=>{seen[a.name]=true;});
+  wallet._connectables={};installed.forEach(a=>{wallet._connectables[a.name]=a;});
+  (wallet._stdList||[]).forEach(w=>{
+    if(seen[w.name])return;seen[w.name]=true;
+    const shim=wallet._stdShims[w.name]||(wallet._stdShims[w.name]=stdWalletAdapter(w));
+    installed.push(shim);wallet._connectables[shim.name]=shim;
+  });
+  return{installed,installable};
+}
 function renderWalletModalError(){
   $('walletModalBody').innerHTML='<div class="werr">Wallet library failed to load. Check your connection and retry.</div><button type="button" class="wrow" id="walletLibRetry"><span class="wname">Retry loading adapters</span><span class="wgo">↻</span></button><div class="wnote">No wallet is connected. The terminal keeps working in paper mode.</div>';
+}
+function paintWalletModal(){
+  const body=$('walletModalBody');
+  const c=walletModalRows();
+  let html=c.installed.map(a=>walletRowHtml(a,'installed')).join('')+c.installable.map(a=>walletRowHtml(a,'install')).join('');
+  if(!c.installed.length&&!c.installable.length)html='<div class="wnote">No supported wallets found.</div>';
+  html+='<div class="wnote">Only wallets detected in this browser can connect — any Wallet Standard wallet, plus Phantom and Solflare.<br>Connecting is read-only for trading — the terminal signs only the sync login challenge (never a transaction) when you connect.</div>';
+  body.innerHTML=html;
 }
 async function openWalletModal(){
   const modal=$('walletModal'),body=$('walletModalBody');
@@ -2861,11 +2951,9 @@ async function openWalletModal(){
     try{await ensureWalletAdapters();}
     catch(e){renderWalletModalError();return;}
   }
-  const c=classifyWallets(wallet._adapters);
-  let html=c.installed.map(a=>walletRowHtml(a,'installed')).join('')+c.installable.map(a=>walletRowHtml(a,'install')).join('');
-  if(!c.installed.length&&!c.installable.length)html='<div class="wnote">No supported wallets found.</div>';
-  html+='<div class="wnote">Only wallets detected in this browser can connect.<br>Connecting is read-only for trading — the terminal signs only the sync login challenge (never a transaction) when you connect.</div>';
-  body.innerHTML=html;
+  try{await ensureStdWallets();}catch(e){/* standard discovery is additive: adapters-only modal still works */}
+  walletAttachAdapterListeners();
+  paintWalletModal();
 }
 function closeWalletModal(){$('walletModal').hidden=true;}
 async function rpcCall(method,params){
@@ -2968,8 +3056,8 @@ function bindWalletUi(){
   document.addEventListener('click',e=>{const dd=$('walletDd');if(!dd.hidden&&!e.target.closest('.wwrap'))dd.hidden=true;});
   body.addEventListener('click',e=>{
     const rb=e.target.closest?e.target.closest('[data-wallet]'):null;
-    if(rb&&wallet._adapters){const a=wallet._adapters.find(x=>x.name===rb.dataset.wallet);if(a){connectWallet(a);return;}}
-    if(e.target.closest&&e.target.closest('#walletLibRetry')){wallet._adapters=null;openWalletModal();}
+    if(rb){const a=(wallet._connectables&&wallet._connectables[rb.dataset.wallet])||(wallet._adapters||[]).find(x=>x.name===rb.dataset.wallet);if(a){connectWallet(a);return;}}
+    if(e.target.closest&&e.target.closest('#walletLibRetry')){wallet._adapters=null;wallet._stdApi=null;wallet._stdList=[];openWalletModal();}
   });
   $('walletDisconnect').onclick=()=>disconnectWallet();
   $('walletCopy').onclick=()=>{const pk=wallet.publicKey;if(!pk)return;if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(pk).then(()=>toast('Address copied.'),()=>toast('Copy failed — select the address manually.'));}else toast('Copy not available in this browser.');};
