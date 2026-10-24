@@ -66,11 +66,14 @@
 //! per agent per round (the SignalRecord PDA seeds enforce the duplicate
 //! rule — a second signal from the same agent in the same round fails at
 //! account creation). The kernel's monotone-revision rule is pure-helper
-//! tested here but its on-chain wiring awaits `advance_round`: only
-//! round 0 is reachable until rounds advance, and the kernel's monotone
+//! tested here but its on-chain wiring awaited `advance_round`: only
+//! round 0 was reachable until rounds advanced, and the kernel's monotone
 //! branch is vacuous in round 0 (it compares against a previous round
-//! that does not exist yet); `advance_round` will snapshot the previous
-//! round's aggregates so the check can read its mean. The TransitionRecord
+//! that does not exist yet). `advance_round` now snapshots the previous
+//! round's weighted mean onto the TransitionRecord; the remaining
+//! wiring — the agent's own previous-round support, read from that
+//! round's SignalRecord — is a follow-up signal-side increment, and
+//! until then commit replay enforces the check. The TransitionRecord
 //! gains `round_count` (SPACE 110 → 114), starting at 1 — the kernel
 //! starts every transition with one empty round.
 //! This increment adds `submit_constraint_report` (design §4.1) and the
@@ -96,6 +99,30 @@
 //! clear regardless, but the flag is recorded now so a policy
 //! transition that does require it is judged on a real report, never
 //! on an assumed default.
+//! This increment adds `advance_round` (design §4.1): permissionless,
+//! like the kernel's (the kernel ignores the caller) — Registered or
+//! Planning state, the current round non-empty, and room under
+//! `max_rounds` (3 at launch), in that check order. The RoundEmpty
+//! gate is faithful, not a signal-count proxy: `submit_signal` now
+//! accumulates the current round's effective-weight total and weighted
+//! support sum onto the TransitionRecord (FlatWeights: relevance and
+//! group policy are 1.0, so effective weight is raw × the signer's
+//! recorded influence, Amount arithmetic — the same computation the
+//! kernel performs, from on-chain records, never a client total), and
+//! a round whose total is zero — no signals, or only zero-weight
+//! signals — cannot advance, exactly as the kernel's
+//! `total == Amount::ZERO` test refuses. Advancing snapshots the
+//! previous round's weighted mean onto the record
+//! (`prev_round_mean`) and resets the current-round aggregates, so
+//! the monotone-revision check can read its mean. The TransitionRecord
+//! gains `current_round_total`, `current_round_weighted`, and
+//! `prev_round_mean` (SPACE 383 → 407). One gap stays open, stated
+//! plainly: the monotone check also needs the agent's own previous-round
+//! support, which lives on that round's SignalRecord — `submit_signal`
+//! does not yet take it as an account, so the check is enforced at
+//! commit replay (the kernel's `submit_signal` during replay refuses
+//! a violating sequence), not at signal time. That wiring is the next
+//! signal-side increment, not this one.
 //! Nothing here is deployed: NO devnet deployment in W4.3, NO mainnet step
 //! exists in W4. No instruction here moves value.
 //!
@@ -352,6 +379,9 @@ pub mod treasury_program {
         record.planning_deadline = 0;
         record.plan_count = 0;
         record.round_count = 1;
+        record.current_round_total = 0;
+        record.current_round_weighted = 0;
+        record.prev_round_mean = 0;
         record.objectives_ok = false;
         record.constraints = constraint_ids
             .iter()
@@ -511,14 +541,19 @@ pub mod treasury_program {
     /// commit — the program never trusts a client-computed total.
     /// Monotone revision, stated plainly: the kernel refuses a
     /// re-signal that moves farther from the previous round's weighted
-    /// mean than the agent's previous signal did, but that check needs
-    /// the previous round's mean, which only exists once a round has
-    /// advanced — and rounds cannot advance until `advance_round`
-    /// lands. The pure check is written and tested now (see
-    /// [`check_monotone_revision`]); its on-chain wiring lands with
-    /// `advance_round`, which snapshots the previous round's
-    /// aggregates onto the TransitionRecord. Until then only round 0
-    /// is reachable, where the kernel's monotone branch is vacuous.
+    /// mean than the agent's previous signal did. The mean half of
+    /// that check now exists on-chain: `advance_round` snapshots the
+    /// previous round's weighted mean onto the TransitionRecord
+    /// (`prev_round_mean`). The other half — the agent's own
+    /// previous-round support, which lives on that round's
+    /// SignalRecord — is not yet wired: this instruction does not take
+    /// the previous SignalRecord as an account, so the check is
+    /// enforced at commit replay (the kernel's `submit_signal` during
+    /// replay refuses a violating sequence), not at signal time. The
+    /// pure check is written and tested (see
+    /// [`check_monotone_revision`]); its signal-time wiring is the
+    /// follow-up signal-side increment. In round 0 the kernel's
+    /// monotone branch is vacuous, as it has no previous round.
     pub fn submit_signal(
         ctx: Context<SubmitSignal>,
         transition_id: u64,
@@ -542,6 +577,21 @@ pub mod treasury_program {
             kernel_bridge::launch_policy().max_rounds,
             transition.round_count.checked_sub(1).unwrap_or(0),
         )?;
+        // Round aggregates, maintained on-chain so `advance_round`
+        // can judge RoundEmpty the way the kernel does (total == ZERO).
+        // FlatWeights: relevance and group policy are 1.0, so the
+        // effective weight is raw x the signer's recorded influence —
+        // computed here from on-chain records, never trusted from the
+        // client, and replayed identically at commit.
+        let (eff, term) = signal_aggregates(raw, support, record.influence_raw)?;
+        transition.current_round_total = transition
+            .current_round_total
+            .checked_add(eff)
+            .ok_or(TreasuryError::Overflow)?;
+        transition.current_round_weighted = transition
+            .current_round_weighted
+            .checked_add(term)
+            .ok_or(TreasuryError::Overflow)?;
         let signal = &mut ctx.accounts.signal_record;
         signal.transition_id = transition.transition_id;
         signal.round = round;
@@ -643,6 +693,51 @@ pub mod treasury_program {
             transition_id: transition.transition_id,
             evaluator: caller_key,
             ok,
+        });
+        Ok(())
+    }
+
+    /// Governance lifecycle (design §4.1): advance to the next round.
+    ///
+    /// Mirrors the kernel's `advance_round` in check order: the
+    /// transition must be Registered or Planning (`BadState`
+    /// otherwise), the current round must be non-empty — its
+    /// effective-weight total, maintained by `submit_signal`, must be
+    /// non-zero (`RoundEmpty` otherwise; a round of only zero-weight
+    /// signals is empty in the kernel's sense, and this gate refuses
+    /// it exactly as the kernel does) — and room must remain under
+    /// `max_rounds` from the launch policy (`RoundsExhausted`
+    /// otherwise; the empty check precedes the exhaustion check, as
+    /// in the kernel). The caller is permissionless, as in the kernel
+    /// (the kernel ignores its caller): no AgentRecord is required,
+    /// and revision happens between rounds, never within one. On
+    /// success the previous round's weighted mean is snapshotted onto
+    /// the record (`prev_round_mean`, for the monotone-revision check),
+    /// the current-round aggregates reset to zero, and the round count
+    /// increments — the new current round is `round_count - 1`.
+    pub fn advance_round(
+        ctx: Context<AdvanceRound>,
+        transition_id: u64,
+    ) -> Result<()> {
+        let _ = transition_id;
+        let transition = &mut ctx.accounts.transition_record;
+        can_advance_round(
+            transition.state,
+            transition.current_round_total,
+            transition.round_count,
+            kernel_bridge::launch_policy().max_rounds,
+        )?;
+        transition.prev_round_mean =
+            round_mean(transition.current_round_weighted, transition.current_round_total)?;
+        transition.current_round_total = 0;
+        transition.current_round_weighted = 0;
+        transition.round_count = transition
+            .round_count
+            .checked_add(1)
+            .ok_or(TreasuryError::Overflow)?;
+        emit!(RoundAdvanced {
+            transition_id: transition.transition_id,
+            round: transition.round_count - 1,
         });
         Ok(())
     }
@@ -822,6 +917,61 @@ pub fn can_submit_objectives_check(is_evaluator: bool, state: u8) -> Result<()> 
     Ok(())
 }
 
+/// Who may advance a round, as a pure check (design §4.1, kernel
+/// `advance_round`, in the kernel's check order): the transition must
+/// be Registered or Planning, the current round must be non-empty
+/// (its effective-weight total non-zero — the kernel's
+/// `total == Amount::ZERO` test, not a signal count), and room must
+/// remain under `max_rounds`. The empty check precedes the exhaustion
+/// check, as in the kernel: an empty final round reports RoundEmpty,
+/// not RoundsExhausted. The caller is permissionless (the kernel
+/// ignores its caller), so no caller argument appears here.
+pub fn can_advance_round(
+    state: u8,
+    current_round_total: u64,
+    round_count: u32,
+    max_rounds: u32,
+) -> Result<()> {
+    require!(
+        state == STATE_REGISTERED || state == STATE_PLANNING,
+        TreasuryError::BadState
+    );
+    require!(current_round_total != 0, TreasuryError::RoundEmpty);
+    require!(round_count < max_rounds, TreasuryError::RoundsExhausted);
+    Ok(())
+}
+
+/// A round's weighted mean support, as the kernel computes it at
+/// `submit_signal` time for the previous round: `weighted * ONE /
+/// total`, in u128, floored — the kernel's
+/// `checked_mul_div(Amount::ONE, total)`. A zero total has no mean
+/// and is an overflow error; `advance_round` gates on non-zero total
+/// before calling this, so the error is unreachable through the
+/// handler and exists only to keep the helper total.
+pub fn round_mean(weighted: u64, total: u64) -> Result<u64> {
+    if total == 0 {
+        return Err(TreasuryError::Overflow.into());
+    }
+    let mean = (weighted as u128) * (SUPPORT_ONE_RAW as u128) / (total as u128);
+    u64::try_from(mean).map_err(|_| TreasuryError::Overflow.into())
+}
+
+/// One signal's contribution to its round's aggregates, in kernel
+/// `Amount` arithmetic (SCALE 1_000_000, u128 intermediates, floored).
+/// Under FlatWeights, relevance and group policy are 1.0, so the
+/// effective weight is raw x influence / SCALE, and the weighted term
+/// is effective weight x support / SCALE — exactly the kernel's
+/// `submit_signal` computation (`eff` then `term`). An intermediate
+/// that does not fit u64 is an overflow, never a wrap, matching the
+/// kernel's checked `Amount` operations.
+pub fn signal_aggregates(raw: u64, support: u64, influence_raw: u64) -> Result<(u64, u64)> {
+    let eff = (raw as u128) * (influence_raw as u128) / (SUPPORT_ONE_RAW as u128);
+    let term = eff * (support as u128) / (SUPPORT_ONE_RAW as u128);
+    let eff = u64::try_from(eff).map_err(|_| TreasuryError::Overflow)?;
+    let term = u64::try_from(term).map_err(|_| TreasuryError::Overflow)?;
+    Ok((eff, term))
+}
+
 /// Write one report into a frozen set: the entry must exist (an unknown
 /// id is an error, never an append — the set is frozen), and the status
 /// must be a real status code. Re-reporting overwrites: the CONSTRAINTS
@@ -881,6 +1031,17 @@ pub struct ObjectivesReported {
     pub transition_id: u64,
     pub evaluator: Pubkey,
     pub ok: bool,
+}
+
+/// Event for [`treasury_program::advance_round`] (design §4.1, §6):
+/// the transition and the new current round index — the round the
+/// next signal belongs to. The previous round's weighted mean, which
+/// the monotone-revision check reads, is snapshotted on the
+/// TransitionRecord by the same instruction, not carried in the event.
+#[event]
+pub struct RoundAdvanced {
+    pub transition_id: u64,
+    pub round: u32,
 }
 
 /// Event for [`treasury_program::submit_signal`] (design §4.1): the
@@ -1236,10 +1397,11 @@ pub struct ConstraintEntry {
 /// Per-transition kernel state lives here, serialized (design §1.2:
 /// load → call → store). This slice carries the manifest inputs, the
 /// recorded proposer, the state, the plan count, the round count, the
-/// frozen constraint set, and the objectives flag; rounds/signals,
-/// per-transition exceptions, reconciled flag, and realized hash are
-/// added by the lifecycle instructions that own them — each field lands
-/// with the instruction that writes it, not before.
+/// current-round aggregates, the previous-round mean, the frozen
+/// constraint set, and the objectives flag; per-transition exceptions,
+/// reconciled flag, and realized hash are added by the lifecycle
+/// instructions that own them — each field lands with the instruction
+/// that writes it, not before.
 #[account]
 pub struct TransitionRecord {
     /// Caller-chosen id (PDA seed component).
@@ -1262,6 +1424,21 @@ pub struct TransitionRecord {
     /// transition with one empty round, and `advance_round` adds one.
     /// `submit_signal` signals the current round, `round_count - 1`.
     pub round_count: u32,
+    /// Effective-weight total of the current round, maintained by
+    /// `submit_signal` (FlatWeights: raw x signer influence). The
+    /// kernel's RoundEmpty test is `total == Amount::ZERO`, and this
+    /// is the field that test reads on-chain.
+    pub current_round_total: u64,
+    /// Weighted-support sum of the current round, maintained by
+    /// `submit_signal` (effective weight x support, Amount arithmetic).
+    /// `advance_round` derives the previous round's mean from this
+    /// and the total, then resets both to zero for the new round.
+    pub current_round_weighted: u64,
+    /// Weighted mean support of the most recently closed round,
+    /// snapshotted by `advance_round` (weighted x ONE / total). Zero
+    /// until the first advance — the monotone-revision check reads
+    /// this field, and round 0 has no previous round to read.
+    pub prev_round_mean: u64,
     /// The frozen constraint set (design §3): fixed at
     /// `register_transition`, reported against by
     /// `submit_constraint_report`, never extended after registration.
@@ -1282,8 +1459,8 @@ pub struct TransitionRecord {
 
 impl TransitionRecord {
     /// 8 (discriminator) + 8 + 1 + 32 + 8 + 8 + 8 + 4 + 4
-    /// + (4 + 8 × 33) + 1 + 32 + 1 = 383.
-    pub const SPACE: usize = 8 + 8 + 1 + 32 + 8 + 8 + 8 + 4 + 4 + 268 + 1 + 32 + 1;
+    /// + 8 + 8 + 8 + (4 + 8 × 33) + 1 + 32 + 1 = 407.
+    pub const SPACE: usize = 8 + 8 + 1 + 32 + 8 + 8 + 8 + 4 + 4 + 8 + 8 + 8 + 268 + 1 + 32 + 1;
 }
 
 /// Maximum claims per plan (design §3: a plan is a capacity-claims
@@ -1398,6 +1575,24 @@ pub struct SubmitSignal<'info> {
     pub caller: Signer<'info>,
     /// Rent sysvar, required by the `init` constraint.
     pub system_program: Program<'info, System>,
+}
+
+/// Accounts for [`treasury_program::advance_round`].
+#[derive(Accounts)]
+#[instruction(transition_id: u64)]
+pub struct AdvanceRound<'info> {
+    /// The transition record to advance (must be Registered or
+    /// Planning, current round non-empty, room under `max_rounds`).
+    /// No new account: the round count, the snapshotted previous-round
+    /// mean, and the reset current-round aggregates all live on this
+    /// record (design §3).
+    #[account(mut, seeds = [b"transition", transition_id.to_le_bytes().as_ref()], bump = transition_record.bump)]
+    pub transition_record: Account<'info, TransitionRecord>,
+    /// The caller (signer; pays no rent here). Permissionless, as in
+    /// the kernel — the kernel ignores its advance_round caller, and
+    /// no AgentRecord is required, so revision timing cannot be gated
+    /// by a role the kernel does not gate it by.
+    pub caller: Signer<'info>,
 }
 
 /// Accounts for [`treasury_program::submit_objectives_check`].
@@ -1534,6 +1729,11 @@ pub enum TreasuryError {
     /// entries, or a constraint id supplied twice.
     #[msg("Invalid constraint set: too many, or a constraint id twice.")]
     InvalidConstraints,
+    /// The current round is empty: its effective-weight total is zero
+    /// — no signals, or only zero-weight signals. Advancing an empty
+    /// round would create a round with nothing to revise from.
+    #[msg("Current round is empty: effective-weight total is zero.")]
+    RoundEmpty,
 }
 
 #[cfg(test)]
@@ -1597,12 +1797,13 @@ mod tests {
     #[test]
     fn observation_and_transition_spaces_match_fields() {
         assert_eq!(Observation::SPACE, 105);
-        // 383: the proposer key (32) joined with open_planning, the
+        // 407: the proposer key (32) joined with open_planning, the
         // plan count (4) with submit_plan, the round count (4) with
         // submit_signal, the frozen constraint set (4 + 8 x 33)
-        // with submit_constraint_report, and the objectives flag (1)
-        // with submit_objectives_check.
-        assert_eq!(TransitionRecord::SPACE, 383);
+        // with submit_constraint_report, the objectives flag (1)
+        // with submit_objectives_check, and the round aggregates
+        // (8 + 8) plus the previous-round mean (8) with advance_round.
+        assert_eq!(TransitionRecord::SPACE, 407);
         assert_eq!(MAX_CONSTRAINTS, 8);
         assert_eq!(STATUS_PASS, 0);
         assert_eq!(STATUS_FAIL, 1);
@@ -1725,6 +1926,76 @@ mod tests {
     }
 
     #[test]
+    fn advance_round_gate_matrix() {
+        // Caller binding is permissionless (the kernel ignores its
+        // advance_round caller), so the helper takes no caller
+        // argument. max_rounds 3 at launch.
+        let base = |state: u8, total: u64, count: u32| {
+            can_advance_round(state, total, count, 3)
+        };
+        // The clean cases pass: Registered or Planning, non-empty
+        // round, room under max_rounds.
+        assert!(base(STATE_REGISTERED, 1, 1).is_ok());
+        assert!(base(STATE_PLANNING, 500_000, 2).is_ok());
+        // Wrong state refuses (Committable, Committed, Settled,
+        // Rejected, Expired) — checked before emptiness.
+        assert!(base(STATE_COMMITTABLE, 500_000, 1).is_err());
+        assert!(base(STATE_COMMITTED, 500_000, 1).is_err());
+        assert!(base(STATE_SETTLED, 500_000, 1).is_err());
+        // An empty round refuses: no signals, or only zero-weight
+        // signals — both are a zero total, and the kernel's test is
+        // total == ZERO, not a signal count.
+        assert!(base(STATE_REGISTERED, 0, 1).is_err());
+        assert!(base(STATE_PLANNING, 0, 2).is_err());
+        // At max_rounds a non-empty round is exhausted.
+        assert!(base(STATE_PLANNING, 500_000, 3).is_err());
+        // Check order, as in the kernel: an empty round at max_rounds
+        // reports RoundEmpty, not RoundsExhausted.
+        let empty_at_max = base(STATE_PLANNING, 0, 3);
+        assert!(empty_at_max.is_err());
+        assert_eq!(
+            empty_at_max.unwrap_err(),
+            anchor_lang::error::Error::from(TreasuryError::RoundEmpty)
+                .into()
+        );
+    }
+
+    #[test]
+    fn round_aggregates_and_mean_follow_kernel_amount_math() {
+        // FlatWeights: relevance and group policy are 1.0, so eff is
+        // raw x influence / SCALE, and term is eff x support / SCALE.
+        // Full influence (1.0): eff == raw.
+        assert_eq!(
+            signal_aggregates(1_000_000, 600_000, 1_000_000).unwrap(),
+            (1_000_000, 600_000)
+        );
+        // Half influence (0.5): raw 1.0 -> eff 0.5; support 0.6 ->
+        // term 0.3.
+        assert_eq!(
+            signal_aggregates(1_000_000, 600_000, 500_000).unwrap(),
+            (500_000, 300_000)
+        );
+        // Zero raw or zero influence contributes nothing — the round
+        // stays empty in the kernel's sense.
+        assert_eq!(
+            signal_aggregates(0, 600_000, 1_000_000).unwrap(),
+            (0, 0)
+        );
+        assert_eq!(
+            signal_aggregates(1_000_000, 600_000, 0).unwrap(),
+            (0, 0)
+        );
+        // The mean is weighted x ONE / total, floored, as the kernel
+        // computes it for the previous round.
+        assert_eq!(round_mean(600_000, 1_000_000).unwrap(), 600_000);
+        assert_eq!(round_mean(300_000, 500_000).unwrap(), 600_000);
+        assert_eq!(round_mean(1, 3).unwrap(), 333_333);
+        // A zero total has no mean.
+        assert!(round_mean(0, 0).is_err());
+        assert!(round_mean(600_000, 0).is_err());
+    }
+
+    #[test]
     fn plan_record_space_matches_fields() {
         // 8 + 8 + 32 + 8 + (4 + 16 x 10) + 32 + 1 = 253.
         assert_eq!(PlanRecord::SPACE, 253);
@@ -1777,6 +2048,9 @@ mod tests {
             planning_deadline: 0,
             plan_count: 0,
             round_count: 1,
+            current_round_total: 0,
+            current_round_weighted: 0,
+            prev_round_mean: 0,
             constraints: vec![ConstraintEntry {
                 id: [5u8; 32],
                 status: STATUS_UNAVAILABLE,
@@ -1790,6 +2064,9 @@ mod tests {
         assert_eq!(record.planning_deadline, 0);
         assert_eq!(record.plan_count, 0);
         assert_eq!(record.round_count, 1);
+        assert_eq!(record.current_round_total, 0);
+        assert_eq!(record.current_round_weighted, 0);
+        assert_eq!(record.prev_round_mean, 0);
         assert!(!record.objectives_ok);
         assert_eq!(record.constraints.len(), 1);
         assert_eq!(record.constraints[0].status, STATUS_UNAVAILABLE);

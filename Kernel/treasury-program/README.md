@@ -60,7 +60,27 @@ TransitionRecord SPACE 382 → 383). The OBJECTIVES bit at commit is
 `require_objectives && !objectives_ok` — at launch the policy does not
 require objectives, so the bit is clear regardless, but the flag is
 recorded now so a requiring policy is judged on a real report.
-`advance_round` and the remaining lifecycle instructions are next.
++ `advance_round` (permissionless, as in the kernel — the kernel
+ignores its caller; Registered-or-Planning, current round non-empty,
+room under `max_rounds` 3, in that check order; new error
+`RoundEmpty`, IDL errors 19 → 20). The RoundEmpty gate is faithful,
+not a signal-count proxy: `submit_signal` now maintains the current
+round's effective-weight total and weighted sum on the
+TransitionRecord (FlatWeights: raw × signer influence, Amount
+arithmetic, computed from on-chain records), and a zero total — no
+signals, or only zero-weight signals — cannot advance, exactly as
+the kernel's `total == Amount::ZERO` test refuses. Advancing
+snapshots the previous round's weighted mean (`prev_round_mean`)
+and resets the aggregates; TransitionRecord SPACE 383 → 407.
+Program host tests 27 → 29. Carried gap, stated in the code: the
+monotone-revision check also needs the agent's own previous-round
+support (that round's SignalRecord), which `submit_signal` does not
+yet take as an account — until that wiring lands, commit replay
+enforces the check (the kernel's `submit_signal` during replay
+refuses a violating sequence).
+`reconcile`, `commit`, `record_evidence`, `settle`, exceptions,
+`policy_transition`, `reject_transition`, `expire_transition` are
+next, in design order.
 
 **Design:** `files/OWN_IDL_DESIGN.md` (W4.1, validated and revised
 2026-10-24; W4.3 GO given by Carlos 2026-10-24 ~03:39 CST). Placement C: the
