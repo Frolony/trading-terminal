@@ -199,6 +199,27 @@
 //! index — so the settle slice also records the commit index on the
 //! TransitionRecord at commit time (a follow-up change to the commit
 //! handler, owed then, not now).
+//! This increment adds `settle` (design §4.1) and closes that
+//! follow-up: `commit` now records the new chain index on the
+//! TransitionRecord as `commit_index`, and settle records the realized
+//! hash there too (SPACE 448 → 488), so settle's event can name the
+//! commit it settles. Settle mirrors the kernel's `settle` in check
+//! order — attestor gate first (active Oracle role AND the presented
+//! hash equal to the independently recorded EvidenceRecord — the
+//! program-layer EvidenceAttestor, a role + evidence check, not a
+//! capability check), then the Committed state gate — then the
+//! attribution rules: every attributed agent must be a plan
+//! participant, deltas are summed per agent (order-independent),
+//! capped at ±20 units, and an inexact settle (realized ≠ declared)
+//! halves positive credit only; reputation is written to the attributed
+//! agents' AgentRecords (FlatWeights: recorded, zero quorum influence).
+//! A refused settle changes nothing and leaves the transition Committed
+//! for a correct settlement to retry; a settled transition cannot
+//! re-settle (its state is Settled, not Committed). No new account
+//! type: settle reads the existing EvidenceRecord and writes the
+//! existing AgentRecords (passed as remaining accounts, classified by
+//! discriminator, with the plan set complete — the commit slice's
+//! completeness discipline, applied here to both sets).
 //! Nothing here is deployed: NO devnet deployment in W4.3, NO mainnet step
 //! exists in W4. No instruction here moves value.
 //!
@@ -486,6 +507,8 @@ pub mod treasury_program {
         record.declared_hash = declared_hash;
         record.parent_index = parent_index;
         record.parent_hash = parent_hash;
+        record.commit_index = 0;
+        record.realized_hash = [0; 32];
         record.bump = ctx.bumps.transition_record;
         Ok(())
     }
@@ -1025,6 +1048,12 @@ pub mod treasury_program {
             .checked_add(1)
             .ok_or(TreasuryError::Overflow)?;
         chain.hash = transition.declared_hash;
+        // The settle slice's follow-up, closed here: the new chain
+        // index is recorded on the transition as its commit index, so
+        // settle's event can name the commit it settles (and so the
+        // commit event's index and the settle event's index agree —
+        // they are the same number, read from the same record).
+        transition.commit_index = chain.index;
         // The bump stays as genesis set it: this account's seeds use
         // its stored bump (`bump = declared_chain.bump`), so it is not
         // in `ctx.bumps` and must not be re-derived here.
@@ -1085,6 +1114,234 @@ pub mod treasury_program {
         emit!(EvidenceRecorded {
             transition_id: transition.transition_id,
             realized_hash,
+        });
+        Ok(())
+    }
+
+    /// Governance lifecycle (design §4.1): settle a committed transition.
+    ///
+    /// Mirrors the kernel's `settle` in check order: the attestor gate
+    /// first, then the state gate, then the attribution rules. The
+    /// attestor gate at the program layer is a role + evidence check
+    /// (the kernel-policy EvidenceAttestor is std-only and cannot be
+    /// vendored into SBF, so the log lives in the EvidenceRecord
+    /// account — see `kernel_bridge`): the caller must be an active
+    /// Oracle, and the presented realized hash must equal the
+    /// independently recorded EvidenceRecord. A missing EvidenceRecord
+    /// fails account validation before this handler runs — still a
+    /// refusal that changes no state; the `Unauthorized` path below
+    /// covers a present-but-mismatched record. The state gate is the
+    /// kernel's: only a Committed transition settles, so a settled
+    /// transition cannot re-settle and a refused settle leaves the
+    /// transition Committed for a correct settlement to retry.
+    /// Attributions (kernel `settle`'s third check, after the state
+    /// gate): every attributed agent must have an AgentRecord passed
+    /// (`UnknownAgent` otherwise) and a plan for this transition
+    /// (`NotParticipant` otherwise — the kernel's `plans.contains_key`
+    /// test, judged over the complete plan set passed as remaining
+    /// accounts, never a partial one). Deltas are summed per agent in
+    /// first-appearance order (order-independent, as the kernel sums
+    /// them), capped at ±20 units, and an inexact settle — realized
+    /// hash ≠ declared hash — halves positive credit only, exactly as
+    /// the kernel's settle does; reputation is clamped to 0–100 units.
+    /// The attributed agents' AgentRecords are remaining accounts,
+    /// classified by discriminator (AgentRecord vs PlanRecord): the
+    /// agent set must match the attributed set exactly (one record per
+    /// unique attributed agent, distinct pubkeys, writable — extras or
+    /// duplicates are `SettleAccountsMismatch`), and the plan set must
+    /// match the transition's plan count exactly (program-owned, naming
+    /// this transition, distinct pubkeys — `PlanMismatch` otherwise,
+    /// the commit slice's completeness rule). Remaining accounts are
+    /// loaded and written by hand, as in `commit`: `Account::try_from`
+    /// cannot satisfy the remaining-accounts lifetime here
+    /// (AccountInfo is invariant over its lifetime, and the Context's
+    /// lifetimes do not line up), so each record is deserialized from
+    /// its data bytes (discriminator-checked, owner-checked
+    /// explicitly — the manual load checks neither on its own) and
+    /// the mutated record is serialized back explicitly — Anchor
+    /// writes back Context accounts on exit but not remaining
+    /// accounts, so a load without the explicit write-back would
+    /// silently drop the reputation write, and this handler does not
+    /// rely on it. Settle takes no Clock: the program
+    /// keeps no kernel-time state, so there is no last-timestamp for
+    /// the kernel's `tick` to check against — the time-judged mask
+    /// bits were already decided at commit, and settle judges only
+    /// attestation, state, and attribution. The event carries the
+    /// commit index recorded at commit time, the realized hash, and
+    /// `exact` (declared == realized).
+    pub fn settle(
+        ctx: Context<Settle>,
+        transition_id: u64,
+        realized_hash: [u8; 32],
+        attributions: Vec<Attribution>,
+    ) -> Result<()> {
+        let _ = transition_id;
+        let caller_key = ctx.accounts.oracle.key();
+        let record = &ctx.accounts.agent_record;
+        require!(
+            record.agent == caller_key,
+            TreasuryError::AgentMismatch
+        );
+        let transition = &ctx.accounts.transition_record;
+        let evidence_matches =
+            ctx.accounts.evidence_record.realized_hash == realized_hash;
+        can_settle(
+            record.active,
+            record.is_oracle,
+            evidence_matches,
+            transition.state,
+        )?;
+        // Sum first: the kernel sums per agent (order-independent),
+        // and the agent set below is the unique attributed set.
+        let summed = sum_attributions(&attributions);
+        // Classify the remaining accounts by discriminator. Reading
+        // the discriminator is read-only; ownership is enforced by
+        // the typed loads below, mapped to each set's error. Indices,
+        // not references, are stored: `remaining_accounts` borrows
+        // `ctx` with a shorter lifetime than the AccountInfos
+        // themselves (AccountInfo is invariant over its lifetime),
+        // so a stored `&AccountInfo` does not compile — each pass
+        // below re-indexes the slice instead.
+        let mut agent_idx: Vec<usize> = Vec::new();
+        let mut plan_idx: Vec<usize> = Vec::new();
+        for (i, info) in ctx.remaining_accounts.iter().enumerate() {
+            let data = info.data.borrow();
+            require!(
+                data.len() >= 8,
+                TreasuryError::SettleAccountsMismatch
+            );
+            let discriminator = &data[..8];
+            if discriminator == AgentRecord::DISCRIMINATOR {
+                agent_idx.push(i);
+            } else if discriminator == PlanRecord::DISCRIMINATOR {
+                plan_idx.push(i);
+            } else {
+                return Err(TreasuryError::SettleAccountsMismatch.into());
+            }
+        }
+        // The plan set must be complete: exactly plan_count plans,
+        // each program-owned, naming this transition, distinct
+        // pubkeys — the commit slice's rule, so membership below is
+        // judged over the whole set, never a convenient subset.
+        require!(
+            plan_idx.len() == transition.plan_count as usize,
+            TreasuryError::PlanMismatch
+        );
+        let mut plan_agents: Vec<Pubkey> = Vec::new();
+        let mut seen_plans: Vec<Pubkey> = Vec::new();
+        for i in plan_idx.iter() {
+            let info = &ctx.remaining_accounts[*i];
+            require!(
+                !seen_plans.contains(info.key),
+                TreasuryError::PlanMismatch
+            );
+            seen_plans.push(*info.key);
+            // Manual load (see handler docs): owner checked
+            // explicitly, discriminator checked by try_deserialize.
+            require!(
+                info.owner == &crate::ID,
+                TreasuryError::PlanMismatch
+            );
+            let data = info
+                .try_borrow_data()
+                .map_err(|_| TreasuryError::PlanMismatch)?;
+            let mut slice: &[u8] = &data;
+            let plan = PlanRecord::try_deserialize(&mut slice)
+                .map_err(|_| TreasuryError::PlanMismatch)?;
+            require!(
+                plan.transition_id == transition.transition_id,
+                TreasuryError::PlanMismatch
+            );
+            plan_agents.push(plan.agent);
+        }
+        // The agent set must match the attributed set exactly: one
+        // record per unique attributed agent, distinct pubkeys,
+        // writable (a non-writable record could not take the write).
+        require!(
+            agent_idx.len() == summed.len(),
+            TreasuryError::SettleAccountsMismatch
+        );
+        let mut seen_agents: Vec<Pubkey> = Vec::new();
+        for i in agent_idx.iter() {
+            let info = &ctx.remaining_accounts[*i];
+            require!(
+                !seen_agents.contains(info.key),
+                TreasuryError::SettleAccountsMismatch
+            );
+            seen_agents.push(*info.key);
+            require!(
+                info.owner == &crate::ID,
+                TreasuryError::SettleAccountsMismatch
+            );
+            require!(
+                info.is_writable,
+                TreasuryError::SettleAccountsMismatch
+            );
+        }
+        // Resolve each attributed agent to its record (UnknownAgent),
+        // then to a plan (NotParticipant) — the kernel's order: agent
+        // existence before plan membership.
+        let mut writes: Vec<(Pubkey, u64)> = Vec::new();
+        let exact = realized_hash == transition.declared_hash;
+        for (agent, net) in summed.iter() {
+            let mut found: Option<u64> = None;
+            for i in agent_idx.iter() {
+                let info = &ctx.remaining_accounts[*i];
+                let data = info
+                    .try_borrow_data()
+                    .map_err(|_| TreasuryError::SettleAccountsMismatch)?;
+                let mut slice: &[u8] = &data;
+                let loaded = AgentRecord::try_deserialize(&mut slice)
+                    .map_err(|_| TreasuryError::SettleAccountsMismatch)?;
+                if loaded.agent == *agent {
+                    found = Some(loaded.reputation_raw);
+                    break;
+                }
+            }
+            let old_rep = found.ok_or(TreasuryError::UnknownAgent)?;
+            require!(
+                plan_agents.contains(agent),
+                TreasuryError::NotParticipant
+            );
+            writes.push((*agent, settle_attribution(old_rep, *net, exact)));
+        }
+        // All checks passed: write the reputations, then move state.
+        // Each record is re-loaded here so the write path owns exactly
+        // one record at a time (load → mutate → serialize back).
+        // Settle never changes a record's shape (only reputation_raw,
+        // a fixed-width field), so the serialized length is unchanged
+        // and the write-back cannot overrun the account data.
+        for (agent, new_rep) in writes.iter() {
+            for i in agent_idx.iter() {
+                let info = &ctx.remaining_accounts[*i];
+                let data = info
+                    .try_borrow_data()
+                    .map_err(|_| TreasuryError::SettleAccountsMismatch)?;
+                let mut slice: &[u8] = &data;
+                let mut loaded = AgentRecord::try_deserialize(&mut slice)
+                    .map_err(|_| TreasuryError::SettleAccountsMismatch)?;
+                if loaded.agent == *agent {
+                    loaded.reputation_raw = *new_rep;
+                    drop(data);
+                    let mut data = info
+                        .try_borrow_mut_data()
+                        .map_err(|_| TreasuryError::SettleAccountsMismatch)?;
+                    let mut dst: &mut [u8] = &mut data;
+                    loaded
+                        .try_serialize(&mut dst)
+                        .map_err(|_| TreasuryError::SettleAccountsMismatch)?;
+                    break;
+                }
+            }
+        }
+        let transition = &mut ctx.accounts.transition_record;
+        transition.realized_hash = realized_hash;
+        transition.state = STATE_SETTLED;
+        emit!(Settled {
+            transition_id: transition.transition_id,
+            commit_index: transition.commit_index,
+            realized_hash,
+            exact,
         });
         Ok(())
     }
@@ -1371,6 +1628,82 @@ pub fn can_record_evidence(agent_active: bool, is_oracle: bool, state: u8) -> Re
     require!(agent_active && is_oracle, TreasuryError::Unauthorized);
     require!(state == STATE_COMMITTED, TreasuryError::BadState);
     Ok(())
+}
+
+/// Who may settle a transition, as a pure check (design §4.1, the
+/// kernel's `settle` in check order): the attestor gate first — the
+/// caller must be an active Oracle (the kernel's RoleAttestor rule,
+/// plus the active flag, the same fail-closed tightening
+/// `post_observation` applies) AND the presented realized hash must
+/// equal the independently recorded EvidenceRecord (the program-layer
+/// EvidenceAttestor — a role + evidence check, not a capability
+/// check) — then the state gate: only a Committed transition settles.
+/// A missing EvidenceRecord never reaches this helper (account
+/// validation fails first); a present-but-mismatched record arrives
+/// here as `evidence_matches = false`. The caller binding is
+/// structural (AgentRecord match in the handler), so no caller
+/// argument appears here. Check order, as in the kernel's `settle`:
+/// the attestor gate before the state gate, and the role half of the
+/// attestor gate before the evidence half (a non-Oracle cannot learn
+/// from the error whether the hash matched).
+pub fn can_settle(
+    agent_active: bool,
+    is_oracle: bool,
+    evidence_matches: bool,
+    state: u8,
+) -> Result<()> {
+    require!(agent_active && is_oracle, TreasuryError::Unauthorized);
+    require!(evidence_matches, TreasuryError::Unauthorized);
+    require!(state == STATE_COMMITTED, TreasuryError::BadState);
+    Ok(())
+}
+
+/// Per-settlement attribution cap in kernel fixed-point raw units: 20
+/// units at SCALE 1_000_000 (kernel launch config `max_attribution`,
+/// kernel_bridge). The kernel clamps each agent's summed delta to
+/// ±this before applying it.
+pub const MAX_ATTRIBUTION_RAW: i128 = 20_000_000;
+
+/// Sum settle attributions per agent (kernel `settle`'s net map):
+/// deltas for the same agent add (order-independent — the sum is the
+/// same whatever order the caller lists them in), in i128 so no sum of
+/// i64 deltas can overflow. Agents appear in first-appearance order;
+/// the handler resolves each unique agent to exactly one AgentRecord.
+pub fn sum_attributions(attributions: &[Attribution]) -> Vec<(Pubkey, i128)> {
+    let mut summed: Vec<(Pubkey, i128)> = Vec::new();
+    for attribution in attributions {
+        let mut found = false;
+        for entry in summed.iter_mut() {
+            if entry.0 == attribution.agent {
+                entry.1 += attribution.delta as i128;
+                found = true;
+                break;
+            }
+        }
+        if !found {
+            summed.push((attribution.agent, attribution.delta as i128));
+        }
+    }
+    summed
+}
+
+/// Apply one agent's summed settle delta to its reputation (kernel
+/// `settle`'s attribution rule, exactly): clamp the sum to
+/// ±[`MAX_ATTRIBUTION_RAW`], halve positive credit on an inexact
+/// settle (realized ≠ declared — negative deltas are never halved,
+/// the kernel halves only positive credit), then add to the current
+/// reputation with saturation and clamp to the 0–100 unit band
+/// (kernel launch config `rep_min`/`rep_max`, raw 0/100_000_000 —
+/// the same band `register_agent` enforces). Under FlatWeights the
+/// result is recorded influence, not quorum power: reputation moves
+/// nothing until a weight policy says otherwise.
+pub fn settle_attribution(reputation_raw: u64, net: i128, exact: bool) -> u64 {
+    let mut n = net.clamp(-MAX_ATTRIBUTION_RAW, MAX_ATTRIBUTION_RAW);
+    if !exact && n > 0 {
+        n /= 2;
+    }
+    let value = (reputation_raw as i128).saturating_add(n);
+    value.clamp(0, REP_MAX_RAW as i128) as u64
 }
 
 /// The 13 `commit_fail_mask` bit values (kernel `kernel.rs:20-34`,
@@ -1689,6 +2022,34 @@ pub struct Committed {
 pub struct EvidenceRecorded {
     pub transition_id: u64,
     pub realized_hash: [u8; 32],
+}
+
+/// Event for [`treasury_program::settle`] (design §4.1, §6): the
+/// transition, the commit index recorded at commit time (the same
+/// number the `Committed` event carried), the realized hash as
+/// settled, and `exact` (declared == realized). An inexact settle is
+/// still a settle — the event says so plainly instead of hiding the
+/// drift — and the halved positive credit is the kernel's consequence,
+/// recorded on the attributed agents' records.
+#[event]
+pub struct Settled {
+    pub transition_id: u64,
+    pub commit_index: u64,
+    pub realized_hash: [u8; 32],
+    pub exact: bool,
+}
+
+/// One settle attribution: an agent and its reputation delta (kernel
+/// `Delta`, i64, in fixed-point raw units). The kernel sums deltas
+/// per agent, caps at ±20 units, and halves positive credit on an
+/// inexact settle — the program's `settle_attribution` helper is that
+/// rule, and this struct is its input shape, not a stored account.
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Attribution {
+    /// The attributed agent's key — must name a plan participant.
+    pub agent: Pubkey,
+    /// The delta, kernel fixed-point raw (SCALE 1_000_000).
+    pub delta: i64,
 }
 
 /// Event for [`treasury_program::submit_signal`] (design §4.1): the
@@ -2124,14 +2485,23 @@ pub struct TransitionRecord {
     pub parent_index: u64,
     /// Manifest parent hash, frozen at registration with the index.
     pub parent_hash: [u8; 32],
+    /// The chain index this transition committed at, recorded by
+    /// `commit` (the settle slice's follow-up, closed with `settle`):
+    /// 0 until commit, then the new chain index — the same number the
+    /// `Committed` event carried, so settle's event can name it.
+    pub commit_index: u64,
+    /// The realized hash, recorded by `settle` (zero until then): the
+    /// hash the transition settled against, equal to the
+    /// EvidenceRecord's hash by the settle gate.
+    pub realized_hash: [u8; 32],
     /// PDA bump for the `["transition", id]` seeds.
     pub bump: u8,
 }
 
 impl TransitionRecord {
     /// 8 (discriminator) + 8 + 1 + 32 + 8 + 8 + 8 + 4 + 4
-    /// + 8 + 8 + 8 + (4 + 8 × 33) + 1 + 1 + 32 + 8 + 32 + 1 = 448.
-    pub const SPACE: usize = 8 + 8 + 1 + 32 + 8 + 8 + 8 + 4 + 4 + 8 + 8 + 8 + 268 + 1 + 1 + 32 + 8 + 32 + 1;
+    /// + 8 + 8 + 8 + (4 + 8 × 33) + 1 + 1 + 32 + 8 + 32 + 8 + 32 + 1 = 488.
+    pub const SPACE: usize = 8 + 8 + 1 + 32 + 8 + 8 + 8 + 4 + 4 + 8 + 8 + 8 + 268 + 1 + 1 + 32 + 8 + 32 + 8 + 32 + 1;
 }
 
 /// Maximum claims per plan (design §3: a plan is a capacity-claims
@@ -2393,6 +2763,29 @@ impl EvidenceRecord {
     pub const SPACE: usize = 8 + 8 + 32 + 1;
 }
 
+/// Accounts for [`treasury_program::settle`].
+#[derive(Accounts)]
+#[instruction(transition_id: u64)]
+pub struct Settle<'info> {
+    /// The settling Oracle's agent record (must exist, be active, and
+    /// hold the Oracle role). Seeds bind it to the signer.
+    #[account(seeds = [b"agent", oracle.key().as_ref()], bump = agent_record.bump)]
+    pub agent_record: Account<'info, AgentRecord>,
+    /// The transition record to settle (must be Committed). Written:
+    /// state moves to Settled and the realized hash is recorded here.
+    #[account(mut, seeds = [b"transition", transition_id.to_le_bytes().as_ref()], bump = transition_record.bump)]
+    pub transition_record: Account<'info, TransitionRecord>,
+    /// The independently recorded evidence (must exist — a missing
+    /// record fails validation before the handler runs, still a
+    /// refusal that changes no state). The presented hash must equal
+    /// this record's hash; the record is read, never written, here.
+    #[account(seeds = [b"evidence", transition_id.to_le_bytes().as_ref()], bump = evidence_record.bump)]
+    pub evidence_record: Account<'info, EvidenceRecord>,
+    /// The settling Oracle (signer; pays no rent here — the
+    /// attributed agents' records already exist).
+    pub oracle: Signer<'info>,
+}
+
 /// Accounts for [`treasury_program::submit_objectives_check`].
 #[derive(Accounts)]
 #[instruction(transition_id: u64)]
@@ -2555,6 +2948,23 @@ pub enum TreasuryError {
     /// The mask is never computed over a partial plan set.
     #[msg("Remaining plan accounts do not match this transition's plan set.")]
     PlanMismatch,
+    /// A settle attribution names an agent with no AgentRecord passed
+    /// among the remaining accounts — the kernel's `UnknownAgent`.
+    /// The attribution names nobody the program can write to.
+    #[msg("Settle attribution names an agent with no agent record passed.")]
+    UnknownAgent,
+    /// A settle attribution names an agent with no plan for this
+    /// transition — the kernel's `NotParticipant`. Only plan authors
+    /// earn reputation from a settlement.
+    #[msg("Settle attribution names an agent with no plan for this transition.")]
+    NotParticipant,
+    /// A settle remaining account does not belong to this settle: an
+    /// agent record that is not program-owned, not writable, listed
+    /// twice, or outside the attributed set, or an account whose
+    /// discriminator is neither AgentRecord nor PlanRecord. The
+    /// agent set must match the attributed set exactly.
+    #[msg("Remaining settle accounts do not match this settle's agent set.")]
+    SettleAccountsMismatch,
 }
 
 #[cfg(test)]
@@ -2625,8 +3035,9 @@ mod tests {
         // with submit_objectives_check, and the round aggregates
         // (8 + 8) plus the previous-round mean (8) with advance_round,
         // the reconciled flag (1) with reconcile, and the lineage
-        // inputs (8 + 32) with commit.
-        assert_eq!(TransitionRecord::SPACE, 448);
+        // inputs (8 + 32) with commit, and the commit index (8) plus
+        // the realized hash (32) with settle.
+        assert_eq!(TransitionRecord::SPACE, 488);
         assert_eq!(DeclaredChain::SPACE, 49);
         assert_eq!(MAX_CONSTRAINTS, 8);
         assert_eq!(STATUS_PASS, 0);
@@ -2884,6 +3295,8 @@ mod tests {
             declared_hash: [9u8; 32],
             parent_index: 0,
             parent_hash: [0; 32],
+            commit_index: 0,
+            realized_hash: [0; 32],
             bump: 255,
         };
         assert_eq!(record.state, STATE_REGISTERED);
@@ -2899,6 +3312,8 @@ mod tests {
         assert_eq!(record.constraints.len(), 1);
         assert_eq!(record.constraints[0].status, STATUS_UNAVAILABLE);
         assert_eq!(record.observation_id, 3);
+        assert_eq!(record.commit_index, 0);
+        assert_eq!(record.realized_hash, [0; 32]);
     }
 
     #[test]
@@ -3106,6 +3521,136 @@ mod tests {
     fn evidence_record_space_matches_fields() {
         // 8 + 8 + 32 + 1 = 49.
         assert_eq!(EvidenceRecord::SPACE, 49);
+    }
+
+    #[test]
+    fn settle_gate_matrix() {
+        // Caller binding is structural (AgentRecord match in the
+        // handler), so the helper takes no caller argument. Check
+        // order, as in the kernel's settle: the attestor gate (role,
+        // then evidence) before the state gate.
+        let base = |active: bool, oracle: bool, evidence: bool, state: u8| {
+            can_settle(active, oracle, evidence, state)
+        };
+        // The clean case passes: active Oracle, matching evidence,
+        // Committed transition.
+        assert!(base(true, true, true, STATE_COMMITTED).is_ok());
+        // A non-Oracle is refused first, whatever else holds.
+        assert!(base(true, false, true, STATE_COMMITTED).is_err());
+        assert!(base(true, false, false, STATE_COMMITTED).is_err());
+        // An inactive Oracle is refused — the same fail-closed
+        // tightening post_observation and record_evidence apply.
+        assert!(base(false, true, true, STATE_COMMITTED).is_err());
+        // A mismatched hash is refused: the presented hash must equal
+        // the independently recorded EvidenceRecord.
+        assert!(base(true, true, false, STATE_COMMITTED).is_err());
+        // Wrong state refuses: Registered, Planning, Committable,
+        // Settled (no re-settle), Rejected, Expired.
+        assert!(base(true, true, true, STATE_REGISTERED).is_err());
+        assert!(base(true, true, true, STATE_PLANNING).is_err());
+        assert!(base(true, true, true, STATE_COMMITTABLE).is_err());
+        assert!(base(true, true, true, STATE_SETTLED).is_err());
+        assert!(base(true, true, true, STATE_REJECTED).is_err());
+        assert!(base(true, true, true, STATE_EXPIRED).is_err());
+        // Check order: role before evidence, evidence before state.
+        let role_first = base(false, false, false, STATE_REGISTERED);
+        assert_eq!(
+            role_first.unwrap_err(),
+            anchor_lang::error::Error::from(TreasuryError::Unauthorized).into()
+        );
+        let evidence_before_state = base(true, true, false, STATE_SETTLED);
+        assert_eq!(
+            evidence_before_state.unwrap_err(),
+            anchor_lang::error::Error::from(TreasuryError::Unauthorized).into()
+        );
+        let state_last = base(true, true, true, STATE_SETTLED);
+        assert_eq!(
+            state_last.unwrap_err(),
+            anchor_lang::error::Error::from(TreasuryError::BadState).into()
+        );
+    }
+
+    #[test]
+    fn settle_attributions_sum_per_agent_in_order() {
+        // The kernel sums per agent, order-independent: the same
+        // agents in a different listing order sum the same, and the
+        // handler's unique-agent set is the summed set.
+        let a = Pubkey::new_from_array([1u8; 32]);
+        let b = Pubkey::new_from_array([2u8; 32]);
+        let list = vec![
+            Attribution { agent: a, delta: 5 },
+            Attribution { agent: b, delta: -3 },
+            Attribution { agent: a, delta: 7 },
+            Attribution { agent: a, delta: -2 },
+        ];
+        assert_eq!(
+            sum_attributions(&list),
+            vec![(a, 10), (b, -3)]
+        );
+        // Reordered, the same sums (first-appearance order changes,
+        // the per-agent totals do not).
+        let reordered = vec![
+            Attribution { agent: b, delta: -3 },
+            Attribution { agent: a, delta: -2 },
+            Attribution { agent: a, delta: 7 },
+            Attribution { agent: a, delta: 5 },
+        ];
+        let summed = sum_attributions(&reordered);
+        assert_eq!(summed.len(), 2);
+        assert_eq!(
+            summed.iter().find(|(agent, _)| *agent == a).unwrap().1,
+            10
+        );
+        assert_eq!(
+            summed.iter().find(|(agent, _)| *agent == b).unwrap().1,
+            -3
+        );
+        // Empty attributions sum to empty: a settle with no
+        // attributions still flips state and records the hash.
+        assert!(sum_attributions(&[]).is_empty());
+        // i64 extremes cannot overflow the i128 sum.
+        assert_eq!(
+            sum_attributions(&[
+                Attribution { agent: a, delta: i64::MAX },
+                Attribution { agent: a, delta: i64::MAX },
+            ]),
+            vec![(a, 2 * i64::MAX as i128)]
+        );
+    }
+
+    #[test]
+    fn settle_attribution_follows_kernel_rule() {
+        // Exact settle, inside the cap: the delta applies in full.
+        assert_eq!(settle_attribution(50_000_000, 5_000_000, true), 55_000_000);
+        assert_eq!(settle_attribution(50_000_000, -5_000_000, true), 45_000_000);
+        // The cap clamps both directions: ±20 units raw.
+        assert_eq!(
+            settle_attribution(50_000_000, 100_000_000, true),
+            70_000_000
+        );
+        assert_eq!(
+            settle_attribution(50_000_000, -100_000_000, true),
+            30_000_000
+        );
+        assert_eq!(MAX_ATTRIBUTION_RAW, 20_000_000);
+        // Inexact settle halves positive credit only: 5 -> 2
+        // (integer division, as the kernel's n /= 2), -5 untouched.
+        assert_eq!(settle_attribution(50_000_000, 5, false), 50_000_002);
+        assert_eq!(settle_attribution(50_000_000, -5, false), 49_999_995);
+        // Capped-then-halved: a 100-unit positive claim caps to 20
+        // and halves to 10 on an inexact settle.
+        assert_eq!(
+            settle_attribution(50_000_000, 100_000_000, false),
+            60_000_000
+        );
+        // The 0–100 unit band clamps both ends: reputation never
+        // leaves it, whatever the delta.
+        assert_eq!(
+            settle_attribution(99_000_000, 20_000_000, true),
+            100_000_000
+        );
+        assert_eq!(settle_attribution(1_000_000, -20_000_000, true), 0);
+        assert_eq!(settle_attribution(0, -1, false), 0);
     }
 
     #[test]

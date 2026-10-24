@@ -185,3 +185,23 @@ before it ever calls the kernel's settle — no record, or a mismatched
 hash, refuses and leaves the transition Committed for a correct
 settlement to retry. Recording evidence changes no transition state.
 Program host tests 34 → 36.
+**This increment adds `settle` (design §4.1)** and closes the
+follow-up the `record_evidence` slice owed: `commit` now records the
+new chain index on the TransitionRecord as `commit_index`, and settle
+records the realized hash there too (SPACE 448 → 488), so settle's
+event can name the commit it settles. Settle mirrors the kernel's
+`settle` in check order — attestor gate first (active Oracle role AND
+the presented hash equal to the independently recorded EvidenceRecord),
+then the Committed state gate, then attribution rules: every attributed
+agent must be a plan participant, deltas summed per agent, capped at
+±20 units, inexact settle halves positive credit only; reputation is
+written to the attributed agents' AgentRecords (FlatWeights: recorded,
+zero quorum influence). A refused settle changes nothing and leaves
+the transition Committed for a correct settlement to retry; a settled
+transition cannot re-settle. Remaining accounts are loaded and written
+by hand (discriminator-classified, owner-checked): `Account::try_from`
+cannot satisfy the remaining-accounts lifetime, and Anchor writes back
+Context accounts on exit but not remaining accounts. No new account
+type. IDL: instructions 15 → 16 (incl. `settle`), accounts 8,
+errors 24 → 27 (`UnknownAgent`, `NotParticipant`,
+`SettleAccountsMismatch`). Program host tests 36 → 39.
