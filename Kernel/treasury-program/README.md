@@ -221,10 +221,32 @@ holdings. IDL: instructions 21 → 23 (incl. both capability
 instructions), accounts 9 (no new account type), errors 32 → 34
 (`TooManyCapabilities`, `CommitAccountsMismatch`). Program host
 tests 49 → 51 (grant/revoke set semantics; the coverage helper
-matrix incl. the overflow-fails case). The §4.1 lifecycle is now
-input-complete for every mask bit except COMPAT's real stocks.
-Remaining: `set_capacity` (CapacityStock accounts, closing the
-COMPAT interim), post-genesis policy execution, then §4.2 treasury.
+matrix incl. the overflow-fails case). (At that point the §4.1
+lifecycle was input-complete for every mask bit except COMPAT's
+real stocks — the paragraph below closes that interim.)
+
+**This increment lands `set_capacity` (design §4.1)** and closes
+the COMPAT interim: the `CapacityStock` account (PDA seeds
+`["stock", resource_id]`, SPACE 19) is installed genesis-direct by
+the `Config` authority like `policy_transition` (one-time per
+resource id; the balance moves afterwards only by `commit`'s
+atomic debit and by committed-flow replenishment). `reconcile`
+judges its fit against the real stocks (remaining accounts: plans
+then stocks, `PlanMismatch` / the new `StockMismatch` on any
+mismatch — a claimed resource with no stock account passed still
+fails, fail-closed) and `commit` does the same against the stocks
+passed after the plans and authors (writable, so a clear mask can
+debit them), debiting atomically on a clear mask only via the pure
+`apply_debit` helper (computed whole before any write; a refused
+commit writes nothing). IDL: instructions 23 → 24 (incl.
+`set_capacity`), accounts 9 → 10 (`CapacityStock`), errors
+34 → 35 (`StockMismatch`). Program host tests 51 → 53
+(`CapacityStock` SPACE; the debit matrix incl. exact-fit,
+over-claim-fails-whole, missing-stock-fails, and overflow-fails).
+The §4.1 lifecycle is now input-complete for every mask bit: every
+bit reads its governing on-chain record. Remaining: post-genesis
+policy execution (amendment through a committed
+`treasury.policy.v1` transition), then §4.2 treasury.
 
 **Design:** `files/OWN_IDL_DESIGN.md` (W4.1, validated and revised
 2026-10-24; W4.3 GO given by Carlos 2026-10-24 ~03:39 CST). Placement C: the

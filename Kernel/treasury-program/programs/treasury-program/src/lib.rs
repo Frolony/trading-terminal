@@ -133,13 +133,12 @@
 //! anyway. The fit rule itself is proven here as a pure helper
 //! (aggregate claims per resource, checked addition, a missing stock
 //! or an over-claim fails, overflow fails): the handler evaluates it
-//! against the stock set that exists today, which is empty — no
-//! CapacityStock accounts exist yet — so a plan-bearing transition
-//! reconciles false (fail-closed) and a plan-free one reconciles true
-//! (the empty aggregate fits vacuously; the PLANS bit will still
-//! refuse it at commit). When CapacityStock accounts land, the handler
-//! sums the transition's PlanRecord claims against the real stocks
-//! through this same helper instead of the empty-map evaluation; the
+//! against the real stocks (this slice: `set_capacity` installs the
+//! CapacityStock accounts, and the plans' claims are summed against
+//! them through this same helper) — a plan-bearing transition whose
+//! claims no passed stock covers reconciles false (fail-closed) and
+//! a plan-free one reconciles true (the empty aggregate fits
+//! vacuously; the PLANS bit will still refuse it at commit). The
 //! flag's meaning does not change. The TransitionRecord gains
 //! `reconciled` (SPACE 407 → 408).
 //! This increment adds `commit` (design §4.1): permissionless, like the
@@ -160,17 +159,21 @@
 //! the last round's aggregates from the same record, the observation
 //! account for FRESH, the Clock for planning/expiry, PlanRecord accounts
 //! (passed as remaining accounts) for PLANS expiries and the COMPAT claim
-//! aggregate, and the `DeclaredChain` for LINEAGE. Two completeness rules
-//! make the remaining-accounts read sound: the caller must pass exactly
+//! aggregate, the plan authors' AgentRecords (CAPABILITY), the
+//! CapacityStock accounts that follow them (COMPAT balances), and
+//! the `DeclaredChain` for LINEAGE. Three completeness rules make
+//! the remaining-accounts read sound: the caller must pass exactly
 //! `plan_count` PlanRecords, each program-owned, each naming this
 //! transition, each pubkey distinct — a missing, foreign, or duplicate
-//! plan is `PlanMismatch`, never a silently partial mask. One honest
-//! interim, stated plainly: CapacityStock accounts do not exist yet, so
-//! the COMPAT aggregate is judged against the stock set that exists
-//! today, which is empty — the same empty-map evaluation `reconcile`
-//! performs, so a plan with claims fails COMPAT (fail-closed) while an
-//! empty-claim plan fits vacuously and can commit; when stocks land,
-//! the handler passes them to the same `fits_capacity` helper. The
+//! plan is `PlanMismatch`, never a silently partial mask; one
+//! AgentRecord per distinct plan author, in any order — a missing,
+//! foreign, or duplicate author is `CommitAccountsMismatch`; and the
+//! stock segment after them, each program-owned CapacityStock at the
+//! PDA of its stored resource id — anything else is `StockMismatch`.
+//! The COMPAT aggregate is judged against those real stocks through
+//! the same `fits_capacity` helper `reconcile` uses, and on a clear
+//! mask the handler debits them atomically (see the handler docs).
+//! The
 //! EXCEPTIONS bit is fed by the transition's live `unresolved_blocking`
 //! count (`raise_exception` / `resolve_exception`, this slice); the
 //! CAPABILITY bit is clear because no transition type carries required
@@ -299,10 +302,32 @@
 //! a missing, foreign, or duplicate author record is
 //! `CommitAccountsMismatch`, never a mask computed over partial
 //! holdings. No new account type: holdings live on the AgentRecord,
-//! the design §3 CapabilityRegistry in program form. The §4.1
-//! lifecycle is now input-complete for every mask bit except COMPAT's
-//! real stocks (CapacityStock accounts, next increment) — every other
-//! bit already reads its governing on-chain record.
+//! the design §3 CapabilityRegistry in program form. (At that point
+//! the §4.1 lifecycle was input-complete for every mask bit except
+//! COMPAT's real stocks — the paragraph below closes that interim.)
+//! This increment closes that last interim: `set_capacity` (design
+//! §4.1 Admin setup, genesis-direct form like `policy_transition`)
+//! installs a `CapacityStock` account per resource id (PDA seeds
+//! `["stock", resource_id]`, SPACE 19), and `reconcile` and `commit`
+//! now judge COMPAT against the real stocks, passed as remaining
+//! accounts after the plans (reconcile) and after the plans and
+//! authors (commit): program-owned, deserializing as CapacityStock,
+//! distinct pubkeys, and the key must be the PDA of the stored
+//! resource id — anything else is the new `StockMismatch`, never a
+//! fit judged over partial stocks. A claimed resource with no stock
+//! account passed still fails, fail-closed, exactly as the empty-map
+//! evaluation failed it before — passing fewer stocks can only refuse
+//! more, never admit a claim the stocks do not cover. On a clear mask
+//! `commit` debits the stocks atomically (the kernel's commit debits
+//! capacity): the pure `apply_debit` helper computes the post-debit
+//! balances first and returns None on any failure, so a refused
+//! commit changes no stock and a clear commit writes every debit or
+//! none — the write-back follows settle's load → mutate → serialize
+//! pattern, and the stock accounts are the only remaining accounts
+//! `commit` writes. The §4.1 lifecycle is now input-complete for every
+//! mask bit: every bit reads its governing on-chain record, and the
+//! remaining §4.1 work is execution, not inputs — post-genesis policy
+//! amendment through a committed `treasury.policy.v1` transition.
 //! Nothing here is deployed: NO devnet deployment in W4.3, NO mainnet step
 //! exists in W4. No instruction here moves value.
 //!
@@ -547,6 +572,45 @@ pub mod treasury_program {
             TreasuryError::AgentMismatch
         );
         ctx.accounts.agent_record.revoke_capability(capability);
+        Ok(())
+    }
+
+    /// Admin setup, genesis-direct form (design §4.1): install one
+    /// capacity stock.
+    ///
+    /// The caller must be the `Config` authority, like `grant_role`
+    /// and `policy_transition`. The kernel's `set_capacity` takes a
+    /// resource id and an amount and overwrites; the program's
+    /// install is one-time per resource id (the PDA seeds bind one
+    /// stock account per id, and a second install fails at account
+    /// creation and changes no state — Duplicate in the design
+    /// taxonomy), because the balance afterwards moves only by
+    /// `commit`'s atomic debit (and, once it lands, by the window
+    /// protocol's replenishment inside a committed flow). Post-genesis
+    /// stock changes are the execution of a committed
+    /// `treasury.policy.v1` transition — that execution path is a
+    /// later increment, and this genesis-direct install does not
+    /// authorize itself post-genesis. The installed balances are what
+    /// `reconcile` and `commit` judge COMPAT against, and what a clear
+    /// commit debits.
+    pub fn set_capacity(
+        ctx: Context<SetCapacity>,
+        resource_id: u16,
+        balance: u64,
+    ) -> Result<()> {
+        require!(
+            ctx.accounts.config.authority == ctx.accounts.authority.key(),
+            TreasuryError::Unauthorized
+        );
+        let stock = &mut ctx.accounts.stock;
+        stock.resource_id = resource_id;
+        stock.balance = balance;
+        stock.bump = ctx.bumps.stock;
+        emit!(CapacityStockSet {
+            resource_id,
+            balance,
+            authority: ctx.accounts.authority.key(),
+        });
         Ok(())
     }
 
@@ -1037,14 +1101,26 @@ pub mod treasury_program {
     /// and its only exits are reject/expire. That is the kernel's
     /// fail-closed shape, not a half-state: a transition that cannot
     /// fit never commits, and no claim is partially applied.
-    /// Staging note, stated plainly: the fit is evaluated against the
-    /// stock set that exists today, which is empty — CapacityStock
-    /// accounts do not exist yet — so a plan-bearing transition
-    /// reconciles false and a plan-free one reconciles true (the empty
-    /// aggregate fits vacuously; commit's PLANS bit refuses it anyway
-    /// for having no plans). The `fits_capacity` helper below is the
-    /// full rule, proven by tests; when stocks land, this handler sums
-    /// the transition's PlanRecord claims against them through it.
+    /// The fit is judged against the real stocks: the remaining
+    /// accounts are the transition's plans first, then its
+    /// CapacityStock accounts, in any order within each segment. The
+    /// plan segment follows commit's completeness discipline exactly:
+    /// exactly `plan_count` plans, each program-owned, each naming
+    /// this transition, each pubkey distinct — anything else is
+    /// `PlanMismatch`, never a fit judged over a partial claim set.
+    /// Each stock account must be program-owned, deserialize as a
+    /// CapacityStock, be listed once, and sit at the PDA of its stored
+    /// resource id — anything else is `StockMismatch`, never a fit
+    /// judged over partial stocks. A claimed resource with no stock
+    /// account passed fails the fit, fail-closed: passing fewer stocks
+    /// can only refuse more, never admit a claim the stocks do not
+    /// cover. A plan-free transition fits vacuously (commit's PLANS
+    /// bit refuses it anyway for having no plans). The fit is computed
+    /// once, here, and re-checked at commit against the stocks passed
+    /// there — the two calls may see different stock sets, and commit
+    /// is the binding check: a transition reconciled true against
+    /// ample stocks still refuses at commit if the stocks passed
+    /// there do not cover the claims.
     pub fn reconcile(
         ctx: Context<Reconcile>,
         transition_id: u64,
@@ -1053,10 +1129,12 @@ pub mod treasury_program {
         let transition = &mut ctx.accounts.transition_record;
         let now = ctx.accounts.clock.unix_timestamp;
         can_reconcile(transition.state, now, transition.planning_deadline)?;
-        // Empty-stock-map evaluation (see handler docs): no stock
-        // account exists yet, so only a transition with no plans at
-        // all can fit — any claim names a stock that does not exist.
-        let fits = transition.plan_count == 0;
+        let (claims, stocks) = load_plan_claims_and_stocks(
+            ctx.remaining_accounts,
+            transition.transition_id,
+            transition.plan_count as usize,
+        )?;
+        let fits = fits_capacity(&claims, &stocks);
         transition.reconciled = fits;
         transition.state = STATE_COMMITTABLE;
         emit!(Reconciled {
@@ -1092,24 +1170,31 @@ pub mod treasury_program {
     /// On a clear mask the transition moves to Committed and the chain
     /// advances to the transition's declared hash, exactly as the
     /// kernel's `commit` advances its declared state and debits
-    /// capacity. The debit itself is the COMPAT check: with no
-    /// CapacityStock accounts yet, the aggregate is judged against the
-    /// empty stock set (see the `commit_fail_mask` docs), so only an
-    /// empty-claim plan can commit today — a plan with claims fails
-    /// COMPAT, fail-closed, until stocks land and the handler passes
-    /// them to `fits_capacity`. The chain account is created at genesis
-    /// by `initialize_config` (index 0, zero hash — the kernel's genesis
-    /// declared state) and read here; a missing chain fails validation,
-    /// fail-closed. Remaining-accounts completeness is enforced, not
-    /// assumed: exactly `plan_count` plan accounts, each program-owned,
-    /// each naming this transition, each pubkey distinct — anything
-    /// else is `PlanMismatch`, never a partial mask — followed by one
+    /// capacity. The COMPAT check is the fit of the claim aggregate
+    /// against the CapacityStock balances passed after the authors
+    /// (see the `commit_fail_mask` docs), judged through
+    /// `fits_capacity` — a claimed resource with no stock account
+    /// passed fails, fail-closed — and the debit is the commit's
+    /// write: on a clear mask only, the handler subtracts each
+    /// aggregate from its stock (via `apply_debit`, computed whole
+    /// before any write, so a failure writes nothing). The chain
+    /// account is created at genesis by `initialize_config` (index 0,
+    /// zero hash — the kernel's genesis declared state) and read here;
+    /// a missing chain fails validation, fail-closed.
+    /// Remaining-accounts completeness is enforced, not assumed:
+    /// exactly `plan_count` plan accounts, each program-owned, each
+    /// naming this transition, each pubkey distinct — anything else
+    /// is `PlanMismatch`, never a partial mask — followed by one
     /// AgentRecord per distinct plan author, in any order, each
     /// program-owned and deserializing as an AgentRecord, each naming
     /// a plan author, each pubkey distinct — anything else is
     /// `CommitAccountsMismatch`, never a mask computed over partial
-    /// holdings. The author records are read-only here (commit writes
-    /// only the transition and the chain), so no write-back is owed.
+    /// holdings — followed by the stock segment, each program-owned
+    /// CapacityStock at the PDA of its stored resource id, writable,
+    /// distinct — anything else is `StockMismatch`, never a fit over
+    /// partial stocks. The author records are read-only here; the
+    /// stocks are the only remaining accounts a clear commit writes
+    /// (the debit), and a refused commit writes nothing at all.
     /// The observation id is an
     /// instruction argument (the proven pattern of `register_transition`)
     /// and must match the record's, else `ObservationMismatch` — the
@@ -1180,15 +1265,21 @@ pub mod treasury_program {
         // exactly: count, membership, and distinctness. Fewer
         // remaining accounts than plans + authors fails here, not
         // at the plan loop above — the take() above reads only what
-        // exists, so a short slice is a mismatch of the author set,
-        // and a long one is an extra account, never ignored.
+        // exists, so a short slice is a mismatch of the author set.
+        // A long tail is not an extra account, never ignored: it is
+        // the stock segment, parsed below.
         require!(
-            ctx.remaining_accounts.len() == plan_count + authors.len(),
+            ctx.remaining_accounts.len() >= plan_count + authors.len(),
             TreasuryError::CommitAccountsMismatch
         );
         let mut author_holdings: Vec<(u64, Vec<[u8; 32]>)> = Vec::new();
         let mut seen_authors: Vec<Pubkey> = Vec::new();
-        for account in ctx.remaining_accounts.iter().skip(plan_count) {
+        for account in ctx
+            .remaining_accounts
+            .iter()
+            .skip(plan_count)
+            .take(authors.len())
+        {
             require!(
                 account.owner == &crate::ID,
                 TreasuryError::CommitAccountsMismatch
@@ -1208,10 +1299,24 @@ pub mod treasury_program {
             );
             author_holdings.push((record.influence_raw, record.capabilities));
         }
-        // The stock set that exists today is empty (see handler docs):
-        // the same empty-map evaluation `reconcile` performs. When
-        // CapacityStock accounts land, they are passed here instead.
-        let fits = fits_capacity(&claims, &[]);
+        // The stock segment follows the authors: every account there
+        // must be a program-owned CapacityStock at the PDA of its
+        // stored resource id, listed once (see `load_stock_balances`).
+        // Stock accounts must be writable — a clear mask debits them
+        // below, and a read-only stock could not take the write, so
+        // it is refused here rather than after the mask is decided.
+        // The fit is judged against these real balances, the same
+        // rule `reconcile` applied: a claimed resource with no stock
+        // account passed fails, fail-closed.
+        let stock_start = plan_count + authors.len();
+        for account in ctx.remaining_accounts.iter().skip(stock_start) {
+            require!(
+                account.is_writable,
+                TreasuryError::StockMismatch
+            );
+        }
+        let stocks = load_stock_balances(&ctx.remaining_accounts[stock_start..])?;
+        let fits = fits_capacity(&claims, &stocks);
         // The mask inputs come from the transition type's PolicyRecord,
         // not the launch policy: a type whose policy was amended commits
         // under its own record. The record is seeds-bound to the
@@ -1260,6 +1365,40 @@ pub mod treasury_program {
         if mask != 0 {
             msg!("commit refused: commit_fail_mask={:#06x}", mask);
             return Err(TreasuryError::CommitFailed.into());
+        }
+        // Clear mask: debit the stocks atomically, the kernel's commit
+        // semantics. `apply_debit` computes the post-debit balances
+        // first and returns None on any failure, so a failure here is
+        // unreachable after a passing fit — but it is an error, never
+        // a partial debit: nothing is written until every new balance
+        // is computed. The write-back follows settle's load → mutate
+        // → serialize pattern, one record at a time; a stock account
+        // is identified by its stored resource id, which the PDA
+        // check above bound to its key. Only the stocks move here;
+        // the author records stay read-only, as before.
+        let new_balances = apply_debit(&stocks, &claims)
+            .ok_or(TreasuryError::Overflow)?;
+        for account in ctx.remaining_accounts.iter().skip(stock_start) {
+            let data = account
+                .try_borrow_data()
+                .map_err(|_| TreasuryError::StockMismatch)?;
+            let mut slice: &[u8] = &data;
+            let mut stock = CapacityStock::try_deserialize(&mut slice)
+                .map_err(|_| TreasuryError::StockMismatch)?;
+            if let Some((_, balance)) = new_balances
+                .iter()
+                .find(|(id, _)| *id == stock.resource_id)
+            {
+                stock.balance = *balance;
+                drop(data);
+                let mut data = account
+                    .try_borrow_mut_data()
+                    .map_err(|_| TreasuryError::StockMismatch)?;
+                let mut dst: &mut [u8] = &mut data;
+                stock
+                    .try_serialize(&mut dst)
+                    .map_err(|_| TreasuryError::StockMismatch)?;
+            }
         }
         let transition = &mut ctx.accounts.transition_record;
         transition.state = STATE_COMMITTED;
@@ -2204,6 +2343,132 @@ pub fn fits_capacity(claims: &[(u16, u64)], stocks: &[(u16, u64)]) -> bool {
     })
 }
 
+/// Load a CapacityStock segment of remaining accounts (design §4.1):
+/// every account must be program-owned, deserialize as a
+/// CapacityStock, be listed once, and sit at the PDA of its stored
+/// resource id (`["stock", resource_id]`) — anything else is
+/// `StockMismatch`. The PDA check is the stock analogue of the plan
+/// segment's transition-naming check: a stock account names its
+/// resource by its key, and the key is program-derived, so a caller
+/// cannot present a stranger's balance as a stock. Two accounts with
+/// the same resource id would share one PDA key, so the distinctness
+/// check also guarantees distinct resource ids in the returned list.
+pub fn load_stock_balances(
+    accounts: &[AccountInfo],
+) -> Result<Vec<(u16, u64)>> {
+    let mut stocks: Vec<(u16, u64)> = Vec::new();
+    let mut seen: Vec<Pubkey> = Vec::new();
+    for account in accounts.iter() {
+        require!(
+            account.owner == &crate::ID,
+            TreasuryError::StockMismatch
+        );
+        require!(
+            !seen.contains(account.key),
+            TreasuryError::StockMismatch
+        );
+        seen.push(*account.key);
+        let data = account.data.borrow();
+        let mut slice: &[u8] = &data;
+        let stock = CapacityStock::try_deserialize(&mut slice)
+            .map_err(|_| TreasuryError::StockMismatch)?;
+        let (expected, _) = Pubkey::find_program_address(
+            &[b"stock", &stock.resource_id.to_le_bytes()],
+            &crate::ID,
+        );
+        require!(
+            expected == *account.key,
+            TreasuryError::StockMismatch
+        );
+        stocks.push((stock.resource_id, stock.balance));
+    }
+    Ok(stocks)
+}
+
+/// Load a reconcile plan segment plus its stock segment (design
+/// §4.1): the first `plan_count` accounts are plans — program-owned,
+/// naming this transition, distinct pubkeys, else `PlanMismatch` —
+/// and the rest are stocks, via `load_stock_balances`. Returns the
+/// plans' claims (in plan order, duplicates kept for aggregation by
+/// `fits_capacity`) and the stock balances. `commit` parses its
+/// longer plans + authors + stocks layout inline, because the author
+/// segment sits between the plans and the stocks; the plan and stock
+/// rules it applies are these same two.
+pub fn load_plan_claims_and_stocks(
+    accounts: &[AccountInfo],
+    transition_id: u64,
+    plan_count: usize,
+) -> Result<(Vec<(u16, u64)>, Vec<(u16, u64)>)> {
+    require!(
+        accounts.len() >= plan_count,
+        TreasuryError::PlanMismatch
+    );
+    let mut claims: Vec<(u16, u64)> = Vec::new();
+    let mut seen: Vec<Pubkey> = Vec::new();
+    for account in accounts.iter().take(plan_count) {
+        require!(
+            account.owner == &crate::ID,
+            TreasuryError::PlanMismatch
+        );
+        require!(
+            !seen.contains(account.key),
+            TreasuryError::PlanMismatch
+        );
+        seen.push(*account.key);
+        let data = account.data.borrow();
+        let mut slice: &[u8] = &data;
+        let plan = PlanRecord::try_deserialize(&mut slice)
+            .map_err(|_| TreasuryError::PlanMismatch)?;
+        require!(
+            plan.transition_id == transition_id,
+            TreasuryError::PlanMismatch
+        );
+        for claim in plan.claims.iter() {
+            claims.push((claim.resource_id, claim.amount));
+        }
+    }
+    let stocks = load_stock_balances(&accounts[plan_count..])?;
+    Ok((claims, stocks))
+}
+
+/// The kernel's commit debit, as a pure function (design §4.1,
+/// kernel `commit` debits capacity): aggregate the claims per
+/// resource (checked addition — an overflow fails, never wraps),
+/// then subtract each aggregate from its stock. Returns None — and
+/// changes nothing, since the input is borrowed — when a claimed
+/// resource has no stock, when any aggregate exceeds its stock, or
+/// when an aggregate overflows. Callers pass distinct resource ids
+/// (the PDA check in `load_stock_balances` enforces it), so the
+/// first-match lookup below is unambiguous.
+pub fn apply_debit(
+    stocks: &[(u16, u64)],
+    claims: &[(u16, u64)],
+) -> Option<Vec<(u16, u64)>> {
+    let mut agg: Vec<(u16, u64)> = Vec::new();
+    for (resource, amount) in claims {
+        let mut found = false;
+        for entry in agg.iter_mut() {
+            if entry.0 == *resource {
+                entry.1 = entry.1.checked_add(*amount)?;
+                found = true;
+                break;
+            }
+        }
+        if !found {
+            agg.push((*resource, *amount));
+        }
+    }
+    let mut next = stocks.to_vec();
+    for (resource, total) in agg {
+        let entry = next.iter_mut().find(|(id, _)| *id == resource)?;
+        if entry.1 < total {
+            return None;
+        }
+        entry.1 -= total;
+    }
+    Some(next)
+}
+
 /// The commit gate, as a pure check (design §4.1, kernel `commit`):
 /// only a Committable transition may commit — the kernel's `set_state`
 /// allows Committable → Committed and nothing else into Committed.
@@ -2786,6 +3051,16 @@ pub struct TransitionExpired {
 #[event]
 pub struct PolicyInstalled {
     pub transition_type: [u8; 32],
+    pub authority: Pubkey,
+}
+
+/// Capacity stock installed (design §4.1): the `set_capacity` event,
+/// carrying the installed balance so the stock's genesis is on the
+/// receipt chain, like the policy install above it.
+#[event]
+pub struct CapacityStockSet {
+    pub resource_id: u16,
+    pub balance: u64,
     pub authority: Pubkey,
 }
 
@@ -3522,6 +3797,33 @@ impl PlanRecord {
     pub const SPACE: usize = 8 + 8 + 32 + 8 + 164 + 32 + 1;
 }
 
+/// One capacity stock (design §3 `CapacityStock`, program-owned).
+///
+/// The kernel's capacity map made persistent, one account per
+/// resource id: the launch stocks (0 = treasury tranche, 1 = lending
+/// book, 2 = exit window) and allocation class stocks (ids ≥ 3).
+/// `reconcile` and `commit` read these balances for the COMPAT bit,
+/// and a clear `commit` debits them atomically; replenishment
+/// happens only inside a committed window/policy flow (design §4.2),
+/// never by editing this account ad hoc. The PDA seeds bind one
+/// account per resource id, so two accounts can never claim the same
+/// stock — `load_stock_balances` relies on that for distinctness.
+#[account]
+pub struct CapacityStock {
+    /// The capacity stock claimed (launch stocks 0/1/2; allocation
+    /// class stocks are ids ≥ 3, design §4.1).
+    pub resource_id: u16,
+    /// Current balance, kernel fixed-point raw (SCALE 1_000_000).
+    pub balance: u64,
+    /// PDA bump for the `["stock", resource_id]` seeds.
+    pub bump: u8,
+}
+
+impl CapacityStock {
+    /// 8 (discriminator) + 2 + 8 + 1.
+    pub const SPACE: usize = 8 + 2 + 8 + 1;
+}
+
 /// Accounts for [`treasury_program::submit_signal`].
 #[derive(Accounts)]
 #[instruction(transition_id: u64, round: u32)]
@@ -3849,6 +4151,33 @@ pub struct PolicyTransition<'info> {
     pub system_program: Program<'info, System>,
 }
 
+/// Accounts for [`treasury_program::set_capacity`].
+#[derive(Accounts)]
+#[instruction(resource_id: u16)]
+pub struct SetCapacity<'info> {
+    /// Program configuration PDA — read to check the authority.
+    #[account(seeds = [b"config"], bump = config.bump)]
+    pub config: Account<'info, Config>,
+    /// Capacity stock PDA, seeds `["stock", resource_id]`.
+    /// One-time init: installing a resource twice fails at account
+    /// creation and changes no state (Duplicate in the design
+    /// taxonomy); the balance moves afterwards only by `commit`'s
+    /// atomic debit and by committed-flow replenishment.
+    #[account(
+        init,
+        payer = authority,
+        space = CapacityStock::SPACE,
+        seeds = [b"stock", resource_id.to_le_bytes().as_ref()],
+        bump
+    )]
+    pub stock: Account<'info, CapacityStock>,
+    /// Genesis authority (the governance multisig at genesis).
+    #[account(mut)]
+    pub authority: Signer<'info>,
+    /// Rent sysvar, required by the `init` constraint.
+    pub system_program: Program<'info, System>,
+}
+
 /// Accounts for [`treasury_program::submit_constraint_report`].
 #[derive(Accounts)]
 #[instruction(transition_id: u64)]
@@ -4045,6 +4374,14 @@ pub enum TreasuryError {
     /// partial author set.
     #[msg("Remaining author accounts do not match this commit's plan-author set.")]
     CommitAccountsMismatch,
+    /// A remaining-accounts stock does not belong to this
+    /// reconcile/commit's stock set: an account is not program-owned,
+    /// does not deserialize as a CapacityStock, is listed twice, is
+    /// not writable at commit (a clear mask must debit it), or does
+    /// not sit at the PDA of its stored resource id. The COMPAT bit
+    /// is never judged over partial stocks.
+    #[msg("Remaining stock accounts do not match this transition's stock set.")]
+    StockMismatch,
 }
 
 #[cfg(test)]
@@ -4734,9 +5071,60 @@ mod tests {
             &[(0, u64::MAX), (0, 1)],
             &[(0, u64::MAX)]
         ));
-        // The empty-stock-map evaluation the handler performs today:
-        // any claim fails, no claims fit — fail-closed until stocks land.
+        // The empty-stock-map evaluation the handlers performed
+        // before stocks landed: any claim fails, no claims fit —
+        // fail-closed, and still the rule today for a claimed
+        // resource with no stock account passed.
         assert!(!fits_capacity(&[(0, 1)], &[]));
+    }
+
+    #[test]
+    fn capacity_stock_space_matches_fields() {
+        // 8 (discriminator) + 2 + 8 + 1.
+        assert_eq!(CapacityStock::SPACE, 19);
+    }
+
+    #[test]
+    fn commit_debit_follows_kernel_rules() {
+        // Empty claims leave every balance untouched.
+        assert_eq!(
+            apply_debit(&[(0, 1_000), (1, 500)], &[]),
+            Some(vec![(0, 1_000), (1, 500)])
+        );
+        // Partial debits, per resource, independently.
+        assert_eq!(
+            apply_debit(&[(0, 1_000), (1, 500)], &[(0, 400), (1, 500)]),
+            Some(vec![(0, 600), (1, 0)])
+        );
+        // Claims on one stock sum across plans before debiting.
+        assert_eq!(
+            apply_debit(&[(0, 1_000)], &[(0, 600), (0, 400)]),
+            Some(vec![(0, 0)])
+        );
+        // Exact-fit debit empties the stock without going negative.
+        assert_eq!(
+            apply_debit(&[(2, 250)], &[(2, 250)]),
+            Some(vec![(2, 0)])
+        );
+        // Over-claim fails whole, and the input is untouched — the
+        // helper borrows, so a None carries no partial mutation.
+        let stocks = [(0, 1_000)];
+        assert_eq!(apply_debit(&stocks, &[(0, 1_001)]), None);
+        assert_eq!(stocks, [(0, 1_000)]);
+        // A claimed resource with no stock fails, even when other
+        // stocks are ample — the same fail-closed rule as the fit.
+        assert_eq!(apply_debit(&[(0, 1_000)], &[(1, 1)]), None);
+        // An overflowing aggregate fails, never wraps into a debit
+        // that fits.
+        assert_eq!(
+            apply_debit(&[(0, u64::MAX)], &[(0, u64::MAX), (0, 1)]),
+            None
+        );
+        // Untouched stocks keep their balances, in order.
+        assert_eq!(
+            apply_debit(&[(0, 100), (1, 200), (2, 300)], &[(1, 50)]),
+            Some(vec![(0, 100), (1, 150), (2, 300)])
+        );
     }
 
     #[test]
