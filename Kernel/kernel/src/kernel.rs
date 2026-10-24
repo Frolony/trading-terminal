@@ -398,7 +398,7 @@ impl<A: Attestor, W: WeightPolicy> Kernel<A, W> {
         let rec = self.transitions.get_mut(id).ok_or(KernelError::UnknownTransition)?;
         if !matches!(rec.state, TState::Registered | TState::Planning) { return Err(KernelError::BadState); }
         let _ = caller;
-        if rec.rounds.last().map_or(true, |r| r.total == Amount::ZERO) { return Err(KernelError::RoundEmpty); }
+        if rec.rounds.last().is_none_or(|r| r.total == Amount::ZERO) { return Err(KernelError::RoundEmpty); }
         if rec.rounds.len() as u32 >= rec.pol.max_rounds { return Err(KernelError::RoundsExhausted); }
         rec.rounds.push(Round::default());
         Ok(())
@@ -534,7 +534,7 @@ impl<A: Attestor, W: WeightPolicy> Kernel<A, W> {
         if now >= rec.m.expires_at { m |= FailMask::EXPIRED; }
         if rec.m.parent_index != self.declared.index || rec.m.parent_hash != self.declared.hash { m |= FailMask::LINEAGE; }
         let min_exp = rec.plans.values().map(|p| p.expires_at).min();
-        if min_exp.map_or(true, |e| now >= e) { m |= FailMask::PLANS; }
+        if min_exp.is_none_or(|e| now >= e) { m |= FailMask::PLANS; }
         if !self.capability_covered(rec) { m |= FailMask::CAPABILITY; }
         if !self.dialect_deps_ok(rec) { m |= FailMask::DIALECT; }
         Ok(FailMask(m))
