@@ -328,6 +328,23 @@
 //! mask bit: every bit reads its governing on-chain record, and the
 //! remaining §4.1 work is execution, not inputs — post-genesis policy
 //! amendment through a committed `treasury.policy.v1` transition.
+//! This increment closes that execution item: `apply_policy_amendment`
+//! (design §4.1) overwrites a target type's PolicyRecord only from a
+//! Settled transition whose type is the canonical
+//! `POLICY_TRANSITION_TYPE` (SHA-256 of `treasury.policy.v1`), whose
+//! declared hash equals the SHA-256 payload hash of the supplied new
+//! values, and whose settle was exact (realized == declared) — the
+//! amendment is bound to what the transition declared and settled,
+//! not to caller-supplied values riding a convenient settled
+//! transition. The executor is permissionless: the authority is the
+//! settled transition, not the signer, exactly as `commit` and
+//! `expire_transition` are permissionless. The one-time execution
+//! flag (`policy_amendment_applied`, TransitionRecord SPACE 800 →
+//! 801) refuses a second execution of the same transition — without
+//! it, an old settled amendment replayed after a newer one would
+//! roll the policy back. The genesis-direct `policy_transition`
+//! install stays genesis-only in form; after genesis, this is the
+//! only path that changes a PolicyRecord.
 //! Nothing here is deployed: NO devnet deployment in W4.3, NO mainnet step
 //! exists in W4. No instruction here moves value.
 //!
@@ -387,6 +404,16 @@ pub const MAX_LOAN_TO_POSITION_PPM: u64 = 500_000;
 
 /// Loan term at pilot, days. 60-day only (design §4.2).
 pub const LOAN_TERM_DAYS: u64 = 60;
+
+/// Canonical transition-type id for `treasury.policy.v1` amendments:
+/// SHA-256 of the bytes `treasury.policy.v1`. A policy transition
+/// registered under any other type id is not an amendment source —
+/// `apply_policy_amendment` refuses it — so the domain tag is
+/// machine-checkable, not a naming convention in client code.
+pub const POLICY_TRANSITION_TYPE: [u8; 32] = [
+    112, 138, 102, 53, 84, 202, 22, 162, 127, 236, 43, 185, 126, 62, 225, 129,
+    54, 155, 163, 94, 31, 38, 85, 207, 74, 251, 193, 139, 221, 27, 239, 186,
+];
 
 /// Stage flag values on [`Config`].
 pub const STAGE_1: u8 = 1;
@@ -733,6 +760,7 @@ pub mod treasury_program {
         record.realized_hash = [0; 32];
         record.exceptions = Vec::new();
         record.unresolved_blocking = 0;
+        record.policy_amendment_applied = false;
         record.bump = ctx.bumps.transition_record;
         Ok(())
     }
@@ -1939,12 +1967,13 @@ pub mod treasury_program {
     /// at commit (the mask bit stays set), never admits a transition
     /// that should not commit. Genesis-direct form only: after
     /// genesis, policy changes are the execution of a committed
-    /// `treasury.policy.v1` transition — that execution path is a
-    /// later increment, and this install does not authorize itself
-    /// post-genesis. The `PolicyCommitted` / `PolicySettled` events of
-    /// the design table belong to that execution, not to this install;
-    /// this install emits `PolicyInstalled` (type + authority), and the
-    /// installed record itself is the payload.
+    /// `treasury.policy.v1` transition (`apply_policy_amendment`),
+    /// and this install does not authorize itself post-genesis. The
+    /// `PolicyCommitted` / `PolicySettled` events of the design table
+    /// are the lifecycle events of that policy transition itself
+    /// (emitted by `commit` / `settle`); this install emits
+    /// `PolicyInstalled` (type + authority), and the installed record
+    /// itself is the payload.
     pub fn policy_transition(
         ctx: Context<PolicyTransition>,
         transition_type: [u8; 32],
@@ -1984,6 +2013,114 @@ pub mod treasury_program {
         emit!(PolicyInstalled {
             transition_type,
             authority: ctx.accounts.authority.key(),
+        });
+        Ok(())
+    }
+
+    /// Post-genesis policy execution (design §4.1): apply a committed
+    /// `treasury.policy.v1` transition's amendment to a target type's
+    /// PolicyRecord.
+    ///
+    /// This is the ONLY post-genesis path that changes a PolicyRecord:
+    /// the genesis-direct `policy_transition` install cannot be called
+    /// twice for one type (account creation fails), and no other
+    /// instruction writes a PolicyRecord. The executor is
+    /// permissionless — the authority is the settled transition, not
+    /// the signer, exactly as `commit` and `expire_transition` are
+    /// permissionless — and the executor pays no rent (no account is
+    /// created here; the target record already exists).
+    ///
+    /// The binding is the payload hash, checked by
+    /// `can_apply_policy_amendment` before anything is written:
+    /// (1) the source transition is Settled, (2) it has not already
+    /// been executed — a second execution refuses, because replaying
+    /// an old amendment after a newer one would roll the policy
+    /// back, (3) its type is the canonical `POLICY_TRANSITION_TYPE`,
+    /// (4) the target record's stored type is the target type named
+    /// here (the PDA seeds bind the account to that type, and the
+    /// stored field is checked too), (5) the SHA-256 payload hash of
+    /// the supplied new values equals the source's declared hash —
+    /// the amendment is what the transition declared at registration,
+    /// never values invented at execution time, and (6) the source's
+    /// settle was exact (realized == declared) — an inexact settle
+    /// means the executed outcome diverged from the declared one,
+    /// so it authorizes nothing. Only then are the values validated
+    /// by `validate_policy` (the genesis install's gates, unchanged)
+    /// and written; the target record's bump is preserved, and the
+    /// source transition's execution flag is set in the same
+    /// instruction, so the write and the flag cannot diverge.
+    /// Amending the policy type itself is allowed: the target type
+    /// may be `POLICY_TRANSITION_TYPE`, governed by a policy
+    /// transition like any other type.
+    pub fn apply_policy_amendment(
+        ctx: Context<ApplyPolicyAmendment>,
+        transition_id: u64,
+        target_type: [u8; 32],
+        quorum_required: u64,
+        confidence_threshold: u64,
+        min_obs_confidence: u64,
+        require_objectives: bool,
+        planning_window: u64,
+        max_rounds: u32,
+        max_plans: u32,
+        mandatory_constraints: Vec<[u8; 32]>,
+        required_capabilities: Vec<CapabilityRequirement>,
+    ) -> Result<()> {
+        let _ = transition_id;
+        let source = &ctx.accounts.transition_record;
+        let source_state = source.state;
+        let source_type = source.transition_type;
+        let source_declared = source.declared_hash;
+        let source_realized = source.realized_hash;
+        let source_applied = source.policy_amendment_applied;
+        let source_id = source.transition_id;
+        let target_stored = ctx.accounts.policy_record.transition_type;
+        let payload = policy_payload_hash(
+            target_type,
+            quorum_required,
+            confidence_threshold,
+            min_obs_confidence,
+            require_objectives,
+            planning_window,
+            max_rounds,
+            max_plans,
+            &mandatory_constraints,
+            &required_capabilities,
+        );
+        can_apply_policy_amendment(
+            source_state,
+            source_type,
+            target_stored,
+            target_type,
+            payload,
+            source_declared,
+            source_realized,
+            source_applied,
+        )?;
+        validate_policy(
+            confidence_threshold,
+            max_rounds,
+            max_plans,
+            &mandatory_constraints,
+            &required_capabilities,
+        )?;
+        let record = &mut ctx.accounts.policy_record;
+        record.transition_type = target_type;
+        record.quorum_required = quorum_required;
+        record.confidence_threshold = confidence_threshold;
+        record.min_obs_confidence = min_obs_confidence;
+        record.require_objectives = require_objectives;
+        record.planning_window = planning_window;
+        record.max_rounds = max_rounds;
+        record.max_plans = max_plans;
+        record.mandatory_constraints = mandatory_constraints;
+        record.required_capabilities = required_capabilities;
+        let transition = &mut ctx.accounts.transition_record;
+        transition.policy_amendment_applied = true;
+        emit!(PolicyAmended {
+            transition_id: source_id,
+            target_type,
+            executor: ctx.accounts.executor.key(),
         });
         Ok(())
     }
@@ -2911,6 +3048,90 @@ pub fn validate_policy(
     Ok(())
 }
 
+/// The payload hash a `treasury.policy.v1` transition declares for its
+/// amendment (design §4.1, `apply_policy_amendment`): SHA-256 over
+/// the target type followed by every new policy value, in argument
+/// order, little-endian, with the two variable-length sets prefixed
+/// by their counts — the same commitment shape as `claims_hash`
+/// (fixed-width fields in order, counts before variable data), so the
+/// hash is a function of exactly the values applied and nothing else.
+/// A proposer registers the policy transition with this hash as its
+/// declared hash; at execution the handler recomputes it from the
+/// supplied values and refuses any mismatch.
+#[allow(clippy::too_many_arguments)]
+pub fn policy_payload_hash(
+    target_type: [u8; 32],
+    quorum_required: u64,
+    confidence_threshold: u64,
+    min_obs_confidence: u64,
+    require_objectives: bool,
+    planning_window: u64,
+    max_rounds: u32,
+    max_plans: u32,
+    mandatory_constraints: &[[u8; 32]],
+    required_capabilities: &[CapabilityRequirement],
+) -> [u8; 32] {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&target_type);
+    bytes.extend_from_slice(&quorum_required.to_le_bytes());
+    bytes.extend_from_slice(&confidence_threshold.to_le_bytes());
+    bytes.extend_from_slice(&min_obs_confidence.to_le_bytes());
+    bytes.push(u8::from(require_objectives));
+    bytes.extend_from_slice(&planning_window.to_le_bytes());
+    bytes.extend_from_slice(&max_rounds.to_le_bytes());
+    bytes.extend_from_slice(&max_plans.to_le_bytes());
+    bytes.extend_from_slice(&(mandatory_constraints.len() as u32).to_le_bytes());
+    for id in mandatory_constraints {
+        bytes.extend_from_slice(id);
+    }
+    bytes.extend_from_slice(&(required_capabilities.len() as u32).to_le_bytes());
+    for cap in required_capabilities {
+        bytes.extend_from_slice(&cap.id);
+        bytes.extend_from_slice(&cap.min_weight.to_le_bytes());
+    }
+    anchor_lang::solana_program::hash::hash(&bytes).to_bytes()
+}
+
+/// The `apply_policy_amendment` gate, as a pure check (design §4.1):
+/// Settled state first, then the one-time execution flag, then the
+/// canonical policy-transition type, then the target record's stored
+/// type, then the payload hash against the declared hash, then the
+/// exact-settle condition (realized == declared). Any failure is a
+/// refusal to write: the order puts the cheapest, most general
+/// failures first and the binding checks last, so no partial
+/// amendment can ever be constructed from a subset of these tests.
+#[allow(clippy::too_many_arguments)]
+pub fn can_apply_policy_amendment(
+    state: u8,
+    source_type: [u8; 32],
+    target_stored_type: [u8; 32],
+    target_type: [u8; 32],
+    payload_hash: [u8; 32],
+    declared_hash: [u8; 32],
+    realized_hash: [u8; 32],
+    already_applied: bool,
+) -> Result<()> {
+    require!(state == STATE_SETTLED, TreasuryError::BadState);
+    require!(!already_applied, TreasuryError::BadState);
+    require!(
+        source_type == POLICY_TRANSITION_TYPE,
+        TreasuryError::AmendmentMismatch
+    );
+    require!(
+        target_stored_type == target_type,
+        TreasuryError::AmendmentMismatch
+    );
+    require!(
+        payload_hash == declared_hash,
+        TreasuryError::AmendmentMismatch
+    );
+    require!(
+        realized_hash == declared_hash,
+        TreasuryError::AmendmentMismatch
+    );
+    Ok(())
+}
+
 /// Event for [`treasury_program::submit_constraint_report`] (design
 /// §4.1): the transition, the reporting Evaluator, and the report as
 /// submitted — the authorization context the design requires on every
@@ -3052,6 +3273,20 @@ pub struct TransitionExpired {
 pub struct PolicyInstalled {
     pub transition_type: [u8; 32],
     pub authority: Pubkey,
+}
+
+/// Event for [`treasury_program::apply_policy_amendment`] (design
+/// §4.1): the settled policy transition, the amended target type,
+/// and the permissionless executor — the authorization context for
+/// a post-genesis policy change. The design table's
+/// `PolicyCommitted` / `PolicySettled` are the policy transition's
+/// own lifecycle events (emitted by `commit` / `settle`); this event
+/// is the execution receipt, distinct from both.
+#[event]
+pub struct PolicyAmended {
+    pub transition_id: u64,
+    pub target_type: [u8; 32],
+    pub executor: Pubkey,
 }
 
 /// Capacity stock installed (design §4.1): the `set_capacity` event,
@@ -3644,6 +3879,13 @@ pub struct TransitionRecord {
     /// yet resolved. `commit` feeds this count to the EXCEPTIONS bit;
     /// a non-zero count refuses every commit until resolved.
     pub unresolved_blocking: u32,
+    /// Program-layer execution marker, not kernel state:
+    /// `apply_policy_amendment` sets this once it applies a Settled
+    /// policy transition's amendment, and refuses a second execution.
+    /// False at registration; meaningful only on a Settled transition
+    /// of the canonical policy type, and never set on any other
+    /// transition.
+    pub policy_amendment_applied: bool,
     /// PDA bump for the `["transition", id]` seeds.
     pub bump: u8,
 }
@@ -3651,8 +3893,8 @@ pub struct TransitionRecord {
 impl TransitionRecord {
     /// 8 (discriminator) + 8 + 32 + 1 + 32 + 8 + 8 + 8 + 4 + 4
     /// + 8 + 8 + 8 + (4 + 8 × 33) + 1 + 1 + 32 + 8 + 32 + 8 + 32
-    /// + (4 + 8 × 34) + 4 + 1 = 800.
-    pub const SPACE: usize = 8 + 8 + 32 + 1 + 32 + 8 + 8 + 8 + 4 + 4 + 8 + 8 + 8 + 268 + 1 + 1 + 32 + 8 + 32 + 8 + 32 + 276 + 4 + 1;
+    /// + (4 + 8 × 34) + 4 + 1 + 1 = 801.
+    pub const SPACE: usize = 8 + 8 + 32 + 1 + 32 + 8 + 8 + 8 + 4 + 4 + 8 + 8 + 8 + 268 + 1 + 1 + 32 + 8 + 32 + 8 + 32 + 276 + 4 + 1 + 1;
 }
 
 /// One transition type's policy (design §3 `PolicyRecord`, §4.1
@@ -4151,6 +4393,26 @@ pub struct PolicyTransition<'info> {
     pub system_program: Program<'info, System>,
 }
 
+/// Accounts for [`treasury_program::apply_policy_amendment`].
+#[derive(Accounts)]
+#[instruction(transition_id: u64, target_type: [u8; 32])]
+pub struct ApplyPolicyAmendment<'info> {
+    /// The settled policy transition authorizing the amendment
+    /// (mut only for the one-time execution flag; its state, type,
+    /// and hashes are read, never rewritten, by this instruction).
+    #[account(mut, seeds = [b"transition", transition_id.to_le_bytes().as_ref()], bump = transition_record.bump)]
+    pub transition_record: Account<'info, TransitionRecord>,
+    /// The target type's policy record (mut: its values are
+    /// overwritten by the amendment; its PDA seeds bind it to the
+    /// target type, and its stored type is checked too).
+    #[account(mut, seeds = [b"policy", target_type.as_ref()], bump = policy_record.bump)]
+    pub policy_record: Account<'info, PolicyRecord>,
+    /// Permissionless executor (signer; pays no rent — no account is
+    /// created here). The authority is the settled transition, not
+    /// this key.
+    pub executor: Signer<'info>,
+}
+
 /// Accounts for [`treasury_program::set_capacity`].
 #[derive(Accounts)]
 #[instruction(resource_id: u16)]
@@ -4382,6 +4644,15 @@ pub enum TreasuryError {
     /// is never judged over partial stocks.
     #[msg("Remaining stock accounts do not match this transition's stock set.")]
     StockMismatch,
+    /// A policy amendment does not match its authorizing transition:
+    /// the source transition's type is not the canonical
+    /// `treasury.policy.v1` type, the target record's stored type is
+    /// not the target type, the payload hash does not equal the
+    /// declared hash, or the settle was not exact (realized differs
+    /// from declared). The amendment is never applied on a partial
+    /// binding.
+    #[msg("Policy amendment does not match its settled policy transition.")]
+    AmendmentMismatch,
 }
 
 #[cfg(test)]
@@ -4542,8 +4813,10 @@ mod tests {
         // the realized hash (32) with settle, and the exception set
         // (4 + 8 x 34) plus the unresolved-blocking count (4) with
         // raise_exception / resolve_exception, and the transition
-        // type (32) with policy_transition.
-        assert_eq!(TransitionRecord::SPACE, 800);
+        // type (32) with policy_transition, and the one-time
+        // policy-amendment execution flag (1) with
+        // apply_policy_amendment.
+        assert_eq!(TransitionRecord::SPACE, 801);
         assert_eq!(DeclaredChain::SPACE, 49);
         assert_eq!(MAX_CONSTRAINTS, 8);
         assert_eq!(MAX_EXCEPTIONS, 8);
@@ -4904,9 +5177,11 @@ mod tests {
             realized_hash: [0; 32],
             exceptions: vec![],
             unresolved_blocking: 0,
+            policy_amendment_applied: false,
             bump: 255,
         };
         assert_eq!(record.state, STATE_REGISTERED);
+        assert!(!record.policy_amendment_applied);
         assert_eq!(record.proposer, proposer);
         assert_eq!(record.planning_deadline, 0);
         assert_eq!(record.plan_count, 0);
@@ -5579,6 +5854,175 @@ mod tests {
             })
             .collect();
         assert!(validate_policy(500_000, 3, 4, &mandatory, &many).is_err());
+    }
+
+    #[test]
+    fn policy_payload_hash_binds_exactly_the_applied_values() {
+        let target = [3u8; 32];
+        let mandatory = [[9u8; 32]];
+        let caps = [CapabilityRequirement {
+            id: [7; 32],
+            min_weight: 500_000,
+        }];
+        let base = policy_payload_hash(
+            target, 1_000_000, 500_000, 500_000, false, 10, 3, 4, &mandatory,
+            &caps,
+        );
+        // Deterministic: the same values hash the same.
+        assert_eq!(
+            base,
+            policy_payload_hash(
+                target, 1_000_000, 500_000, 500_000, false, 10, 3, 4,
+                &mandatory, &caps,
+            )
+        );
+        // Every field is load-bearing: changing any one changes the
+        // hash, so no supplied value can drift from the declared one.
+        assert_ne!(
+            base,
+            policy_payload_hash(
+                target, 999_999, 500_000, 500_000, false, 10, 3, 4,
+                &mandatory, &caps,
+            )
+        );
+        assert_ne!(
+            base,
+            policy_payload_hash(
+                target, 1_000_000, 500_000, 500_000, true, 10, 3, 4,
+                &mandatory, &caps,
+            )
+        );
+        assert_ne!(
+            base,
+            policy_payload_hash(
+                [4u8; 32], 1_000_000, 500_000, 500_000, false, 10, 3, 4,
+                &mandatory, &caps,
+            )
+        );
+        assert_ne!(
+            base,
+            policy_payload_hash(
+                target, 1_000_000, 500_000, 500_000, false, 10, 3, 4,
+                &[[8u8; 32]], &caps,
+            )
+        );
+        assert_ne!(
+            base,
+            policy_payload_hash(
+                target, 1_000_000, 500_000, 500_000, false, 10, 3, 4,
+                &mandatory,
+                &[CapabilityRequirement {
+                    id: [7; 32],
+                    min_weight: 250_000,
+                }],
+            )
+        );
+        // The canonical policy type id is the SHA-256 of its name, not
+        // an arbitrary constant: recompute it here from the string.
+        assert_eq!(
+            POLICY_TRANSITION_TYPE,
+            anchor_lang::solana_program::hash::hash(b"treasury.policy.v1")
+                .to_bytes()
+        );
+    }
+
+    #[test]
+    fn policy_amendment_gate_matrix() {
+        let target = [3u8; 32];
+        let payload = [11u8; 32];
+        let ok = |state: u8,
+                  source_type: [u8; 32],
+                  stored: [u8; 32],
+                  declared: [u8; 32],
+                  realized: [u8; 32],
+                  applied: bool| {
+            can_apply_policy_amendment(
+                state,
+                source_type,
+                stored,
+                target,
+                payload,
+                declared,
+                realized,
+                applied,
+            )
+        };
+        // The happy path: Settled, canonical policy type, stored type
+        // matches, payload == declared == realized, never applied.
+        assert!(ok(
+            STATE_SETTLED,
+            POLICY_TRANSITION_TYPE,
+            target,
+            payload,
+            payload,
+            false
+        )
+        .is_ok());
+        // Not settled (Committed, or any pre-settle state): BadState.
+        assert!(ok(
+            STATE_COMMITTED,
+            POLICY_TRANSITION_TYPE,
+            target,
+            payload,
+            payload,
+            false
+        )
+        .is_err());
+        // Already executed once: BadState — replay is refused even
+        // when every other check would pass, so an old amendment
+        // cannot roll back a newer one.
+        assert!(ok(
+            STATE_SETTLED,
+            POLICY_TRANSITION_TYPE,
+            target,
+            payload,
+            payload,
+            true
+        )
+        .is_err());
+        // Wrong source type: a settled window transition is not a
+        // policy amendment, however clean its settle.
+        assert!(ok(
+            STATE_SETTLED,
+            [9u8; 32],
+            target,
+            payload,
+            payload,
+            false
+        )
+        .is_err());
+        // Target record names another type than the amendment targets.
+        assert!(ok(
+            STATE_SETTLED,
+            POLICY_TRANSITION_TYPE,
+            [4u8; 32],
+            payload,
+            payload,
+            false
+        )
+        .is_err());
+        // Payload hash differs from the declared hash: values
+        // invented at execution time, not declared at registration.
+        assert!(ok(
+            STATE_SETTLED,
+            POLICY_TRANSITION_TYPE,
+            target,
+            [12u8; 32],
+            [12u8; 32],
+            false
+        )
+        .is_err());
+        // Inexact settle: realized differs from declared, so the
+        // settled outcome is not the declared amendment.
+        assert!(ok(
+            STATE_SETTLED,
+            POLICY_TRANSITION_TYPE,
+            target,
+            payload,
+            [13u8; 32],
+            false
+        )
+        .is_err());
     }
 
     #[test]

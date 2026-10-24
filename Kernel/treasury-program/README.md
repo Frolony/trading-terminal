@@ -247,6 +247,21 @@ The §4.1 lifecycle is now input-complete for every mask bit: every
 bit reads its governing on-chain record. Remaining: post-genesis
 policy execution (amendment through a committed
 `treasury.policy.v1` transition), then §4.2 treasury.
++ `apply_policy_amendment` (design §4.1, post-genesis policy
+execution — the only post-genesis path that changes a PolicyRecord):
+permissionless execution from a Settled transition whose type is the
+canonical `POLICY_TRANSITION_TYPE` (SHA-256 of `treasury.policy.v1`),
+whose declared hash equals the SHA-256 payload hash of the supplied
+new values, and whose settle was exact (realized == declared); a
+one-time execution flag on the TransitionRecord (SPACE 800 → 801)
+refuses replay, so an old amendment cannot roll back a newer one.
+IDL: instructions 24 → 25 (incl. `apply_policy_amendment`), accounts
+10 (no new account type), errors 35 → 36 (`AmendmentMismatch`).
+Program host tests 53 → 55 (the payload-hash binding matrix and the
+amendment gate matrix incl. replay-refused and inexact-settle
+refused). The §4.1 lifecycle instruction set is now complete in
+code — governance inputs, lifecycle, and post-genesis execution.
+Next: §4.2 treasury.
 
 **Design:** `files/OWN_IDL_DESIGN.md` (W4.1, validated and revised
 2026-10-24; W4.3 GO given by Carlos 2026-10-24 ~03:39 CST). Placement C: the
