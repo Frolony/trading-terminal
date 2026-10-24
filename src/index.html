@@ -1194,13 +1194,26 @@ let wsSeq=0;
 function activeWorkspace(){return layout.workspaces.find(w=>w.id===layout.activeWorkspaceId)||layout.workspaces[0];}
 function saveLayout(){try{localStorage.setItem(LAYOUT_KEY,JSON.stringify({version:LAYOUT_VERSION,activeWorkspaceId:layout.activeWorkspaceId,workspaces:layout.workspaces.filter(w=>!w.builtIn)}));}catch(_){}syncMarkDirty();}
 function panelEl(id){return document.querySelector('[data-panel="'+id+'"]');}
+/* N5.8 (2026-10-24, A45 displacement): the shipped child order per root,
+   captured on the FIRST placement call — before any panel has moved, the DOM
+   still carries the shipped order (applyLayoutBoot is the first caller). Panel
+   slots in the snapshot are the positions panels return to; non-panel
+   sections (Strategy Lab, discovery, …) never move, so they stay exactly
+   where they shipped. The old slot technique anchored extras at the first
+   panel slot of a root, so after a Reset UI from a mangled state (maincol
+   holding only the hidden dashboard) chart/pairs clustered ~900 px below
+   their shipped spots — order-correct, but reading as "disappeared" below
+   the fold. With snapshot slots, a reset reproduces the shipped layout
+   exactly; a user move that adds a panel beyond a root's shipped slots
+   still anchors after the last placed panel (the old extras rule). */
+let shippedRootChildren=null;
 function renderPanelPlacement(ws){
   /* N5.6: panels are placed by ws.place[panelId] into the root whose
      data-root-key matches; within each root, panels sort by the global order
-     rank. DOM-node moves only (comment-placeholder slot technique, no
-     destroy/recreate) — ticket input, chart canvas and feed subscriptions
-     survive cross-container moves exactly as they survived v1 slot swaps.
-     Non-layoutable panels (Strategy Lab, discovery, portfolio, …) never move. */
+     rank. DOM-node moves only — ticket input, chart canvas and feed
+     subscriptions survive cross-container moves exactly as they survived
+     v1 slot swaps. Non-layoutable panels (Strategy Lab, discovery,
+     portfolio, …) never move. */
   const rank=id=>{const i=ws.order.indexOf(id);return i<0?PANEL_IDS.length:i;};
   const byRoot={};
   PANEL_IDS.forEach(id=>{
@@ -1216,21 +1229,48 @@ function renderPanelPlacement(ws){
      reload). */
   const els={};
   PANEL_IDS.forEach(id=>{const el=panelEl(id);if(el)els[id]=el;});
+  if(!shippedRootChildren){
+    shippedRootChildren={};
+    document.querySelectorAll('[data-layout-root]').forEach(root=>{
+      const key=root.getAttribute('data-root-key');
+      shippedRootChildren[key]=[...root.children].map(el=>{
+        const id=el.getAttribute&&el.getAttribute('data-panel');
+        return (id&&PANEL_IDS.includes(id))?{panel:id}:{node:el};
+      });
+    });
+  }
   document.querySelectorAll('[data-layout-root]').forEach(root=>{
     const key=root.getAttribute('data-root-key');
     const wanted=(byRoot[key]||[]).map(id=>els[id]).filter(Boolean);
-    const kids=[...root.children].filter(el=>el.getAttribute&&PANEL_IDS.includes(el.getAttribute('data-panel')));
-    if(!kids.length&&!wanted.length)return;
-    const slots=kids.map(k=>{const ph=document.createComment('layout-slot');k.replaceWith(ph);return ph;});
-    /* Extras (a panel moved INTO this root) anchor after the previously placed
-       panel — never after a slot, because replaceWith detaches used slots and
-       after() on a detached node is a silent no-op (the panel would vanish). */
-    wanted.forEach((p,i)=>{
-      if(i<slots.length)slots[i].replaceWith(p);
-      else if(i>0)wanted[i-1].after(p);
-      else root.appendChild(p);
+    const snap=shippedRootChildren[key];
+    if(!snap){
+      /* No snapshot for this root (created after boot): old slot technique. */
+      const kids=[...root.children].filter(el=>el.getAttribute&&PANEL_IDS.includes(el.getAttribute('data-panel')));
+      if(!kids.length&&!wanted.length)return;
+      const slots=kids.map(k=>{const ph=document.createComment('layout-slot');k.replaceWith(ph);return ph;});
+      wanted.forEach((p,i)=>{
+        if(i<slots.length)slots[i].replaceWith(p);
+        else if(i>0)wanted[i-1].after(p);
+        else root.appendChild(p);
+      });
+      for(let i=wanted.length;i<slots.length;i++)slots[i].remove();
+      return;
+    }
+    /* Detach this root's panels (they live in els); non-panel sections stay. */
+    [...root.children].filter(el=>el.getAttribute&&PANEL_IDS.includes(el.getAttribute('data-panel'))).forEach(el=>el.remove());
+    let wi=0;
+    const seq=[];
+    snap.forEach(item=>{
+      if(item.panel){if(wi<wanted.length){seq.push(wanted[wi]);wi++;}}
+      else if(item.node.parentNode===root)seq.push(item.node);
     });
-    for(let i=wanted.length;i<slots.length;i++)slots[i].remove();
+    const extras=wanted.slice(wi);
+    if(extras.length){
+      let idx=-1;
+      for(let i=seq.length-1;i>=0;i--){const n=seq[i];if(n.getAttribute&&PANEL_IDS.includes(n.getAttribute('data-panel'))){idx=i;break;}}
+      seq.splice(idx+1,0,...extras);
+    }
+    seq.forEach(node=>root.appendChild(node));
   });
 }
 function applyPanelVisibility(hidden){
