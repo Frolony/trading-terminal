@@ -1495,6 +1495,91 @@ pub mod treasury_program {
         });
         Ok(())
     }
+
+    /// Governance lifecycle (design §4.1): veto a pre-commit
+    /// transition.
+    ///
+    /// Mirrors the kernel's `reject` exactly: the caller must hold
+    /// the Evaluator role or the Admin role (`Unauthorized`
+    /// otherwise — the kernel's `has_role` test, either role, not
+    /// both), and the transition must be Registered, Planning, or
+    /// Committable (`BadState` otherwise — the kernel's `set_state`
+    /// gate, which admits only the pre-commit states to Rejected).
+    /// Rejection is terminal and not idempotent: rejecting an
+    /// already-Rejected (or Committed, Settled, Expired) transition
+    /// refuses with `BadState`, it does not re-emit. The kernel's
+    /// `tick(now)` has no program counterpart here — the program
+    /// keeps no kernel-time state, as with exceptions — and reject
+    /// judges no time rule, so no Clock is taken. The caller binding
+    /// is structural, as with exceptions: the AgentRecord must match
+    /// the signer (`AgentMismatch` otherwise). No active-flag check
+    /// is added: the kernel's reject tests roles only, and this
+    /// handler stays faithful to it (unlike `record_evidence` and
+    /// `post_observation`, whose active tightenings are documented
+    /// where they land).
+    pub fn reject_transition(
+        ctx: Context<RejectTransition>,
+        transition_id: u64,
+    ) -> Result<()> {
+        let _ = transition_id;
+        let caller_key = ctx.accounts.caller.key();
+        let record = &ctx.accounts.agent_record;
+        require!(
+            record.agent == caller_key,
+            TreasuryError::AgentMismatch
+        );
+        let transition = &mut ctx.accounts.transition_record;
+        can_reject_transition(
+            record.is_evaluator,
+            record.is_admin,
+            transition.state,
+        )?;
+        transition.state = STATE_REJECTED;
+        emit!(TransitionRejected {
+            transition_id: transition.transition_id,
+            vetoer: caller_key,
+        });
+        Ok(())
+    }
+
+    /// Governance lifecycle (design §4.1): close a never-committed
+    /// transition past its manifest expiry.
+    ///
+    /// Mirrors the kernel's `expire` exactly, including its two
+    /// properties a stricter program would hide: the caller is
+    /// permissionless (the kernel checks no role for expire — expiry
+    /// is a fact about the Clock, not an authority's act), so no
+    /// AgentRecord is required; and the check order is the kernel's —
+    /// the expiry test first (`BadWindow` while `now` is before the
+    /// manifest's `expires_at`), then the state gate (`BadState`
+    /// unless Registered, Planning, or Committable). That order
+    /// matters: expiring a Committed transition that has not yet
+    /// expired reports the window, not the state — the caller learns
+    /// the transition simply is not expirable yet, whatever its
+    /// state. Expiry is terminal and not idempotent: expiring an
+    /// already-Expired (or Rejected, Committed, Settled) transition
+    /// past its expiry refuses with `BadState`. The kernel's
+    /// `tick(now)` has no program counterpart — the Clock sysvar is
+    /// monotonic on-chain, so there is no stored kernel clock to
+    /// regress against — and `now` is the Clock sysvar, never a
+    /// client timestamp.
+    pub fn expire_transition(
+        ctx: Context<ExpireTransition>,
+        transition_id: u64,
+    ) -> Result<()> {
+        let _ = transition_id;
+        let transition = &mut ctx.accounts.transition_record;
+        can_expire_transition(
+            transition.state,
+            ctx.accounts.clock.unix_timestamp,
+            transition.expires_at,
+        )?;
+        transition.state = STATE_EXPIRED;
+        emit!(TransitionExpired {
+            transition_id: transition.transition_id,
+        });
+        Ok(())
+    }
 }
 
 /// Who may open planning, as a pure check (design §4.1, kernel
@@ -1714,6 +1799,45 @@ pub fn can_raise_exception(
 pub fn can_resolve_exception(is_evaluator: bool, exception_known: bool) -> Result<()> {
     require!(is_evaluator, TreasuryError::Unauthorized);
     require!(exception_known, TreasuryError::UnknownException);
+    Ok(())
+}
+
+/// Who may veto a transition, as a pure check (design §4.1, kernel
+/// `reject`, in the kernel's check order minus the caller binding,
+/// which is structural — PDA seeds plus the AgentRecord match): the
+/// caller must hold the Evaluator role or the Admin role, and the
+/// transition must be Registered, Planning, or Committable (the
+/// kernel's pre-commit states — a Committed transition cannot be
+/// vetoed back, and a terminal one cannot be vetoed twice). The role
+/// test precedes the state test, as in the kernel: a non-vetoer
+/// learns nothing about the state from the error.
+pub fn can_reject_transition(is_evaluator: bool, is_admin: bool, state: u8) -> Result<()> {
+    require!(
+        is_evaluator || is_admin,
+        TreasuryError::Unauthorized
+    );
+    require!(
+        state == STATE_REGISTERED || state == STATE_PLANNING || state == STATE_COMMITTABLE,
+        TreasuryError::BadState
+    );
+    Ok(())
+}
+
+/// When a transition may expire, as a pure check (design §4.1,
+/// kernel `expire`, in the kernel's check order): the manifest must
+/// already be expired (`now` at or past `expires_at` — `BadWindow`
+/// before it), and the transition must be Registered, Planning, or
+/// Committable (`BadState` otherwise — a Committed transition never
+/// expires, and a terminal one never expires twice). There is
+/// deliberately NO caller argument here — the kernel checks no role
+/// for expire, so this helper takes none, and a caller cannot smuggle
+/// a role gate in later.
+pub fn can_expire_transition(state: u8, now: i64, expires_at: i64) -> Result<()> {
+    require!(now >= expires_at, TreasuryError::BadWindow);
+    require!(
+        state == STATE_REGISTERED || state == STATE_PLANNING || state == STATE_COMMITTABLE,
+        TreasuryError::BadState
+    );
     Ok(())
 }
 
@@ -2275,6 +2399,26 @@ pub struct ExceptionResolved {
     pub transition_id: u64,
     pub evaluator: Pubkey,
     pub exception_id: [u8; 32],
+}
+
+/// Event for [`treasury_program::reject_transition`] (design §4.1,
+/// §6): the transition and the vetoing agent — the vetoer is the
+/// authorization context for a terminal close, as the Evaluator is
+/// for an exception. A rejected chain closes honestly instead of
+/// dangling.
+#[event]
+pub struct TransitionRejected {
+    pub transition_id: u64,
+    pub vetoer: Pubkey,
+}
+
+/// Event for [`treasury_program::expire_transition`] (design §4.1,
+/// §6): the transition only. Expiry is permissionless — no agent's
+/// authority closes the chain, the Clock does — so there is no
+/// vetoer to name, and inventing one would misstate the authority.
+#[event]
+pub struct TransitionExpired {
+    pub transition_id: u64,
 }
 
 /// One settle attribution: an agent and its reputation delta (kernel
@@ -3123,6 +3267,40 @@ pub struct ResolveException<'info> {
     pub caller: Signer<'info>,
 }
 
+/// Accounts for [`treasury_program::reject_transition`].
+#[derive(Accounts)]
+#[instruction(transition_id: u64)]
+pub struct RejectTransition<'info> {
+    /// The vetoing agent's record (must exist and be bound to the
+    /// signer; the Evaluator-or-Admin gate is enforced here).
+    #[account(seeds = [b"agent", caller.key().as_ref()], bump = agent_record.bump)]
+    pub agent_record: Account<'info, AgentRecord>,
+    /// The transition record to veto (Registered, Planning, or
+    /// Committable). Written in place to Rejected; no new account.
+    #[account(mut, seeds = [b"transition", transition_id.to_le_bytes().as_ref()], bump = transition_record.bump)]
+    pub transition_record: Account<'info, TransitionRecord>,
+    /// The vetoing agent (signer; pays no rent here).
+    pub caller: Signer<'info>,
+}
+
+/// Accounts for [`treasury_program::expire_transition`].
+#[derive(Accounts)]
+#[instruction(transition_id: u64)]
+pub struct ExpireTransition<'info> {
+    /// The transition record to expire (Registered, Planning, or
+    /// Committable, past its manifest expiry). Written in place to
+    /// Expired; no new account.
+    #[account(mut, seeds = [b"transition", transition_id.to_le_bytes().as_ref()], bump = transition_record.bump)]
+    pub transition_record: Account<'info, TransitionRecord>,
+    /// The caller (signer; pays no rent here). Permissionless, as in
+    /// the kernel — the kernel checks no role for expire, so no
+    /// AgentRecord is required.
+    pub caller: Signer<'info>,
+    /// Clock sysvar: expiry is judged on-chain, never from a client
+    /// timestamp (design §4.1, the EXPIRED bit's anchor).
+    pub clock: Sysvar<'info, Clock>,
+}
+
 /// Accounts for [`treasury_program::submit_constraint_report`].
 #[derive(Accounts)]
 #[instruction(transition_id: u64)]
@@ -3431,6 +3609,55 @@ mod tests {
         assert!(can_resolve_exception(false, true).is_err());
         // An id never raised is unknown, never resolved.
         assert!(can_resolve_exception(true, false).is_err());
+    }
+
+    #[test]
+    fn reject_transition_gate_matrix() {
+        // Kernel check order: Evaluator-or-Admin, then pre-commit
+        // state. Caller binding is structural (AgentRecord match in
+        // the handler), so the helper takes no caller argument.
+        let base =
+            |evaluator: bool, admin: bool, state: u8| can_reject_transition(evaluator, admin, state);
+        // Clean cases pass in all three pre-commit states, for
+        // either vetoing role.
+        assert!(base(true, false, STATE_REGISTERED).is_ok());
+        assert!(base(false, true, STATE_PLANNING).is_ok());
+        assert!(base(true, true, STATE_COMMITTABLE).is_ok());
+        // A caller holding neither role is refused first, whatever
+        // the state.
+        assert!(base(false, false, STATE_REGISTERED).is_err());
+        assert!(base(false, false, STATE_COMMITTED).is_err());
+        // Committed, Settled, Rejected, Expired cannot be vetoed —
+        // rejection is terminal, not idempotent.
+        assert!(base(true, false, STATE_COMMITTED).is_err());
+        assert!(base(false, true, STATE_SETTLED).is_err());
+        assert!(base(true, false, STATE_REJECTED).is_err());
+        assert!(base(false, true, STATE_EXPIRED).is_err());
+    }
+
+    #[test]
+    fn expire_transition_gate_matrix() {
+        // Kernel check order: expiry first, then pre-commit state.
+        // No caller argument: expire is permissionless in the kernel.
+        let base =
+            |state: u8, now: i64, expires_at: i64| can_expire_transition(state, now, expires_at);
+        // Clean cases pass in all three pre-commit states, at and
+        // past expiry (the boundary itself expires: `now >=
+        // expires_at`, as in the kernel's `now < expires_at` refuse).
+        assert!(base(STATE_REGISTERED, 100, 100).is_ok());
+        assert!(base(STATE_PLANNING, 101, 100).is_ok());
+        assert!(base(STATE_COMMITTABLE, 200, 100).is_ok());
+        // Not yet expired refuses with the window, whatever the
+        // state — even a Committed transition reports BadWindow
+        // before BadState, as in the kernel.
+        assert!(base(STATE_REGISTERED, 99, 100).is_err());
+        assert!(base(STATE_COMMITTED, 99, 100).is_err());
+        // Past expiry, a terminal or committed state still refuses —
+        // expiry never lands twice and never un-commits.
+        assert!(base(STATE_COMMITTED, 100, 100).is_err());
+        assert!(base(STATE_SETTLED, 200, 100).is_err());
+        assert!(base(STATE_REJECTED, 200, 100).is_err());
+        assert!(base(STATE_EXPIRED, 200, 100).is_err());
     }
 
     #[test]

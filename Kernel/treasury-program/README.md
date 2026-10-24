@@ -123,8 +123,21 @@ parent hash and freezes them on the record (SPACE 408 → 448). New errors
 `CommitFailed`, `ObservationMismatch`, `PlanMismatch`, IDL errors
 21 → 24, instructions 13 → 14, accounts 6 → 7. Program host tests
 31 → 34.
-`policy_transition`, `reject_transition`, `expire_transition` are
-next, in design order.
+**This increment adds `reject_transition` / `expire_transition`
+(design §4.1)** and closes the §4.1 lifecycle: both are terminal,
+neither takes a new account, and neither moves SPACE. `reject` is
+Evaluator-or-Admin from Registered, Planning, or Committable only —
+the kernel's role test, then its `set_state` gate — and is not
+idempotent (re-vetoing a terminal transition refuses with
+`BadState`). `expire` is permissionless, as in the kernel (no
+AgentRecord, expiry is a Clock fact, not an authority's act), and
+keeps the kernel's check order: `BadWindow` while `now` precedes the
+manifest's `expires_at`, then `BadState` for non-pre-commit states —
+so an unexpired Committed transition reports the window, not the
+state. No new errors (both reuse `Unauthorized` / `BadState` /
+`BadWindow`); IDL: instructions 18 → 20 (incl. both terminal
+instructions), accounts 8, errors 31. Program host tests 41 → 43.
+`policy_transition` is next, in design order.
 
 **Design:** `files/OWN_IDL_DESIGN.md` (W4.1, validated and revised
 2026-10-24; W4.3 GO given by Carlos 2026-10-24 ~03:39 CST). Placement C: the
