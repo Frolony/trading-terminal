@@ -44,6 +44,23 @@
 //! TransitionRecord now carries the proposer's key (set from the payer at
 //! `register_transition`), so its SPACE moves 74 → 106. No on-chain
 //! account exists yet (no deployment in W4.3), so no migration is owed.
+//! This increment adds `submit_plan` (design §4.1): Planning-only,
+//! before the deadline, plan agent == caller, one plan per agent (the
+//! PDA seeds enforce the duplicate rule — a second plan from the same
+//! agent fails at account creation, no state changes), capacity
+//! deliberately NOT checked here (the kernel checks it at
+//! reconcile/commit, COMPAT — design §4.1: "there is no courtesy
+//! check"). Plans live in standalone `PlanRecord` accounts (design §3
+//! lists Plan separately from the TransitionRecord, unlike constraint
+//! reports which live on it), and the TransitionRecord gains a
+//! `plan_count` so the kernel's `TooManyPlans` rule (max 4 at launch)
+//! is enforceable on-chain — SPACE 106 → 110. Honest gap, stated in
+//! the handler docs: the kernel's eligibility rule also requires the
+//! agent's groups to overlap the manifest's `relevant_groups`, but the
+//! record does not carry `relevant_groups` yet (manifest completion
+//! lands with its owning increment), so this slice enforces the
+//! active half of eligibility and defers the group-overlap half — the
+//! gap is documented, not papered over.
 //! Nothing here is deployed: NO devnet deployment in W4.3, NO mainnet step
 //! exists in W4. No instruction here moves value.
 //!
@@ -294,6 +311,7 @@ pub mod treasury_program {
         record.observation_id = observation_id;
         record.expires_at = expires_at;
         record.planning_deadline = 0;
+        record.plan_count = 0;
         record.declared_hash = declared_hash;
         record.bump = ctx.bumps.transition_record;
         Ok(())
@@ -337,6 +355,86 @@ pub mod treasury_program {
         transition.state = STATE_PLANNING;
         Ok(())
     }
+
+    /// Governance lifecycle (design §4.1): submit a plan for a transition.
+    ///
+    /// Mirrors the kernel's `submit_plan` in check order: Planning state
+    /// and before the deadline (`PlanningClosed` otherwise — the kernel
+    /// returns `PlanningClosed` for both a non-Planning state and a
+    /// lapsed deadline), the agent active (`NotEligible`), room under
+    /// `max_plans` from the launch policy (`TooManyPlans`), and a plan
+    /// expiry in the future (`BadWindow`). The kernel's plan-agent ==
+    /// caller rule is enforced structurally, not by a returned error:
+    /// the `PlanRecord` PDA seeds bind the plan to the signer, and the
+    /// AgentRecord must match the signer (`AgentMismatch` otherwise).
+    /// The duplicate rule is enforced one layer down:
+    /// the `PlanRecord` PDA seeds bind it to (transition, caller), so
+    /// a second plan from the same agent fails at account creation and
+    /// changes no state (Duplicate in the design taxonomy, enforced by
+    /// account existence, like the observation duplicate before it).
+    /// Capacity is NOT checked here — the kernel checks aggregate
+    /// claims against stocks at reconcile/commit (COMPAT); there is no
+    /// courtesy check, so a plan that will not fit is still recorded
+    /// and still fails closed later. Claims are stored as a
+    /// `Vec<Claim>` (at most [`MAX_CLAIMS`] — an
+    /// account-size bound, not a kernel rule; the launch surface is 3
+    /// stocks plus allocation classes, so 16 carries headroom) with
+    /// distinct resource ids enforced (`InvalidClaims` otherwise — the
+    /// kernel's claims are a keyed map, so a duplicate key would be a
+    /// silent double-count at reconcile). The event carries the
+    /// claims hash (SHA-256 over the little-endian
+    /// resource/amount encoding, see [`claims_hash`]), not the claims
+    /// themselves. Eligibility gap, stated plainly: the kernel's
+    /// `eligible` also requires the agent's groups to overlap the
+    /// manifest's `relevant_groups`, but the TransitionRecord does not
+    /// carry `relevant_groups` yet — that field lands with the manifest
+    /// completion, and the group-overlap check lands with it. This
+    /// slice enforces the active half of eligibility; it does not claim
+    /// the full kernel rule.
+    pub fn submit_plan(
+        ctx: Context<SubmitPlan>,
+        transition_id: u64,
+        claims: Vec<Claim>,
+        expires_at: i64,
+    ) -> Result<()> {
+        let _ = transition_id;
+        let caller_key = ctx.accounts.caller.key();
+        let record = &ctx.accounts.agent_record;
+        require!(
+            record.agent == caller_key,
+            TreasuryError::AgentMismatch
+        );
+        validate_claims(&claims)?;
+        let now = ctx.accounts.clock.unix_timestamp;
+        let transition = &mut ctx.accounts.transition_record;
+        can_submit_plan(
+            record.active,
+            transition.state,
+            now,
+            transition.planning_deadline,
+            transition.plan_count,
+            kernel_bridge::launch_policy().max_plans,
+            expires_at,
+        )?;
+        let hash = claims_hash(&claims);
+        let plan = &mut ctx.accounts.plan_record;
+        plan.transition_id = transition.transition_id;
+        plan.agent = caller_key;
+        plan.expires_at = expires_at;
+        plan.claims = claims;
+        plan.claims_hash = hash;
+        plan.bump = ctx.bumps.plan_record;
+        transition.plan_count = transition
+            .plan_count
+            .checked_add(1)
+            .ok_or(TreasuryError::Overflow)?;
+        emit!(PlanSubmitted {
+            transition_id: transition.transition_id,
+            agent: caller_key,
+            claims_hash: hash,
+        });
+        Ok(())
+    }
 }
 
 /// Who may open planning, as a pure check (design §4.1, kernel
@@ -363,6 +461,80 @@ pub fn can_open_planning(
 pub fn planning_deadline(now: i64, planning_window: u64) -> Result<i64> {
     now.checked_add(planning_window as i64)
         .ok_or(TreasuryError::Overflow.into())
+}
+
+/// Who may submit a plan, as a pure check (design §4.1, kernel
+/// `submit_plan`, in the kernel's check order minus the caller
+/// binding): the transition must be Planning and `now` must precede
+/// the deadline (both failures are `PlanningClosed` in the kernel);
+/// the agent must be active (the active half of the kernel's
+/// eligibility — the group-overlap half awaits `relevant_groups` on
+/// the record, see the handler docs); room must remain under
+/// `max_plans`; the plan's expiry must be in the future. The
+/// plan-agent == caller rule is NOT re-checked here: it is structural
+/// — the `PlanRecord` PDA seeds bind the plan to the signer, and the
+/// handler requires the AgentRecord to match the signer
+/// (`AgentMismatch` otherwise) — so a seven-argument helper stays
+/// within clippy's argument-count lint without duplicating a check
+/// the account constraints already enforce.
+pub fn can_submit_plan(
+    agent_active: bool,
+    state: u8,
+    now: i64,
+    planning_deadline: i64,
+    plan_count: u32,
+    max_plans: u32,
+    plan_expires_at: i64,
+) -> Result<()> {
+    require!(
+        state == STATE_PLANNING && now < planning_deadline,
+        TreasuryError::PlanningClosed
+    );
+    require!(agent_active, TreasuryError::NotEligible);
+    require!(plan_count < max_plans, TreasuryError::TooManyPlans);
+    require!(plan_expires_at > now, TreasuryError::BadWindow);
+    Ok(())
+}
+
+/// A plan's claims must fit the account and the kernel's keyed-map
+/// shape: at most [`MAX_CLAIMS`] entries, no resource id twice (a
+/// duplicate key would double-count at reconcile).
+pub fn validate_claims(claims: &[Claim]) -> Result<()> {
+    require!(claims.len() <= MAX_CLAIMS, TreasuryError::InvalidClaims);
+    for (i, claim) in claims.iter().enumerate() {
+        for other in &claims[..i] {
+            require!(
+                claim.resource_id != other.resource_id,
+                TreasuryError::InvalidClaims
+            );
+        }
+    }
+    Ok(())
+}
+
+/// The claims hash carried by the `PlanSubmitted` event: SHA-256 over
+/// the concatenated little-endian (resource_id, amount) pairs, in the
+/// order submitted. The encoding is the commitment — reconcile and
+/// commit re-derive it from the stored claims, so a stored plan whose
+/// hash does not match its claims is evidence of tampering, not a
+/// second copy of the data.
+pub fn claims_hash(claims: &[Claim]) -> [u8; 32] {
+    let mut bytes = Vec::new();
+    for claim in claims {
+        bytes.extend_from_slice(&claim.resource_id.to_le_bytes());
+        bytes.extend_from_slice(&claim.amount.to_le_bytes());
+    }
+    anchor_lang::solana_program::hash::hash(&bytes).to_bytes()
+}
+
+/// Event for [`treasury_program::submit_plan`] (design §4.1): the
+/// transition, the submitting agent, and the claims hash — the
+/// authorization context the design requires on every event.
+#[event]
+pub struct PlanSubmitted {
+    pub transition_id: u64,
+    pub agent: Pubkey,
+    pub claims_hash: [u8; 32],
 }
 
 /// TransitionRecord states (design §3): the kernel's seven, exactly, in
@@ -643,11 +815,11 @@ pub struct OpenPlanning<'info> {
 ///
 /// Per-transition kernel state lives here, serialized (design §1.2:
 /// load → call → store). This slice carries the manifest inputs, the
-/// recorded proposer, and the state; the frozen constraint set,
-/// objectives flag, rounds/signals, plans, per-transition exceptions,
-/// reconciled flag, and realized hash are added by the lifecycle
-/// instructions that own them — each field lands with the instruction
-/// that writes it, not before.
+/// recorded proposer, the state, and the plan count; the frozen
+/// constraint set, objectives flag, rounds/signals, per-transition
+/// exceptions, reconciled flag, and realized hash are added by the
+/// lifecycle instructions that own them — each field lands with the
+/// instruction that writes it, not before.
 #[account]
 pub struct TransitionRecord {
     /// Caller-chosen id (PDA seed component).
@@ -663,6 +835,9 @@ pub struct TransitionRecord {
     pub expires_at: i64,
     /// Planning deadline, set by `open_planning`; 0 until then.
     pub planning_deadline: i64,
+    /// Plans submitted so far, counted by `submit_plan` so the
+    /// kernel's `TooManyPlans` rule is enforceable on-chain.
+    pub plan_count: u32,
     /// The transition's declared next hash (commit/commitment anchor).
     pub declared_hash: [u8; 32],
     /// PDA bump for the `["transition", id]` seeds.
@@ -670,8 +845,92 @@ pub struct TransitionRecord {
 }
 
 impl TransitionRecord {
-    /// 8 (discriminator) + 8 + 1 + 32 + 8 + 8 + 8 + 32 + 1.
-    pub const SPACE: usize = 8 + 8 + 1 + 32 + 8 + 8 + 8 + 32 + 1;
+    /// 8 (discriminator) + 8 + 1 + 32 + 8 + 8 + 8 + 4 + 32 + 1.
+    pub const SPACE: usize = 8 + 8 + 1 + 32 + 8 + 8 + 8 + 4 + 32 + 1;
+}
+
+/// Maximum claims per plan (design §3: a plan is a capacity-claims
+/// map). An account-size bound, not a kernel rule — the kernel's map
+/// is unbounded, but an on-chain account is not; the launch surface
+/// (3 stocks plus allocation classes) fits 16 with headroom, and
+/// raising the bound is a SPACE change, not a policy change.
+pub const MAX_CLAIMS: usize = 16;
+
+/// Accounts for [`treasury_program::submit_plan`].
+#[derive(Accounts)]
+#[instruction(transition_id: u64)]
+pub struct SubmitPlan<'info> {
+    /// The submitting agent's record (must exist and be bound to the
+    /// signer; active flag is the eligibility half enforced here).
+    #[account(seeds = [b"agent", caller.key().as_ref()], bump = agent_record.bump)]
+    pub agent_record: Account<'info, AgentRecord>,
+    /// The transition record to plan against (must be Planning).
+    #[account(mut, seeds = [b"transition", transition_id.to_le_bytes().as_ref()], bump = transition_record.bump)]
+    pub transition_record: Account<'info, TransitionRecord>,
+    /// PlanRecord PDA, seeds `["plan", transition_id, caller]`.
+    /// One-time init: a second plan from the same agent fails and
+    /// changes no state (Duplicate in the design taxonomy).
+    #[account(
+        init,
+        payer = caller,
+        space = PlanRecord::SPACE,
+        seeds = [b"plan", transition_id.to_le_bytes().as_ref(), caller.key().as_ref()],
+        bump
+    )]
+    pub plan_record: Account<'info, PlanRecord>,
+    /// The submitting agent (signer; pays rent for the plan record).
+    #[account(mut)]
+    pub caller: Signer<'info>,
+    /// Rent sysvar, required by the `init` constraint.
+    pub system_program: Program<'info, System>,
+    /// Clock sysvar: Planning state and the deadline are judged
+    /// on-chain, never from a client timestamp.
+    pub clock: Sysvar<'info, Clock>,
+}
+
+/// One capacity claim inside a plan: the kernel's claims map is
+/// `ResourceId → Amount`, and Anchor's IDL cannot express a tuple
+/// type — so the map entry is a named struct, not `(u16, u64)`.
+/// Borsh layout is identical (2 + 8 = 10 bytes), and the struct is
+/// what the generated IDL carries as a defined type.
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Claim {
+    /// The capacity stock claimed (launch stocks 0/1/2; allocation
+    /// class stocks are ids ≥ 3, design §4.1).
+    pub resource_id: u16,
+    /// The claimed amount, kernel fixed-point raw (SCALE 1_000_000).
+    pub amount: u64,
+}
+
+/// One agent's plan for a transition (design §3 `Plan`).
+///
+/// Capacity claims `{resource_id: amount}` plus expiry, stored so
+/// `reconcile` can sum them against the capacity stocks (COMPAT) and
+/// `commit` can debit them atomically. The claims hash is the event's
+/// commitment over the stored claims (see [`claims_hash`]).
+/// Claims are [`Claim`] structs, not tuples: Anchor's IDL cannot
+/// express a tuple type, and the first `anchor build` of this slice
+/// failed on exactly that (fixed by the struct, same byte layout).
+#[account]
+pub struct PlanRecord {
+    /// The transition this plan belongs to (PDA seed component).
+    pub transition_id: u64,
+    /// The submitting agent's key (PDA seed component).
+    pub agent: Pubkey,
+    /// Plan expiry: the kernel refuses a plan expired at submission,
+    /// and reconcile/commit judge the plan against its expiry.
+    pub expires_at: i64,
+    /// Capacity claims, at most [`MAX_CLAIMS`], distinct resource ids.
+    pub claims: Vec<Claim>,
+    /// SHA-256 over the claims encoding (see [`claims_hash`]).
+    pub claims_hash: [u8; 32],
+    /// PDA bump for the `["plan", transition_id, agent]` seeds.
+    pub bump: u8,
+}
+
+impl PlanRecord {
+    /// 8 (discriminator) + 8 + 32 + 8 + (4 + 16×10) + 32 + 1.
+    pub const SPACE: usize = 8 + 8 + 32 + 8 + 164 + 32 + 1;
 }
 
 /// Program errors (design §4 taxonomy, first entries).
@@ -707,6 +966,22 @@ pub enum TreasuryError {
     /// the timestamp range). An overflow is an error, never a wrap.
     #[msg("Arithmetic overflow.")]
     Overflow,
+    /// Planning is not open: the transition is not Planning, or `now`
+    /// has reached the planning deadline (kernel `PlanningClosed`).
+    #[msg("Planning is closed: transition not Planning or deadline reached.")]
+    PlanningClosed,
+    /// The agent is not eligible to plan (e.g. inactive). The
+    /// group-overlap half of kernel eligibility awaits `relevant_groups`
+    /// on the record (see `submit_plan` docs).
+    #[msg("Agent is not eligible to submit a plan.")]
+    NotEligible,
+    /// The transition already holds `max_plans` plans (4 at launch).
+    #[msg("Too many plans for this transition.")]
+    TooManyPlans,
+    /// Claims break the account/keyed-map shape: more than MAX_CLAIMS
+    /// entries, or a resource id claimed twice.
+    #[msg("Invalid claims: too many, or a resource claimed twice.")]
+    InvalidClaims,
 }
 
 #[cfg(test)]
@@ -770,8 +1045,16 @@ mod tests {
     #[test]
     fn observation_and_transition_spaces_match_fields() {
         assert_eq!(Observation::SPACE, 105);
-        // 106: the proposer key (32) joined the record with open_planning.
-        assert_eq!(TransitionRecord::SPACE, 106);
+        // 110: the proposer key (32) joined with open_planning, and the
+        // plan count (4) with submit_plan.
+        assert_eq!(TransitionRecord::SPACE, 110);
+    }
+
+    #[test]
+    fn plan_record_space_matches_fields() {
+        // 8 + 8 + 32 + 8 + (4 + 16 x 10) + 32 + 1 = 253.
+        assert_eq!(PlanRecord::SPACE, 253);
+        assert_eq!(MAX_CLAIMS, 16);
     }
 
     #[test]
@@ -818,12 +1101,14 @@ mod tests {
             observation_id: 3,
             expires_at: 1_000,
             planning_deadline: 0,
+            plan_count: 0,
             declared_hash: [9u8; 32],
             bump: 255,
         };
         assert_eq!(record.state, STATE_REGISTERED);
         assert_eq!(record.proposer, proposer);
         assert_eq!(record.planning_deadline, 0);
+        assert_eq!(record.plan_count, 0);
         assert_eq!(record.observation_id, 3);
     }
 
@@ -842,6 +1127,61 @@ mod tests {
         assert!(can_open_planning(proposer, proposer, false, STATE_PLANNING).is_err());
         // Even an Admin cannot open a Committed transition.
         assert!(can_open_planning(admin, proposer, true, STATE_COMMITTED).is_err());
+    }
+
+    #[test]
+    fn submit_plan_gate_matrix() {
+        // Caller binding is structural (PDA seeds + AgentRecord match
+        // in the handler), so the helper takes no caller argument.
+        let base = |state: u8,
+                    now: i64,
+                    deadline: i64,
+                    active: bool,
+                    count: u32,
+                    expires: i64| {
+            can_submit_plan(active, state, now, deadline, count, 4, expires)
+        };
+        // The clean case passes.
+        assert!(base(STATE_PLANNING, 100, 200, true, 0, 300).is_ok());
+        // Room under the cap passes; at the cap it does not.
+        assert!(base(STATE_PLANNING, 100, 200, true, 3, 300).is_ok());
+        assert!(base(STATE_PLANNING, 100, 200, true, 4, 300).is_err());
+        // Planning not open: wrong state, or the deadline reached.
+        assert!(base(STATE_REGISTERED, 100, 200, true, 0, 300).is_err());
+        assert!(base(STATE_PLANNING, 200, 200, true, 0, 300).is_err());
+        assert!(base(STATE_PLANNING, 201, 200, true, 0, 300).is_err());
+        // Inactive agents are not eligible.
+        assert!(base(STATE_PLANNING, 100, 200, false, 0, 300).is_err());
+        // Plan expiry at or before now is a bad window.
+        assert!(base(STATE_PLANNING, 100, 200, true, 0, 100).is_err());
+        assert!(base(STATE_PLANNING, 100, 200, true, 0, 99).is_err());
+    }
+
+    #[test]
+    fn claims_validation_and_hash() {
+        let claim = |resource_id: u16, amount: u64| Claim { resource_id, amount };
+        // Empty and distinct claims pass.
+        assert!(validate_claims(&[]).is_ok());
+        assert!(validate_claims(&[claim(0, 100), claim(1, 200), claim(2, 300)]).is_ok());
+        // A resource claimed twice is rejected, not double-counted.
+        assert!(validate_claims(&[claim(1, 100), claim(1, 200)]).is_err());
+        // Over the account bound is rejected.
+        let too_many: Vec<Claim> = (0..17).map(|r| claim(r, 1)).collect();
+        assert!(validate_claims(&too_many).is_err());
+        // The hash is deterministic, order-sensitive, and content-bound.
+        let claims = vec![claim(0, 100), claim(2, 300)];
+        assert_eq!(claims_hash(&claims), claims_hash(&claims));
+        assert_ne!(claims_hash(&claims), claims_hash(&[claim(0, 100)]));
+        assert_ne!(claims_hash(&claims), claims_hash(&[claim(2, 300), claim(0, 100)]));
+        // SHA-256 of the empty encoding is the well-known empty hash.
+        assert_eq!(
+            claims_hash(&[]),
+            [
+                0xe3, 0xb0, 0xc4, 0x42, 0x98, 0xfc, 0x1c, 0x14, 0x9a, 0xfb, 0xf4, 0xc8,
+                0x99, 0x6f, 0xb9, 0x24, 0x27, 0xae, 0x41, 0xe4, 0x64, 0x9b, 0x93, 0x4c,
+                0xa4, 0x95, 0x99, 0x1b, 0x78, 0x52, 0xb8, 0x55,
+            ]
+        );
     }
 
     #[test]

@@ -27,9 +27,16 @@ This increment adds the first lifecycle instructions in design order:
 (TransitionRecord in Registered state; observation must already exist;
 lineage judged at commit, not here) + `open_planning` (proposer-or-Admin
 only, Registered → Planning, deadline `now + PLANNING_WINDOW`; the
-TransitionRecord now carries the recorded proposer key, SPACE 74 → 106).
-Constraint reports, plans, signals, and the remaining lifecycle
-instructions are next.
+TransitionRecord now carries the recorded proposer key, SPACE 74 → 106)
++ `submit_plan` (Planning-only, before the deadline, plan agent ==
+caller, one plan per agent via PDA seeds, capacity NOT checked here —
+COMPAT at reconcile/commit; standalone PlanRecord accounts, SPACE 253;
+TransitionRecord gains `plan_count`, SPACE 106 → 110, so TooManyPlans
+is enforceable on-chain). Carried gap, stated in the code: the kernel's
+group-overlap half of plan eligibility awaits `relevant_groups` on the
+record (manifest completion); this slice enforces the active half.
+Constraint reports, signals, and the remaining lifecycle instructions
+are next.
 
 **Design:** `files/OWN_IDL_DESIGN.md` (W4.1, validated and revised
 2026-10-24; W4.3 GO given by Carlos 2026-10-24 ~03:39 CST). Placement C: the
