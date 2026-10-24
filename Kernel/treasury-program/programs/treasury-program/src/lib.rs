@@ -547,6 +547,18 @@ pub const TREASURY_WINDOW_TYPE: [u8; 32] = [
     121, 164, 9, 39, 178, 22, 107, 67, 20, 222, 160, 106, 231, 127, 207,
 ];
 
+/// Canonical transition-type id for `treasury.exit.v1`: SHA-256 of
+/// the bytes `treasury.exit.v1`. Only a Committed transition of this
+/// type authorizes `schedule_whale_exit` — the whale schedule is a
+/// governed exit contract, not a holder-side convenience, so its
+/// authority is a transition of its own type, not the window flow's
+/// (`ScheduleMismatch` otherwise). The same machine-checkable
+/// domain-tag discipline as the window, init, and launch types.
+pub const TREASURY_EXIT_TYPE: [u8; 32] = [
+    9, 240, 135, 210, 223, 48, 195, 245, 154, 6, 13, 81, 88, 230, 196, 158,
+    209, 166, 62, 101, 10, 160, 167, 184, 155, 53, 66, 198, 210, 241, 254, 109,
+];
+
 /// Operator-settlement capability id (design §5): SHA-256 of the
 /// bytes `operator.settle`. The payout instructions check this id
 /// against the operator's AgentRecord capabilities — "Operator" is
@@ -2958,6 +2970,81 @@ pub mod treasury_program {
         });
         Ok(())
     }
+
+    /// Schedule a whale exit (design §4.2): the window protocol's
+    /// timed/tranched exit contract, for purses above movable
+    /// liquidity. Holder-signed intent — the holder schedules
+    /// their own exit, the HolderRecord PDA seeds bind the record
+    /// to the signer — but the authority is a Committed
+    /// `treasury.exit.v1` transition, a governed exit contract of
+    /// its own type, not the window flow transition that gates
+    /// `exit` itself. The schedule is created here; tranches are
+    /// executed by `execute_whale_tranche` (the operator-settled
+    /// counterpart, next slice), one per period at or below L.
+    ///
+    /// The classification reading, stated plainly because the
+    /// design row names it in one line ("purse above movable
+    /// liquidity exits only on a timed/tranched schedule; below
+    /// L: open-trader path"): a schedule exists only for a whale
+    /// purse, so a total at or below L refuses here with
+    /// `BelowWhaleThreshold` — that holder uses the open-trader
+    /// `exit` path, not a schedule. A total above the holder's
+    /// locked position refuses with `ScheduleExceedsPosition`:
+    /// a schedule cannot promise an exit of principal the holder
+    /// does not hold. The tranche size is L itself (judged on
+    /// the window's period-start snapshot total, never a live
+    /// total, exactly as `exit` judges its per-order bound), and
+    /// the tranche count is the ceiling of total over L — the
+    /// last tranche is the remainder, computed at execution
+    /// time, so the schedule stores the standard tranche size
+    /// and the count, not a per-tranche list. A snapshot total
+    /// whose movable liquidity is zero sizes no schedule at
+    /// all (`InvalidScheduleAmount`): a window with no exit
+    /// budget cannot host a timed exit.
+    ///
+    /// Honest scope, as in the sibling slices: this slice
+    /// records the schedule as bookkeeping — total, standard
+    /// tranche, count, zero executed — and does NOT move tokens,
+    /// debit the window's exit stock, or reduce the position.
+    /// The stock debit and the position reduction happen per
+    /// tranche at execution, each tranche bounded by L again,
+    /// so the schedule as a whole can never drain more than
+    /// its tranches sum to, and no single tranche exceeds L.
+    pub fn schedule_whale_exit(
+        ctx: Context<ScheduleWhaleExit>,
+        transition_id: u64,
+        window_id: u64,
+        total_raw: u64,
+    ) -> Result<()> {
+        let (tranche_raw, tranches_total) = can_schedule_whale_exit(
+            ctx.accounts.transition_record.state,
+            ctx.accounts.transition_record.transition_type,
+            ctx.accounts.holder_record.window_id,
+            window_id,
+            total_raw,
+            ctx.accounts.holder_record.position_raw,
+            ctx.accounts.window_state.snapshot_total_raw,
+        )?;
+        let schedule = &mut ctx.accounts.exit_schedule;
+        schedule.holder = ctx.accounts.holder.key();
+        schedule.window_id = window_id;
+        schedule.total_raw = total_raw;
+        schedule.tranche_raw = tranche_raw;
+        schedule.tranches_total = tranches_total;
+        schedule.tranches_executed = 0;
+        schedule.bump = ctx.bumps.exit_schedule;
+        emit!(WhaleScheduleCreated {
+            window_id,
+            holder: ctx.accounts.holder.key(),
+            total_raw,
+            tranche_raw,
+            tranches_total,
+            transition_id,
+            commit_index: ctx.accounts.transition_record.commit_index,
+            declared_hash: ctx.accounts.transition_record.declared_hash,
+        });
+        Ok(())
+    }
 }
 
 /// Who may open planning, as a pure check (design §4.1, kernel
@@ -4266,6 +4353,54 @@ pub fn can_exit(
     Ok((penalty_raw, paid_raw))
 }
 
+/// Who may schedule a whale exit, as a pure check (design §4.2,
+/// D-10): the authorizing transition must be Committed and of
+/// the canonical `treasury.exit.v1` type, and the holder's record
+/// must belong to the scheduled window — a schedule names its
+/// authority by type, never by claim, exactly as `exit` does for
+/// the window flow type. Returns the standard tranche size (L)
+/// and the tranche count (ceiling of total over L). The checks,
+/// in order: committed state, type + window binding, positive
+/// total, a nonzero movable liquidity (a zero-L snapshot sizes
+/// no schedule), the whale threshold itself (total strictly
+/// above L — at or below L the holder is an open trader and
+/// uses `exit`, not a schedule), and the position bound (the
+/// schedule cannot exceed what the holder holds). The ceiling
+/// division is checked: L is proven nonzero above, so the
+/// division cannot fault, and the count is at least 2 whenever
+/// the threshold passes (total > L), never a degenerate
+/// one-tranche "schedule" for a whale purse.
+pub fn can_schedule_whale_exit(
+    state: u8,
+    transition_type: [u8; 32],
+    record_window_id: u64,
+    window_id: u64,
+    total_raw: u64,
+    position_raw: u64,
+    snapshot_total_raw: u64,
+) -> Result<(u64, u64)> {
+    require!(state == STATE_COMMITTED, TreasuryError::BadState);
+    require!(
+        transition_type == TREASURY_EXIT_TYPE && record_window_id == window_id,
+        TreasuryError::ScheduleMismatch
+    );
+    require!(total_raw != 0, TreasuryError::InvalidScheduleAmount);
+    let liquidity = movable_liquidity(snapshot_total_raw as u128);
+    require!(liquidity != 0, TreasuryError::InvalidScheduleAmount);
+    require!(
+        total_raw as u128 > liquidity,
+        TreasuryError::BelowWhaleThreshold
+    );
+    require!(
+        total_raw <= position_raw,
+        TreasuryError::ScheduleExceedsPosition
+    );
+    let tranche_raw = liquidity as u64;
+    let tranches_total =
+        (total_raw as u128).div_ceil(liquidity) as u64;
+    Ok((tranche_raw, tranches_total))
+}
+
 /// A window's rotation slot (design §4.2, D-1): the 12-slot
 /// rotation, so the slot is the window id mod 12. The window id
 /// itself is the unique lock-cycle identifier and is never reduced
@@ -4585,6 +4720,25 @@ pub struct Exited {
     pub penalty_raw: u64,
     pub paid_raw: u64,
     pub position_after_raw: u64,
+    pub transition_id: u64,
+    pub commit_index: u64,
+    pub declared_hash: [u8; 32],
+}
+
+/// Whale schedule created (design §4.2, §6): the scheduled
+/// total, the standard tranche size (L), and the tranche count
+/// — plus the authorization context, the Committed
+/// `treasury.exit.v1` transition's id, commit index, and
+/// declared hash. The schedule here is bookkeeping, not a
+/// token movement: no stock is debited and no position moves
+/// until tranches execute.
+#[event]
+pub struct WhaleScheduleCreated {
+    pub window_id: u64,
+    pub holder: Pubkey,
+    pub total_raw: u64,
+    pub tranche_raw: u64,
+    pub tranches_total: u64,
     pub transition_id: u64,
     pub commit_index: u64,
     pub declared_hash: [u8; 32],
@@ -5552,6 +5706,50 @@ impl HolderRecord {
     pub const SPACE: usize = 8 + 32 + 8 + 8 + 8 + 8 + 8 + 8 + 1 + 1 + 8 + 1 + 1;
 }
 
+/// Whale exit schedule (design §3, §4.2) — one per holder per
+/// window, the timed/tranched exit contract for a purse above
+/// movable liquidity. Created only by `schedule_whale_exit`,
+/// which is the only writer of the creation fields; the
+/// execution family writes `tranches_executed`, and no
+/// instruction withdraws an active schedule (design §7,
+/// committed-inventory exits: no withdrawal instruction exists
+/// for an active schedule). The schedule stores the standard
+/// tranche size (L, judged on the window's period-start
+/// snapshot) and the tranche count — the last tranche is the
+/// remainder of total over L, computed at execution time, so
+/// no per-tranche list is stored and no tranche can be
+/// re-sized after creation. The position is not reduced here:
+/// each executed tranche reduces it then, bounded by L again.
+#[account]
+pub struct ExitSchedule {
+    /// The scheduling holder's key (PDA seed component).
+    pub holder: Pubkey,
+    /// The window (lock cycle) this schedule exits from (PDA
+    /// seed component).
+    pub window_id: u64,
+    /// Total scheduled exit, kernel fixed-point raw. Strictly
+    /// above L at creation (the whale threshold, D-10) and at
+    /// most the holder's locked position.
+    pub total_raw: u64,
+    /// Standard tranche size: L = T/6 of the window's
+    /// period-start snapshot total. Every tranche is at most
+    /// this; the last is the remainder.
+    pub tranche_raw: u64,
+    /// Tranche count: ceiling of total over L, at least 2.
+    pub tranches_total: u64,
+    /// Tranches already executed by `execute_whale_tranche`.
+    /// Zero at creation; the schedule is complete at equality
+    /// with `tranches_total`.
+    pub tranches_executed: u64,
+    /// PDA bump for the `["schedule", window_id, holder]` seeds.
+    pub bump: u8,
+}
+
+impl ExitSchedule {
+    /// 8 (discriminator) + 32 + 5 × 8 + 1.
+    pub const SPACE: usize = 8 + 32 + 8 + 8 + 8 + 8 + 8 + 1;
+}
+
 /// Accounts for [`treasury_program::submit_signal`].
 #[derive(Accounts)]
 #[instruction(transition_id: u64, round: u32)]
@@ -6182,6 +6380,52 @@ pub struct Exit<'info> {
     pub holder_record: Account<'info, HolderRecord>,
 }
 
+/// Accounts for [`treasury_program::schedule_whale_exit`].
+#[derive(Accounts)]
+#[instruction(transition_id: u64, window_id: u64, total_raw: u64)]
+pub struct ScheduleWhaleExit<'info> {
+    /// The scheduling holder (signer). Holder-signed intent:
+    /// the record below is seeds-bound to this signer, so a
+    /// holder schedules only their own exit, and the `init`
+    /// constraint makes a second schedule for the same holder
+    /// in the same window fail at account creation. Pays the
+    /// schedule account's rent (disclosed up front, design
+    /// §2.3) — hence `mut`, the Enroll pattern.
+    #[account(mut)]
+    pub holder: Signer<'info>,
+    /// The exit-contract transition, seeds-bound to its id.
+    /// Must be Committed and of the canonical
+    /// `treasury.exit.v1` type — the authority for this
+    /// schedule, not the window flow transition.
+    #[account(seeds = [b"transition", transition_id.to_le_bytes().as_ref()], bump = transition_record.bump)]
+    pub transition_record: Account<'info, TransitionRecord>,
+    /// The window being scheduled from, seeds-bound to its id.
+    /// Read-only here: scheduling moves neither the roster
+    /// nor the snapshot — but its period-start snapshot total
+    /// is the D-10 threshold's basis, so the account's presence
+    /// binds the schedule to an opened window.
+    #[account(seeds = [b"window", window_id.to_le_bytes().as_ref()], bump = window_state.bump)]
+    pub window_state: Account<'info, WindowState>,
+    /// The holder's record for this window, seeds-bound to the
+    /// window and the signer. Read-only here: the position is
+    /// the schedule's upper bound, and it moves only when
+    /// tranches execute, not when the schedule is created.
+    #[account(seeds = [b"holder", window_id.to_le_bytes().as_ref(), holder.key().as_ref()], bump = holder_record.bump)]
+    pub holder_record: Account<'info, HolderRecord>,
+    /// The schedule PDA — created here, and nowhere else, so
+    /// the creation fields are written exactly once.
+    #[account(
+        init,
+        payer = holder,
+        space = ExitSchedule::SPACE,
+        seeds = [b"schedule", window_id.to_le_bytes().as_ref(), holder.key().as_ref()],
+        bump
+    )]
+    pub exit_schedule: Account<'info, ExitSchedule>,
+    /// System program for the schedule account's rent.
+    pub system_program: Program<'info, System>,
+}
+
 /// Accounts for [`treasury_program::set_capacity`].
 #[derive(Accounts)]
 #[instruction(resource_id: u16)]
@@ -6574,6 +6818,30 @@ pub enum TreasuryError {
     /// budget, and this order would pass it.
     #[msg("Exit stock exhausted: the window's remaining exit stock cannot cover this exit.")]
     ExitStockExhausted,
+    /// A whale schedule does not match its window: the
+    /// authorizing transition is not a canonical
+    /// `treasury.exit.v1` transition, or the holder's record
+    /// belongs to another window. A schedule names its
+    /// authority by type, never by claim.
+    #[msg("Schedule window mismatch: authorizing transition is not a treasury.exit.v1 transition, or the holder's record belongs to another window.")]
+    ScheduleMismatch,
+    /// A whale schedule amount must be positive, and its
+    /// window's movable liquidity must be nonzero: a zero
+    /// schedule schedules nothing, and a zero-L snapshot sizes
+    /// no schedule at all.
+    #[msg("Schedule amount must be positive, and the window's movable liquidity must be nonzero.")]
+    InvalidScheduleAmount,
+    /// The scheduled total is at or below one period's movable
+    /// liquidity: a purse at or below L is an open-trader
+    /// position, not a whale purse, and exits through `exit`
+    /// instead of a schedule.
+    #[msg("Below whale threshold: a schedule exists only for a purse above one period's movable liquidity.")]
+    BelowWhaleThreshold,
+    /// The scheduled total exceeds the holder's locked
+    /// position: a schedule cannot promise an exit of
+    /// principal the holder does not hold.
+    #[msg("Schedule exceeds position: the scheduled total must fit inside the holder's locked position.")]
+    ScheduleExceedsPosition,
 }
 
 #[cfg(test)]
@@ -8723,5 +8991,92 @@ mod tests {
             600_000, 100_000,
         )
         .expect("an exit down to exactly the outstanding loan passes");
+    }
+
+    #[test]
+    fn schedule_whale_exit_gate_matrix() {
+        // Happy paths, snapshot 600,000 so L = 100,000:
+        // 250,000 over a 300,000 position schedules in 3
+        // tranches of 100,000 (last tranche the 50,000
+        // remainder, computed at execution time); 200,001
+        // also takes 3 tranches; exactly 200,000 takes 2.
+        let (tranche, count) = can_schedule_whale_exit(
+            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 250_000, 300_000, 600_000,
+        )
+        .expect("a whale purse above L schedules");
+        assert_eq!(tranche, 100_000);
+        assert_eq!(count, 3);
+        let (_, count) = can_schedule_whale_exit(
+            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 200_001, 300_000, 600_000,
+        )
+        .expect("a remainder past a whole tranche adds one");
+        assert_eq!(count, 3);
+        let (_, count) = can_schedule_whale_exit(
+            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 200_000, 300_000, 600_000,
+        )
+        .expect("an exact multiple takes no extra tranche");
+        assert_eq!(count, 2);
+        // Gate failures: non-committed state, wrong type,
+        // record-window mismatch.
+        assert!(can_schedule_whale_exit(
+            STATE_PLANNING, TREASURY_EXIT_TYPE, 13, 13, 250_000, 300_000, 600_000
+        )
+        .is_err());
+        assert!(can_schedule_whale_exit(
+            STATE_COMMITTED, TREASURY_WINDOW_TYPE, 13, 13, 250_000, 300_000, 600_000
+        )
+        .is_err());
+        assert!(can_schedule_whale_exit(
+            STATE_COMMITTED, TREASURY_EXIT_TYPE, 12, 13, 250_000, 300_000, 600_000
+        )
+        .is_err());
+        // Amount failures: zero total, zero-L snapshot,
+        // and the whale threshold itself — at L exactly and
+        // below L the holder is an open trader, not a whale.
+        assert!(can_schedule_whale_exit(
+            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 0, 300_000, 600_000
+        )
+        .is_err());
+        assert!(can_schedule_whale_exit(
+            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 250_000, 300_000, 5
+        )
+        .is_err());
+        assert!(can_schedule_whale_exit(
+            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 100_000, 300_000, 600_000
+        )
+        .is_err());
+        assert!(can_schedule_whale_exit(
+            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 99_999, 300_000, 600_000
+        )
+        .is_err());
+        // Position bound: 250,000 scheduled against a
+        // 200,000 position refuses, whatever the threshold.
+        assert!(can_schedule_whale_exit(
+            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 250_000, 200_000, 600_000
+        )
+        .is_err());
+        // At the bound exactly, a 250,000 schedule against a
+        // 250,000 position passes.
+        can_schedule_whale_exit(
+            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 250_000, 250_000, 600_000,
+        )
+        .expect("a schedule exactly at the position passes");
+        // Scale invariance of the threshold: the same
+        // 250,000 purse is a whale at a 600,000 snapshot
+        // (L = 100,000) and an open trader at a 6,000,000
+        // snapshot (L = 1,000,000).
+        assert!(can_schedule_whale_exit(
+            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 250_000, 300_000, 6_000_000
+        )
+        .is_err());
+        // The exit type id is its own domain tag, distinct
+        // from every other transition type.
+        assert_ne!(TREASURY_EXIT_TYPE, TREASURY_WINDOW_TYPE);
+        assert_ne!(TREASURY_EXIT_TYPE, TREASURY_LAUNCH_TYPE);
+        assert_ne!(TREASURY_EXIT_TYPE, TREASURY_INIT_TYPE);
+        assert_ne!(TREASURY_EXIT_TYPE, POLICY_TRANSITION_TYPE);
+        // The schedule account's space arithmetic matches its
+        // fields: discriminator + holder + five u64s + bump.
+        assert_eq!(ExitSchedule::SPACE, 8 + 32 + 8 + 8 + 8 + 8 + 8 + 1);
     }
 }

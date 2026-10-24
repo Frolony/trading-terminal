@@ -630,3 +630,39 @@ errors 58 → 64 (`ExitMismatch`, `InvalidExitAmount`,
 and the inclusive loan floor). Next, in design order:
 the whale schedule (`schedule_whale_exit` /
 `execute_whale_tranche`), then §4.3 distribution.
+**This increment adds `schedule_whale_exit` (design §4.2, D-10)** — the
+ninth §4.2 instruction and the first half of the whale schedule pair
+(the window protocol's timed/tranched exit contract, after `exit` in
+design order). Holder-signed intent, but the authority is a Committed
+`treasury.exit.v1` transition — a governed exit contract of its own
+type, not the window flow transition that gates `exit` itself (new
+canonical type id, SHA-256 of `treasury.exit.v1`, machine-checkable
+like the rest). The classification rule, stated plainly: a schedule
+exists only for a whale purse, so a total at or below L = T/6 of the
+window's period-start snapshot total refuses with
+`BelowWhaleThreshold` — that holder is an open trader and uses `exit`,
+not a schedule — and a total above the holder's locked position
+refuses with `ScheduleExceedsPosition`. The tranche size is L itself
+and the count is the ceiling of total over L (the last tranche is the
+remainder, computed at execution time), so no per-tranche list is
+stored and no tranche can be re-sized after creation; a zero-L
+snapshot sizes no schedule at all. The `init` constraint makes a
+second schedule for the same holder in the same window fail at account
+creation, and the holder pays the schedule account's rent (the Enroll
+pattern — the payer must be `mut`, a compile lesson recorded here:
+the first build failed on exactly that, plus the cascading Bumps
+errors it produced). Honest scope, as in the sibling slices:
+bookkeeping only (total, standard tranche, count, zero executed) —
+no token movement, no exit-stock debit, no position reduction; those
+happen per tranche at execution, each bounded by L again. The
+gate matrix proves the threshold's scale invariance directly: the
+same 250,000 purse is a whale at a 600,000 snapshot (L = 100,000) and
+an open trader at a 6,000,000 snapshot (L = 1,000,000). IDL:
+instructions 33 → 34 (incl. `schedule_whale_exit`), accounts 15 → 16
+(new `ExitSchedule`), errors 64 → 68 (`ScheduleMismatch`,
+`InvalidScheduleAmount`, `BelowWhaleThreshold`,
+`ScheduleExceedsPosition`). Program host tests 73 → 74 (the schedule
+gate matrix, incl. the threshold, the position bound, and the
+scale-invariance pair). Next, in design order:
+`execute_whale_tranche` (the operator-settled counterpart), then §4.3
+distribution.
