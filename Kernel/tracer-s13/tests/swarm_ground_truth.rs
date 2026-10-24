@@ -53,8 +53,9 @@
 //! ## Gate status after this pass
 //!
 //! The devnet-swarm half of W6.2 is DONE. The W6.2 gate stays CLOSED:
-//! remaining are the MM-unwind/WashLoop stitcher overlap, the
-//! PositionClose reachability ruling, and real labeled mainnet routes.
+//! remaining are real labeled mainnet routes (plus the stateless
+//! partial-vs-full close limit). The MM-unwind overlap and the
+//! PositionClose dead arm have since been resolved at the classifier.
 //! No label is user-facing.
 
 use tracer_s13::classify::{classify, Label, CONFIDENCE_THRESHOLD};
@@ -405,7 +406,7 @@ fn swarm_ground_truth_workflows() {
         }
     }
     println!("--- summary: {passed}/{} cases passed ---", corpus.len());
-    println!("--- gate: STILL CLOSED. Devnet-swarm half landed; remaining: MM-unwind/WashLoop stitcher overlap, PositionClose reachability ruling, real labeled mainnet routes. No label is user-facing. ---");
+    println!("--- gate: STILL CLOSED. Devnet-swarm half landed; remaining: real labeled mainnet routes (+ stateless partial-vs-full close limit). No label is user-facing. ---");
     println!("=== end of W6.2 validation report ===");
 
     assert!(

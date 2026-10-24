@@ -565,3 +565,40 @@ fn t35_circular_with_swap_leg_stays_wash() {
     assert!(v.confidence() >= 0.85, "3-hop loop: {}", v.confidence());
     assert_ne!(v.label(), Some(Label::MarketMaker), "a swap leg voids the unwind reading");
 }
+
+// T36 — position close, the W6.2 dead-arm resolution: a standalone removal
+// leg (pool -> user, decreaseLiquidity) labels PositionClose. Before this
+// arm the same leg mislabeled as PositionOpen, because the stitcher's
+// origin is the pool and the net reading saw only the pool's outflow.
+// The instruction semantics, not the origin wallet, carry the reading.
+#[test]
+fn t36_position_close_single_remove_labeled() {
+    let verdicts = run(vec![
+        ev("sig0", 760, 0, "pool1", "user2", "SOL", 1_999_000_000, "P_clmm", "decreaseLiquidity", 5000),
+    ]);
+    assert_eq!(verdicts.len(), 1);
+    let v = &verdicts[0];
+    assert_eq!(v.label(), Some(Label::PositionClose));
+    assert!(v.confidence() >= 0.75, "close leg: {}", v.confidence());
+    assert_ne!(v.label(), Some(Label::PositionOpen), "a close leg is not an open");
+    assert!(!v.is_guess());
+    let h = headline(v);
+    assert!(h.contains("Position closed"), "headline: {h}");
+    assert!(v.net.net_of("user2", "SOL") == 1_999_000_000);
+}
+
+// T37 — the close arm's guard, proved: a removal leg whose receiver sends
+// the funds onward in the same workflow is routing, not a terminal close,
+// so the arm must not claim it. (What it falls through to — the pool's
+// outflow reading — is the net arm's business, not asserted here; the
+// guard's job is only that PositionClose does not fire.)
+#[test]
+fn t37_close_guard_receiver_sends_onward_not_close() {
+    let verdicts = run(vec![
+        ev("sig0", 770, 0, "pool1", "user2", "SOL", 1_999_000_000, "P_clmm", "decreaseLiquidity", 5000),
+        ev("sig1", 770, 1, "user2", "friend9", "SOL", 1_998_000_000, "P_agg", "swap", 5000),
+    ]);
+    assert_eq!(verdicts.len(), 1, "the two legs are one workflow");
+    let v = &verdicts[0];
+    assert_ne!(v.label(), Some(Label::PositionClose), "routed removal is not a close");
+}

@@ -17,23 +17,26 @@
 //! * NOT covered yet: ground truth from real labeled mainnet routes.
 //!   Ground truth from our own devnet swarm traffic landed as the second
 //!   pass (`tests/swarm_ground_truth.rs`, commit `fd20df35`).
-//! * One honest gap this pass still *pins* rather than fixes, as
-//!   [`WfExpect::KnownLimitation`]: [`Label::PositionClose`] has no
-//!   constructible fixture under the current stitcher — hop 1 always
-//!   debits the origin wallet, and any same-mint return home closes the
-//!   loop first (wash, priority 1), so a close intent either mislabels as
-//!   WashLoop (return home) or as PositionOpen (return swept elsewhere).
-//!   The case asserts the machine's CURRENT reading so that any future fix
-//!   flips it loudly; the report names it as a launch-gate blocker.
-//!   (The second gap this file once pinned — the MM-unwind/WashLoop
-//!   overlap — was RESOLVED by the classifier's `mm_unwind_candidate` arm:
-//!   a closed loop of pure liquidity-management legs now reads as
-//!   MarketMaker, and the case below asserts the corrected reading.)
+//! * Both gaps this file once pinned are now RESOLVED, in the same pattern:
+//!   the MM-unwind/WashLoop overlap by the classifier's
+//!   `mm_unwind_candidate` arm, and the PositionClose dead arm by the
+//!   `position_close_candidate` arm — a standalone removal leg IS
+//!   constructible (its workflow starts at the pool, so the net reading
+//!   mislabeled it PositionOpen; the instruction semantics carry the
+//!   reading instead), and the case below asserts the corrected reading.
+//!   The old "closest constructible close" fixture is reframed, not
+//!   deleted: from the data its origin net is outflow-only, so PositionOpen
+//!   is the honest reading of that fixture, and the close reading needs
+//!   removal legs alone. The [`WfExpect::KnownLimitation`] variant is
+//!   retained for future pinned gaps; no case currently uses it.
+//!   Remaining limit, stated not hidden: the stateless classifier cannot
+//!   distinguish a full close from a partial removal (both are removal legs
+//!   to one wallet) — full-close certainty needs cross-window position
+//!   state, a W6.2 follow-up after mainnet validation.
 //!
 //! The W6.2 gate stays CLOSED after this pass: no label is user-facing
-//! until (a) the PositionClose reachability question is ruled on
-//! (windowed-ingestion shape, or the arm is retired) and (b) real labeled
-//! mainnet routes validate the corpus.
+//! until real labeled mainnet routes validate the corpus (plus the
+//! partial-vs-full close limit above).
 
 use tracer_s13::attestation::{
     attest, AttestationLabel, AttestationRecord, CausalTime, RealizedEvent,
@@ -105,6 +108,9 @@ enum WfExpect {
     MustStayUnclassified,
     /// A documented gap: asserts the machine's CURRENT reading (pins it so
     /// a future fix flips the case loudly) and carries the launch-gate note.
+    /// Retained for future pinned gaps; no case uses it since the
+    /// PositionClose resolution (see the header note).
+    #[allow(dead_code)]
     KnownLimitation { observed_label: Label, min_confidence: f64, gate_note: &'static str },
 }
 
@@ -276,22 +282,21 @@ fn workflow_corpus() -> Vec<WfCase> {
             expect: WfExpect::MustLabel { label: Label::MarketMaker, min_confidence: 0.75 },
         },
         WfCase {
-            name: "position_close_dead_arm",
-            ground_truth: "a close intent with the return swept to a second wallet — the closest constructible 'close'",
+            name: "position_close_single_remove",
+            ground_truth: "a standalone removal leg returning funds to one wallet: a position closed (stateless limit: full vs partial close indistinguishable here)",
+            events: vec![
+                ev("k4", 955, 0, "pool9", "user9", "SOL", 999_000_000, "P_clmm", "decreaseLiquidity", 5000),
+            ],
+            expect: WfExpect::MustLabel { label: Label::PositionClose, min_confidence: 0.75 },
+        },
+        WfCase {
+            name: "position_open_with_swept_removal",
+            ground_truth: "open leg plus a removal swept to a second wallet — from the data the origin's net is outflow-only, so PositionOpen is the honest reading; the old 'closest constructible close' framing is withdrawn, since a standalone removal leg (see position_close_single_remove) IS constructible",
             events: vec![
                 ev("k2", 950, 0, "mm5", "pool5", "SOL", 1_000_000_000, "P_clmm", "increaseLiquidity", 5000),
                 ev("k3", 950, 1, "pool5", "mm6", "SOL", 999_000_000, "P_clmm", "decreaseLiquidity", 5000),
             ],
-            expect: WfExpect::KnownLimitation {
-                observed_label: Label::PositionOpen,
-                min_confidence: 0.75,
-                gate_note: "DEAD ARM: Label::PositionClose has no constructible fixture under the current \
-                    stitcher — hop 1 always debits the origin wallet, and any same-mint return home \
-                    closes the loop first (wash, priority 1). A close intent mislabels as WashLoop \
-                    (return home) or PositionOpen (return swept elsewhere, as here). Reachability needs \
-                    windowed ingestion (the open leg outside the window) — an open W6.2 design question; \
-                    the arm is pinned here, not redesigned.",
-            },
+            expect: WfExpect::MustLabel { label: Label::PositionOpen, min_confidence: 0.75 },
         },
     ]
 }
@@ -416,10 +421,13 @@ fn w62_labeled_route_validation_corpus() {
     let total = wf_corpus.len() + att_corpus.len();
     println!("--- summary: {passed}/{total} cases passed ---");
     println!("--- known limitations (launch-gate blockers, pinned above) ---");
+    if gate_blockers.is_empty() {
+        println!("  [none — all pinned gaps resolved; gate held by mainnet routes + the partial-vs-full close limit]");
+    }
     for (name, note) in &gate_blockers {
         println!("  [BLOCKER] {name}: {note}");
     }
-    println!("--- gate: CLOSED. Remaining: PositionClose reachability ruling + real labeled mainnet routes. ---");
+    println!("--- gate: CLOSED. Remaining: real labeled mainnet routes (+ stateless partial-vs-full close limit). ---");
     println!("=== end of W6.2 validation report ===");
 
     assert!(

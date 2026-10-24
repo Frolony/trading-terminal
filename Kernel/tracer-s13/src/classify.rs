@@ -182,18 +182,24 @@ fn distinct_venues(hits: &[Option<VenueHit>]) -> Vec<Venue> {
 ///    the same hops; a loop that looks like routing is still a loop.
 /// 3. [`Label::TreasuryTransition`] — our own program's flows are labeled
 ///    as what they are before venue heuristics get a say.
-/// 4. [`Label::PositionOpen`] / [`Label::PositionClose`] — a user wallet
-///    with a one-sided net answers the tracer's core question ("did anyone
-///    take a real position?") directly.
-/// 5. [`Label::AggregatorSplit`] — multi-venue pass-through routing.
-/// 6. [`Label::CrossMintRoundTrip`] — a completed swap whose output leg came
+/// 4. [`Label::PositionClose`] — a workflow of removal legs only, all
+///    returning funds to one wallet that sends nothing onward: a position
+///    closed (or reduced — the stateless limit, see
+///    [`position_close_candidate`]). Evaluated before PositionOpen because
+///    the naive one-sided-net reading mislabels a close leg as an open.
+/// 5. [`Label::PositionOpen`] (net reading) — a user wallet with a
+///    one-sided outflow net answers the tracer's core question ("did anyone
+///    take a real position?") directly. The inflow side of that reading is
+///    claimed by the removal-leg arm above, so a close leg never lands here.
+/// 6. [`Label::AggregatorSplit`] — multi-venue pass-through routing.
+/// 7. [`Label::CrossMintRoundTrip`] — a completed swap whose output leg came
 ///    home in a different mint. Evaluated after AggregatorSplit so
 ///    multi-venue routes keep the plumbing reading; single-venue or short
 ///    completed swaps get the round-trip reading. Both can match; the order
 ///    is the overlap rule, stated here.
-/// 7. [`Label::MarketMaker`] — inventory cycling or managed-with-harvest.
-/// 8. [`Label::IncentiveFarming`] — position plus repeated harvest.
-/// 9. [`Label::LiquidityAddRemove`] — pool liquidity moves with no swap legs.
+/// 8. [`Label::MarketMaker`] — inventory cycling or managed-with-harvest.
+/// 9. [`Label::IncentiveFarming`] — position plus repeated harvest.
+/// 10. [`Label::LiquidityAddRemove`] — pool liquidity moves with no swap legs.
 ///
 /// The reported confidence still reflects the evidence strength; the order
 /// only decides ties and overlaps. The sealed verdict enforces the
@@ -215,6 +221,7 @@ pub fn classify(dict: &Dictionary, wf: &Workflow) -> Verdict {
     let candidate: Option<(Label, f64, String)> = mm_unwind_candidate(&hop_kinds_aligned, wf)
         .or_else(|| wash_candidate(wf, &net))
         .or_else(|| treasury_candidate(wf, &hits, &has_venue))
+        .or_else(|| position_close_candidate(&hop_kinds_aligned, wf, &venues))
         .or_else(|| position_candidate(wf, &net, &venues, recognized))
         .or_else(|| aggregator_candidate(wf, &net, &venues))
         .or_else(|| cross_mint_round_trip_candidate(wf, &net, &venues, &hop_kinds, recognized))
@@ -344,10 +351,77 @@ fn treasury_candidate(
     ))
 }
 
+/// PositionClose (removal-leg arm): the W6.2 dead-arm resolution. The
+/// stitcher defines a workflow's origin as its first hop's `from`, so a
+/// close leg's workflow starts AT the pool — and the net reading below
+/// would then mislabel the pool's outflow as a PositionOpen. The
+/// instruction semantics rescue the reading: a workflow whose every leg
+/// is a recognized liquidity-removal instruction (`decreaseLiquidity`,
+/// `closePosition`, …), all landing at one wallet that sends nothing
+/// onward in this window, is a position being taken OUT, not put in —
+/// whatever wallet the stitcher calls the origin. Guards, each load-bearing:
+/// non-circular (a loop is wash or an unwind, decided above); at most one
+/// venue (one position, not a route); every leg recognized and a removal
+/// (any swap, add, harvest, or unrecognized leg voids the arm — a
+/// removal routed onward is routing, not a terminal close, and a
+/// removal-plus-add is inventory management, decided below); one receiver
+/// that never sends. Strictly removal-only: under the greedy stitcher a
+/// close's harvest legs do not chain into this workflow (they arrive from
+/// the pool, not from the receiver), so no harvest allowance is pretended
+/// here — a close-with-harvest transaction splits into a close workflow
+/// and a harvest workflow, and the harvest-alone reading is a separate
+/// known quirk, not folded into this arm.
+/// Stated limit (stateless): this arm cannot distinguish a FULL close from
+/// a PARTIAL removal — both are removal legs to one wallet. Full-close
+/// certainty needs cross-window position state (an open ledger carried
+/// across windows), which this stateless classifier does not keep. The
+/// label therefore means "removal legs returned funds to this wallet", at
+/// 0.75, not "this wallet's position is provably zero". The gate still
+/// holds on real labeled mainnet routes; this limit is the next W6.2 item
+/// after them, not a reason to leave the arm dead.
+fn position_close_candidate(
+    hop_kinds_aligned: &[Option<HopKind>],
+    wf: &Workflow,
+    venues: &[Venue],
+) -> Option<(Label, f64, String)> {
+    if wf.is_circular || wf.hops.is_empty() || venues.len() > 1 {
+        return None;
+    }
+    if hop_kinds_aligned.iter().any(|k| k.is_none()) {
+        return None;
+    }
+    if hop_kinds_aligned
+        .iter()
+        .any(|k| !matches!(k, Some(HopKind::LiquidityRemove)))
+    {
+        return None;
+    }
+    let receiver = wf.hops.first()?.to.clone();
+    if wf.hops.iter().any(|h| h.to != receiver) {
+        return None;
+    }
+    if wf.hops.iter().any(|h| h.from == receiver) {
+        return None;
+    }
+    let removes = hop_kinds_aligned.len();
+    Some((
+        Label::PositionClose,
+        0.75,
+        format!(
+            "position removal legs returned funds to {receiver}: {removes} remove leg(s), no onward leg from the receiver in this window"
+        ),
+    ))
+}
+
 /// PositionOpen / PositionClose: a non-circular, at-most-one-venue flow
 /// where the origin wallet has a one-sided net (outflow only = open, inflow
 /// only = close) with no return leg. Requires at least one *recognized*
 /// hop: a lone unrecognized transfer is a payment until proven otherwise.
+/// The inflow side here is unreachable under the current stitcher, stated
+/// plainly: a workflow's origin always sends its first hop, so the origin
+/// can never have an inflow-only net — the branch is kept for symmetry
+/// and documentation, and the removal-leg arm above is the live
+/// PositionClose path, not this branch.
 fn position_candidate(
     wf: &Workflow,
     net: &NetEffect,
