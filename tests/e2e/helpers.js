@@ -70,12 +70,79 @@ export async function failFeeds(page) {
  * Every test starts from the N1.1 initial state ($10,000 / 0 holdings / 0 orders).
  */
 export async function freshPage(page) {
+  const consoleErrors = [];
+  page.on('console', (msg) => {
+    if (msg.type() === 'error') consoleErrors.push(msg.text().slice(0, 300));
+  });
+  page.on('pageerror', (err) => consoleErrors.push('pageerror: ' + String((err && err.message) || err).slice(0, 300)));
   await page.goto('/', { waitUntil: 'domcontentloaded' });
   await page.evaluate(() => localStorage.clear());
   await interceptFeeds(page);
   await page.goto('/');
-  await expect(page.getByTestId('feed-badge')).toContainText(/live feed/i, { timeout: 30000 });
+  await waitForFeedBadge(page, consoleErrors);
   await expect(page.getByTestId('pair-row').first()).toBeVisible({ timeout: 30000 });
+}
+
+/** Snapshot of what the page actually looked like, for badge-absence diagnostics. */
+export async function badgeDiagnostics(page, consoleErrors) {
+  let url = '',
+    title = '',
+    htmlLen = 0,
+    hasBadge = false,
+    bodyHead = '';
+  try {
+    url = page.url();
+  } catch (_) {}
+  try {
+    title = await page.title();
+  } catch (_) {}
+  try {
+    const html = await page.content();
+    htmlLen = html.length;
+    hasBadge = html.includes('data-testid="feed-badge"');
+    bodyHead = html.replace(/\s+/g, ' ').slice(0, 400);
+  } catch (_) {}
+  return (
+    `url=${url} title=${JSON.stringify(title)} htmlLen=${htmlLen} ` +
+    `rawHtmlHasBadge=${hasBadge} consoleErrors=${JSON.stringify(consoleErrors.slice(0, 5))} ` +
+    `bodyHead=${JSON.stringify(bodyHead)}`
+  );
+}
+
+/**
+ * Wait for the feed badge, resilient to bad page loads.
+ *
+ * The badge is STATIC HTML (src/index.html header; app JS only ever sets its
+ * textContent/style, never removes it — verified 2026-10-23): its absence from
+ * the DOM proves a bad page load (serving/network/rendering transient), never a
+ * product state. CI runs #10–#13 (2026-10-23) showed exactly this signature —
+ * `getByTestId('feed-badge')` "element(s) not found" for the full 30 s on a
+ * shifting contiguous block of end-of-run tests, each failing twice
+ * (initial + retry), while the same static badge was found minutes earlier and
+ * later in the same run. So on element-absence we capture diagnostics and take
+ * ONE reload before failing. The LIVE FEED text assertion below still runs at
+ * full strictness afterward — no product signal is weakened: a genuinely broken
+ * header would fail every load, not transiently.
+ */
+export async function waitForFeedBadge(page, consoleErrors) {
+  const badge = () => page.getByTestId('feed-badge');
+  try {
+    await expect(badge()).toBeAttached({ timeout: 30000 });
+  } catch (attachErr) {
+    const diag = await badgeDiagnostics(page, consoleErrors || []);
+    await page.reload();
+    try {
+      await expect(badge()).toBeAttached({ timeout: 30000 });
+    } catch (attachErr2) {
+      const diag2 = await badgeDiagnostics(page, consoleErrors || []);
+      throw new Error(
+        'feed-badge static element never attached (initial load + one reload). ' +
+          'This is a page-load/serving failure, not a product assertion. ' +
+          `diag-initial=[${diag}] diag-reload=[${diag2}] lastError=${attachErr2.message}`
+      );
+    }
+  }
+  await expect(badge()).toContainText(/live feed/i, { timeout: 30000 });
 }
 
 /** Paper ticket flow: fill size -> submit (opens the N4.4 review sheet) -> confirm. */
