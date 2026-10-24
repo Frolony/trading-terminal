@@ -409,3 +409,32 @@ is the one-time guarantee: a second launch refuses with
 IDL: instructions 26 → 27 (incl. `launch_stage2`), accounts 13 (no
 new account type), errors 38 → 41 (`LaunchMismatch`,
 `AlreadyLaunched`, `ThresholdUnset`). Program host tests 59 → 61.
+**This increment adds `open_window` (design §4.2)** — the third
+§4.2 instruction, in the same transition-executed form: a Settled
+`treasury.window.v1` transition authorizes opening the NEXT window
+(the window opens for the next cohort, never mid-window, D-11), and
+the window's own flow transitions are registered after open and ride
+the window, per the pinned window protocol's order of operations.
+Window ids run in sequence with no gaps or repeats, enforced by a
+counter on TreasuryState (`window_count`, advanced here and nowhere
+else; TreasuryState SPACE 57 → 65, init zeroes it) plus the Anchor
+`init` constraint on the WindowState PDA. The handler snapshots the
+period-start ledger (T, the three sleeves, the retained float, the
+lending book's outstanding) into the new WindowState account and
+sizes the window's exit stock fresh from the snapshot as movable
+liquidity (T/6, D-10) — that fresh sizing is the protocol's stock
+replenishment; the kernel capacity stocks are governed by
+`set_capacity` / commit debit and are not rewritten here. The roster
+hash starts zero (no roster exists at open; the writer lands with
+`enroll`). No exact-settle requirement (the effect is a fixed
+snapshot + counter advance). The executor is permissionless and pays
+the WindowState rent (operator-paid from the 73 bps fee flow,
+design §2.3). The source transition is recorded on the WindowState
+with its commit index as the authorization context, and the
+`WindowOpened` event carries the same context plus the exit stock.
+IDL: instructions 27 → 28 (incl. `open_window`), accounts 13 → 14
+(`WindowState`), errors 41 → 43 (`WindowMismatch`,
+`WindowNotSequential`). Program host tests 61 → 64 (window type id
+recomputed from the string, the open gate matrix, the exit-stock
+identity). Next, in design order: `enroll`, then the window's
+execution family (`pay_tranche` first, per the pinned protocol).

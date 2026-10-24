@@ -399,6 +399,24 @@
 //! exact-settle requirement (the effect is a fixed flag flip) and no
 //! execution flag (the flip itself is the one-time guarantee: a
 //! second launch refuses because the stage is no longer Stage 1).
+//! This increment adds `open_window` (design §4.2), the third §4.2
+//! instruction, in the same transition-executed form: a Settled
+//! `treasury.window.v1` transition authorizes opening the NEXT window
+//! — the window opens for the next cohort, never mid-window (D-11).
+//! Window ids run in sequence with no gaps or repeats, enforced by a
+//! counter on TreasuryState (`window_count`, advanced here and nowhere
+//! else) plus the Anchor `init` constraint on the WindowState PDA
+//! (the counter stops gaps, the `init` constraint backstops repeats).
+//! The handler snapshots the period-start ledger (T, the three sleeves,
+//! the retained float, the lending book's outstanding) and sizes the
+//! window's exit stock fresh from the snapshot as movable liquidity
+//! (T/6, D-10) — that fresh sizing is the protocol's stock
+//! replenishment; the kernel capacity stocks themselves are governed
+//! by `set_capacity` / commit debit and are not rewritten here. The
+//! roster hash starts zero (no roster exists at open; the writer lands
+//! with `enroll`). No exact-settle requirement (the effect is a fixed
+//! snapshot + counter advance). The executor is permissionless and pays
+//! the WindowState rent (operator-paid from the 73 bps fee flow).
 //! Nothing here is deployed: NO devnet deployment in W4.3, NO mainnet step
 //! exists in W4. No instruction here moves value.
 //!
@@ -485,6 +503,18 @@ pub fn max_outstanding(treasury: u128) -> u128 {
     treasury * (CASH_SLEEVE_PPM as u128) / PPM / 3
 }
 
+/// A window's exit stock, sized fresh from its period-start total:
+/// movable liquidity (T/6, D-10). The result never exceeds the total,
+/// so the narrowing cast cannot wrap. `open_window` stores this on
+/// the WindowState; the exit family then enforces the period budget
+/// as min(L, the window's exit stock) against that stored value, so
+/// repeated sub-L orders in one period cannot drain more than L in
+/// total — the D-10 hard bound, enforced by the program and the
+/// stock together, not by policy prose.
+pub fn window_exit_stock(total_raw: u64) -> u64 {
+    movable_liquidity(total_raw as u128) as u64
+}
+
 /// Canonical transition-type id for `treasury.init.v1`: SHA-256 of
 /// the bytes `treasury.init.v1`. Only a Settled transition of this
 /// type authorizes `initialize_treasury` — the domain tag is
@@ -504,6 +534,17 @@ pub const TREASURY_INIT_TYPE: [u8; 32] = [
 pub const TREASURY_LAUNCH_TYPE: [u8; 32] = [
     24, 150, 201, 135, 106, 198, 184, 96, 196, 151, 146, 230, 11, 122, 79, 108,
     12, 171, 180, 153, 187, 213, 179, 190, 241, 135, 160, 238, 225, 174, 59, 120,
+];
+
+/// Canonical transition-type id for `treasury.window.v1`: SHA-256 of
+/// the bytes `treasury.window.v1`. Only a Settled transition of this
+/// type authorizes `open_window` — the same machine-checkable
+/// domain-tag discipline as the init and launch types. A settled
+/// transition of any other type is not a window-opening source
+/// (`WindowMismatch`).
+pub const TREASURY_WINDOW_TYPE: [u8; 32] = [
+    4, 183, 159, 106, 50, 193, 247, 212, 60, 77, 35, 78, 18, 62, 225, 63, 78,
+    121, 164, 9, 39, 178, 22, 107, 67, 20, 222, 160, 106, 231, 127, 207,
 ];
 
 /// Bonds sleeve, 50% of T (50/25/25 portfolio, Carlos's 2026-10-22
@@ -2274,6 +2315,7 @@ pub mod treasury_program {
         state.arb_raw = 0;
         state.retained_float_raw = 0;
         state.backing_threshold_ppm = 0;
+        state.window_count = 0;
         state.bump = ctx.bumps.treasury_state;
         let book = &mut ctx.accounts.lending_book;
         book.outstanding_raw = 0;
@@ -2345,6 +2387,78 @@ pub mod treasury_program {
         emit!(Stage2Launched {
             transition_id,
             commit_index: source.commit_index,
+            executor: ctx.accounts.executor.key(),
+        });
+        Ok(())
+    }
+
+    /// Window open (design §4.2): open the NEXT window — the window
+    /// opens for the next cohort, never mid-window (D-11) — from a
+    /// Settled `treasury.window.v1` transition, in the same
+    /// transition-executed form as the init and the launch. The open
+    /// is authorized by committed governance, never by operator
+    /// discretion: the window's own flow transitions are registered
+    /// after open and ride the window (the pinned window protocol's
+    /// order of operations), so the source here is not the new
+    /// window's own flow transition.
+    ///
+    /// The handler snapshots the period-start ledger — T, the three
+    /// sleeves, the retained float, the lending book's outstanding —
+    /// from TreasuryState and LendingBook, and sizes the window's
+    /// exit stock fresh from the snapshot as movable liquidity
+    /// (T/6, D-10). That fresh sizing IS the protocol's stock
+    /// replenishment: the kernel capacity stocks themselves are
+    /// governed by `set_capacity` / commit debit and are not
+    /// rewritten here. The roster hash starts zero — no roster
+    /// exists at open; enrollments during the window build it, and
+    /// the roster-hash writer lands with `enroll`. The window
+    /// counter on TreasuryState advances here and nowhere else, so
+    /// a repeat open of the same id fails at the counter gate and
+    /// a gapped id fails there too (the Anchor `init` constraint
+    /// on the WindowState PDA is the backstop, not the mechanism).
+    /// Deliberately no exact-settle requirement, as with the init
+    /// and the launch: the effect is a fixed snapshot + counter
+    /// advance, so no declared payload exists for an inexact settle
+    /// to diverge from. The executor is permissionless and pays the
+    /// WindowState rent (operator-paid from the 73 bps fee flow,
+    /// design §2.3). This instruction moves no value; it opens the
+    /// window the value-moving family executes in.
+    pub fn open_window(
+        ctx: Context<OpenWindow>,
+        transition_id: u64,
+        window_id: u64,
+    ) -> Result<()> {
+        let source = &ctx.accounts.transition_record;
+        can_open_window(
+            source.state,
+            source.transition_type,
+            window_id,
+            ctx.accounts.treasury_state.window_count,
+        )?;
+        let state = &mut ctx.accounts.treasury_state;
+        let book = &ctx.accounts.lending_book;
+        let window = &mut ctx.accounts.window_state;
+        window.window_id = window_id;
+        window.snapshot_total_raw = state.total_raw;
+        window.snapshot_cash_raw = state.cash_raw;
+        window.snapshot_bonds_raw = state.bonds_raw;
+        window.snapshot_arb_raw = state.arb_raw;
+        window.snapshot_retained_float_raw = state.retained_float_raw;
+        window.snapshot_outstanding_raw = book.outstanding_raw;
+        window.exit_stock_raw = window_exit_stock(state.total_raw);
+        window.source_transition_id = transition_id;
+        window.source_commit_index = source.commit_index;
+        window.roster_hash = [0; 32];
+        window.bump = ctx.bumps.window_state;
+        state.window_count = state
+            .window_count
+            .checked_add(1)
+            .ok_or(TreasuryError::Overflow)?;
+        emit!(WindowOpened {
+            window_id,
+            transition_id,
+            commit_index: source.commit_index,
+            exit_stock_raw: window.exit_stock_raw,
             executor: ctx.accounts.executor.key(),
         });
         Ok(())
@@ -3412,6 +3526,35 @@ pub fn can_launch_stage2(
     Ok(())
 }
 
+/// The `open_window` gate, as a pure check (design §4.2):
+/// Settled state first, then the canonical `treasury.window.v1`
+/// type, then the sequence — the opened id must equal
+/// TreasuryState's window counter. Order mirrors
+/// [`can_launch_stage2`]: the general failure first, the bindings
+/// last. A repeat id (below the counter) and a gap (above it) both
+/// refuse here: the counter, not the PDA alone, is the sequence
+/// enforcement — the `init` constraint would stop a repeat but
+/// could not stop a gap. Deliberately no exact-settle check, as
+/// with the init and the launch: the open's effect is a fixed
+/// snapshot + counter advance.
+pub fn can_open_window(
+    state: u8,
+    source_type: [u8; 32],
+    window_id: u64,
+    window_count: u64,
+) -> Result<()> {
+    require!(state == STATE_SETTLED, TreasuryError::BadState);
+    require!(
+        source_type == TREASURY_WINDOW_TYPE,
+        TreasuryError::WindowMismatch
+    );
+    require!(
+        window_id == window_count,
+        TreasuryError::WindowNotSequential
+    );
+    Ok(())
+}
+
 /// Event for [`treasury_program::submit_constraint_report`] (design
 /// §4.1): the transition, the reporting Evaluator, and the report as
 /// submitted — the authorization context the design requires on every
@@ -3595,6 +3738,22 @@ pub struct TreasuryInitialized {
 pub struct Stage2Launched {
     pub transition_id: u64,
     pub commit_index: u64,
+    pub executor: Pubkey,
+}
+
+/// Event for [`treasury_program::open_window`] (design §4.2, §6):
+/// the window id, the authorizing transition + commit index (the
+/// authorization context the design requires on every event), and
+/// the period exit stock sized at open — so the window's budget is
+/// on the receipt chain from the moment it opens, and the exit
+/// family's later debits reconcile against this figure, not against
+/// a recomputed one.
+#[event]
+pub struct WindowOpened {
+    pub window_id: u64,
+    pub transition_id: u64,
+    pub commit_index: u64,
+    pub exit_stock_raw: u64,
     pub executor: Pubkey,
 }
 
@@ -4399,13 +4558,19 @@ pub struct TreasuryState {
     /// Stage 2 backing threshold B in parts-per-million of
     /// (supply × price); 0 means unset (D-2 open).
     pub backing_threshold_ppm: u64,
+    /// Windows opened so far. `open_window` requires the opened
+    /// window's id to equal this counter, then advances it — the
+    /// sequence enforcement for next-window-only entry (D-11):
+    /// windows open in order with no gaps and no repeats. Advanced
+    /// here and nowhere else.
+    pub window_count: u64,
     /// PDA bump for the `["treasury"]` seeds.
     pub bump: u8,
 }
 
 impl TreasuryState {
-    /// 8 (discriminator) + 6 × 8 + 1.
-    pub const SPACE: usize = 8 + 8 + 8 + 8 + 8 + 8 + 8 + 1;
+    /// 8 (discriminator) + 7 × 8 + 1.
+    pub const SPACE: usize = 8 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 1;
 }
 
 /// Lending book (design §3, §4.2) — aggregate only. Individual loans
@@ -4445,6 +4610,55 @@ pub struct FeeVault {
 impl FeeVault {
     /// 8 (discriminator) + 8 + 1.
     pub const SPACE: usize = 8 + 8 + 1;
+}
+
+/// Window state (design §3, §4.2) — one account per window, the
+/// period-start snapshot the exit-cap engine reads. The snapshot
+/// is a stored ledger copy, never recomputed: the exit family
+/// judges allowances against these period-start figures, so a
+/// mid-window balance move cannot inflate the current window's
+/// budget (design §7: cap increases never inflate current
+/// snapshots). The roster hash starts zero at open — no roster
+/// exists yet; enrollments during the window build it, and the
+/// writer lands with `enroll`. The source transition id + commit
+/// index are the authorization context for the open itself.
+#[account]
+pub struct WindowState {
+    /// Window id: 0 for the first window, then strictly sequential
+    /// (TreasuryState's window counter is the sequence).
+    pub window_id: u64,
+    /// Period-start total treasury value T, kernel fixed-point raw.
+    pub snapshot_total_raw: u64,
+    /// Period-start cash sleeve balance.
+    pub snapshot_cash_raw: u64,
+    /// Period-start bonds sleeve balance.
+    pub snapshot_bonds_raw: u64,
+    /// Period-start arbitrage-bot sleeve balance.
+    pub snapshot_arb_raw: u64,
+    /// Period-start retained-income float (D-1 timing retention).
+    pub snapshot_retained_float_raw: u64,
+    /// Period-start lending-book outstanding principal.
+    pub snapshot_outstanding_raw: u64,
+    /// Period exit stock: movable liquidity (T/6, D-10) sized from
+    /// the snapshot total at open. The exit family's period budget
+    /// is min(L, this stock); debits against it are the D-10 hard
+    /// bound in aggregate, not just per order.
+    pub exit_stock_raw: u64,
+    /// The Settled `treasury.window.v1` transition that authorized
+    /// the open.
+    pub source_transition_id: u64,
+    /// That transition's commit index (authorization context).
+    pub source_commit_index: u64,
+    /// Cohort roster hash: zero at open, populated by the enroll
+    /// path (not yet landed) as holders join the window.
+    pub roster_hash: [u8; 32],
+    /// PDA bump for the `["window", window_id]` seeds.
+    pub bump: u8,
+}
+
+impl WindowState {
+    /// 8 (discriminator) + 10 × 8 + 32 + 1.
+    pub const SPACE: usize = 8 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 32 + 1;
 }
 
 /// Accounts for [`treasury_program::submit_signal`].
@@ -4870,6 +5084,45 @@ pub struct LaunchStage2<'info> {
     pub executor: Signer<'info>,
 }
 
+/// Accounts for [`treasury_program::open_window`].
+#[derive(Accounts)]
+#[instruction(transition_id: u64, window_id: u64)]
+pub struct OpenWindow<'info> {
+    /// Treasury state PDA — mutated: the window counter advances
+    /// here and nowhere else. Read for the period-start snapshots.
+    #[account(mut, seeds = [b"treasury"], bump = treasury_state.bump)]
+    pub treasury_state: Account<'info, TreasuryState>,
+    /// Lending book PDA — read for the outstanding snapshot.
+    #[account(seeds = [b"lending-book"], bump = lending_book.bump)]
+    pub lending_book: Account<'info, LendingBook>,
+    /// The Settled `treasury.window.v1` transition authorizing the
+    /// open (read-only: no flag is written — the counter advance
+    /// plus the `init` constraint below are the one-time guarantee
+    /// for this window id).
+    #[account(seeds = [b"transition", transition_id.to_le_bytes().as_ref()], bump = transition_record.bump)]
+    pub transition_record: Account<'info, TransitionRecord>,
+    /// Window state PDA, seeds `["window", window_id]`. One-time
+    /// init: a second open of the same id fails at account
+    /// creation, and a gapped id fails at the counter gate — the
+    /// two mechanisms cover repeats and gaps respectively.
+    #[account(
+        init,
+        payer = executor,
+        space = WindowState::SPACE,
+        seeds = [b"window", window_id.to_le_bytes().as_ref()],
+        bump
+    )]
+    pub window_state: Account<'info, WindowState>,
+    /// Permissionless executor (signer; pays rent for the new
+    /// window account — operator-paid from the 73 bps fee flow,
+    /// design §2.3). The authority is the settled transition, not
+    /// this key.
+    #[account(mut)]
+    pub executor: Signer<'info>,
+    /// Rent sysvar, required by the `init` constraint.
+    pub system_program: Program<'info, System>,
+}
+
 /// Accounts for [`treasury_program::set_capacity`].
 #[derive(Accounts)]
 #[instruction(resource_id: u16)]
@@ -5139,6 +5392,18 @@ pub enum TreasuryError {
     /// An unset threshold must never read as "any backing passes".
     #[msg("Stage 2 backing threshold B is unset (D-2 open): no governed path has set it yet.")]
     ThresholdUnset,
+    /// A window open does not match its authorizing transition:
+    /// the source transition's type is not the canonical
+    /// `treasury.window.v1` type. The window is never opened on a
+    /// transition of another type.
+    #[msg("Window open does not match a settled treasury.window.v1 transition.")]
+    WindowMismatch,
+    /// The window id is not the next window: it must equal
+    /// TreasuryState's window counter. A repeat id and a gapped id
+    /// both refuse — windows open in sequence, no repeats, no gaps
+    /// (next-window-only entry, D-11).
+    #[msg("Window id is not the next window: windows open in sequence with no gaps or repeats.")]
+    WindowNotSequential,
 }
 
 #[cfg(test)]
@@ -6755,6 +7020,51 @@ mod tests {
     }
 
     #[test]
+    fn treasury_window_type_id_is_sha256_of_domain_tag() {
+        // The canonical type id is recomputed from the string, not
+        // trusted as a literal — the same discipline as the init,
+        // launch, and policy type ids.
+        let computed =
+            anchor_lang::solana_program::hash::hash(b"treasury.window.v1").to_bytes();
+        assert_eq!(TREASURY_WINDOW_TYPE, computed);
+        assert_ne!(TREASURY_WINDOW_TYPE, TREASURY_LAUNCH_TYPE);
+        assert_ne!(TREASURY_WINDOW_TYPE, TREASURY_INIT_TYPE);
+        assert_ne!(TREASURY_WINDOW_TYPE, POLICY_TRANSITION_TYPE);
+    }
+
+    #[test]
+    fn window_open_gate_matrix() {
+        // Settled + canonical type + next id: passes — first window
+        // (0 against a 0 counter) and a later window alike.
+        can_open_window(STATE_SETTLED, TREASURY_WINDOW_TYPE, 0, 0)
+            .expect("settled window transition authorizes the first open");
+        can_open_window(STATE_SETTLED, TREASURY_WINDOW_TYPE, 7, 7)
+            .expect("settled window transition authorizes the next open");
+        // Any non-Settled state refuses first, whatever the rest is.
+        assert!(can_open_window(STATE_COMMITTED, TREASURY_WINDOW_TYPE, 0, 0).is_err());
+        assert!(can_open_window(STATE_PLANNING, TREASURY_WINDOW_TYPE, 0, 0).is_err());
+        // A settled transition of another type is not a window source.
+        assert!(can_open_window(STATE_SETTLED, TREASURY_LAUNCH_TYPE, 0, 0).is_err());
+        assert!(can_open_window(STATE_SETTLED, TREASURY_INIT_TYPE, 0, 0).is_err());
+        assert!(can_open_window(STATE_SETTLED, [0; 32], 0, 0).is_err());
+        // A repeat id (below the counter) refuses, and a gap (above
+        // the counter) refuses: the counter is the sequence.
+        assert!(can_open_window(STATE_SETTLED, TREASURY_WINDOW_TYPE, 0, 1).is_err());
+        assert!(can_open_window(STATE_SETTLED, TREASURY_WINDOW_TYPE, 2, 1).is_err());
+    }
+
+    #[test]
+    fn window_exit_stock_is_movable_liquidity() {
+        // Reference scale: T/6, the D-10 period budget.
+        assert_eq!(window_exit_stock(100_000_000), 16_666_666);
+        // Zero treasury: zero stock.
+        assert_eq!(window_exit_stock(0), 0);
+        // Odd total floors: nothing created by rounding.
+        assert_eq!(window_exit_stock(101), 16);
+        assert_eq!(window_exit_stock(600), 100);
+    }
+
+    #[test]
     fn treasury_sleeve_split_sums_exactly() {
         // 50/25/25 at the $100M reference scale (raw units).
         assert_eq!(split_sleeves(100_000_000), (25_000_000, 50_000_000, 25_000_000));
@@ -6776,8 +7086,9 @@ mod tests {
 
     #[test]
     fn treasury_account_spaces_match_fields() {
-        assert_eq!(TreasuryState::SPACE, 57);
+        assert_eq!(TreasuryState::SPACE, 65);
         assert_eq!(LendingBook::SPACE, 21);
         assert_eq!(FeeVault::SPACE, 17);
+        assert_eq!(WindowState::SPACE, 121);
     }
 }
