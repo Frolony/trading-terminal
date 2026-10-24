@@ -49,7 +49,13 @@
 //!    single mint, no venue signal, value conserved within tolerance,
 //!    single-use intermediates, single-operation cadence, unbroken
 //!    linkage); a refused merge names every failed gate, never a guessed
-//!    merge. Entrance/exit boundary judgments are a later increment.
+//!    merge.
+//! 8. **Entrance/exit boundary judgment** ([`boundary`], W6.2 seventh
+//!    pass): the rule's other half — a dispersal slice graduates to its
+//!    own exit blob only when the recipient itself crosses a boundary
+//!    (burn, asset change, persistent outside destination, off-cluster
+//!    deposit); a slice that merely moves on is still in the story, and
+//!    an entrance requires a persistent source outside the cluster.
 //!
 //! ## Deliberate limits of this increment
 //!
@@ -80,6 +86,7 @@ pub mod summary;
 pub mod attestation;
 pub mod position_state;
 pub mod blob;
+pub mod boundary;
 
 pub use dictionary::{default_dictionary, Dictionary, HopKind, Venue, VenueHit, VENUE_DICTIONARY};
 pub use ingest::TransferEvent;

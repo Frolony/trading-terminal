@@ -43,7 +43,7 @@
 //! refused instead of silently drawing two blobs. This module judges
 //! collapse only; it labels nothing (see [`crate::classify`]) and it
 //! decides nothing about entrances or exits — those are boundary
-//! judgments over the workflow's neighborhood, a later increment.
+//! judgments over the workflow's neighborhood (see [`crate::boundary`]).
 
 use crate::dictionary::Dictionary;
 use crate::reconstruct::{NetEffect, Workflow};
