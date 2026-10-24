@@ -438,3 +438,40 @@ IDL: instructions 27 → 28 (incl. `open_window`), accounts 13 → 14
 recomputed from the string, the open gate matrix, the exit-stock
 identity). Next, in design order: `enroll`, then the window's
 execution family (`pay_tranche` first, per the pinned protocol).
+**This increment adds `enroll` (design §4.2)** — the fourth
+§4.2 instruction, and the window protocol's entry step in
+executable form: a holder joins the CURRENT window only (the
+window `open_window` most recently opened, counter − 1) — a past
+window's pool has closed and a future window's pool has not
+opened, so both refuse with `NotCurrentWindow` (D-11,
+next-window-only entry). It deliberately requires no Settled
+transition of its own: enroll executes during the window, and the
+window's flow transitions settle only after the window's
+executions, so a Settled gate would refuse every real enrollment;
+the event's authorization context is the window-opening transition
+recorded on the WindowState. The handler creates the HolderRecord
+(PDA `["holder", window_id, holder]`, SPACE 99: holder, window,
+cohort = window mod 12 for the D-1 12-slot rotation, position,
+accrued dividend 0, loan principal 0, maturity 0, skip flag clear,
+standing settlement authorization true with its granting window)
+and advances the WindowState roster hash by chaining holder +
+position onto the previous hash — the roster-hash writer `open_window`
+promised, and a chain, not a set, so enrollment order is part of
+the commitment the window's declared roster hash must match at
+settle. One record per holder per window (the PDA `init`
+constraint): a holder's funds are never counted twice in one pool.
+A zero position refuses with `InvalidPosition` (only positive
+locks are entries). The holder signs and pays their own rent
+(disclosed up front, design §2.3); the authorization delegates
+claim execution to the Operator agent class, capability-gated, not
+to a named operator key, and revocation takes effect at the next
+window boundary (design §5). Whether the window's flow transition
+must additionally be Committed before enrollments land is left
+open for the `pay_tranche` family to settle — no design record
+names such a gate for enroll, and this slice does not invent one.
+IDL: instructions 28 → 29 (incl. `enroll`), accounts 14 → 15
+(`HolderRecord`), errors 43 → 45 (`NotCurrentWindow`,
+`InvalidPosition`). Program host tests 64 → 68 (cohort rotation,
+the enroll gate matrix, the roster-chain properties, the SPACE
+check). Next, in design order: the window's execution family
+(`pay_tranche` first, per the pinned protocol).

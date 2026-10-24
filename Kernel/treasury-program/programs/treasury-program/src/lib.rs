@@ -2463,6 +2463,101 @@ pub mod treasury_program {
         });
         Ok(())
     }
+
+    /// Enrollment (design §4.2): a holder joins the CURRENT window —
+    /// the window that is open now, never a past window and never a
+    /// window that has not opened yet. That is next-window-only
+    /// entry (D-11) in executable form: each lock cycle is a unique
+    /// pool of locked funds counted once, so a holder cannot enroll
+    /// into a window whose pool has already closed, nor reserve a
+    /// place in a pool that does not exist yet. The enrolled window
+    /// is the holder's cohort window; the rotation slot on the
+    /// record is that window id mod 12 (the D-1 12-slot rotation),
+    /// while the window id itself stays the unique lock-cycle
+    /// identifier — the two are not conflated.
+    ///
+    /// The design row says enroll "rides the window's transition
+    /// (holder-signed)". This handler does NOT require a Settled
+    /// transition of its own: enroll executes DURING the window,
+    /// and the window's flow transitions settle only after the
+    /// window's executions (the pinned protocol's order of
+    /// operations), so a Settled gate here would refuse every real
+    /// enrollment. The authorization context on the event is the
+    /// window-opening transition recorded on the WindowState
+    /// (`source_transition_id` / `source_commit_index`) — the
+    /// committed governance that opened the pool being joined.
+    /// Whether the window's flow transition must additionally be
+    /// Committed before enrollments land is a question for the
+    /// `pay_tranche` family to settle with its own gate, not
+    /// something this slice invents: no design record names a
+    /// Committed-flow gate for enroll, and inventing one would
+    /// change the window protocol's order of operations by stealth.
+    ///
+    /// The handler creates the HolderRecord and the standing
+    /// settlement authorization (§5) in one act: the authorization
+    /// flag is set true at enroll, with the granting window
+    /// recorded, so a later revocation can take effect at the next
+    /// window boundary (mid-window revocation would tear in-flight
+    /// batches — stated in §5, not hidden). The authorization
+    /// delegates claim execution to the Operator agent class, not
+    /// to a named operator key: execution is capability-gated
+    /// (`OPERATOR_SETTLE` on the operator's AgentRecord, checked by
+    /// the payout instructions), so no single key is bound here.
+    /// The holder signs (the record's PDA seeds bind it to the
+    /// signer) and pays their own rent, disclosed up front
+    /// (design §2.3). The position must be positive: a zero lock
+    /// is not an entry (the engine-sim lock rule, same principle).
+    /// Accrued dividend, loan principal, and maturity all start at
+    /// zero; the skip-next-dividend flag starts clear — those are
+    /// written by the window's execution family, never at enroll.
+    /// The roster-hash writer promised by `open_window` lands here:
+    /// the WindowState's roster hash advances by chaining the new
+    /// holder and position onto the previous hash, so the roster
+    /// is a chain, not a set — enrollment order is part of the
+    /// commitment the window transition's declared roster hash must
+    /// match at settle. A second enroll by the same holder in the
+    /// same window fails at the PDA `init` constraint and changes
+    /// no state: one record per holder per window, so one holder's
+    /// funds are never counted twice in one pool.
+    pub fn enroll(
+        ctx: Context<Enroll>,
+        window_id: u64,
+        position_raw: u64,
+    ) -> Result<()> {
+        can_enroll(
+            window_id,
+            ctx.accounts.treasury_state.window_count,
+            position_raw,
+        )?;
+        let window = &mut ctx.accounts.window_state;
+        let record = &mut ctx.accounts.holder_record;
+        record.holder = ctx.accounts.holder.key();
+        record.window_id = window_id;
+        record.cohort = enroll_cohort(window_id);
+        record.position_raw = position_raw;
+        record.accrued_dividend_raw = 0;
+        record.loan_principal_raw = 0;
+        record.loan_maturity = 0;
+        record.skip_next_dividend = false;
+        record.standing_authorization = true;
+        record.authorization_window = window_id;
+        record.bump = ctx.bumps.holder_record;
+        window.roster_hash = roster_hash_update(
+            window.roster_hash,
+            ctx.accounts.holder.key(),
+            position_raw,
+        );
+        emit!(HolderEnrolled {
+            window_id,
+            holder: ctx.accounts.holder.key(),
+            position_raw,
+            cohort: record.cohort,
+            roster_hash: window.roster_hash,
+            transition_id: window.source_transition_id,
+            commit_index: window.source_commit_index,
+        });
+        Ok(())
+    }
 }
 
 /// Who may open planning, as a pure check (design §4.1, kernel
@@ -3555,6 +3650,50 @@ pub fn can_open_window(
     Ok(())
 }
 
+/// The `enroll` gate, as a pure check (design §4.2, D-11): the
+/// enrolled window must be the currently open one — the window
+/// counter advanced at `open_window`, so the current window's id is
+/// `window_count − 1`. A past window (below it) and a future window
+/// (at or above the counter) both refuse, and with no window open
+/// at all (`window_count == 0`) every enroll refuses: there is no
+/// pool to join. Order mirrors [`can_open_window`]: the window
+/// binding first, the position rule last. A zero position is not
+/// an entry — the engine-sim lock rule, that only positive locks
+/// are entries — so it refuses with `InvalidPosition`, never with
+/// a record that locks nothing.
+pub fn can_enroll(window_id: u64, window_count: u64, position_raw: u64) -> Result<()> {
+    require!(
+        window_count > 0 && window_id == window_count - 1,
+        TreasuryError::NotCurrentWindow
+    );
+    require!(position_raw != 0, TreasuryError::InvalidPosition);
+    Ok(())
+}
+
+/// A window's rotation slot (design §4.2, D-1): the 12-slot
+/// rotation, so the slot is the window id mod 12. The window id
+/// itself is the unique lock-cycle identifier and is never reduced
+/// to the slot on the record — both are stored, for different jobs.
+pub fn enroll_cohort(window_id: u64) -> u64 {
+    window_id % 12
+}
+
+/// The roster-hash chain step (design §4.2, §6): SHA-256 over the
+/// previous roster hash, the enrolling holder's key, and the
+/// position, in that order. The chain, not a set hash, is the
+/// commitment: the window transition's declared roster hash must
+/// match the enrollments in order, so a reordered or omitted
+/// enrollment is a settle mismatch, visible, not a silent roster
+/// edit. Same inputs always give the same next hash; any input
+/// change gives (up to hash collision) a different one.
+pub fn roster_hash_update(old: [u8; 32], holder: Pubkey, position_raw: u64) -> [u8; 32] {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&old);
+    bytes.extend_from_slice(holder.as_ref());
+    bytes.extend_from_slice(&position_raw.to_le_bytes());
+    anchor_lang::solana_program::hash::hash(&bytes).to_bytes()
+}
+
 /// Event for [`treasury_program::submit_constraint_report`] (design
 /// §4.1): the transition, the reporting Evaluator, and the report as
 /// submitted — the authorization context the design requires on every
@@ -3755,6 +3894,26 @@ pub struct WindowOpened {
     pub commit_index: u64,
     pub exit_stock_raw: u64,
     pub executor: Pubkey,
+}
+
+/// Event for [`treasury_program::enroll`] (design §4.2, §6): the
+/// window joined, the holder, the locked position, the rotation
+/// slot, and the roster hash after this enrollment — plus the
+/// authorization context, which is the window-opening transition
+/// recorded on the WindowState (id + commit index). The window
+/// flow's declared hash is not duplicated here: it belongs to the
+/// flow transition's own lifecycle events, and duplicating it onto
+/// every enrollment would let an enrollment event masquerade as a
+/// flow commitment.
+#[event]
+pub struct HolderEnrolled {
+    pub window_id: u64,
+    pub holder: Pubkey,
+    pub position_raw: u64,
+    pub cohort: u64,
+    pub roster_hash: [u8; 32],
+    pub transition_id: u64,
+    pub commit_index: u64,
 }
 
 /// Capacity stock installed (design §4.1): the `set_capacity` event,
@@ -4661,6 +4820,60 @@ impl WindowState {
     pub const SPACE: usize = 8 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 32 + 1;
 }
 
+/// Holder record (design §3, §4.2) — one per holder per window, the
+/// holder's locked position in that window's unique pool. Created
+/// only by `enroll`, which is the only writer of the enrollment
+/// fields; the window's execution family writes the dividend, loan,
+/// and skip fields, and no instruction withdraws an active schedule
+/// (design §7, committed-inventory exits: no withdrawal instruction
+/// exists for an active schedule). The cohort is the rotation slot
+/// (`window_id` mod 12, see [`enroll_cohort`]); the window id is
+/// the lock-cycle identifier. The standing authorization (§5) is a
+/// flag plus its granting window, not a named operator key: payout
+/// instructions check the operator's `OPERATOR_SETTLE` capability,
+/// and revocation takes effect at the next window boundary, so the
+/// granting window is the record a revocation instruction will need.
+#[account]
+pub struct HolderRecord {
+    /// The enrolled holder's key (PDA seed component).
+    pub holder: Pubkey,
+    /// The window (lock cycle) this record enrolls into (PDA seed
+    /// component).
+    pub window_id: u64,
+    /// Rotation slot: `window_id` mod 12 (the D-1 12-slot rotation).
+    pub cohort: u64,
+    /// Locked position, kernel fixed-point raw. Positive at enroll;
+    /// reduced only by exit or by default settlement (D-3).
+    pub position_raw: u64,
+    /// Accrued unpaid dividend, kernel fixed-point raw. Zero at
+    /// enroll; written by the window's execution family.
+    pub accrued_dividend_raw: u64,
+    /// Outstanding loan principal, kernel fixed-point raw. Zero at
+    /// enroll (no loan exists until `borrow`); 60-day terms at
+    /// pilot, 12% rate (design §4.2).
+    pub loan_principal_raw: u64,
+    /// Loan maturity as a unix timestamp. Zero at enroll means no
+    /// loan; a loan's maturity is set by `borrow`.
+    pub loan_maturity: i64,
+    /// Skip-next-dividend flag (D-3 forfeiture): set by
+    /// `settle_default`, cleared when the skipped slot passes.
+    /// Clear at enroll.
+    pub skip_next_dividend: bool,
+    /// Standing settlement authorization (§5): true from enroll
+    /// until a revocation takes effect at a window boundary.
+    pub standing_authorization: bool,
+    /// The window in which the standing authorization was granted
+    /// (the enroll window at creation).
+    pub authorization_window: u64,
+    /// PDA bump for the `["holder", window_id, holder]` seeds.
+    pub bump: u8,
+}
+
+impl HolderRecord {
+    /// 8 (discriminator) + 32 + 6 × 8 + 1 + 1 + 8 + 1.
+    pub const SPACE: usize = 8 + 32 + 8 + 8 + 8 + 8 + 8 + 8 + 1 + 1 + 8 + 1;
+}
+
 /// Accounts for [`treasury_program::submit_signal`].
 #[derive(Accounts)]
 #[instruction(transition_id: u64, round: u32)]
@@ -5123,6 +5336,42 @@ pub struct OpenWindow<'info> {
     pub system_program: Program<'info, System>,
 }
 
+/// Accounts for [`treasury_program::enroll`].
+#[derive(Accounts)]
+#[instruction(window_id: u64, position_raw: u64)]
+pub struct Enroll<'info> {
+    /// Treasury state PDA — read for the window counter, the
+    /// next-window-only sequence source: the enrolled window must
+    /// be the currently open one (counter − 1). Not mutated here;
+    /// only `open_window` advances the counter.
+    #[account(seeds = [b"treasury"], bump = treasury_state.bump)]
+    pub treasury_state: Account<'info, TreasuryState>,
+    /// Window state PDA — mutated: the roster hash advances here
+    /// and nowhere else. Seeds-bound to the enrolled window, so an
+    /// enroll names the window it joins by address, not by claim.
+    #[account(mut, seeds = [b"window", window_id.to_le_bytes().as_ref()], bump = window_state.bump)]
+    pub window_state: Account<'info, WindowState>,
+    /// Holder record PDA, seeds `["holder", window_id, holder]`.
+    /// One-time init: a second enroll by the same holder in the
+    /// same window fails at account creation and changes no state
+    /// — one holder's funds are never counted twice in one pool.
+    #[account(
+        init,
+        payer = holder,
+        space = HolderRecord::SPACE,
+        seeds = [b"holder", window_id.to_le_bytes().as_ref(), holder.key().as_ref()],
+        bump
+    )]
+    pub holder_record: Account<'info, HolderRecord>,
+    /// The enrolling holder (signer; pays rent for the holder
+    /// record — disclosed up front, design §2.3). The authority
+    /// is the holder's own signature, not a transition.
+    #[account(mut)]
+    pub holder: Signer<'info>,
+    /// Rent sysvar, required by the `init` constraint.
+    pub system_program: Program<'info, System>,
+}
+
 /// Accounts for [`treasury_program::set_capacity`].
 #[derive(Accounts)]
 #[instruction(resource_id: u16)]
@@ -5404,6 +5653,17 @@ pub enum TreasuryError {
     /// (next-window-only entry, D-11).
     #[msg("Window id is not the next window: windows open in sequence with no gaps or repeats.")]
     WindowNotSequential,
+    /// An enroll does not name the currently open window: the
+    /// window must be the counter − 1 (the window `open_window`
+    /// most recently opened). Past windows have closed their pool
+    /// and future windows have not opened theirs (D-11).
+    #[msg("Enrollment window is not the currently open window: enroll only into the open window.")]
+    NotCurrentWindow,
+    /// An enroll locks nothing: only positive positions are entries
+    /// (the engine-sim lock rule). A zero-position record would be
+    /// a roster entry with no funds behind it.
+    #[msg("Enrollment position must be positive: a zero lock is not an entry.")]
+    InvalidPosition,
 }
 
 #[cfg(test)]
@@ -7090,5 +7350,78 @@ mod tests {
         assert_eq!(LendingBook::SPACE, 21);
         assert_eq!(FeeVault::SPACE, 17);
         assert_eq!(WindowState::SPACE, 121);
+    }
+
+    #[test]
+    fn enroll_cohort_is_window_mod_twelve() {
+        // The rotation slot, not the cycle: window 12 is a new pool
+        // in the same slot as window 0.
+        assert_eq!(enroll_cohort(0), 0);
+        assert_eq!(enroll_cohort(11), 11);
+        assert_eq!(enroll_cohort(12), 0);
+        assert_eq!(enroll_cohort(13), 1);
+        assert_eq!(enroll_cohort(25), 1);
+    }
+
+    #[test]
+    fn enroll_gate_matrix() {
+        // No window open yet: every enroll refuses.
+        assert!(can_enroll(0, 0, 100).is_err());
+        // The currently open window passes — first window (counter
+        // 1, current 0) and a later window alike.
+        can_enroll(0, 1, 100).expect("first open window accepts enroll");
+        can_enroll(1, 2, 100).expect("current window accepts enroll");
+        // A past window refuses (its pool has closed) and a future
+        // window refuses (its pool has not opened).
+        assert!(can_enroll(0, 2, 100).is_err());
+        assert!(can_enroll(2, 2, 100).is_err());
+        assert!(can_enroll(5, 2, 100).is_err());
+        // A zero position is not an entry, even in the open window.
+        assert!(can_enroll(1, 2, 0).is_err());
+    }
+
+    #[test]
+    fn roster_hash_update_is_a_deterministic_chain() {
+        let a = Pubkey::new_from_array([1u8; 32]);
+        let b = Pubkey::new_from_array([2u8; 32]);
+        // Deterministic: same inputs, same next hash.
+        assert_eq!(
+            roster_hash_update([0; 32], a, 100),
+            roster_hash_update([0; 32], a, 100)
+        );
+        // An enrollment moves the roster off zero — the empty
+        // roster at open is not a valid post-enroll roster.
+        assert_ne!(roster_hash_update([0; 32], a, 100), [0; 32]);
+        // Every input matters: holder, position, and prior hash.
+        assert_ne!(
+            roster_hash_update([0; 32], a, 100),
+            roster_hash_update([0; 32], b, 100)
+        );
+        assert_ne!(
+            roster_hash_update([0; 32], a, 100),
+            roster_hash_update([0; 32], a, 200)
+        );
+        assert_ne!(
+            roster_hash_update([0; 32], a, 100),
+            roster_hash_update([7; 32], a, 100)
+        );
+        // Order matters: the roster is a chain, so the same two
+        // enrollments in opposite order commit to different hashes.
+        let forward = roster_hash_update(
+            roster_hash_update([0; 32], a, 100),
+            b,
+            200,
+        );
+        let reverse = roster_hash_update(
+            roster_hash_update([0; 32], b, 200),
+            a,
+            100,
+        );
+        assert_ne!(forward, reverse);
+    }
+
+    #[test]
+    fn holder_record_space_matches_fields() {
+        assert_eq!(HolderRecord::SPACE, 99);
     }
 }
