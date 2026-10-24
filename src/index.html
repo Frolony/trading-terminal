@@ -324,18 +324,28 @@ function formatPriceUsd(value){const n=Number(value);if(!Number.isFinite(n)||n<=
    wallet section — syncMarkDirty() is therefore TDZ-safe (try/catch) and the
    sync state initializes before any save hook can fire. */
 const SYNC_NS_LIST=['settings','slippage','layout','paperlive','btConfigs'];
-let syncState={token:null,pubkey:null,authing:false,pushing:false,timer:0,applying:false};
+let syncState={token:null,pubkey:null,authing:false,pushing:false,timer:0,applying:false,status:'off'};
 let syncLocalTs={}; // ns -> last applied/pushed updatedAt (ms)
 let syncPushedJson={}; // ns -> JSON of the last pushed local data
 const SYNC_STATUS_WORDS={off:'Sync off',syncing:'Sync — signing in…',synced:'Sync on — settings follow this wallet',offline:'Sync off — sign-in failed; settings stay on this device'};
-function syncSetStatus(s){try{const dot=$('syncDot');if(dot){if(s==='off'){dot.style.display='none';}else{dot.style.display='inline-block';dot.style.background=s==='synced'?'#6fbf6f':s==='syncing'?'#e0a83c':'#d9534f';}dot.title=SYNC_STATUS_WORDS[s]||'Sync';}const wb=$('walletBtn');if(wb)wb.title=s==='off'?'Connect Wallet':(SYNC_STATUS_WORDS[s]||'Sync');const ln=$('walletSyncLine');if(ln)ln.textContent=SYNC_STATUS_WORDS[s]||'Sync off';}catch(_){}}
+/* N2.5 (A53): syncState.status is the single source of truth for the sync
+   display — every painter renders FROM it, never from a snapshot.
+   paintWalletSync() re-applies the current status: the wallet-menu open path
+   calls it, so the menu always shows the live state even when it opens
+   mid-auth. The old menu repainted nothing on open, so it kept showing the
+   previous session's line (e.g. 'Sync off' after a decline) while a new
+   sign-in was already in flight — the messenger lied while the mechanism
+   worked. syncSetStatus() itself paints on every transition, so an open
+   menu also updates in place when auth completes, is declined, or clears. */
+function syncSetStatus(s){syncState.status=s;try{const dot=$('syncDot');if(dot){if(s==='off'){dot.style.display='none';}else{dot.style.display='inline-block';dot.style.background=s==='synced'?'#6fbf6f':s==='syncing'?'#e0a83c':'#d9534f';}dot.title=SYNC_STATUS_WORDS[s]||'Sync';}const wb=$('walletBtn');if(wb)wb.title=s==='off'?'Connect Wallet':(SYNC_STATUS_WORDS[s]||'Sync');const ln=$('walletSyncLine');if(ln)ln.textContent=SYNC_STATUS_WORDS[s]||'Sync off';}catch(_){}}
+function paintWalletSync(){try{syncSetStatus(syncState.status||'off');}catch(_){}}
 function syncB64(bytes){let s='';const CH=0x8000;for(let i=0;i<bytes.length;i+=CH){s+=String.fromCharCode.apply(null,bytes.subarray(i,i+CH));}return btoa(s);}
 function syncPost(body){const c=new AbortController(),t=setTimeout(()=>c.abort(),10000);const h={'content-type':'application/json'};if(syncState.token)h['Authorization']='Bearer '+syncState.token;return fetch('/api/sync',{method:'POST',headers:h,body:JSON.stringify(body),signal:c.signal}).then(r=>r.json()).catch(()=>({ok:false,error:'sync_unavailable'})).finally(()=>clearTimeout(t));}
 function syncGetPull(){const c=new AbortController(),t=setTimeout(()=>c.abort(),10000);const h={};if(syncState.token)h['Authorization']='Bearer '+syncState.token;return fetch('/api/sync?action=pull',{headers:h,signal:c.signal}).then(r=>r.json()).catch(()=>({ok:false,error:'sync_unavailable'})).finally(()=>clearTimeout(t));}
 function syncCollect(pk){const out={};try{const raw=localStorage.getItem(SETTINGS_KEY);const p=raw?JSON.parse(raw):null;out.settings=(p&&typeof p==='object')?p:settings;}catch(_){out.settings=settings;}try{out.slippage={bps:slipLoad()};}catch(_){}try{const raw=localStorage.getItem(LAYOUT_KEY);const p=raw?JSON.parse(raw):null;if(p&&typeof p==='object')out.layout=p;}catch(_){}try{const s=plLoadStore();out.paperlive={deployments:(s.deployments&&s.deployments[pk])||[]};}catch(_){}try{const s=btLoadCfgStore();out.btConfigs={configs:(s.configs&&s.configs[pk])||[]};}catch(_){}return out;}
 function syncApplyNamespaces(serverNs,pk){if(!serverNs||typeof serverNs!=='object')return;const local=syncCollect(pk);syncState.applying=true;try{for(const ns of SYNC_NS_LIST){const entry=serverNs[ns];if(!entry||typeof entry.updatedAt!=='number')continue;const localTs=syncLocalTs[ns]||0;if(entry.updatedAt<=localTs)continue;const localJson=local[ns]===undefined?null:JSON.stringify(local[ns]);const serverJson=JSON.stringify(entry.data);try{if(ns==='settings'){if(!entry.data||typeof entry.data!=='object')continue;localStorage.setItem(SETTINGS_KEY,serverJson);settings=loadSettings();applySettingsVisual();}else if(ns==='slippage'){const v=slipValidate(entry.data&&entry.data.bps);if(!v.ok)continue;slipSave(v.bps);const el=$('slippageInput');if(el)el.value=String(v.bps);paintSlipPresets();}else if(ns==='layout'){if(!entry.data||typeof entry.data!=='object')continue;localStorage.setItem(LAYOUT_KEY,serverJson);layout=loadLayout(serverJson);const ws=activeWorkspace();renderPanelPlacement(ws);applyPanelVisibility(ws.hidden);}else if(ns==='paperlive'){if(!entry.data||!Array.isArray(entry.data.deployments))continue;const s=plLoadStore();s.deployments[pk]=entry.data.deployments;plSaveStore(s);plRenderDeploys();}else if(ns==='btConfigs'){if(!entry.data||!Array.isArray(entry.data.configs))continue;const s=btLoadCfgStore();s.configs[pk]=entry.data.configs;btSaveCfgStore(s);btRenderConfigs();}else continue;syncLocalTs[ns]=entry.updatedAt;if(localJson!==null&&localJson!==serverJson)toast('Synced — kept the newer '+ns+' from '+new Date(entry.updatedAt).toLocaleString()+'.');}catch(_){/* corrupt namespace: leave local untouched (N2.1 fail-closed pattern) */}}}finally{syncState.applying=false;}}
 function syncMarkDirty(){try{if(syncState.applying||!syncState.token||!syncState.pubkey)return;clearTimeout(syncState.timer);syncState.timer=setTimeout(syncPushNow,2000);}catch(_){/* TDZ-safe: a save hook firing before this block initializes is a no-op */}}
-async function syncPushNow(){try{if(!syncState.token||!syncState.pubkey||syncState.pushing)return;const pk=syncState.pubkey;const local=syncCollect(pk);const changed={};for(const ns of SYNC_NS_LIST){if(local[ns]===undefined)continue;const j=JSON.stringify(local[ns]);if(syncPushedJson[ns]!==j)changed[ns]={updatedAt:Date.now(),data:local[ns]};}if(!Object.keys(changed).length)return;syncState.pushing=true;syncSetStatus('syncing');const j=await syncPost({action:'push',namespaces:changed});if(j&&j.ok){const after=syncCollect(pk);for(const ns of Object.keys(changed)){syncPushedJson[ns]=JSON.stringify(after[ns]);syncLocalTs[ns]=changed[ns].updatedAt;}syncSetStatus('synced');if(j.namespaces&&typeof j.namespaces==='object'){/* server won a namespace despite our fresh timestamps (clock skew): adopt it */syncApplyNamespaces(j.namespaces,pk);}}else{syncSetStatus('offline');}}catch(_){try{syncSetStatus('offline');}catch(__){}}finally{syncState.pushing=false;}}
+async function syncPushNow(){try{if(!syncState.token||!syncState.pubkey||syncState.pushing)return;const pk=syncState.pubkey;const local=syncCollect(pk);const changed={};for(const ns of SYNC_NS_LIST){if(local[ns]===undefined)continue;const j=JSON.stringify(local[ns]);if(syncPushedJson[ns]!==j)changed[ns]={updatedAt:Date.now(),data:local[ns]};}if(!Object.keys(changed).length)return;syncState.pushing=true;/* N2.5: pushing is not signing in — the status stays 'synced' while a push is in flight, so an open menu never reads 'signing in' for an already-signed-in wallet. */const j=await syncPost({action:'push',namespaces:changed});if(!syncState.token||syncState.pubkey!==pk)return;/* N2.5: disconnected mid-push — syncClear's 'off' stands; a late push must not resurrect 'synced' or overwrite 'off' with 'offline'. */if(j&&j.ok){const after=syncCollect(pk);for(const ns of Object.keys(changed)){syncPushedJson[ns]=JSON.stringify(after[ns]);syncLocalTs[ns]=changed[ns].updatedAt;}syncSetStatus('synced');if(j.namespaces&&typeof j.namespaces==='object'){/* server won a namespace despite our fresh timestamps (clock skew): adopt it */syncApplyNamespaces(j.namespaces,pk);}}else{syncSetStatus('offline');}}catch(_){try{syncSetStatus('offline');}catch(__){}}finally{syncState.pushing=false;}}
 const SYNC_BRAND='Turnpool'; // N6.5: single brand constant for the sync sign-in message.
 // N2.3: the exact string the wallet signs — plain language, built ONLY from
 // SYNC_BRAND + the server challenge. The server template in api/sync.rs
@@ -3032,6 +3042,7 @@ function renderWalletDd(){
   set('walletSol',wallet.balances.sol,'SOL',wallet.balErr.sol);
   set('walletUsdc',wallet.balances.usdc,'USDC',wallet.balErr.usdc);
   set('walletUsdt',wallet.balances.usdt,'USDT',wallet.balErr.usdt);
+  paintWalletSync(); // N2.5: the menu's only repaint path also repaints sync — no repaint can leave a stale Sync line behind
 }
 function setWalletConnected(a,pk){
   wallet.connected=true;wallet.publicKey=pk;wallet.name=a.name;wallet.icon=a.icon;wallet.adapter=a;
@@ -3042,6 +3053,7 @@ function setWalletConnected(a,pk){
   $('walletDdName').textContent=a.name||'Wallet';
   $('walletDdAddr').textContent=pk;
   renderWalletDd();
+  paintWalletSync(); // N2.5: anchor the menu Sync line to live syncState at connect
   $('ticketNote').textContent='Wallet '+truncateAddr(pk)+' connected · paper mode — no real orders or funds';
   try{document.dispatchEvent(new CustomEvent('walletchange',{detail:{connected:true,publicKey:pk}}));}catch(e){}
 }
@@ -3103,7 +3115,7 @@ function setTicketMode(m){
 }
 function bindWalletUi(){
   const modal=$('walletModal'),body=$('walletModalBody');
-  $('walletBtn').onclick=()=>{if(wallet.connected){const dd=$('walletDd');dd.hidden=!dd.hidden;}else openWalletModal();};
+  $('walletBtn').onclick=()=>{if(wallet.connected){const dd=$('walletDd');const opening=dd.hidden;dd.hidden=!dd.hidden;if(opening)paintWalletSync();}else openWalletModal();};
   $('walletModalClose').onclick=closeWalletModal;
   modal.addEventListener('click',e=>{if(e.target===modal)closeWalletModal();});
   document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!modal.hidden)closeWalletModal();});
