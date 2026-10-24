@@ -137,7 +137,33 @@ so an unexpired Committed transition reports the window, not the
 state. No new errors (both reuse `Unauthorized` / `BadState` /
 `BadWindow`); IDL: instructions 18 → 20 (incl. both terminal
 instructions), accounts 8, errors 31. Program host tests 41 → 43.
-`policy_transition` is next, in design order.
+**This increment adds `policy_transition` (design §4.1)** and closes
+the §4.1 lifecycle instruction set: the `PolicyRecord` account (PDA
+seeds `["policy", transition_type]`, SPACE 666) holds one transition
+type's policy — quorum, confidence threshold, minimum observation
+confidence, objectives requirement, planning window, round and plan
+caps, the mandatory constraint set, and the required capabilities —
+installed by the `Config` authority in genesis-direct form, like the
+other Admin setup calls (one-time: installing a type twice fails at
+account creation). `register_transition` now takes the transition's
+type and its PolicyRecord, and the frozen set is derived as the kernel
+derives it: the type's mandatory constraints ∪ the proposer's
+additions, deduped, all Unavailable — a proposer can no longer omit a
+mandatory gate, and the merged set must still fit 8 entries.
+TransitionRecord gains `transition_type` (SPACE 768 → 800). New error
+`InvalidCapabilities`; IDL: instructions 20 → 21 (incl.
+`policy_transition`), accounts 8 → 9 (incl. `PolicyRecord`), errors
+31 → 32. Program host tests 43 → 47. Honest interims, stated in code:
+per-type numeric values are recorded now but lifecycle handlers still
+read the launch constants (installed launch values equal them, so no
+behavior change until the wiring increment); the CAPABILITY bit's
+on-chain input still awaits `grant_capability` (per-agent holdings);
+post-genesis policy changes remain the execution of a committed
+`treasury.policy.v1` transition, not a fresh authority signature —
+the amendment execution is a later increment. Next: per-type policy
+enforcement in handlers, `grant_capability` (AgentRecord holdings),
+`set_capacity` (CapacityStock accounts, closing the COMPAT interim),
+then §4.2 treasury.
 
 **Design:** `files/OWN_IDL_DESIGN.md` (W4.1, validated and revised
 2026-10-24; W4.3 GO given by Carlos 2026-10-24 ~03:39 CST). Placement C: the

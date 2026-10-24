@@ -236,6 +236,35 @@
 //! success that neither double-decrements nor errors. `commit` now
 //! reads the record's live `unresolved_blocking` instead of the
 //! hard-coded 0 the earlier slices carried as an interim.
+//! This increment adds `policy_transition` (design §4.1) and closes
+//! the §4.1 lifecycle instruction set: the `PolicyRecord` account (PDA
+//! seeds `["policy", transition_type]`) holds one transition type's
+//! policy — quorum, confidence threshold, minimum observation
+//! confidence, the objectives requirement, planning window, round and
+//! plan caps, the mandatory constraint set, and the required
+//! capabilities — installed by the `Config` authority in genesis-direct
+//! form, like the other Admin setup calls. `register_transition` now
+//! takes the transition's type and its PolicyRecord, and the frozen set
+//! is derived as the kernel derives it: the type's mandatory
+//! constraints ∪ the proposer's additions, deduped, all Unavailable —
+//! a proposer can no longer register a transition that omits its type's
+//! mandatory gate, and a mandatory id supplied twice is one entry, not
+//! two. The TransitionRecord gains `transition_type` (SPACE 768 → 800)
+//! so the record names the policy that governs it. Two honest
+//! interims, stated plainly: the per-type numeric values are recorded
+//! now, but the lifecycle handlers still read the launch constants
+//! (`open_planning`'s deadline, `submit_plan`'s cap, `submit_signal`'s
+//! round cap) — wiring them to read the type's PolicyRecord is the
+//! next policy increment, and the installed launch values equal those
+//! constants, so no behavior changes until then; and the CAPABILITY
+//! bit's on-chain input still awaits `grant_capability` (per-agent
+//! holdings) — the required capabilities are recorded per type now,
+//! the holdings they are checked against land with that instruction.
+//! Post-genesis policy changes remain what the design says they are:
+//! the execution of a committed `treasury.policy.v1` transition, not a
+//! fresh authority signature — the amendment execution is a later
+//! increment, and this genesis-direct install does not pretend
+//! otherwise.
 //! Nothing here is deployed: NO devnet deployment in W4.3, NO mainnet step
 //! exists in W4. No instruction here moves value.
 //!
@@ -486,10 +515,17 @@ pub mod treasury_program {
     /// is recorded as the proposer: the kernel records the proposer at
     /// registration (`kernel.rs` `register_transition`), and
     /// `open_planning` below admits only that proposer or an Admin.
+    /// The transition's type names its PolicyRecord (seeds-bound, so a
+    /// record cannot be registered under a stranger's policy), and the
+    /// frozen set is derived as the kernel derives it: the type's
+    /// mandatory constraints ∪ the proposer's additions, deduped — the
+    /// merged set must still fit [`MAX_CONSTRAINTS`], or registration
+    /// refuses rather than silently dropping a mandatory gate.
     pub fn register_transition(
         ctx: Context<RegisterTransition>,
         transition_id: u64,
         observation_id: u64,
+        transition_type: [u8; 32],
         expires_at: i64,
         declared_hash: [u8; 32],
         parent_index: u64,
@@ -498,9 +534,14 @@ pub mod treasury_program {
     ) -> Result<()> {
         let now = ctx.accounts.clock.unix_timestamp;
         validate_transition_expiry(expires_at, now)?;
-        validate_constraint_ids(&constraint_ids)?;
+        let frozen = merge_constraint_sets(
+            &ctx.accounts.policy_record.mandatory_constraints,
+            &constraint_ids,
+        );
+        validate_constraint_ids(&frozen)?;
         let record = &mut ctx.accounts.transition_record;
         record.transition_id = transition_id;
+        record.transition_type = transition_type;
         record.state = STATE_REGISTERED;
         record.proposer = ctx.accounts.payer.key();
         record.observation_id = observation_id;
@@ -513,7 +554,7 @@ pub mod treasury_program {
         record.prev_round_mean = 0;
         record.objectives_ok = false;
         record.reconciled = false;
-        record.constraints = constraint_ids
+        record.constraints = frozen
             .iter()
             .map(|id| ConstraintEntry {
                 id: *id,
@@ -1580,6 +1621,71 @@ pub mod treasury_program {
         });
         Ok(())
     }
+
+    /// Admin setup, genesis-direct form (design §4.1): install one
+    /// transition type's policy record.
+    ///
+    /// The caller must be the `Config` authority (the governance
+    /// multisig at genesis), like `grant_role`. The record is one-time:
+    /// installing a type twice fails at account creation and changes
+    /// nothing. The policy values are validated by `validate_policy`
+    /// against the kernel's own registration gates — a confidence
+    /// threshold above 1.0 or a zero round/plan cap is `BadWindow`,
+    /// exactly as the kernel refuses such a policy at registration.
+    /// Quorum, minimum observation confidence, and planning window are
+    /// deliberately NOT range-checked here: the kernel does not check
+    /// them at registration, and an unsatisfiable value fails closed
+    /// at commit (the mask bit stays set), never admits a transition
+    /// that should not commit. Genesis-direct form only: after
+    /// genesis, policy changes are the execution of a committed
+    /// `treasury.policy.v1` transition — that execution path is a
+    /// later increment, and this install does not authorize itself
+    /// post-genesis. The `PolicyCommitted` / `PolicySettled` events of
+    /// the design table belong to that execution, not to this install;
+    /// this install emits `PolicyInstalled` (type + authority), and the
+    /// installed record itself is the payload.
+    pub fn policy_transition(
+        ctx: Context<PolicyTransition>,
+        transition_type: [u8; 32],
+        quorum_required: u64,
+        confidence_threshold: u64,
+        min_obs_confidence: u64,
+        require_objectives: bool,
+        planning_window: u64,
+        max_rounds: u32,
+        max_plans: u32,
+        mandatory_constraints: Vec<[u8; 32]>,
+        required_capabilities: Vec<CapabilityRequirement>,
+    ) -> Result<()> {
+        require!(
+            ctx.accounts.config.authority == ctx.accounts.authority.key(),
+            TreasuryError::Unauthorized
+        );
+        validate_policy(
+            confidence_threshold,
+            max_rounds,
+            max_plans,
+            &mandatory_constraints,
+            &required_capabilities,
+        )?;
+        let record = &mut ctx.accounts.policy_record;
+        record.transition_type = transition_type;
+        record.quorum_required = quorum_required;
+        record.confidence_threshold = confidence_threshold;
+        record.min_obs_confidence = min_obs_confidence;
+        record.require_objectives = require_objectives;
+        record.planning_window = planning_window;
+        record.max_rounds = max_rounds;
+        record.max_plans = max_plans;
+        record.mandatory_constraints = mandatory_constraints;
+        record.required_capabilities = required_capabilities;
+        record.bump = ctx.bumps.policy_record;
+        emit!(PolicyInstalled {
+            transition_type,
+            authority: ctx.accounts.authority.key(),
+        });
+        Ok(())
+    }
 }
 
 /// Who may open planning, as a pure check (design §4.1, kernel
@@ -2290,6 +2396,62 @@ pub fn validate_constraint_ids(ids: &[[u8; 32]]) -> Result<()> {
     Ok(())
 }
 
+/// The kernel's frozen-set derivation (design §4.1, kernel
+/// `register_transition`): the type's mandatory constraints ∪ the
+/// proposer's additions, in that order, deduped — a mandatory id the
+/// proposer also supplies is one entry, never two, and the mandatory
+/// order is preserved so the set is deterministic from its inputs.
+/// The caller still validates the merged set's shape (at most
+/// [`MAX_CONSTRAINTS`]); merging alone cannot shrink a too-large union.
+pub fn merge_constraint_sets(
+    mandatory: &[[u8; 32]],
+    additions: &[[u8; 32]],
+) -> Vec<[u8; 32]> {
+    let mut merged: Vec<[u8; 32]> = mandatory.to_vec();
+    for id in additions {
+        if !merged.contains(id) {
+            merged.push(*id);
+        }
+    }
+    merged
+}
+
+/// A transition type's policy, validated as the kernel validates it at
+/// registration (kernel `register_transition`): a confidence
+/// threshold above 1.0, or a zero round or plan cap, is `BadWindow`.
+/// Quorum, minimum observation confidence, and planning window are
+/// deliberately NOT range-checked — the kernel does not check them at
+/// registration, and an unsatisfiable value fails closed at commit
+/// (its mask bit stays set), never admits a transition that should not
+/// commit. The mandatory set must fit the frozen-set shape, and the
+/// required capabilities must fit their bound with no id twice (a
+/// duplicate requirement would double-count one capability's cover).
+pub fn validate_policy(
+    confidence_threshold: u64,
+    max_rounds: u32,
+    max_plans: u32,
+    mandatory: &[[u8; 32]],
+    required_capabilities: &[CapabilityRequirement],
+) -> Result<()> {
+    require!(
+        confidence_threshold <= SUPPORT_ONE_RAW,
+        TreasuryError::BadWindow
+    );
+    require!(max_rounds > 0, TreasuryError::BadWindow);
+    require!(max_plans > 0, TreasuryError::BadWindow);
+    validate_constraint_ids(mandatory)?;
+    require!(
+        required_capabilities.len() <= MAX_REQUIRED_CAPS,
+        TreasuryError::InvalidCapabilities
+    );
+    for (i, cap) in required_capabilities.iter().enumerate() {
+        for other in &required_capabilities[..i] {
+            require!(cap.id != other.id, TreasuryError::InvalidCapabilities);
+        }
+    }
+    Ok(())
+}
+
 /// Event for [`treasury_program::submit_constraint_report`] (design
 /// §4.1): the transition, the reporting Evaluator, and the report as
 /// submitted — the authorization context the design requires on every
@@ -2419,6 +2581,18 @@ pub struct TransitionRejected {
 #[event]
 pub struct TransitionExpired {
     pub transition_id: u64,
+}
+
+/// Event for [`treasury_program::policy_transition`] (design §4.1):
+/// the installed type and the installing authority — the
+/// authorization context for a genesis policy install. The installed
+/// record itself is the payload; the `PolicyCommitted` /
+/// `PolicySettled` events of the design table belong to the later
+/// `treasury.policy.v1` amendment execution, not to this install.
+#[event]
+pub struct PolicyInstalled {
+    pub transition_type: [u8; 32],
+    pub authority: Pubkey,
 }
 
 /// One settle attribution: an agent and its reputation delta (kernel
@@ -2726,13 +2900,19 @@ impl Observation {
 
 /// Accounts for [`treasury_program::register_transition`].
 #[derive(Accounts)]
-#[instruction(transition_id: u64, observation_id: u64)]
+#[instruction(transition_id: u64, observation_id: u64, transition_type: [u8; 32])]
 pub struct RegisterTransition<'info> {
     /// The manifest's observation — must already exist (design §4.1:
     /// UnknownObservation if it does not; enforced by this account
     /// constraint, not by a returned error).
     #[account(seeds = [b"observation", observation_id.to_le_bytes().as_ref()], bump = observation.bump)]
     pub observation: Account<'info, Observation>,
+    /// The transition type's policy — must already exist (installed by
+    /// `policy_transition` at genesis). The seeds bind it to the
+    /// registered type, so the mandatory set it contributes cannot be
+    /// swapped for another type's policy at registration time.
+    #[account(seeds = [b"policy", transition_type.as_ref()], bump = policy_record.bump)]
+    pub policy_record: Account<'info, PolicyRecord>,
     /// TransitionRecord PDA, seeds `["transition", transition_id]`.
     /// One-time init: a duplicate id fails and changes no state.
     #[account(
@@ -2780,6 +2960,13 @@ pub struct OpenPlanning<'info> {
 /// change, not a policy change.
 pub const MAX_CONSTRAINTS: usize = 8;
 
+/// Maximum required capabilities on one transition type's policy
+/// (design §4.1: the kernel's `required_caps` per type). An
+/// account-size bound, not a kernel rule — the kernel's list is
+/// unbounded, but an on-chain record is not; 8 mirrors the frozen-set
+/// bound, and raising it is a SPACE change, not a policy change.
+pub const MAX_REQUIRED_CAPS: usize = 8;
+
 /// One entry of a transition's frozen constraint set: the kernel's
 /// `ConstraintId` ([u8; 32]) plus its current status, one of the
 /// `STATUS_*` codes. Every entry starts Unavailable at registration;
@@ -2790,6 +2977,22 @@ pub struct ConstraintEntry {
     pub id: [u8; 32],
     /// Current status: Pass (0), Fail (1), or Unavailable (2).
     pub status: u8,
+}
+
+/// One required capability on a transition type's policy: the kernel's
+/// `required_caps` entry (a `CapabilityId` plus the minimum summed
+/// influence its plan authors must hold). The CAPABILITY bit at commit
+/// is the coverage test over these entries; the holdings they are
+/// checked against live on AgentRecords and land with
+/// `grant_capability` — this struct records the requirement, not the
+/// holding.
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CapabilityRequirement {
+    /// The capability's id (kernel `CapabilityId`).
+    pub id: [u8; 32],
+    /// Minimum summed influence of plan authors holding it, raw
+    /// fixed-point units (kernel `Amount`).
+    pub min_weight: u64,
 }
 
 /// Maximum exceptions on one transition (design §3: exceptions are
@@ -2842,6 +3045,10 @@ pub struct ExceptionEntry {
 pub struct TransitionRecord {
     /// Caller-chosen id (PDA seed component).
     pub transition_id: u64,
+    /// The transition's type (kernel `TransitionType`, [u8; 32]) —
+    /// the PolicyRecord whose mandatory set and caps govern it.
+    /// Frozen at registration, like the rest of the manifest.
+    pub transition_type: [u8; 32],
     /// One of the `STATE_*` constants (kernel's seven states).
     pub state: u8,
     /// The registering payer's key — the kernel's recorded proposer.
@@ -2875,10 +3082,11 @@ pub struct TransitionRecord {
     /// until the first advance — the monotone-revision check reads
     /// this field, and round 0 has no previous round to read.
     pub prev_round_mean: u64,
-    /// The frozen constraint set (design §3): fixed at
-    /// `register_transition`, reported against by
-    /// `submit_constraint_report`, never extended after registration.
-    /// Each entry is 32 (id) + 1 (status) bytes.
+    /// The frozen constraint set (design §3): derived at
+    /// `register_transition` as the type's PolicyRecord mandatory set
+    /// ∪ the proposer's additions, deduped, all Unavailable; reported
+    /// against by `submit_constraint_report`, never extended after
+    /// registration. Each entry is 32 (id) + 1 (status) bytes.
     pub constraints: Vec<ConstraintEntry>,
     /// The independent objectives verdict (kernel `objectives_ok`):
     /// false at registration, overwritten by each
@@ -2926,10 +3134,63 @@ pub struct TransitionRecord {
 }
 
 impl TransitionRecord {
-    /// 8 (discriminator) + 8 + 1 + 32 + 8 + 8 + 8 + 4 + 4
+    /// 8 (discriminator) + 8 + 32 + 1 + 32 + 8 + 8 + 8 + 4 + 4
     /// + 8 + 8 + 8 + (4 + 8 × 33) + 1 + 1 + 32 + 8 + 32 + 8 + 32
-    /// + (4 + 8 × 34) + 4 + 1 = 768.
-    pub const SPACE: usize = 8 + 8 + 1 + 32 + 8 + 8 + 8 + 4 + 4 + 8 + 8 + 8 + 268 + 1 + 1 + 32 + 8 + 32 + 8 + 32 + 276 + 4 + 1;
+    /// + (4 + 8 × 34) + 4 + 1 = 800.
+    pub const SPACE: usize = 8 + 8 + 32 + 1 + 32 + 8 + 8 + 8 + 4 + 4 + 8 + 8 + 8 + 268 + 1 + 1 + 32 + 8 + 32 + 8 + 32 + 276 + 4 + 1;
+}
+
+/// One transition type's policy (design §3 `PolicyRecord`, §4.1
+/// launch policy table): the kernel `Policy` for a type, plus the
+/// mandatory constraint set and required capabilities the kernel keeps
+/// per type (`mandatory`, `required_caps`). Installed by
+/// `policy_transition` in genesis-direct form; after genesis, changes
+/// are the execution of a committed `treasury.policy.v1` transition,
+/// never a fresh authority signature. The launch table's numeric values
+/// are identical across types at genesis (quorum 1.0, confidence 0.5,
+/// minimum observation confidence 0.5, objectives not required, 3
+/// rounds, 4 plans); the types differ in their mandatory sets and
+/// required capabilities, which is where the per-type policy lives.
+#[account]
+pub struct PolicyRecord {
+    /// The transition type this record governs (kernel
+    /// `TransitionType`, [u8; 32]; PDA seed component).
+    pub transition_type: [u8; 32],
+    /// Quorum: the last round's effective-weight total must reach this
+    /// (kernel `quorum_required`, raw fixed-point units).
+    pub quorum_required: u64,
+    /// Confidence threshold for the last round's mean support (kernel
+    /// `confidence_threshold`, raw units).
+    pub confidence_threshold: u64,
+    /// Minimum observation confidence for the FRESH bit (kernel
+    /// `min_obs_confidence`, raw units).
+    pub min_obs_confidence: u64,
+    /// Whether the transition type requires an objectives report (kernel
+    /// `require_objectives`).
+    pub require_objectives: bool,
+    /// Planning window in seconds (kernel `planning_window`; the
+    /// engine-sim value carried at genesis, a parameter not a ruling).
+    pub planning_window: u64,
+    /// Maximum rounds (kernel `max_rounds`).
+    pub max_rounds: u32,
+    /// Maximum plans (kernel `max_plans`).
+    pub max_plans: u32,
+    /// Mandatory constraint ids for the type (kernel `mandatory`):
+    /// every transition of this type freezes these into its set at
+    /// registration, all Unavailable. At most [`MAX_CONSTRAINTS`].
+    pub mandatory_constraints: Vec<[u8; 32]>,
+    /// Required capabilities for the type (kernel `required_caps`):
+    /// each entry's minimum summed plan-author influence. At most
+    /// [`MAX_REQUIRED_CAPS`].
+    pub required_capabilities: Vec<CapabilityRequirement>,
+    /// PDA bump for the `["policy", transition_type]` seeds.
+    pub bump: u8,
+}
+
+impl PolicyRecord {
+    /// 8 (discriminator) + 32 + 8 + 8 + 8 + 1 + 8 + 4 + 4
+    /// + (4 + 8 × 32) + (4 + 8 × (32 + 8)) + 1 = 666.
+    pub const SPACE: usize = 8 + 32 + 8 + 8 + 8 + 1 + 8 + 4 + 4 + 260 + 324 + 1;
 }
 
 /// Maximum claims per plan (design §3: a plan is a capacity-claims
@@ -3301,6 +3562,31 @@ pub struct ExpireTransition<'info> {
     pub clock: Sysvar<'info, Clock>,
 }
 
+/// Accounts for [`treasury_program::policy_transition`].
+#[derive(Accounts)]
+#[instruction(transition_type: [u8; 32])]
+pub struct PolicyTransition<'info> {
+    /// Program configuration PDA — read to check the authority.
+    #[account(seeds = [b"config"], bump = config.bump)]
+    pub config: Account<'info, Config>,
+    /// Policy record PDA, seeds `["policy", transition_type]`.
+    /// One-time init: installing a type twice fails at account
+    /// creation and changes no state.
+    #[account(
+        init,
+        payer = authority,
+        space = PolicyRecord::SPACE,
+        seeds = [b"policy", transition_type.as_ref()],
+        bump
+    )]
+    pub policy_record: Account<'info, PolicyRecord>,
+    /// Genesis authority (the governance multisig at genesis).
+    #[account(mut)]
+    pub authority: Signer<'info>,
+    /// Rent sysvar, required by the `init` constraint.
+    pub system_program: Program<'info, System>,
+}
+
 /// Accounts for [`treasury_program::submit_constraint_report`].
 #[derive(Accounts)]
 #[instruction(transition_id: u64)]
@@ -3480,6 +3766,10 @@ pub enum TreasuryError {
     /// The transition already holds `MAX_EXCEPTIONS` exceptions (8).
     #[msg("Too many exceptions: at most 8 per transition.")]
     TooManyExceptions,
+    /// The required-capability set breaks its shape: more than
+    /// MAX_REQUIRED_CAPS entries, or a capability id twice.
+    #[msg("Invalid required capabilities: too many, or a capability id twice.")]
+    InvalidCapabilities,
 }
 
 #[cfg(test)]
@@ -3553,8 +3843,9 @@ mod tests {
         // inputs (8 + 32) with commit, and the commit index (8) plus
         // the realized hash (32) with settle, and the exception set
         // (4 + 8 x 34) plus the unresolved-blocking count (4) with
-        // raise_exception / resolve_exception.
-        assert_eq!(TransitionRecord::SPACE, 768);
+        // raise_exception / resolve_exception, and the transition
+        // type (32) with policy_transition.
+        assert_eq!(TransitionRecord::SPACE, 800);
         assert_eq!(DeclaredChain::SPACE, 49);
         assert_eq!(MAX_CONSTRAINTS, 8);
         assert_eq!(MAX_EXCEPTIONS, 8);
@@ -3891,6 +4182,7 @@ mod tests {
         let proposer = Pubkey::new_from_array([1u8; 32]);
         let record = TransitionRecord {
             transition_id: 7,
+            transition_type: [4u8; 32],
             state: STATE_REGISTERED,
             proposer,
             observation_id: 3,
@@ -4468,5 +4760,75 @@ mod tests {
                 | MASK_CAPABILITY
         );
         assert_eq!(worst & MASK_DIALECT, 0);
+    }
+
+    #[test]
+    fn policy_record_space_matches_fields() {
+        // 8 (discriminator) + 32 (type) + 8 + 8 + 8 (quorum,
+        // confidence, min-obs) + 1 (objectives) + 8 (window) + 4 + 4
+        // (caps) + (4 + 8 x 32) mandatory + (4 + 8 x (32 + 8))
+        // required caps + 1 (bump) = 666.
+        assert_eq!(PolicyRecord::SPACE, 666);
+        assert_eq!(MAX_REQUIRED_CAPS, 8);
+    }
+
+    #[test]
+    fn merged_constraint_set_is_mandatory_union_proposer_deduped() {
+        let mandatory = [[1; 32], [2; 32]];
+        let additions = [[2; 32], [3; 32]];
+        let merged = merge_constraint_sets(&mandatory, &additions);
+        // Mandatory order preserved, the duplicate appears once, the
+        // new addition appends — never a second entry for one id.
+        assert_eq!(merged, vec![[1; 32], [2; 32], [3; 32]]);
+        // Empty sides degenerate cleanly both ways.
+        assert_eq!(merge_constraint_sets(&mandatory, &[]), mandatory);
+        assert_eq!(
+            merge_constraint_sets(&[], &additions),
+            vec![[2; 32], [3; 32]]
+        );
+        assert!(merge_constraint_sets(&[], &[]).is_empty());
+    }
+
+    #[test]
+    fn validate_policy_mirrors_kernel_registration_gates() {
+        let mandatory = [[9; 32]];
+        let caps = [CapabilityRequirement {
+            id: [7; 32],
+            min_weight: 500_000,
+        }];
+        // The launch values install cleanly.
+        assert!(validate_policy(500_000, 3, 4, &mandatory, &caps).is_ok());
+        // The kernel's own gates: confidence above 1.0, zero rounds,
+        // zero plans — each is BadWindow, never a silent install.
+        assert!(validate_policy(1_000_001, 3, 4, &mandatory, &caps).is_err());
+        assert!(validate_policy(500_000, 0, 4, &mandatory, &caps).is_err());
+        assert!(validate_policy(500_000, 3, 0, &mandatory, &caps).is_err());
+        // A duplicate mandatory id breaks the frozen-set shape.
+        assert!(validate_policy(500_000, 3, 4, &[[9; 32], [9; 32]], &caps).is_err());
+    }
+
+    #[test]
+    fn validate_policy_rejects_bad_capability_sets() {
+        let mandatory = [[9; 32]];
+        // A duplicate capability id would double-count one cover.
+        let dup = [
+            CapabilityRequirement {
+                id: [7; 32],
+                min_weight: 500_000,
+            },
+            CapabilityRequirement {
+                id: [7; 32],
+                min_weight: 250_000,
+            },
+        ];
+        assert!(validate_policy(500_000, 3, 4, &mandatory, &dup).is_err());
+        // Nine requirements break the account-size bound.
+        let many: Vec<CapabilityRequirement> = (0..9)
+            .map(|i| CapabilityRequirement {
+                id: [i as u8; 32],
+                min_weight: 0,
+            })
+            .collect();
+        assert!(validate_policy(500_000, 3, 4, &mandatory, &many).is_err());
     }
 }
