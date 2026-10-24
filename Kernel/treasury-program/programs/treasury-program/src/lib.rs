@@ -36,7 +36,14 @@
 //! constraint enforces it; lineage is judged at commit, not here).
 //! Constraint reports, plans, signals, and the remaining lifecycle
 //! instructions land next, in design order, then §4.2 treasury, then
-//! §4.3 distribution.
+//! §4.3 distribution. This increment adds `open_planning` (design §4.1):
+//! only the transition's recorded proposer or an Admin may open planning,
+//! the state moves Registered → Planning, and the planning deadline is
+//! `now + PLANNING_WINDOW` from the carried launch policy. Recording the
+//! proposer required one honest change to the previous slice: the
+//! TransitionRecord now carries the proposer's key (set from the payer at
+//! `register_transition`), so its SPACE moves 74 → 106. No on-chain
+//! account exists yet (no deployment in W4.3), so no migration is owed.
 //! Nothing here is deployed: NO devnet deployment in W4.3, NO mainnet step
 //! exists in W4. No instruction here moves value.
 //!
@@ -267,7 +274,10 @@ pub mod treasury_program {
     /// §1.1, bit 10). The frozen constraint set, plans, rounds, and
     /// signals are stored on this record by later lifecycle
     /// instructions; this slice creates the record with the planning
-    /// deadline unset (0) until `open_planning` sets it.
+    /// deadline unset (0) until `open_planning` sets it. The payer's key
+    /// is recorded as the proposer: the kernel records the proposer at
+    /// registration (`kernel.rs` `register_transition`), and
+    /// `open_planning` below admits only that proposer or an Admin.
     pub fn register_transition(
         ctx: Context<RegisterTransition>,
         transition_id: u64,
@@ -280,6 +290,7 @@ pub mod treasury_program {
         let record = &mut ctx.accounts.transition_record;
         record.transition_id = transition_id;
         record.state = STATE_REGISTERED;
+        record.proposer = ctx.accounts.payer.key();
         record.observation_id = observation_id;
         record.expires_at = expires_at;
         record.planning_deadline = 0;
@@ -287,6 +298,71 @@ pub mod treasury_program {
         record.bump = ctx.bumps.transition_record;
         Ok(())
     }
+
+    /// Governance lifecycle (design §4.1): open planning for a transition.
+    ///
+    /// Mirrors the kernel's `open_planning` exactly: only the recorded
+    /// proposer or an Admin may call it, the state must be Registered
+    /// (the kernel's `set_state` allows Registered → Planning and
+    /// nothing else into Planning), and the deadline is `now +
+    /// planning_window` from the launch policy (the carried genesis
+    /// parameter in `kernel_bridge`; design §9 — its seconds value is a
+    /// parameter, not a ruling). Time comes from the Clock sysvar, never
+    /// a client timestamp. Program-layer note, stated plainly: the
+    /// caller must present their AgentRecord, because Admin status lives
+    /// only there — a proposer who has never been registered as an agent
+    /// cannot open planning until registered. That is stricter than the
+    /// kernel (which records any caller as proposer), and strictly
+    /// fail-closed: it can only refuse, never admit an extra caller.
+    pub fn open_planning(
+        ctx: Context<OpenPlanning>,
+        transition_id: u64,
+    ) -> Result<()> {
+        let _ = transition_id;
+        let record = &ctx.accounts.agent_record;
+        require!(
+            record.agent == ctx.accounts.caller.key(),
+            TreasuryError::AgentMismatch
+        );
+        let transition = &mut ctx.accounts.transition_record;
+        can_open_planning(
+            ctx.accounts.caller.key(),
+            transition.proposer,
+            record.is_admin,
+            transition.state,
+        )?;
+        let now = ctx.accounts.clock.unix_timestamp;
+        transition.planning_deadline =
+            planning_deadline(now, kernel_bridge::PLANNING_WINDOW)?;
+        transition.state = STATE_PLANNING;
+        Ok(())
+    }
+}
+
+/// Who may open planning, as a pure check (design §4.1, kernel
+/// `open_planning`): the recorded proposer, or any Admin. Any other
+/// caller is unauthorized; a transition not in Registered state cannot
+/// enter Planning (the kernel's `set_state` gate, mirrored here).
+pub fn can_open_planning(
+    caller: Pubkey,
+    proposer: Pubkey,
+    is_admin: bool,
+    state: u8,
+) -> Result<()> {
+    require!(state == STATE_REGISTERED, TreasuryError::BadState);
+    require!(
+        caller == proposer || is_admin,
+        TreasuryError::Unauthorized
+    );
+    Ok(())
+}
+
+/// The planning deadline for a planning window opened at `now`:
+/// `now + planning_window`, checked — an overflow is an error, never a
+/// wrapped deadline.
+pub fn planning_deadline(now: i64, planning_window: u64) -> Result<i64> {
+    now.checked_add(planning_window as i64)
+        .ok_or(TreasuryError::Overflow.into())
 }
 
 /// TransitionRecord states (design §3): the kernel's seven, exactly, in
@@ -544,21 +620,43 @@ pub struct RegisterTransition<'info> {
     pub clock: Sysvar<'info, Clock>,
 }
 
+/// Accounts for [`treasury_program::open_planning`].
+#[derive(Accounts)]
+#[instruction(transition_id: u64)]
+pub struct OpenPlanning<'info> {
+    /// The caller's agent record (must exist and be bound to the
+    /// signer). Admin status is read from here: only the proposer or
+    /// an Admin may open planning (design §4.1).
+    #[account(seeds = [b"agent", caller.key().as_ref()], bump = agent_record.bump)]
+    pub agent_record: Account<'info, AgentRecord>,
+    /// The transition record to move Registered → Planning.
+    #[account(mut, seeds = [b"transition", transition_id.to_le_bytes().as_ref()], bump = transition_record.bump)]
+    pub transition_record: Account<'info, TransitionRecord>,
+    /// The caller (proposer or Admin). Pays no rent here.
+    pub caller: Signer<'info>,
+    /// Clock sysvar: the planning deadline is judged on-chain.
+    pub clock: Sysvar<'info, Clock>,
+}
+
 /// One kernel transition's on-chain record (design §3 `TransitionRecord`,
 /// first fields).
 ///
 /// Per-transition kernel state lives here, serialized (design §1.2:
-/// load → call → store). This slice carries the manifest inputs and the
-/// state; the frozen constraint set, objectives flag, rounds/signals,
-/// plans, per-transition exceptions, reconciled flag, and realized hash
-/// are added by the lifecycle instructions that own them — each field
-/// lands with the instruction that writes it, not before.
+/// load → call → store). This slice carries the manifest inputs, the
+/// recorded proposer, and the state; the frozen constraint set,
+/// objectives flag, rounds/signals, plans, per-transition exceptions,
+/// reconciled flag, and realized hash are added by the lifecycle
+/// instructions that own them — each field lands with the instruction
+/// that writes it, not before.
 #[account]
 pub struct TransitionRecord {
     /// Caller-chosen id (PDA seed component).
     pub transition_id: u64,
     /// One of the `STATE_*` constants (kernel's seven states).
     pub state: u8,
+    /// The registering payer's key — the kernel's recorded proposer.
+    /// `open_planning` admits only this key or an Admin.
+    pub proposer: Pubkey,
     /// The manifest's observation id (FRESH reads through it).
     pub observation_id: u64,
     /// Manifest expiry (past it, the transition can only expire).
@@ -572,8 +670,8 @@ pub struct TransitionRecord {
 }
 
 impl TransitionRecord {
-    /// 8 (discriminator) + 8 + 1 + 8 + 8 + 8 + 32 + 1.
-    pub const SPACE: usize = 8 + 8 + 1 + 8 + 8 + 8 + 32 + 1;
+    /// 8 (discriminator) + 8 + 1 + 32 + 8 + 8 + 8 + 32 + 1.
+    pub const SPACE: usize = 8 + 8 + 1 + 32 + 8 + 8 + 8 + 32 + 1;
 }
 
 /// Program errors (design §4 taxonomy, first entries).
@@ -601,6 +699,14 @@ pub enum TreasuryError {
     /// manifest already expired at registration.
     #[msg("Bad window: expiry must be after the timestamp / in the future.")]
     BadWindow,
+    /// The transition is not in the state this instruction requires
+    /// (e.g. opening planning on a non-Registered transition).
+    #[msg("Transition is not in the required state.")]
+    BadState,
+    /// Checked arithmetic overflowed (e.g. a planning deadline beyond
+    /// the timestamp range). An overflow is an error, never a wrap.
+    #[msg("Arithmetic overflow.")]
+    Overflow,
 }
 
 #[cfg(test)]
@@ -664,7 +770,8 @@ mod tests {
     #[test]
     fn observation_and_transition_spaces_match_fields() {
         assert_eq!(Observation::SPACE, 105);
-        assert_eq!(TransitionRecord::SPACE, 74);
+        // 106: the proposer key (32) joined the record with open_planning.
+        assert_eq!(TransitionRecord::SPACE, 106);
     }
 
     #[test]
@@ -703,9 +810,11 @@ mod tests {
 
     #[test]
     fn fresh_transition_record_starts_registered() {
+        let proposer = Pubkey::new_from_array([1u8; 32]);
         let record = TransitionRecord {
             transition_id: 7,
             state: STATE_REGISTERED,
+            proposer,
             observation_id: 3,
             expires_at: 1_000,
             planning_deadline: 0,
@@ -713,7 +822,35 @@ mod tests {
             bump: 255,
         };
         assert_eq!(record.state, STATE_REGISTERED);
+        assert_eq!(record.proposer, proposer);
         assert_eq!(record.planning_deadline, 0);
         assert_eq!(record.observation_id, 3);
+    }
+
+    #[test]
+    fn open_planning_admits_proposer_or_admin_only() {
+        let proposer = Pubkey::new_from_array([1u8; 32]);
+        let admin = Pubkey::new_from_array([2u8; 32]);
+        let stranger = Pubkey::new_from_array([3u8; 32]);
+        // The proposer opens their own transition.
+        assert!(can_open_planning(proposer, proposer, false, STATE_REGISTERED).is_ok());
+        // An Admin opens anyone's transition.
+        assert!(can_open_planning(admin, proposer, true, STATE_REGISTERED).is_ok());
+        // A non-proposer non-Admin is refused.
+        assert!(can_open_planning(stranger, proposer, false, STATE_REGISTERED).is_err());
+        // Even the proposer cannot re-open a transition already Planning.
+        assert!(can_open_planning(proposer, proposer, false, STATE_PLANNING).is_err());
+        // Even an Admin cannot open a Committed transition.
+        assert!(can_open_planning(admin, proposer, true, STATE_COMMITTED).is_err());
+    }
+
+    #[test]
+    fn planning_deadline_is_now_plus_window() {
+        assert_eq!(
+            planning_deadline(1_000, kernel_bridge::PLANNING_WINDOW).unwrap(),
+            1_000 + kernel_bridge::PLANNING_WINDOW as i64
+        );
+        // Overflow is an error, never a wrapped deadline.
+        assert!(planning_deadline(i64::MAX, kernel_bridge::PLANNING_WINDOW).is_err());
     }
 }
