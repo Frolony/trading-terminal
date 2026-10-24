@@ -274,12 +274,18 @@
 //! and the round cap — instead of the launch constants. The installed
 //! launch values equal those constants, so no behavior changes on any
 //! transition registered under a launch policy; a type whose policy is
-//! later amended is governed by its own record from then on. The
-//! remaining interim is `commit`'s mask inputs (quorum, confidence,
-//! minimum observation confidence, objectives requirement), which
-//! still read the launch policy — the mask-input wiring is the next
-//! policy increment, and the CAPABILITY bit's holdings still await
-//! `grant_capability`.
+//! later amended is governed by its own record from then on. This
+//! increment closes the second interim: `commit` now takes the
+//! transition type's PolicyRecord (seeds-bound to the record's
+//! `transition_type`, like the four lifecycle handlers) and reads its
+//! mask inputs from it — quorum, confidence threshold, minimum
+//! observation confidence, and the objectives requirement — instead
+//! of the launch policy. The installed launch values equal those
+//! constants, so no behavior changes on transitions under a launch
+//! policy; a type whose policy is later amended commits under its own
+//! record from then on. The remaining interim is the CAPABILITY bit's
+//! holdings, which still await `grant_capability` (per-agent
+//! holdings); `capability_covered` stays true until then.
 //! Nothing here is deployed: NO devnet deployment in W4.3, NO mainnet step
 //! exists in W4. No instruction here moves value.
 //!
@@ -1076,7 +1082,12 @@ pub mod treasury_program {
         // the same empty-map evaluation `reconcile` performs. When
         // CapacityStock accounts land, they are passed here instead.
         let fits = fits_capacity(&claims, &[]);
-        let policy = kernel_bridge::launch_policy();
+        // The mask inputs come from the transition type's PolicyRecord,
+        // not the launch policy: a type whose policy was amended commits
+        // under its own record. The record is seeds-bound to the
+        // transition's type, so a stranger's policy cannot be
+        // substituted for the governing type's.
+        let policy = &ctx.accounts.policy_record;
         let now = ctx.accounts.clock.unix_timestamp;
         let constraint_statuses: Vec<u8> = transition
             .constraints
@@ -1089,15 +1100,15 @@ pub mod treasury_program {
             require_objectives: policy.require_objectives,
             round_total: transition.current_round_total,
             round_weighted: transition.current_round_weighted,
-            quorum_required: policy.quorum_required.raw(),
-            confidence_threshold: policy.confidence_threshold.raw(),
+            quorum_required: policy.quorum_required,
+            confidence_threshold: policy.confidence_threshold,
             reconciled: transition.reconciled,
             fits,
             unresolved_blocking: transition.unresolved_blocking,
             obs_timestamp: ctx.accounts.observation.timestamp,
             obs_expiry: ctx.accounts.observation.expiry,
             obs_confidence: ctx.accounts.observation.confidence,
-            min_obs_confidence: policy.min_obs_confidence.raw(),
+            min_obs_confidence: policy.min_obs_confidence,
             now,
             planning_deadline: transition.planning_deadline,
             expires_at: transition.expires_at,
@@ -2202,9 +2213,11 @@ pub struct CommitInputs<'a> {
     pub round_total: u64,
     /// Last round's weighted-support sum (kernel round `weighted`).
     pub round_weighted: u64,
-    /// Launch policy quorum (kernel `quorum_required`, raw).
+    /// The transition type's policy quorum (PolicyRecord
+    /// `quorum_required`, kernel `quorum_required`, raw).
     pub quorum_required: u64,
-    /// Launch policy confidence threshold (raw).
+    /// The transition type's policy confidence threshold (PolicyRecord,
+    /// raw).
     pub confidence_threshold: u64,
     /// The `reconcile` verdict (kernel `reconciled`).
     pub reconciled: bool,
@@ -2221,7 +2234,8 @@ pub struct CommitInputs<'a> {
     pub obs_expiry: i64,
     /// Observation confidence (raw).
     pub obs_confidence: u64,
-    /// Launch policy minimum observation confidence (raw).
+    /// The transition type's policy minimum observation confidence
+    /// (PolicyRecord, raw).
     pub min_obs_confidence: u64,
     /// On-chain time, from the Clock sysvar (kernel `now`).
     pub now: i64,
@@ -3387,6 +3401,13 @@ pub struct Commit<'info> {
     /// The transition record to commit (must be Committable).
     #[account(mut, seeds = [b"transition", transition_id.to_le_bytes().as_ref()], bump = transition_record.bump)]
     pub transition_record: Account<'info, TransitionRecord>,
+    /// The transition type's policy — seeds-bound to the record's
+    /// `transition_type`; its quorum, confidence threshold, minimum
+    /// observation confidence, and objectives requirement are the
+    /// mask inputs `commit` judges, never a stranger's policy and
+    /// never a constant.
+    #[account(seeds = [b"policy", transition_record.transition_type.as_ref()], bump = policy_record.bump)]
+    pub policy_record: Account<'info, PolicyRecord>,
     /// The manifest's observation — the FRESH bit reads through it.
     /// The instruction argument must match the record's observation
     /// id (checked in the handler); a stranger's observation is never
@@ -4954,5 +4975,97 @@ mod tests {
             kernel_bridge::launch_policy().max_rounds,
         )
         .is_ok());
+    }
+
+    #[test]
+    fn commit_mask_inputs_follow_the_type_policy_record() {
+        // A PolicyRecord whose mask inputs differ from the launch
+        // constants: the commit mask must follow the record, not the
+        // launch values. The handler passes exactly these four fields
+        // into `CommitInputs` (and the IDL carries the policy_record
+        // account on `commit`), so this test plus the IDL check is the
+        // wiring evidence for the slice; the handler itself is not
+        // unit-testable on host (Anchor context), and this test does
+        // not pretend otherwise. Every other bit is clear in both
+        // runs, so the two masks differ only by the four policy bits.
+        let policy = PolicyRecord {
+            transition_type: [3; 32],
+            quorum_required: 2_000_000,
+            confidence_threshold: 900_000,
+            min_obs_confidence: 900_000,
+            require_objectives: true,
+            planning_window: 999,
+            max_rounds: 1,
+            max_plans: 2,
+            mandatory_constraints: vec![],
+            required_capabilities: vec![],
+            bump: 0,
+        };
+        let launch = kernel_bridge::launch_policy();
+        assert_ne!(policy.quorum_required, launch.quorum_required.raw());
+        assert_ne!(
+            policy.confidence_threshold,
+            launch.confidence_threshold.raw()
+        );
+        assert_ne!(
+            policy.min_obs_confidence,
+            launch.min_obs_confidence.raw()
+        );
+        assert_ne!(policy.require_objectives, launch.require_objectives);
+        // Round: total 1.0, weighted support 0.5 — clears the launch
+        // quorum (1.0) and confidence (0.5), fails the record's (2.0,
+        // 0.9). Observation confidence 0.5 clears the launch minimum
+        // (0.5), fails the record's (0.9). Objectives unreported:
+        // clear when not required (launch), set when required (record).
+        let mask_for = |require_objectives: bool,
+                        quorum_required: u64,
+                        confidence_threshold: u64,
+                        min_obs_confidence: u64| {
+            let statuses = [STATUS_PASS];
+            commit_fail_mask(&CommitInputs {
+                constraint_statuses: &statuses,
+                objectives_ok: false,
+                require_objectives,
+                round_total: 1_000_000,
+                round_weighted: 500_000,
+                quorum_required,
+                confidence_threshold,
+                reconciled: true,
+                fits: true,
+                unresolved_blocking: 0,
+                obs_timestamp: 900,
+                obs_expiry: 2_000,
+                obs_confidence: 500_000,
+                min_obs_confidence,
+                now: 1_000,
+                planning_deadline: 900,
+                expires_at: 2_000,
+                parent_index: 0,
+                parent_hash: [0; 32],
+                chain_index: 0,
+                chain_hash: [0; 32],
+                plan_count: 1,
+                min_plan_expiry: Some(2_000),
+                capability_covered: true,
+            })
+        };
+        assert_eq!(
+            mask_for(
+                policy.require_objectives,
+                policy.quorum_required,
+                policy.confidence_threshold,
+                policy.min_obs_confidence,
+            ),
+            MASK_OBJECTIVES | MASK_QUORUM | MASK_CONFIDENCE | MASK_FRESH
+        );
+        assert_eq!(
+            mask_for(
+                launch.require_objectives,
+                launch.quorum_required.raw(),
+                launch.confidence_threshold.raw(),
+                launch.min_obs_confidence.raw(),
+            ),
+            0
+        );
     }
 }

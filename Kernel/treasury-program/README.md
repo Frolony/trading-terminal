@@ -184,6 +184,22 @@ policy increment; the CAPABILITY bit's holdings still await
 of a committed `treasury.policy.v1` transition. Next:
 `grant_capability`, `set_capacity`, then §4.2 treasury.
 
+**This increment wires the `commit` mask inputs to the type's
+PolicyRecord (design §4.1)** and closes the second interim above:
+`commit` now takes the transition type's PolicyRecord (seeds-bound to
+the TransitionRecord's `transition_type`) and reads its quorum,
+confidence threshold, minimum observation confidence, and objectives
+requirement from it instead of the launch policy. Installed launch
+values equal those constants, so no behavior changes on transitions
+under a launch policy. IDL: instructions 21 (unchanged count — `commit`
+gains the `policy_record` account), accounts 9, errors 32. Program host
+tests 48 → 49 (the mask follows the record's values at non-launch
+settings and clears at launch settings). Remaining interim: the
+CAPABILITY bit's holdings still await `grant_capability`; post-genesis
+policy changes remain the execution of a committed `treasury.policy.v1`
+transition. Next: `grant_capability`, `set_capacity`, then §4.2
+treasury.
+
 **Design:** `files/OWN_IDL_DESIGN.md` (W4.1, validated and revised
 2026-10-24; W4.3 GO given by Carlos 2026-10-24 ~03:39 CST). Placement C: the
 kernel crate compiled into the program, the full 13-bit `commit_fail_mask`
