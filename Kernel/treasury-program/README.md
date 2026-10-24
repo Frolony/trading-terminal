@@ -200,6 +200,32 @@ policy changes remain the execution of a committed `treasury.policy.v1`
 transition. Next: `grant_capability`, `set_capacity`, then §4.2
 treasury.
 
+**This increment lands `grant_capability` / `revoke_capability`
+(design §4.1)** and closes the last CAPABILITY interim: per-agent
+capability holdings live on the AgentRecord (the design §3
+CapabilityRegistry in program form, SPACE 81 → 341, at most 8
+holdings — the kernel's set is unbounded, the on-chain record is
+not), granted genesis-direct by the `Config` authority like
+`grant_role` (duplicate grant a no-op success, a ninth distinct
+grant `TooManyCapabilities`; revoke a no-op when unheld, mirroring
+the role-revoke shape; the kernel asks nothing about activity, and
+neither does this). `commit` now reads the CAPABILITY bit from live
+inputs: its remaining accounts are the transition's plans followed by
+one AgentRecord per distinct plan author, and the bit is the kernel's
+`capability_covered` over the type's required capabilities against
+the authors' summed influence (checked addition — an overflowing sum
+fails the requirement, never wraps; influence held by a non-author
+counts for nothing). A missing, foreign, or duplicate author record
+is the new `CommitAccountsMismatch`, never a mask over partial
+holdings. IDL: instructions 21 → 23 (incl. both capability
+instructions), accounts 9 (no new account type), errors 32 → 34
+(`TooManyCapabilities`, `CommitAccountsMismatch`). Program host
+tests 49 → 51 (grant/revoke set semantics; the coverage helper
+matrix incl. the overflow-fails case). The §4.1 lifecycle is now
+input-complete for every mask bit except COMPAT's real stocks.
+Remaining: `set_capacity` (CapacityStock accounts, closing the
+COMPAT interim), post-genesis policy execution, then §4.2 treasury.
+
 **Design:** `files/OWN_IDL_DESIGN.md` (W4.1, validated and revised
 2026-10-24; W4.3 GO given by Carlos 2026-10-24 ~03:39 CST). Placement C: the
 kernel crate compiled into the program, the full 13-bit `commit_fail_mask`

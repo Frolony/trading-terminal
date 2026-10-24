@@ -286,6 +286,23 @@
 //! record from then on. The remaining interim is the CAPABILITY bit's
 //! holdings, which still await `grant_capability` (per-agent
 //! holdings); `capability_covered` stays true until then.
+//! This increment closes that last interim: `grant_capability` /
+//! `revoke_capability` (design §4.1 Admin setup, genesis-direct form
+//! like `grant_role`) record per-agent capability holdings on the
+//! AgentRecord (SPACE 81 → 341), and `commit` now reads the CAPABILITY
+//! bit from live inputs — the transition type's required capabilities
+//! against the summed influence of the plan authors who hold each one,
+//! exactly as the kernel's `capability_covered` computes it (checked
+//! addition: an overflowing sum fails the requirement, never wraps).
+//! `commit`'s remaining accounts are now the transition's plans
+//! followed by one AgentRecord per distinct plan author, in any order;
+//! a missing, foreign, or duplicate author record is
+//! `CommitAccountsMismatch`, never a mask computed over partial
+//! holdings. No new account type: holdings live on the AgentRecord,
+//! the design §3 CapabilityRegistry in program form. The §4.1
+//! lifecycle is now input-complete for every mask bit except COMPAT's
+//! real stocks (CapacityStock accounts, next increment) — every other
+//! bit already reads its governing on-chain record.
 //! Nothing here is deployed: NO devnet deployment in W4.3, NO mainnet step
 //! exists in W4. No instruction here moves value.
 //!
@@ -429,6 +446,7 @@ pub mod treasury_program {
         record.influence_raw = influence_raw;
         record.reputation_raw = reputation_raw;
         record.groups = groups;
+        record.capabilities = Vec::new();
         record.bump = ctx.bumps.agent_record;
         Ok(())
     }
@@ -468,6 +486,68 @@ pub mod treasury_program {
             TreasuryError::AgentMismatch
         );
         ctx.accounts.agent_record.apply_role(role, false)
+    }
+
+    /// Admin setup, genesis-direct form (design §4.1): grant one
+    /// capability to an agent.
+    ///
+    /// The caller must be the `Config` authority, like `grant_role`.
+    /// The kernel's `grant_capability` requires the agent to exist
+    /// (UnknownAgent) and asks nothing about activity — the account
+    /// constraint enforces existence here, and no active flag is
+    /// checked, mirroring the kernel. Granting a capability the agent
+    /// already holds is a no-op success (the kernel's set insert is
+    /// idempotent); granting past [`MAX_CAPABILITIES`] distinct
+    /// capabilities is `TooManyCapabilities`. After genesis, grants
+    /// are the execution of a committed `treasury.policy.v1`
+    /// transition — that execution path is a later increment, and
+    /// this genesis-direct grant does not authorize itself
+    /// post-genesis. The holdings recorded here are what `commit`'s
+    /// CAPABILITY bit reads, summed over plan authors only.
+    pub fn grant_capability(
+        ctx: Context<RoleChange>,
+        agent: Pubkey,
+        capability: [u8; 32],
+    ) -> Result<()> {
+        require!(
+            ctx.accounts.config.authority == ctx.accounts.authority.key(),
+            TreasuryError::Unauthorized
+        );
+        require!(
+            ctx.accounts.agent_record.agent == agent,
+            TreasuryError::AgentMismatch
+        );
+        ctx.accounts.agent_record.grant_capability(capability)
+    }
+
+    /// Admin setup, genesis-direct form (design §4.1): revoke one
+    /// capability from an agent.
+    ///
+    /// Same authority rule as `grant_capability`. The kernel has no
+    /// revoke-capability entry point — this mirrors `revoke_role`,
+    /// the program's counterpart for roles: revoking a capability the
+    /// agent does not hold is a no-op success, and a revoked
+    /// capability stops counting toward the CAPABILITY bit at the
+    /// next commit (a committed transition's mask is already
+    /// decided and is never rewritten). This is the program-layer
+    /// half of design §5's revocability: the `OPERATOR_SETTLE`
+    /// capability is granted and revoked through these calls at
+    /// genesis and through `treasury.policy.v1` after it.
+    pub fn revoke_capability(
+        ctx: Context<RoleChange>,
+        agent: Pubkey,
+        capability: [u8; 32],
+    ) -> Result<()> {
+        require!(
+            ctx.accounts.config.authority == ctx.accounts.authority.key(),
+            TreasuryError::Unauthorized
+        );
+        require!(
+            ctx.accounts.agent_record.agent == agent,
+            TreasuryError::AgentMismatch
+        );
+        ctx.accounts.agent_record.revoke_capability(capability);
+        Ok(())
     }
 
     /// Governance lifecycle (design §4.1): post an observation.
@@ -989,17 +1069,20 @@ pub mod treasury_program {
     /// Governance lifecycle (design §4.1): commit a transition.
     ///
     /// Permissionless, as in the kernel — the kernel ignores its commit
-    /// caller, so no AgentRecord is required and the predicate, not the
-    /// caller, decides. The transition must be Committable (`BadState`
-    /// otherwise — the kernel's `set_state` allows Committable →
-    /// Committed and nothing else into Committed). The full 13-bit mask
-    /// is then computed by the pure `commit_fail_mask` helper from
-    /// on-chain records only: constraint reports and the objectives
-    /// flag on the TransitionRecord, the last round's aggregates on the
-    /// same record, the observation account (FRESH), the Clock
-    /// (planning deadline, manifest expiry), the PlanRecord accounts
-    /// passed as remaining accounts (PLANS expiries, COMPAT aggregate),
-    /// and the `DeclaredChain` (LINEAGE). A non-zero mask refuses with
+    /// caller, so no AgentRecord is required of the caller and the
+    /// predicate, not the caller, decides. The transition must be
+    /// Committable (`BadState` otherwise — the kernel's `set_state`
+    /// allows Committable → Committed and nothing else into
+    /// Committed). The full 13-bit mask is then computed by the pure
+    /// `commit_fail_mask` helper from on-chain records only:
+    /// constraint reports and the objectives flag on the
+    /// TransitionRecord, the last round's aggregates on the same
+    /// record, the observation account (FRESH), the Clock (planning
+    /// deadline, manifest expiry), the PlanRecord accounts passed as
+    /// remaining accounts (PLANS expiries, COMPAT aggregate), the
+    /// plan authors' AgentRecords passed after them (CAPABILITY:
+    /// holdings + influence, summed per requirement), and the
+    /// `DeclaredChain` (LINEAGE). A non-zero mask refuses with
     /// `CommitFailed` and changes nothing — no state move, no event,
     /// no chain advance (a failed transaction rolls back in any case).
     /// The
@@ -1018,9 +1101,16 @@ pub mod treasury_program {
     /// by `initialize_config` (index 0, zero hash — the kernel's genesis
     /// declared state) and read here; a missing chain fails validation,
     /// fail-closed. Remaining-accounts completeness is enforced, not
-    /// assumed: exactly `plan_count` accounts, each program-owned, each
-    /// naming this transition, each pubkey distinct — anything else is
-    /// `PlanMismatch`, never a partial mask. The observation id is an
+    /// assumed: exactly `plan_count` plan accounts, each program-owned,
+    /// each naming this transition, each pubkey distinct — anything
+    /// else is `PlanMismatch`, never a partial mask — followed by one
+    /// AgentRecord per distinct plan author, in any order, each
+    /// program-owned and deserializing as an AgentRecord, each naming
+    /// a plan author, each pubkey distinct — anything else is
+    /// `CommitAccountsMismatch`, never a mask computed over partial
+    /// holdings. The author records are read-only here (commit writes
+    /// only the transition and the chain), so no write-back is owed.
+    /// The observation id is an
     /// instruction argument (the proven pattern of `register_transition`)
     /// and must match the record's, else `ObservationMismatch` — the
     /// FRESH bit is never judged through a stranger's observation.
@@ -1039,20 +1129,25 @@ pub mod treasury_program {
             observation_id == transition.observation_id,
             TreasuryError::ObservationMismatch
         );
-        // Remaining accounts are this transition's plans, and only
-        // those: exactly plan_count of them, program-owned, naming
-        // this transition, pubkeys distinct. A caller who omits a plan
-        // would otherwise get a mask computed over a partial claim set
-        // — a weaker predicate wearing a complete mask's clothes.
+        // Remaining accounts are this transition's plans first, then
+        // one AgentRecord per distinct plan author: the plans are
+        // exactly plan_count, program-owned, naming this transition,
+        // pubkeys distinct. A caller who omits a plan would otherwise
+        // get a mask computed over a partial claim set — a weaker
+        // predicate wearing a complete mask's clothes — and a caller
+        // who omits an author would get a CAPABILITY bit computed
+        // over partial holdings, the same failure in the other
+        // direction. Plans are positional (first), authors follow.
         let plan_count = transition.plan_count as usize;
         require!(
-            ctx.remaining_accounts.len() == plan_count,
+            ctx.remaining_accounts.len() >= plan_count,
             TreasuryError::PlanMismatch
         );
         let mut claims: Vec<(u16, u64)> = Vec::new();
         let mut min_plan_expiry: Option<i64> = None;
         let mut seen: Vec<Pubkey> = Vec::new();
-        for account in ctx.remaining_accounts.iter() {
+        let mut authors: Vec<Pubkey> = Vec::new();
+        for account in ctx.remaining_accounts.iter().take(plan_count) {
             require!(
                 account.owner == &crate::ID,
                 TreasuryError::PlanMismatch
@@ -1070,6 +1165,9 @@ pub mod treasury_program {
                 plan.transition_id == transition.transition_id,
                 TreasuryError::PlanMismatch
             );
+            if !authors.contains(&plan.agent) {
+                authors.push(plan.agent);
+            }
             for claim in plan.claims.iter() {
                 claims.push((claim.resource_id, claim.amount));
             }
@@ -1077,6 +1175,38 @@ pub mod treasury_program {
                 Some(prev) => prev.min(plan.expires_at),
                 None => plan.expires_at,
             });
+        }
+        // The author records must match the distinct-author set
+        // exactly: count, membership, and distinctness. Fewer
+        // remaining accounts than plans + authors fails here, not
+        // at the plan loop above — the take() above reads only what
+        // exists, so a short slice is a mismatch of the author set,
+        // and a long one is an extra account, never ignored.
+        require!(
+            ctx.remaining_accounts.len() == plan_count + authors.len(),
+            TreasuryError::CommitAccountsMismatch
+        );
+        let mut author_holdings: Vec<(u64, Vec<[u8; 32]>)> = Vec::new();
+        let mut seen_authors: Vec<Pubkey> = Vec::new();
+        for account in ctx.remaining_accounts.iter().skip(plan_count) {
+            require!(
+                account.owner == &crate::ID,
+                TreasuryError::CommitAccountsMismatch
+            );
+            require!(
+                !seen_authors.contains(account.key),
+                TreasuryError::CommitAccountsMismatch
+            );
+            seen_authors.push(*account.key);
+            let data = account.data.borrow();
+            let mut slice: &[u8] = &data;
+            let record = AgentRecord::try_deserialize(&mut slice)
+                .map_err(|_| TreasuryError::CommitAccountsMismatch)?;
+            require!(
+                authors.contains(&record.agent),
+                TreasuryError::CommitAccountsMismatch
+            );
+            author_holdings.push((record.influence_raw, record.capabilities));
         }
         // The stock set that exists today is empty (see handler docs):
         // the same empty-map evaluation `reconcile` performs. When
@@ -1088,6 +1218,12 @@ pub mod treasury_program {
         // transition's type, so a stranger's policy cannot be
         // substituted for the governing type's.
         let policy = &ctx.accounts.policy_record;
+        // CAPABILITY from live inputs: the type's required
+        // capabilities against the plan authors' holdings and
+        // influence, exactly as the kernel computes it — never the
+        // hard-coded true the earlier slices carried as an interim.
+        let capability_covered =
+            capability_covered(&policy.required_capabilities, &author_holdings);
         let now = ctx.accounts.clock.unix_timestamp;
         let constraint_statuses: Vec<u8> = transition
             .constraints
@@ -1118,7 +1254,7 @@ pub mod treasury_program {
             chain_hash: ctx.accounts.declared_chain.hash,
             plan_count: transition.plan_count,
             min_plan_expiry,
-            capability_covered: true,
+            capability_covered,
         };
         let mask = commit_fail_mask(&inputs);
         if mask != 0 {
@@ -2258,8 +2394,37 @@ pub struct CommitInputs<'a> {
     pub min_plan_expiry: Option<i64>,
     /// Whether every capability required of the transition type is
     /// covered by plan authors' influence (kernel
-    /// `capability_covered`; true until requirements land).
+    /// `capability_covered`, computed by the helper below over the
+    /// commit's author records — never assumed).
     pub capability_covered: bool,
+}
+
+/// The kernel's CAPABILITY coverage test (`capability_covered` in
+/// `kernel.rs`), over program records: every required capability must
+/// be covered by the summed influence of the plan authors holding it.
+/// Each author counts once (the caller passes one record per distinct
+/// author — the kernel iterates `plans.keys()`, which are distinct by
+/// construction); influence held by a non-author counts for nothing,
+/// exactly as the kernel ignores it. Checked addition throughout: an
+/// overflowing sum fails the requirement (the kernel's `Err → false`),
+/// never wraps into coverage. No requirements means covered, as in
+/// the kernel (no `required_caps` entry for the type).
+pub fn capability_covered(
+    required: &[CapabilityRequirement],
+    authors: &[(u64, Vec<[u8; 32]>)],
+) -> bool {
+    required.iter().all(|req| {
+        let mut acc: u64 = 0;
+        for (influence, capabilities) in authors {
+            if capabilities.contains(&req.id) {
+                match acc.checked_add(*influence) {
+                    Some(sum) => acc = sum,
+                    None => return false,
+                }
+            }
+        }
+        acc >= req.min_weight
+    })
 }
 
 /// The kernel's one predicate, computed on-chain (kernel
@@ -2781,6 +2946,13 @@ impl Config {
 /// `SPACE` is a fixed upper bound, not a function of the caller's input.
 pub const MAX_GROUPS: usize = 8;
 
+/// Maximum capability holdings per agent (design §3
+/// CapabilityRegistry: the kernel's `CapabilityId` set per agent).
+/// Mirrors the groups bound — the kernel's set is unbounded, but an
+/// on-chain record is not; raising it is a SPACE change, not a
+/// policy change.
+pub const MAX_CAPABILITIES: usize = 8;
+
 /// Reputation ceiling in kernel fixed-point raw units: 100 units at
 /// SCALE 1_000_000, matching the launch config (kernel_bridge).
 pub const REP_MAX_RAW: u64 = 100_000_000;
@@ -2848,13 +3020,20 @@ pub struct AgentRecord {
     pub reputation_raw: u64,
     /// Group memberships (kernel `GroupId`, u16), at most [`MAX_GROUPS`].
     pub groups: Vec<u16>,
+    /// Capability holdings (kernel `CapabilityId`, [u8; 32]), at most
+    /// [`MAX_CAPABILITIES`] — the design §3 CapabilityRegistry, stored
+    /// on the agent's own record. The CAPABILITY bit at commit sums
+    /// the influence of plan authors holding each required
+    /// capability, so these holdings are the bit's on-chain input.
+    pub capabilities: Vec<[u8; 32]>,
     /// PDA bump for the `["agent", agent]` seeds.
     pub bump: u8,
 }
 
 impl AgentRecord {
-    /// 8 (discriminator) + 32 + 1 + 1 + 1 + 1 + 8 + 8 + (4 + 8×2) + 1.
-    pub const SPACE: usize = 8 + 32 + 4 + 8 + 8 + 20 + 1;
+    /// 8 (discriminator) + 32 + 1 + 1 + 1 + 1 + 8 + 8 + (4 + 8×2)
+    /// + (4 + 8×32) + 1.
+    pub const SPACE: usize = 8 + 32 + 4 + 8 + 8 + 20 + 260 + 1;
 
     /// Set or clear one role flag. Role codes: 0 = Admin, 1 = Oracle,
     /// 2 = Evaluator — the kernel's `Role` enum order. Any other code is
@@ -2867,6 +3046,31 @@ impl AgentRecord {
             _ => return Err(TreasuryError::InvalidRole.into()),
         }
         Ok(())
+    }
+
+    /// Grant one capability (kernel `grant_capability`'s set insert).
+    /// Idempotent: granting a capability already held is a no-op
+    /// success and does not consume a slot. A ninth distinct
+    /// capability is `TooManyCapabilities` — the kernel's set is
+    /// unbounded, but an on-chain record is not, and the bound is a
+    /// SPACE change, not a policy change.
+    pub fn grant_capability(&mut self, capability: [u8; 32]) -> Result<()> {
+        if self.capabilities.contains(&capability) {
+            return Ok(());
+        }
+        require!(
+            self.capabilities.len() < MAX_CAPABILITIES,
+            TreasuryError::TooManyCapabilities
+        );
+        self.capabilities.push(capability);
+        Ok(())
+    }
+
+    /// Revoke one capability. No-op success when the agent does not
+    /// hold it — the end state (capability absent) is what the
+    /// caller asked for, mirroring `apply_role`'s revoke shape.
+    pub fn revoke_capability(&mut self, capability: [u8; 32]) {
+        self.capabilities.retain(|held| *held != capability);
     }
 }
 
@@ -3828,6 +4032,19 @@ pub enum TreasuryError {
     /// MAX_REQUIRED_CAPS entries, or a capability id twice.
     #[msg("Invalid required capabilities: too many, or a capability id twice.")]
     InvalidCapabilities,
+    /// The agent already holds `MAX_CAPABILITIES` distinct
+    /// capabilities (8) — a ninth distinct grant is refused, while a
+    /// duplicate grant stays a no-op success.
+    #[msg("Too many capabilities: at most 8 per agent.")]
+    TooManyCapabilities,
+    /// A commit remaining account does not belong to this commit's
+    /// author set: the author-record count differs from the distinct
+    /// plan-author count, an account is not program-owned, does not
+    /// deserialize as an AgentRecord, names a non-author, or is
+    /// listed twice. The CAPABILITY bit is never computed over a
+    /// partial author set.
+    #[msg("Remaining author accounts do not match this commit's plan-author set.")]
+    CommitAccountsMismatch,
 }
 
 #[cfg(test)]
@@ -3855,8 +4072,9 @@ mod tests {
 
     #[test]
     fn agent_record_space_matches_fields() {
-        assert_eq!(AgentRecord::SPACE, 81);
+        assert_eq!(AgentRecord::SPACE, 341);
         assert_eq!(MAX_GROUPS, 8);
+        assert_eq!(MAX_CAPABILITIES, 8);
         assert_eq!(REP_MAX_RAW, 100_000_000);
     }
 
@@ -3872,6 +4090,7 @@ mod tests {
             influence_raw: 1_000_000,
             reputation_raw: 50_000_000,
             groups: vec![1],
+            capabilities: vec![],
             bump: 0,
         };
         record.apply_role(1, true).expect("oracle grant lands");
@@ -3886,6 +4105,90 @@ mod tests {
         // An unknown code changes nothing and errors.
         assert!(record.apply_role(3, true).is_err());
         assert!(record.is_admin && !record.is_oracle && !record.is_evaluator);
+    }
+
+    #[test]
+    fn capability_grant_and_revoke_follow_the_kernel_set() {
+        // Kernel `grant_capability` is a set insert: idempotent, and
+        // the program bound is the only addition (8 distinct).
+        let mut record = AgentRecord {
+            agent: Pubkey::default(),
+            active: true,
+            is_admin: false,
+            is_oracle: false,
+            is_evaluator: false,
+            influence_raw: 1_000_000,
+            reputation_raw: 50_000_000,
+            groups: vec![],
+            capabilities: vec![],
+            bump: 0,
+        };
+        let cap_a = [1u8; 32];
+        record.grant_capability(cap_a).expect("first grant lands");
+        assert_eq!(record.capabilities.len(), 1);
+        // A duplicate grant is a no-op success, not a second entry.
+        record.grant_capability(cap_a).expect("duplicate grant is fine");
+        assert_eq!(record.capabilities.len(), 1);
+        // Fill to the bound, then a ninth distinct grant refuses —
+        // but a duplicate at a full set still succeeds.
+        for i in 2u8..=8 {
+            record
+                .grant_capability([i; 32])
+                .expect("grant under the bound lands");
+        }
+        assert_eq!(record.capabilities.len(), 8);
+        assert!(record.grant_capability([9u8; 32]).is_err());
+        record.grant_capability(cap_a).expect("duplicate at full set is fine");
+        assert_eq!(record.capabilities.len(), 8);
+        // Revoke removes, and revoking an unheld capability is a
+        // no-op success, mirroring the role-revoke shape.
+        record.revoke_capability(cap_a);
+        assert!(!record.capabilities.contains(&cap_a));
+        assert_eq!(record.capabilities.len(), 7);
+        record.revoke_capability(cap_a);
+        assert_eq!(record.capabilities.len(), 7);
+    }
+
+    #[test]
+    fn capability_covered_sums_plan_authors_only() {
+        // Kernel `capability_covered`: summed influence of plan
+        // authors holding the capability, per requirement, all
+        // requirements covered — checked addition, overflow fails.
+        let cap_a = [1u8; 32];
+        let cap_b = [2u8; 32];
+        let req = |id: [u8; 32], min: u64| CapabilityRequirement {
+            id,
+            min_weight: min,
+        };
+        // No requirements: covered, even with no authors.
+        assert!(capability_covered(&[], &[]));
+        // Two authors holding A sum past the minimum.
+        let authors: Vec<(u64, Vec<[u8; 32]>)> = vec![
+            (1_000_000, vec![cap_a]),
+            (600_000, vec![cap_a]),
+        ];
+        assert!(capability_covered(&[req(cap_a, 1_500_000)], &authors));
+        // Exactly the minimum still covers (boundary, not strict).
+        assert!(capability_covered(&[req(cap_a, 1_600_000)], &authors));
+        // One above the minimum fails: influence held by an author
+        // without the capability counts for nothing.
+        let authors: Vec<(u64, Vec<[u8; 32]>)> = vec![
+            (1_000_000, vec![cap_a]),
+            (600_000, vec![cap_b]),
+        ];
+        assert!(!capability_covered(&[req(cap_a, 1_500_000)], &authors));
+        // All requirements must cover: A covered, B not.
+        let authors: Vec<(u64, Vec<[u8; 32]>)> =
+            vec![(2_000_000, vec![cap_a])];
+        assert!(!capability_covered(
+            &[req(cap_a, 1_000_000), req(cap_b, 1)],
+            &authors
+        ));
+        // An overflowing sum fails the requirement, never wraps
+        // into coverage — the kernel's `Err → false`.
+        let authors: Vec<(u64, Vec<[u8; 32]>)> =
+            vec![(u64::MAX, vec![cap_a]), (1, vec![cap_a])];
+        assert!(!capability_covered(&[req(cap_a, 1)], &authors));
     }
 
     #[test]
