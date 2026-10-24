@@ -1,0 +1,343 @@
+//! Classification with confidence — and the unclassified guarantee.
+//!
+//! Each classifier is a pure function of `(workflow, dictionary-hits)` that
+//! returns an optional `(Label, confidence, evidence-note)` triple. The
+//! public entry point is [`classify`], which takes the highest-confidence
+//! candidate and **seals** it through [`Verdict::seal`]: any candidate below
+//! [`CONFIDENCE_THRESHOLD`] is demoted to [`Classification::Unclassified`]
+//! with the reason stated. There is no public constructor for a labeled
+//! verdict — a label the machine cannot justify is printed as a guess, never
+//! as a fact. That is the whole claims discipline of S13, enforced in the
+//! type, not in the UI copy.
+//!
+//! ## The threshold
+//!
+//! 0.70. A dictionary family-name-only match scores exactly 0.70
+//! ([`crate::dictionary`]), so a lone name match can never label on its
+//! own — a second independent signal (venue count, loop closure, treasury
+//! program context) is required to clear the bar. Strong multi-signal
+//! candidates score 0.75–0.95.
+
+use crate::dictionary::{Dictionary, HopKind, Venue, VenueHit};
+use crate::reconstruct::{NetEffect, Workflow};
+
+/// Below this confidence, a candidate is demoted to Unclassified.
+pub const CONFIDENCE_THRESHOLD: f64 = 0.70;
+
+/// The workflow labels of the S13 spec (§6 of the master plan), as far as
+/// this increment implements them. The market-maker-inventory and
+/// incentive-farming classes land in the W6.2 increment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Label {
+    /// Multi-venue swap route: value passed through ≥2 venues; the
+    /// intermediaries kept nothing (pass-through plumbing).
+    AggregatorSplit,
+    /// Liquidity added to / removed from a pool, no swap legs.
+    LiquidityAddRemove,
+    /// Circular flow returning value to the origin wallet (fees aside) —
+    /// the manufactured-movement shape. The workflow is already collapsed
+    /// to one by reconstruction; this labels it.
+    WashLoop,
+    /// Value moved across a bridge boundary (mint change at a bridge venue).
+    BridgeHop,
+    /// Funds left the user's wallet for a venue/program and did not return
+    /// within the window: a real position was opened.
+    PositionOpen,
+    /// Funds returned from a venue/program to the user's wallet: a position
+    /// was closed.
+    PositionClose,
+    /// A flow through our own treasury program (W4.1): enroll, tranche,
+    /// borrow, default settlement, exit. The audit story for S12
+    /// settlements, labeled as what it is.
+    TreasuryTransition,
+}
+
+/// A classification: either a justified label or an explicit guess.
+#[derive(Debug, Clone)]
+pub enum Classification {
+    Labeled {
+        label: Label,
+        /// Always ≥ CONFIDENCE_THRESHOLD — enforced by [`Verdict::seal`].
+        confidence: f64,
+        /// Why the classifier believes it, in one sentence.
+        rationale: String,
+    },
+    /// The machine's honest answer when it cannot justify a label.
+    Unclassified {
+        /// What was tried and why it fell short (e.g. "best candidate
+        /// AggregatorSplit at 0.62, below the 0.70 threshold").
+        reason: String,
+    },
+}
+
+/// The full verdict for one workflow: classification + evidence + net
+/// effect, ready for the headline renderer.
+#[derive(Debug, Clone)]
+pub struct Verdict {
+    pub workflow_id: u32,
+    pub classification: Classification,
+    /// The underlying event signatures — the audit appendix.
+    pub evidence: Vec<String>,
+    pub net: NetEffect,
+}
+
+impl Verdict {
+    /// Seal a candidate into a verdict. **This is the unclassified
+    /// guarantee**: a candidate below [`CONFIDENCE_THRESHOLD`] cannot become
+    /// a label through this constructor — it is demoted to Unclassified with
+    /// the shortfall stated. Keep this the only path to a labeled verdict.
+    pub fn seal(
+        workflow_id: u32,
+        candidate: Option<(Label, f64, String)>,
+        evidence: Vec<String>,
+        net: NetEffect,
+    ) -> Self {
+        let classification = match candidate {
+            Some((label, confidence, rationale))
+                if confidence >= CONFIDENCE_THRESHOLD =>
+            {
+                Classification::Labeled { label, confidence, rationale }
+            }
+            Some((label, confidence, rationale)) => Classification::Unclassified {
+                reason: format!(
+                    "best candidate {:?} at {:.2}, below the {:.2} threshold ({})",
+                    label, confidence, CONFIDENCE_THRESHOLD, rationale
+                ),
+            },
+            None => Classification::Unclassified {
+                reason: "no classifier produced a candidate".to_string(),
+            },
+        };
+        Verdict { workflow_id, classification, evidence, net }
+    }
+
+    /// True when the verdict is a guess, not a justified label.
+    pub fn is_guess(&self) -> bool {
+        matches!(self.classification, Classification::Unclassified { .. })
+    }
+
+    /// The label, if this verdict carries one.
+    pub fn label(&self) -> Option<Label> {
+        match &self.classification {
+            Classification::Labeled { label, .. } => Some(*label),
+            Classification::Unclassified { .. } => None,
+        }
+    }
+
+    /// The confidence of a labeled verdict. Panics on Unclassified — callers
+    /// must check [`Verdict::label`] first; a guess has no confidence worth
+    /// quoting.
+    pub fn confidence(&self) -> f64 {
+        match &self.classification {
+            Classification::Labeled { confidence, .. } => *confidence,
+            Classification::Unclassified { .. } => {
+                panic!("Unclassified verdict has no confidence to quote")
+            }
+        }
+    }
+}
+
+fn recognize_all(dict: &Dictionary, wf: &Workflow) -> Vec<Option<VenueHit>> {
+    wf.hops
+        .iter()
+        .map(|h| dict.recognize(&h.program_id, &h.instruction))
+        .collect()
+}
+
+fn distinct_venues(hits: &[Option<VenueHit>]) -> Vec<Venue> {
+    let mut out: Vec<Venue> = Vec::new();
+    for h in hits.iter().flatten() {
+        if !out.contains(&h.venue) {
+            out.push(h.venue);
+        }
+    }
+    out
+}
+
+/// Classify one workflow. Candidates are evaluated in priority order and
+/// the first match wins — the shapes are specific enough that ordering is
+/// more principled than a confidence horse race:
+///
+/// 1. [`Label::WashLoop`] — a closed loop overrides every other reading of
+///    the same hops; a loop that looks like routing is still a loop.
+/// 2. [`Label::TreasuryTransition`] — our own program's flows are labeled
+///    as what they are before venue heuristics get a say.
+/// 3. [`Label::PositionOpen`] / [`Label::PositionClose`] — a user wallet
+///    with a one-sided net answers the tracer's core question ("did anyone
+///    take a real position?") directly.
+/// 4. [`Label::AggregatorSplit`] — multi-venue pass-through routing.
+/// 5. [`Label::LiquidityAddRemove`] — pool liquidity moves with no swap legs.
+///
+/// The reported confidence still reflects the evidence strength; the order
+/// only decides ties and overlaps. The sealed verdict enforces the
+/// unclassified guarantee either way.
+pub fn classify(dict: &Dictionary, wf: &Workflow) -> Verdict {
+    let hits = recognize_all(dict, wf);
+    let net = NetEffect::of(wf);
+    let evidence: Vec<String> = wf.hops.iter().map(|h| h.signature.clone()).collect();
+
+    let venues = distinct_venues(&hits);
+    let has_venue = |v: Venue| venues.contains(&v);
+    let hop_kinds: Vec<HopKind> = hits.iter().flatten().map(|h| h.hop).collect();
+    let recognized = hits.iter().any(|h| h.is_some());
+
+    let candidate: Option<(Label, f64, String)> = wash_candidate(wf, &net)
+        .or_else(|| treasury_candidate(wf, &hits, &has_venue))
+        .or_else(|| position_candidate(wf, &net, &venues, recognized))
+        .or_else(|| aggregator_candidate(wf, &net, &venues))
+        .or_else(|| liquidity_candidate(&hop_kinds, wf));
+
+    Verdict::seal(wf.id, candidate, evidence, net)
+}
+
+/// WashLoop: the circular, same-mint value-returning shape. By construction
+/// (see [`crate::reconstruct`]) a circular workflow returned the origin's
+/// own mint to the origin wallet — value came home, only fees burned.
+fn wash_candidate(wf: &Workflow, net: &NetEffect) -> Option<(Label, f64, String)> {
+    if !wf.is_circular {
+        return None;
+    }
+    let origin = wf.origin()?;
+    let hops = wf.hops.len();
+    if hops >= 3 {
+        Some((
+            Label::WashLoop,
+            0.90,
+            format!(
+                "circular flow of {} hops returning the origin's mint to {}; intermediaries kept nothing; fees burned {} lamports",
+                hops, origin, net.total_fees_lamports
+            ),
+        ))
+    } else {
+        Some((
+            Label::WashLoop,
+            0.72,
+            format!(
+                "circular flow of only {} hops returning to {}; short loops are weak evidence",
+                hops, origin
+            ),
+        ))
+    }
+}
+
+/// TreasuryTransition: any hop through our own program. The program's events
+/// carry authorization context by design (W4.1 §6); the tracer labels the
+/// flow as a treasury transition and leaves the authorization audit to the
+/// receipt chain.
+fn treasury_candidate(
+    wf: &Workflow,
+    hits: &[Option<VenueHit>],
+    has_venue: &dyn Fn(Venue) -> bool,
+) -> Option<(Label, f64, String)> {
+    if !has_venue(Venue::TreasuryProgram) {
+        return None;
+    }
+    let mut uniq: Vec<&str> = Vec::new();
+    for (h, hit) in wf.hops.iter().zip(hits.iter()) {
+        if hit.map(|x| x.venue == Venue::TreasuryProgram).unwrap_or(false)
+            && !uniq.contains(&h.instruction.as_str())
+        {
+            uniq.push(h.instruction.as_str());
+        }
+    }
+    uniq.sort();
+    Some((
+        Label::TreasuryTransition,
+        0.90,
+        format!("treasury-program flow through instructions: {}", uniq.join(", ")),
+    ))
+}
+
+/// PositionOpen / PositionClose: a non-circular, at-most-one-venue flow
+/// where the origin wallet has a one-sided net (outflow only = open, inflow
+/// only = close) with no return leg. Requires at least one *recognized*
+/// hop: a lone unrecognized transfer is a payment until proven otherwise.
+fn position_candidate(
+    wf: &Workflow,
+    net: &NetEffect,
+    venues: &[Venue],
+    recognized: bool,
+) -> Option<(Label, f64, String)> {
+    if !recognized || wf.is_circular || venues.len() > 1 || wf.hops.is_empty() {
+        return None;
+    }
+    let origin = wf.origin()?;
+    let mut opened: Vec<(String, i128)> = Vec::new();
+    let mut closed: Vec<(String, i128)> = Vec::new();
+    let mut seen: Vec<String> = Vec::new();
+    for (w, m, n) in &net.net_per_wallet_mint {
+        if w != origin || seen.contains(m) {
+            continue;
+        }
+        seen.push(m.clone());
+        if *n < 0 {
+            opened.push((m.clone(), -*n));
+        } else if *n > 0 {
+            closed.push((m.clone(), *n));
+        }
+    }
+    if !opened.is_empty() && closed.is_empty() {
+        let (mint, amt) = &opened[0];
+        Some((
+            Label::PositionOpen,
+            0.75,
+            format!("origin net outflow of {} {} to a venue with no return leg", amt, mint),
+        ))
+    } else if !closed.is_empty() && opened.is_empty() {
+        let (mint, amt) = &closed[0];
+        Some((
+            Label::PositionClose,
+            0.75,
+            format!("origin net inflow of {} {} from a venue with no outbound leg", amt, mint),
+        ))
+    } else {
+        None
+    }
+}
+
+/// AggregatorSplit: ≥2 venues, ≥3 hops, not circular, intermediaries are
+/// pass-through.
+fn aggregator_candidate(
+    wf: &Workflow,
+    net: &NetEffect,
+    venues: &[Venue],
+) -> Option<(Label, f64, String)> {
+    if wf.is_circular || venues.len() < 2 || wf.hops.len() < 3 {
+        return None;
+    }
+    let conf = 0.80 + 0.05 * (venues.len().min(3) as f64 - 1.0)
+        + 0.05 * (net.passthrough_wallets.len().min(2) as f64) / 2.0;
+    Some((
+        Label::AggregatorSplit,
+        conf.min(0.92),
+        format!(
+            "{} hops across {} venues; {} pass-through wallets kept nothing",
+            wf.hops.len(),
+            venues.len(),
+            net.passthrough_wallets.len()
+        ),
+    ))
+}
+
+/// LiquidityAddRemove: liquidity hop kinds present, no swap legs, not
+/// circular.
+fn liquidity_candidate(hop_kinds: &[HopKind], wf: &Workflow) -> Option<(Label, f64, String)> {
+    if wf.is_circular {
+        return None;
+    }
+    let adds = hop_kinds.iter().filter(|k| **k == HopKind::LiquidityAdd).count();
+    let removes = hop_kinds.iter().filter(|k| **k == HopKind::LiquidityRemove).count();
+    let swaps = hop_kinds.iter().filter(|k| **k == HopKind::SwapLeg).count();
+    if adds + removes == 0 || swaps > 0 {
+        return None;
+    }
+    let action = if adds >= removes { "added to" } else { "removed from" };
+    Some((
+        Label::LiquidityAddRemove,
+        0.80,
+        format!(
+            "liquidity {} a pool ({} add / {} remove hops), no swap legs",
+            action, adds, removes
+        ),
+    ))
+}

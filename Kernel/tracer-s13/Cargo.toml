@@ -1,0 +1,6 @@
+[package]
+name = "tracer-s13"
+version = "0.1.0"
+edition = "2021"
+description = "W6.1 S13 workflow tracer: venue recognition dictionary (S11 IDL surface), greedy route reconstruction, classification with confidence, and the unclassified guarantee."
+license = "MIT OR Apache-2.0"

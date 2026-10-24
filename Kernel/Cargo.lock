@@ -27,3 +27,7 @@ version = "0.1.0"
 dependencies = [
  "coordination-kernel",
 ]
+
+[[package]]
+name = "tracer-s13"
+version = "0.1.0"
