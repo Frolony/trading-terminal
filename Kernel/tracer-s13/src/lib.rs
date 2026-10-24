@@ -12,7 +12,8 @@
 //!    into ONE workflow, not dozens of impressive-looking hops.
 //! 2. **Classification with confidence** ([`classify`]): aggregator split,
 //!    liquidity add/remove, wash/self-routing loop, position open/close,
-//!    treasury transition. Every label ships with its evidence (the underlying
+//!    treasury transition, cross-mint round trip, market-maker inventory,
+//!    incentive farming. Every label ships with its evidence (the underlying
 //!    event signatures) and a confidence value.
 //! 3. **The unclassified guarantee** ([`classify`]): anything below
 //!    [`classify::CONFIDENCE_THRESHOLD`] renders as "unclassified movement",
@@ -47,7 +48,10 @@
 //!   from memory.
 //! * The attestation-timing detection class (Carlos's 2026-10-22 addendum)
 //!   landed as a first-class class in W6.1.2 ([`attestation`]); the
-//!   incentive-farming / market-maker classes land in the W6.2 increment.
+//!   incentive-farming / market-maker / cross-mint-round-trip classes landed
+//!   in W6.1.3 ([`classify`]). Labeled-route validation against known ground
+//!   truth (incl. our own devnet swarm traffic) still gates any user-facing
+//!   claim (W6.2).
 //! * This is inference machinery with a published error posture, not a
 //!   fact source. A wrong "wash" label is a false accusation — validation
 //!   against known labeled routes precedes any user-facing claim (W6.2 gate).

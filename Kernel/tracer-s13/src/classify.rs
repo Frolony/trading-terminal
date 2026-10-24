@@ -24,9 +24,9 @@ use crate::reconstruct::{NetEffect, Workflow};
 /// Below this confidence, a candidate is demoted to Unclassified.
 pub const CONFIDENCE_THRESHOLD: f64 = 0.70;
 
-/// The workflow labels of the S13 spec (§6 of the master plan), as far as
-/// this increment implements them. The market-maker-inventory and
-/// incentive-farming classes land in the W6.2 increment.
+/// The workflow labels of the S13 spec (§6 of the master plan). The
+/// market-maker-inventory and incentive-farming classes landed in W6.1.3, and
+/// the cross-mint round-trip reading in W6.1.3 as well.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Label {
     /// Multi-venue swap route: value passed through ≥2 venues; the
@@ -50,6 +50,20 @@ pub enum Label {
     /// borrow, default settlement, exit. The audit story for S12
     /// settlements, labeled as what it is.
     TreasuryTransition,
+    /// A completed swap route: the origin wallet's funds came home in a
+    /// *different* mint — the output leg of a route the reconstruction layer
+    /// deliberately did NOT collapse as circular. Multi-venue routes keep the
+    /// AggregatorSplit plumbing reading; this is the short / single-venue
+    /// completed-swap shape.
+    CrossMintRoundTrip,
+    /// Active liquidity-inventory management: liquidity added AND removed in
+    /// the same workflow (cycling), or a position managed with fee harvest.
+    /// The more specific reading of the LiquidityAddRemove shape.
+    MarketMaker,
+    /// A liquidity position with repeated fee/reward collection (harvest).
+    /// The weakest class by design: it requires the position AND the
+    /// harvests — harvest evidence alone is plumbing until proven otherwise.
+    IncentiveFarming,
 }
 
 /// A classification: either a justified label or an explicit guess.
@@ -166,7 +180,14 @@ fn distinct_venues(hits: &[Option<VenueHit>]) -> Vec<Venue> {
 ///    with a one-sided net answers the tracer's core question ("did anyone
 ///    take a real position?") directly.
 /// 4. [`Label::AggregatorSplit`] — multi-venue pass-through routing.
-/// 5. [`Label::LiquidityAddRemove`] — pool liquidity moves with no swap legs.
+/// 5. [`Label::CrossMintRoundTrip`] — a completed swap whose output leg came
+///    home in a different mint. Evaluated after AggregatorSplit so
+///    multi-venue routes keep the plumbing reading; single-venue or short
+///    completed swaps get the round-trip reading. Both can match; the order
+///    is the overlap rule, stated here.
+/// 6. [`Label::MarketMaker`] — inventory cycling or managed-with-harvest.
+/// 7. [`Label::IncentiveFarming`] — position plus repeated harvest.
+/// 8. [`Label::LiquidityAddRemove`] — pool liquidity moves with no swap legs.
 ///
 /// The reported confidence still reflects the evidence strength; the order
 /// only decides ties and overlaps. The sealed verdict enforces the
@@ -179,12 +200,19 @@ pub fn classify(dict: &Dictionary, wf: &Workflow) -> Verdict {
     let venues = distinct_venues(&hits);
     let has_venue = |v: Venue| venues.contains(&v);
     let hop_kinds: Vec<HopKind> = hits.iter().flatten().map(|h| h.hop).collect();
+    // Index-aligned with wf.hops (None for unrecognized hops) — the
+    // flattened hop_kinds above is for counting only.
+    let hop_kinds_aligned: Vec<Option<HopKind>> =
+        hits.iter().map(|h| h.map(|v| v.hop)).collect();
     let recognized = hits.iter().any(|h| h.is_some());
 
     let candidate: Option<(Label, f64, String)> = wash_candidate(wf, &net)
         .or_else(|| treasury_candidate(wf, &hits, &has_venue))
         .or_else(|| position_candidate(wf, &net, &venues, recognized))
         .or_else(|| aggregator_candidate(wf, &net, &venues))
+        .or_else(|| cross_mint_round_trip_candidate(wf, &net, &venues, &hop_kinds, recognized))
+        .or_else(|| market_maker_candidate(&hop_kinds, wf, recognized))
+        .or_else(|| incentive_farming_candidate(&hop_kinds_aligned, wf, recognized))
         .or_else(|| liquidity_candidate(&hop_kinds, wf));
 
     Verdict::seal(wf.id, candidate, evidence, net)
@@ -193,6 +221,14 @@ pub fn classify(dict: &Dictionary, wf: &Workflow) -> Verdict {
 /// WashLoop: the circular, same-mint value-returning shape. By construction
 /// (see [`crate::reconstruct`]) a circular workflow returned the origin's
 /// own mint to the origin wallet — value came home, only fees burned.
+///
+/// Known limit (W6.2 validation item): the stitcher's circularity rule is
+/// mint-based, so a fully-closed position cycle — an MM inventory unwind
+/// that returns the position mint home — reads as a loop here. The
+/// [`Label::MarketMaker`] class therefore covers cycles that are still open
+/// or swept elsewhere; distinguishing an MM unwind from manufactured
+/// movement at the stitcher belongs to the labeled-route validation pass,
+/// not to this increment.
 fn wash_candidate(wf: &Workflow, net: &NetEffect) -> Option<(Label, f64, String)> {
     if !wf.is_circular {
         return None;
@@ -317,6 +353,149 @@ fn aggregator_candidate(
             net.passthrough_wallets.len()
         ),
     ))
+}
+
+/// CrossMintRoundTrip: the reconstruction layer's "completed route" shape —
+/// the last hop returned to the origin wallet in a DIFFERENT mint than the
+/// first hop's (reconstruction deliberately does not flag it circular; a
+/// same-mint homecoming is the wash shape instead). The origin's net must
+/// show the two-sided cross-mint position (outflow of mint A, inflow of mint
+/// B) — a gift or a barter with strangers is not this, and an unrecognized
+/// hop pair is a payment until proven otherwise, per the dictionary rule.
+///
+/// Two guards keep the reading honest: (a) the workflow must contain no
+/// liquidity-position legs — a swap route does not open positions, and a
+/// position-with-harvest flow that comes home cross-mint is the
+/// [`Label::IncentiveFarming`] shape, not a completed swap; (b) the
+/// multi-venue variant also matches [`Label::AggregatorSplit`], which fires
+/// first by priority — this candidate is the completed-swap reading for
+/// short or single-venue routes, where there is no pass-through plumbing to
+/// describe instead.
+fn cross_mint_round_trip_candidate(
+    wf: &Workflow,
+    net: &NetEffect,
+    venues: &[Venue],
+    hop_kinds: &[HopKind],
+    recognized: bool,
+) -> Option<(Label, f64, String)> {
+    if !recognized || wf.is_circular || wf.hops.len() < 2 {
+        return None;
+    }
+    if hop_kinds.iter().any(|k| {
+        *k == HopKind::LiquidityAdd || *k == HopKind::LiquidityRemove
+    }) {
+        return None; // position legs — the harvest/close shape, not a swap
+    }
+    let origin = wf.origin()?;
+    let first = wf.hops.first()?;
+    let last = wf.hops.last()?;
+    if last.to != origin || last.mint == first.mint {
+        return None;
+    }
+    // The origin's net must be two-sided across the two mints: value went
+    // out in one asset and came home in another.
+    let out_a = net.net_of(origin, &first.mint) < 0;
+    let in_b = net.net_of(origin, &last.mint) > 0;
+    if !out_a || !in_b {
+        return None;
+    }
+    let conf = if wf.hops.len() >= 3 || venues.len() >= 2 { 0.80 } else { 0.72 };
+    Some((
+        Label::CrossMintRoundTrip,
+        conf,
+        format!(
+            "completed swap route: {} sent and {} came home across {} hops",
+            first.mint, last.mint, wf.hops.len()
+        ),
+    ))
+}
+
+/// MarketMaker: active inventory management on a liquidity venue — adds AND
+/// removes in the same workflow (cycling), or a position with exactly one
+/// fee collection alongside ≥2 liquidity moves. The second arm is
+/// deliberately narrow: two or more harvests make it
+/// [`Label::IncentiveFarming`], not market making. Fires before the plain
+/// liquidity reading so the more specific interpretation wins; a pure
+/// one-sided add is still a [`Label::PositionOpen`] (evaluated earlier), and
+/// add-only legs without any removal or harvest fall through to
+/// [`Label::LiquidityAddRemove`).
+fn market_maker_candidate(
+    hop_kinds: &[HopKind],
+    wf: &Workflow,
+    recognized: bool,
+) -> Option<(Label, f64, String)> {
+    if !recognized || wf.is_circular {
+        return None;
+    }
+    let adds = hop_kinds.iter().filter(|k| **k == HopKind::LiquidityAdd).count();
+    let removes = hop_kinds.iter().filter(|k| **k == HopKind::LiquidityRemove).count();
+    let collects = hop_kinds.iter().filter(|k| **k == HopKind::FeeCollect).count();
+    if adds >= 1 && removes >= 1 && adds + removes >= 3 {
+        Some((
+            Label::MarketMaker,
+            0.80,
+            format!(
+                "inventory cycling: {} liquidity adds and {} removes in one workflow",
+                adds, removes
+            ),
+        ))
+    } else if collects == 1 && adds + removes >= 2 {
+        Some((
+            Label::MarketMaker,
+            0.75,
+            format!(
+                "managed position: {} liquidity moves with one fee collection",
+                adds + removes
+            ),
+        ))
+    } else {
+        None
+    }
+}
+
+/// IncentiveFarming: a liquidity position whose harvest is the point —
+/// repeated fee/reward collections on the same position. Deliberately the
+/// weakest class: it demands the position AND at least two harvests, with at
+/// least one harvest landing back at the origin wallet (fees harvested to a
+/// stranger's wallet are the harvester's shape, not the position owner's).
+/// Harvest-only flows stay unclassified — fee plumbing until proven
+/// otherwise.
+fn incentive_farming_candidate(
+    hop_kinds_aligned: &[Option<HopKind>],
+    wf: &Workflow,
+    recognized: bool,
+) -> Option<(Label, f64, String)> {
+    if !recognized || wf.is_circular {
+        return None;
+    }
+    let origin = wf.origin()?;
+    let liquidity = hop_kinds_aligned
+        .iter()
+        .filter(|k| matches!(k, Some(HopKind::LiquidityAdd) | Some(HopKind::LiquidityRemove)))
+        .count();
+    if liquidity == 0 {
+        return None;
+    }
+    // Harvests are fee-collection hops landing back at the origin — the
+    // position owner's shape, not a stranger's.
+    let harvests_home = wf
+        .hops
+        .iter()
+        .zip(hop_kinds_aligned.iter())
+        .filter(|(h, k)| h.to == origin && matches!(k, Some(HopKind::FeeCollect)))
+        .count();
+    if harvests_home >= 2 {
+        Some((
+            Label::IncentiveFarming,
+            0.75,
+            format!(
+                "position with {} repeated fee harvests back to the origin",
+                harvests_home
+            ),
+        ))
+    } else {
+        None
+    }
 }
 
 /// LiquidityAddRemove: liquidity hop kinds present, no swap legs, not

@@ -370,3 +370,158 @@ fn t27_attestation_seal_demotes_subthreshold() {
     );
     assert_eq!(at_edge.label(), Some(AttestationLabel::PostDated));
 }
+// ---------------------------------------------------------------------------
+// W6.1.3 — cross-mint round-trips, market-maker inventory, incentive farming
+// (T28–T33). The remaining classifier classes from the W6 roadmap.
+// ---------------------------------------------------------------------------
+
+// T28 — cross-mint round trip: a completed 2-hop swap route whose output leg
+// came home in a different mint. Previously this shape fell through to
+// Unclassified (T15's aggregator shape needs >=2 venues and >=3 hops); the
+// round-trip reading fills the gap at the short-route end.
+#[test]
+fn t28_cross_mint_round_trip_labeled() {
+    let verdicts = run(vec![
+        ev("sig0", 700, 0, "user1", "router1", "USDC", 1_000_000, "P_agg", "swap", 5000),
+        ev("sig1", 700, 1, "router1", "user1", "WSOL", 4_990_000, "P_agg", "proxySwap", 5000),
+    ]);
+    assert_eq!(verdicts.len(), 1, "the two legs are one workflow");
+    let v = &verdicts[0];
+    assert_eq!(v.label(), Some(Label::CrossMintRoundTrip));
+    assert!(v.confidence() >= CONFIDENCE_THRESHOLD);
+    assert!(!v.is_guess());
+    let h = headline(v);
+    assert!(h.contains("Cross-mint round trip"), "headline names the label: {h}");
+    assert!(v.net.net_of("user1", "USDC") == -1_000_000);
+    assert!(v.net.net_of("user1", "WSOL") == 4_990_000);
+}
+
+// T29 — the round-trip's guards: (a) an unrecognized hop pair is a payment
+// until proven otherwise — Unclassified, never a guessed round trip;
+// (b) the return leg must come home to the origin wallet — a swap routed to
+// a stranger is the stranger's position story, not a round trip.
+#[test]
+fn t29_round_trip_guards() {
+    // (a) unrecognized.
+    let verdicts = run(vec![
+        ev("sig0", 710, 0, "user4", "dex9", "USDC", 1_000_000, "P_unknown", "mysteryIx", 5000),
+        ev("sig1", 710, 1, "dex9", "user4", "WSOL", 4_990_000, "P_unknown", "mysteryIx", 5000),
+    ]);
+    assert_eq!(verdicts.len(), 1);
+    let v = &verdicts[0];
+    assert!(v.is_guess(), "unrecognized hop pair stays a guess: {:?}", v.label());
+    assert_eq!(v.label(), None);
+
+    // (b) return leg lands on a different wallet.
+    let verdicts = run(vec![
+        ev("sig0", 720, 0, "user5", "router2", "USDC", 1_000_000, "P_agg", "swap", 5000),
+        ev("sig1", 720, 1, "router2", "user6", "WSOL", 4_990_000, "P_agg", "proxySwap", 5000),
+    ]);
+    assert_eq!(verdicts.len(), 1);
+    let v = &verdicts[0];
+    assert_ne!(v.label(), Some(Label::CrossMintRoundTrip));
+    assert_eq!(v.label(), Some(Label::PositionOpen), "origin's one-sided outflow is a position open");
+}
+
+// T30 — market maker: open → harvest → add → sweep-to-inventory-wallet on
+// a CLMM venue is inventory cycling (0.80), not the plain
+// LiquidityAddRemove reading — the more specific interpretation wins by
+// priority. The legs are causally sequenced so reconstruction stitches one
+// workflow (the greedy stitcher follows wallet continuity). The final leg
+// sweeps the removed inventory to a second firm wallet: a fully-closed cycle
+// that returns the position mint home reads as WashLoop by the stitcher's
+// mint-based rule (a documented W6.2 limit), so the test uses the open
+// inventory shape the machine can honestly distinguish.
+#[test]
+fn t30_market_maker_cycling_labeled() {
+    let verdicts = run(vec![
+        ev("sig0", 730, 0, "mm1", "pool1", "SOL", 1_000_000_000, "P_clmm", "openPosition", 5000),
+        ev("sig1", 730, 1, "pool1", "mm1", "USDC", 250_000, "P_clmm", "collectFees", 5000),
+        ev("sig2", 730, 2, "mm1", "pool1", "SOL", 2_000_000_000, "P_clmm", "increaseLiquidity", 5000),
+        ev("sig3", 730, 3, "pool1", "mm2", "SOL", 1_500_000_000, "P_clmm", "decreaseLiquidity", 5000),
+    ]);
+    assert_eq!(verdicts.len(), 1, "causally sequenced legs are one workflow");
+    let v = &verdicts[0];
+    assert_eq!(v.label(), Some(Label::MarketMaker));
+    assert!(v.confidence() >= 0.78, "the cycling shape is strong: {}", v.confidence());
+    assert!(!v.is_guess());
+    let h = headline(v);
+    assert!(h.contains("Market maker"), "headline names the label: {h}");
+    assert_eq!(v.net.net_of("mm2", "SOL"), 1_500_000_000, "the swept inventory is visible in the nets");
+}
+
+// T31 — incentive farming: a position with repeated fee harvests back to the
+// origin. The evidence bar is deliberate — a single harvest on a position
+// reads as a plain liquidity move (farming needs the harvest pattern), and
+// harvests without any position stay unclassified. The legs are causally
+// sequenced (wallet continuity) so they stitch into one workflow.
+#[test]
+fn t31_incentive_farming_labeled() {
+    let verdicts = run(vec![
+        ev("sig0", 740, 0, "farm1", "pool2", "SOL", 1_000_000_000, "P_clmm", "openPosition", 5000),
+        ev("sig1", 741, 0, "pool2", "farm1", "USDC", 250_000, "P_clmm", "collectFees", 5000),
+        ev("sig2", 742, 0, "farm1", "pool2", "SOL", 2_000_000_000, "P_clmm", "increaseLiquidity", 5000),
+        ev("sig3", 743, 0, "pool2", "farm1", "USDC", 300_000, "P_clmm", "collectFees", 5000),
+    ]);
+    assert_eq!(verdicts.len(), 1, "causally sequenced legs are one workflow");
+    let v = &verdicts[0];
+    assert_eq!(v.label(), Some(Label::IncentiveFarming));
+    assert!(v.confidence() >= CONFIDENCE_THRESHOLD);
+    let h = headline(v);
+    assert!(h.contains("Incentive farming"), "headline: {h}");
+
+    // One harvest is not the farming pattern — a plain liquidity reading.
+    let verdicts = run(vec![
+        ev("sig3", 743, 0, "farm1", "pool2", "SOL", 1_000_000_000, "P_clmm", "increaseLiquidity", 5000),
+        ev("sig4", 744, 0, "pool2", "farm1", "USDC", 250_000, "P_clmm", "collectFees", 5000),
+    ]);
+    let v = &verdicts[0];
+    assert_eq!(v.label(), Some(Label::LiquidityAddRemove), "one harvest is not farming evidence");
+
+    // Harvests with no position at all are plumbing until proven otherwise.
+    let verdicts = run(vec![
+        ev("sig5", 745, 0, "pool3", "farm2", "USDC", 250_000, "P_unknown", "mysteryCollect", 5000),
+        ev("sig6", 746, 0, "pool3", "farm2", "USDC", 300_000, "P_unknown", "mysteryCollect", 5000),
+    ]);
+    let v = &verdicts[0];
+    assert!(v.is_guess(), "unrecognized harvest-only flow stays a guess");
+}
+
+// T32 — the seal still demotes weak candidates for the new labels: 0.69
+// cannot label a MarketMaker (or anything else), 0.70 keeps it.
+#[test]
+fn t32_new_label_seal_demotes_subthreshold() {
+    let wf = Workflow { id: 0, hops: vec![], is_circular: false };
+    let net = NetEffect::of(&wf);
+    let low = Verdict::seal(
+        0,
+        Some((Label::MarketMaker, 0.69, "thin cycling evidence".to_string())),
+        vec![],
+        net.clone(),
+    );
+    assert!(low.is_guess());
+    assert_eq!(low.label(), None);
+    let at = Verdict::seal(
+        0,
+        Some((Label::IncentiveFarming, 0.70, "edge".to_string())),
+        vec![],
+        net,
+    );
+    assert_eq!(at.label(), Some(Label::IncentiveFarming));
+}
+
+// T33 — priority regression: a 3-hop 2-venue route that comes home
+// cross-mint matches BOTH AggregatorSplit and CrossMintRoundTrip; the
+// aggregator plumbing reading wins by the documented priority (T15's
+// 4-hop variant already proved this; this is the 3-hop boundary form).
+#[test]
+fn t33_aggregator_priority_over_round_trip() {
+    let verdicts = run(vec![
+        ev("sig0", 750, 0, "user7", "agg7", "USDC", 1_000_000, "P_agg", "swap", 5000),
+        ev("sig1", 750, 1, "agg7", "book7", "USDC", 1_000_000, "P_book", "fillOrder", 5000),
+        ev("sig2", 750, 2, "book7", "user7", "WSOL", 4_990_000, "P_agg", "proxySwap", 5000),
+    ]);
+    assert_eq!(verdicts.len(), 1);
+    let v = &verdicts[0];
+    assert_eq!(v.label(), Some(Label::AggregatorSplit), "multi-venue keeps the plumbing reading");
+}

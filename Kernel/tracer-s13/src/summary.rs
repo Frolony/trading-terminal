@@ -53,6 +53,9 @@ pub fn headline(v: &Verdict) -> String {
                 Label::PositionOpen => "Position opened",
                 Label::PositionClose => "Position closed",
                 Label::TreasuryTransition => "Treasury transition",
+                Label::CrossMintRoundTrip => "Cross-mint round trip (completed swap)",
+                Label::MarketMaker => "Market maker (inventory cycling)",
+                Label::IncentiveFarming => "Incentive farming (position + harvest)",
             };
             format!("{} (confidence {:.2})", name, confidence)
         }

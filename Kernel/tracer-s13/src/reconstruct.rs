@@ -156,8 +156,10 @@ pub fn reconstruct(events: &[TransferEvent]) -> Vec<Workflow> {
         }
         // A same-mint return to the origin closes the loop: value came home,
         // the manufactured-movement shape. A *different* mint coming home is
-        // a completed route (the swap's output leg), not a loop — cross-mint
-        // round-trips are a W6.2 extension, not guessed here.
+        // a completed route (the swap's output leg), not a loop — the
+        // cross-mint round-trip reading belongs to the classifier
+        // ([`crate::classify`]), which demands the two-sided cross-mint net
+        // and a recognized hop; it is never guessed here.
         if let Some(i) = target {
             if !open[i].is_circular {
                 if let (Some(first), Some(origin)) =
