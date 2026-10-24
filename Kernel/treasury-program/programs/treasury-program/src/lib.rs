@@ -183,6 +183,22 @@
 //! the TransitionRecord gains `parent_index` and `parent_hash` (SPACE
 //! 408 → 448). No on-chain account exists yet (no deployment in W4.3),
 //! so no migration is owed.
+//! This increment adds `record_evidence` (design §4.1): the
+//! EvidenceAttestor's write handle at the program layer — an active
+//! Oracle records the realized hash for a Committed transition into a
+//! one-time `EvidenceRecord` account (PDA seeds `["evidence",
+//! transition_id]`, SPACE 49). The program cannot verify that the
+//! realized outcome exists in the world; recording early records a hash
+//! that settle will refuse to match, so a premature record harms only
+//! the recorder's own transition. Settle (next increment) checks the
+//! presented hash against this record before it ever calls the kernel's
+//! settle — no record, or a mismatched hash, refuses and leaves the
+//! transition Committed for a correct settlement to retry. Recording
+//! evidence changes no transition state; the TransitionRecord's
+//! realized hash lands with settle, and settle's event needs the commit
+//! index — so the settle slice also records the commit index on the
+//! TransitionRecord at commit time (a follow-up change to the commit
+//! handler, owed then, not now).
 //! Nothing here is deployed: NO devnet deployment in W4.3, NO mainnet step
 //! exists in W4. No instruction here moves value.
 //!
@@ -1019,6 +1035,59 @@ pub mod treasury_program {
         });
         Ok(())
     }
+
+    /// Governance lifecycle (design §4.1): record evidence for a
+    /// committed transition.
+    ///
+    /// The EvidenceAttestor's write handle, at the program layer (see
+    /// `kernel_bridge`: the kernel-policy EvidenceAttestor is std-only
+    /// and cannot be vendored into SBF, so the log lives in the account
+    /// below, not in a hook). Only an active Oracle may record — the
+    /// kernel's RoleAttestor rule (Oracle may observe/settle) plus the
+    /// active flag, the same fail-closed tightening `post_observation`
+    /// applies — and the transition must be Committed: the kernel's
+    /// settle gate, applied one step early, so evidence cannot be
+    /// recorded for a transition that has not committed, nor re-recorded
+    /// after it settled (a Settled transition is not Committed). The
+    /// record is one-time: the PDA seeds bind one EvidenceRecord per
+    /// transition, so a second record fails at account creation and
+    /// changes no state (Duplicate in the design taxonomy, enforced by
+    /// account existence, like the observation duplicate before it).
+    /// The program cannot verify that the realized outcome exists in
+    /// the world — that is the recorder's attestation, and the design
+    /// says so plainly: recording early records a hash that settle
+    /// will then refuse to match, so a premature record harms only the
+    /// recorder's own transition. Settle (next increment) checks the
+    /// presented hash against this record before it ever calls the
+    /// kernel's settle; no record, or a mismatched hash, refuses with
+    /// Unauthorized and leaves the transition Committed for a correct
+    /// settlement to retry. Recording evidence changes no transition
+    /// state: the transition account is read, not written, and the
+    /// EvidenceRecord is the only write.
+    pub fn record_evidence(
+        ctx: Context<RecordEvidence>,
+        transition_id: u64,
+        realized_hash: [u8; 32],
+    ) -> Result<()> {
+        let _ = transition_id;
+        let caller_key = ctx.accounts.oracle.key();
+        let record = &ctx.accounts.agent_record;
+        require!(
+            record.agent == caller_key,
+            TreasuryError::AgentMismatch
+        );
+        let transition = &ctx.accounts.transition_record;
+        can_record_evidence(record.active, record.is_oracle, transition.state)?;
+        let evidence = &mut ctx.accounts.evidence_record;
+        evidence.transition_id = transition.transition_id;
+        evidence.realized_hash = realized_hash;
+        evidence.bump = ctx.bumps.evidence_record;
+        emit!(EvidenceRecorded {
+            transition_id: transition.transition_id,
+            realized_hash,
+        });
+        Ok(())
+    }
 }
 
 /// Who may open planning, as a pure check (design §4.1, kernel
@@ -1281,6 +1350,26 @@ pub fn fits_capacity(claims: &[(u16, u64)], stocks: &[(u16, u64)]) -> bool {
 /// `CommitFailed`, and changes nothing.
 pub fn can_commit(state: u8) -> Result<()> {
     require!(state == STATE_COMMITTABLE, TreasuryError::BadState);
+    Ok(())
+}
+
+/// Who may record evidence, as a pure check (design §4.1, the kernel's
+/// `settle` attestor gate applied at the program layer, one step early):
+/// the caller must be an active Oracle — the kernel's RoleAttestor
+/// allows Oracle to observe/settle, and the active flag is the same
+/// fail-closed tightening `post_observation` applies — and the
+/// transition must be Committed, the kernel's settle gate applied here
+/// so evidence cannot be recorded for a transition that has not
+/// committed, nor re-recorded after it settled. The realized hash
+/// itself is a value, not a claim the program can verify: any 32 bytes
+/// record, and a hash that does not match the realized outcome simply
+/// fails settle later. The caller binding is structural (AgentRecord
+/// match in the handler), so no caller argument appears here. Check
+/// order, as in the kernel's `settle`: the attestor gate first, then
+/// the state gate.
+pub fn can_record_evidence(agent_active: bool, is_oracle: bool, state: u8) -> Result<()> {
+    require!(agent_active && is_oracle, TreasuryError::Unauthorized);
+    require!(state == STATE_COMMITTED, TreasuryError::BadState);
     Ok(())
 }
 
@@ -1589,6 +1678,17 @@ pub struct Committed {
     pub transition_id: u64,
     pub commit_index: u64,
     pub declared_hash: [u8; 32],
+}
+
+/// Event for [`treasury_program::record_evidence`] (design §4.1, §6):
+/// the transition and the realized hash as recorded — the receipt
+/// `settle` will be checked against. The event is the record's public
+/// face, not a second copy of it: settle reads the EvidenceRecord
+/// account, never this event.
+#[event]
+pub struct EvidenceRecorded {
+    pub transition_id: u64,
+    pub realized_hash: [u8; 32],
 }
 
 /// Event for [`treasury_program::submit_signal`] (design §4.1): the
@@ -2233,6 +2333,62 @@ pub struct DeclaredChain {
 }
 
 impl DeclaredChain {
+    /// 8 (discriminator) + 8 + 32 + 1.
+    pub const SPACE: usize = 8 + 8 + 32 + 1;
+}
+
+/// Accounts for [`treasury_program::record_evidence`].
+#[derive(Accounts)]
+#[instruction(transition_id: u64)]
+pub struct RecordEvidence<'info> {
+    /// The recording Oracle's agent record (must exist, be active, and
+    /// hold the Oracle role). Seeds bind it to the signer.
+    #[account(seeds = [b"agent", oracle.key().as_ref()], bump = agent_record.bump)]
+    pub agent_record: Account<'info, AgentRecord>,
+    /// The transition record to observe (must be Committed). Read,
+    /// not written: recording evidence changes no transition state —
+    /// the EvidenceRecord below is the only write.
+    #[account(seeds = [b"transition", transition_id.to_le_bytes().as_ref()], bump = transition_record.bump)]
+    pub transition_record: Account<'info, TransitionRecord>,
+    /// EvidenceRecord PDA, seeds `["evidence", transition_id]`.
+    /// One-time init: a second record for the same transition fails
+    /// and changes no state (Duplicate in the design taxonomy).
+    #[account(
+        init,
+        payer = oracle,
+        space = EvidenceRecord::SPACE,
+        seeds = [b"evidence", transition_id.to_le_bytes().as_ref()],
+        bump
+    )]
+    pub evidence_record: Account<'info, EvidenceRecord>,
+    /// The recording Oracle (signer; pays rent for the evidence record).
+    #[account(mut)]
+    pub oracle: Signer<'info>,
+    /// Rent sysvar, required by the `init` constraint.
+    pub system_program: Program<'info, System>,
+}
+
+/// One committed transition's evidence record (design §3
+/// `EvidenceRecord`).
+///
+/// The EvidenceAttestor's on-chain form: `transition_id` → realized
+/// hash, written by `record_evidence` (Oracle role) only after the
+/// realized outcome exists. `settle` refuses unless the presented hash
+/// equals this record — no record, no settle. The record is what makes
+/// settle-after-realized mechanical at the program layer: the kernel
+/// itself cannot hold the log (its EvidenceAttestor is std-only), so
+/// the log lives here, in an account, instead of in a hook.
+#[account]
+pub struct EvidenceRecord {
+    /// The transition this evidence observes (PDA seed component).
+    pub transition_id: u64,
+    /// The realized hash the outcome produced.
+    pub realized_hash: [u8; 32],
+    /// PDA bump for the `["evidence", transition_id]` seeds.
+    pub bump: u8,
+}
+
+impl EvidenceRecord {
     /// 8 (discriminator) + 8 + 32 + 1.
     pub const SPACE: usize = 8 + 8 + 32 + 1;
 }
@@ -2908,6 +3064,48 @@ mod tests {
         assert!(can_commit(STATE_SETTLED).is_err());
         assert!(can_commit(STATE_REJECTED).is_err());
         assert!(can_commit(STATE_EXPIRED).is_err());
+    }
+
+    #[test]
+    fn record_evidence_gate_matrix() {
+        // Caller binding is structural (AgentRecord match in the
+        // handler), so the helper takes no caller argument. The
+        // realized hash itself is a value, not a claim the program
+        // can verify — any 32 bytes record; a hash that does not
+        // match the realized outcome fails settle later, not here.
+        let base = |active: bool, oracle: bool, state: u8| {
+            can_record_evidence(active, oracle, state)
+        };
+        // The clean case passes: active Oracle, Committed transition.
+        assert!(base(true, true, STATE_COMMITTED).is_ok());
+        // A non-Oracle is refused first, whatever else holds.
+        assert!(base(true, false, STATE_COMMITTED).is_err());
+        // An inactive Oracle is refused — the same fail-closed
+        // tightening post_observation applies.
+        assert!(base(false, true, STATE_COMMITTED).is_err());
+        // Wrong state refuses: evidence is for committed transitions
+        // only — not Registered, Planning, Committable, Settled,
+        // Rejected, or Expired. The kernel's settle gate, applied one
+        // step early.
+        assert!(base(true, true, STATE_REGISTERED).is_err());
+        assert!(base(true, true, STATE_PLANNING).is_err());
+        assert!(base(true, true, STATE_COMMITTABLE).is_err());
+        assert!(base(true, true, STATE_SETTLED).is_err());
+        assert!(base(true, true, STATE_REJECTED).is_err());
+        assert!(base(true, true, STATE_EXPIRED).is_err());
+        // Check order, as in the kernel's settle: the attestor gate
+        // before the state gate.
+        let role_first = base(false, false, STATE_REGISTERED);
+        assert_eq!(
+            role_first.unwrap_err(),
+            anchor_lang::error::Error::from(TreasuryError::Unauthorized).into()
+        );
+    }
+
+    #[test]
+    fn evidence_record_space_matches_fields() {
+        // 8 + 8 + 32 + 1 = 49.
+        assert_eq!(EvidenceRecord::SPACE, 49);
     }
 
     #[test]

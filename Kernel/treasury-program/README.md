@@ -173,3 +173,15 @@ not committed — regenerate it; never hand-edit it).
 (kernel vendoring + lifecycle instructions + launch policy table) → §4.2
 treasury (pinned window protocol) → §4.3 distribution → W3.2 adversarial
 suite re-expressed against the program's interface (local validator).
+
+**This increment adds `record_evidence` (design §4.1):** the
+EvidenceAttestor's write handle at the program layer — an active Oracle
+records the realized hash for a Committed transition into a one-time
+`EvidenceRecord` account (PDA seeds `["evidence", transition_id]`,
+SPACE 49). The program cannot verify that the realized outcome exists
+in the world; recording early records a hash that settle will refuse to
+match. Settle (next) checks the presented hash against this record
+before it ever calls the kernel's settle — no record, or a mismatched
+hash, refuses and leaves the transition Committed for a correct
+settlement to retry. Recording evidence changes no transition state.
+Program host tests 34 → 36.
