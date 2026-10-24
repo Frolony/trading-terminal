@@ -324,10 +324,16 @@ function formatPriceUsd(value){const n=Number(value);if(!Number.isFinite(n)||n<=
    wallet section — syncMarkDirty() is therefore TDZ-safe (try/catch) and the
    sync state initializes before any save hook can fire. */
 const SYNC_NS_LIST=['settings','slippage','layout','paperlive','btConfigs'];
-let syncState={token:null,pubkey:null,authing:false,pushing:false,timer:0,applying:false,status:'off'};
+let syncState={token:null,pubkey:null,authing:false,pushing:false,timer:0,applying:false,status:'off',stage:null};
 let syncLocalTs={}; // ns -> last applied/pushed updatedAt (ms)
 let syncPushedJson={}; // ns -> JSON of the last pushed local data
 const SYNC_STATUS_WORDS={off:'Sync off',syncing:'Sync — signing in…',synced:'Sync on — settings follow this wallet',offline:'Sync off — sign-in failed; settings stay on this device'};
+/* N4.10 (A52): stage-labeled sync failures — the wallet popup says WHERE a
+   sign-in died (challenge / signature / verification) instead of a bare
+   'sign-in failed'. A stage is set only by syncAuthAndPull; every other
+   offline transition keeps the generic wording. */
+const SYNC_STAGE_WORDS={challenge:'Sync off — sign-in failed at the challenge step; settings stay on this device',signature:'Sync off — sign-in failed at the signature step; settings stay on this device',verification:'Sync off — sign-in failed at the verification step; settings stay on this device'};
+function syncStatusText(){if(syncState.status==='offline'&&syncState.stage&&SYNC_STAGE_WORDS[syncState.stage])return SYNC_STAGE_WORDS[syncState.stage];return SYNC_STATUS_WORDS[syncState.status]||'Sync off';}
 /* N2.5 (A53): syncState.status is the single source of truth for the sync
    display — every painter renders FROM it, never from a snapshot.
    paintWalletSync() re-applies the current status: the wallet-menu open path
@@ -337,7 +343,7 @@ const SYNC_STATUS_WORDS={off:'Sync off',syncing:'Sync — signing in…',synced:
    sign-in was already in flight — the messenger lied while the mechanism
    worked. syncSetStatus() itself paints on every transition, so an open
    menu also updates in place when auth completes, is declined, or clears. */
-function syncSetStatus(s){syncState.status=s;try{const dot=$('syncDot');if(dot){if(s==='off'){dot.style.display='none';}else{dot.style.display='inline-block';dot.style.background=s==='synced'?'#6fbf6f':s==='syncing'?'#e0a83c':'#d9534f';}dot.title=SYNC_STATUS_WORDS[s]||'Sync';}const wb=$('walletBtn');if(wb)wb.title=s==='off'?'Connect Wallet':(SYNC_STATUS_WORDS[s]||'Sync');const ln=$('walletSyncLine');if(ln)ln.textContent=SYNC_STATUS_WORDS[s]||'Sync off';}catch(_){}}
+function syncSetStatus(s,stage){syncState.status=s;if(s==='offline'){if(stage!==undefined)syncState.stage=stage;}else{syncState.stage=null;}try{const dot=$('syncDot');if(dot){if(s==='off'){dot.style.display='none';}else{dot.style.display='inline-block';dot.style.background=s==='synced'?'#6fbf6f':s==='syncing'?'#e0a83c':'#d9534f';}dot.title=syncStatusText();}const wb=$('walletBtn');if(wb)wb.title=s==='off'?'Connect Wallet':syncStatusText();const ln=$('walletSyncLine');if(ln)ln.textContent=syncStatusText();}catch(_){}}
 function paintWalletSync(){try{syncSetStatus(syncState.status||'off');}catch(_){}}
 function syncB64(bytes){let s='';const CH=0x8000;for(let i=0;i<bytes.length;i+=CH){s+=String.fromCharCode.apply(null,bytes.subarray(i,i+CH));}return btoa(s);}
 function syncPost(body){const c=new AbortController(),t=setTimeout(()=>c.abort(),10000);const h={'content-type':'application/json'};if(syncState.token)h['Authorization']='Bearer '+syncState.token;return fetch('/api/sync',{method:'POST',headers:h,body:JSON.stringify(body),signal:c.signal}).then(r=>r.json()).catch(()=>({ok:false,error:'sync_unavailable'})).finally(()=>clearTimeout(t));}
@@ -351,7 +357,14 @@ const SYNC_BRAND='Turnpool'; // N6.5: single brand constant for the sync sign-in
 // SYNC_BRAND + the server challenge. The server template in api/sync.rs
 // (challenge_message) must stay byte-identical; any drift breaks auth.
 function syncChallengeMessage(nonce,issuedAt){return 'Sign in to '+SYNC_BRAND+' sync\nThis signs you in so your settings follow this wallet across devices.\nThis signature cannot move funds, approve transactions, or spend anything.\nSecurity code: '+nonce+'\nIssued at: '+issuedAt;}
-async function syncAuthAndPull(pk){if(syncState.authing)return;if(syncState.token&&syncState.pubkey===pk)return;syncState.authing=true;syncSetStatus('syncing');try{const ch=await syncPost({action:'challenge',pubkey:pk});if(!ch||!ch.ok||!ch.nonce) {syncSetStatus('offline');return;}const message=syncChallengeMessage(ch.nonce,ch.issuedAt);const adapter=wallet.adapter;if(!adapter||typeof adapter.signMessage!=='function'){syncSetStatus('offline');toast('Sync unavailable — this wallet cannot sign the login challenge.');return;}let sig;try{sig=await adapter.signMessage(new TextEncoder().encode(message));}catch(_){syncSetStatus('off');toast("Wallet connected — sync is OFF because the sign-in wasn't approved. Your settings stay on this device only.");return;}/* N2.3: a declined sign-in is reported, never silent — wallet connected, sync off */const au=await syncPost({action:'auth',pubkey:pk,nonce:ch.nonce,signature:syncB64(sig)});if(!au||!au.ok||!au.token){syncSetStatus('offline');toast('Sync sign-in failed — cross-device sync is off for this session. Your settings stay on this device only.');return;}syncState.token=au.token;syncState.pubkey=pk;syncPushedJson={};const pull=await syncGetPull();if(pull&&pull.ok)syncApplyNamespaces(pull.namespaces,pk);syncSetStatus('synced');syncPushNow();/* seeds the server with any local-newer namespaces */}catch(_){syncSetStatus('offline');}finally{syncState.authing=false;}}
+/* N4.10: only a rejection-shaped sign error is a decline. Anything else
+   from signMessage (an interstitial abort, a dropped result, a timeout)
+   is a signature-stage failure, NOT a decline — Carlos's MetaMask datum
+   (approved signature, sync never completed) must never read as 'you
+   declined'. A rejection-shaped abort is indistinguishable from a real
+   decline and is honestly reported as one. */
+function syncIsUserRejection(e){const m=String((e&&e.message)||e||'').toLowerCase();return m.indexOf('reject')>=0||m.indexOf('denied')>=0||m.indexOf('declined')>=0||m.indexOf('4001')>=0||m.indexOf('user cancelled')>=0||m.indexOf('user canceled')>=0;}
+async function syncAuthAndPull(pk){if(syncState.authing)return;if(syncState.token&&syncState.pubkey===pk)return;syncState.authing=true;syncSetStatus('syncing');let stage='challenge';try{const ch=await syncPost({action:'challenge',pubkey:pk});if(!ch||!ch.ok||!ch.nonce) {syncSetStatus('offline','challenge');toast('Sync sign-in failed at the challenge step — the app could not start the sign-in. Your settings stay on this device only. Disconnect and reconnect to retry.');return;}const message=syncChallengeMessage(ch.nonce,ch.issuedAt);const adapter=wallet.adapter;if(!adapter||typeof adapter.signMessage!=='function'){syncSetStatus('offline','signature');toast('Sync unavailable at the signature step — this wallet cannot sign the login challenge. Your settings stay on this device only.');return;}stage='signature';let sig;try{sig=await adapter.signMessage(new TextEncoder().encode(message));}catch(e){if(syncIsUserRejection(e)){syncSetStatus('off');toast("Wallet connected — sync is OFF because the sign-in wasn't approved. Your settings stay on this device only.");return;}syncSetStatus('offline','signature');toast('Sync sign-in failed at the signature step — the signature did not come back. If MetaMask showed a flagged-site warning on the signature request, approve the override and retry; otherwise disconnect and reconnect to retry. Your settings stay on this device only.');return;}/* N2.3+N4.10: a declined sign-in is reported, never silent — wallet connected, sync off; a non-rejection signature error is a stage failure, not a decline */stage='verification';const au=await syncPost({action:'auth',pubkey:pk,nonce:ch.nonce,signature:syncB64(sig)});if(!au||!au.ok||!au.token){syncSetStatus('offline','verification');toast('Sync sign-in failed at the verification step — the signature did not verify. Your settings stay on this device only. Disconnect and reconnect to retry.');return;}syncState.token=au.token;syncState.pubkey=pk;syncPushedJson={};const pull=await syncGetPull();if(pull&&pull.ok)syncApplyNamespaces(pull.namespaces,pk);syncSetStatus('synced');syncPushNow();/* seeds the server with any local-newer namespaces */}catch(_){syncSetStatus('offline',stage);}finally{syncState.authing=false;}}
 function syncClear(){try{clearTimeout(syncState.timer);}catch(_){}syncState.token=null;syncState.pubkey=null;syncState.authing=false;syncState.pushing=false;syncPushedJson={};syncLocalTs={};syncSetStatus('off');}
 document.addEventListener('walletchange',e=>{try{const d=(e&&e.detail)||{};if(d.connected&&d.publicKey)syncAuthAndPull(d.publicKey);else if(!d.connected)syncClear();}catch(_){}});
 /*__N22_SYNC_END__*/
@@ -2999,16 +3012,28 @@ function walletModalRows(){
 function renderWalletModalError(){
   $('walletModalBody').innerHTML='<div class="werr">Wallet library failed to load. Check your connection and retry.</div><button type="button" class="wrow" id="walletLibRetry"><span class="wname">Retry loading adapters</span><span class="wgo">↻</span></button><div class="wnote">No wallet is connected. The terminal keeps working in paper mode.</div>';
 }
+/* N4.10 (A52): connect failures are never silent and never generic.
+   classifyConnectError maps a connect throw to a class; connectErrorCopy
+   renders it in plain language naming the wallet and the remedy. The
+   no-solana-account class covers the MetaMask zero-accounts result (and
+   the adapter no-public-key result); the MetaMask copies carry the
+   conditional A51 flagged-site override note, phrased as 'if you saw
+   it' — the page cannot prove the interstitial aborted the handshake,
+   so it must not claim it did. */
+function classifyConnectError(e,name){const m=String((e&&e.message)||e||'').toLowerCase();if(m.indexOf('no solana account')>=0||m.indexOf('no public key')>=0)return 'no-account';if(m.indexOf('reject')>=0||m.indexOf('denied')>=0||m.indexOf('declined')>=0||m.indexOf('4001')>=0)return 'declined';if(m.indexOf('unavailable')>=0||m.indexOf('no adapters')>=0)return 'unavailable';return 'failed';}
+function connectErrorCopy(name,cls){const n=name||'Wallet';if(cls==='no-account')return n+" did not return a Solana account — open "+n+", add or enable a Solana account, then retry."+(n==='MetaMask'?" If MetaMask showed a 'flagged as unsafe' warning, use 'Continue at your own risk' on that warning first, then retry.":"");if(cls==='declined')return n+" connection was declined — nothing changed. Click the row again to retry.";if(cls==='unavailable')return n+" is not available in this browser — check the extension is installed and unlocked, then retry.";return n+" could not connect — check the wallet is unlocked and retry."+(n==='MetaMask'?" If MetaMask showed a 'flagged as unsafe' warning, use 'Continue at your own risk' on that warning, then retry — the warning can abort the handshake.":"");}
 function paintWalletModal(){
   const body=$('walletModalBody');
   const c=walletModalRows();
   let html=c.installed.map(a=>walletRowHtml(a,'installed')).join('')+c.installable.map(a=>walletRowHtml(a,'install')).join('');
   if(!c.installed.length&&!c.installable.length)html='<div class="wnote">No supported wallets found.</div>';
   html+='<div class="wnote">Only wallets detected in this browser can connect — any Wallet Standard wallet, plus Phantom and Solflare.<br>Connecting is read-only for trading — the terminal signs only the sync login challenge (never a transaction) when you connect.</div>';
+  if(wallet._lastConnectError)html='<div class="werr">'+esc(wallet._lastConnectError.msg)+'</div>'+html;
   body.innerHTML=html;
 }
 async function openWalletModal(){
   const modal=$('walletModal'),body=$('walletModalBody');
+  wallet._lastConnectError=null;
   modal.hidden=false;
   if(!wallet._adapters){
     body.innerHTML='<div class="wnote loading">Loading wallet adapters…</div>';
@@ -3059,16 +3084,17 @@ function setWalletConnected(a,pk){
 }
 async function connectWallet(a){
   if(wallet._connecting||wallet.connected)return;
-  wallet._connecting=true;
+  wallet._connecting=true;wallet._lastConnectError=null;
   try{
     await a.connect();
     const pk=a.publicKey?a.publicKey.toBase58():null;
     if(!pk)throw new Error('no public key');
+    wallet._lastConnectError=null;
     setWalletConnected(a,pk);
     closeWalletModal();
     toast('Wallet connected · '+truncateAddr(pk));
     refreshWalletBalances();
-  }catch(e){toast('Wallet connection failed or was rejected.');}
+  }catch(e){const cls=classifyConnectError(e,a&&a.name);const msg=connectErrorCopy(a&&a.name,cls);wallet._lastConnectError={name:a&&a.name,cls:cls,msg:msg};try{paintWalletModal();}catch(_){}toast(msg);}
   finally{wallet._connecting=false;}
 }
 async function refreshWalletBalances(){
