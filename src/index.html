@@ -216,7 +216,7 @@ the brief outline flash marks the landing panel without touching its copy.*/
 @keyframes execflash{0%{box-shadow:0 0 0 4px rgba(66,214,160,.35)}100%{box-shadow:0 0 0 0 transparent}}
 @media(prefers-reduced-motion:reduce){#execPathPanel.execflash{animation:none}}
 </style></head><body><div class="app">
-<header class="top"><div class="brand"><div class="mark">ɢ</div><div><h1>GECKO TERMINAL</h1><small>Solana market intelligence</small></div></div><div class="topright"><div class="switchrow viewtabs" role="tablist" aria-label="Terminal views"><button type="button" id="tabTerminal" class="active mode" role="tab" aria-selected="true">Terminal</button><button type="button" id="tabDashboard" class="mode" role="tab" aria-selected="false">Dashboard</button></div><span class="pill">NETWORK&nbsp; / &nbsp;SOLANA</span><span class="status"><i class="dot"></i><span id="feedStatus" data-testid="feed-badge">CONNECTING DATA</span></span><span class="wwrap"><button id="walletBtn" class="walletbtn" type="button">Connect Wallet</button><div class="wdd" id="walletDd" hidden><div class="eyebrow" id="walletDdName" style="margin-top:8px">Wallet</div><div class="waddr" id="walletDdAddr"></div><div class="walletrow"><span>SOL balance</span><strong id="walletSol">—</strong></div><div class="walletrow"><span>USDC balance</span><strong id="walletUsdc">—</strong></div><div class="walletrow"><span>USDT balance</span><strong id="walletUsdt">—</strong></div><div class="wrowbtn"><button type="button" id="walletCopy">Copy address</button><button type="button" id="walletRetryBal">Retry balances</button></div><div class="wrowbtn"><button type="button" id="walletDisconnect" class="danger">Disconnect</button></div></div></span><span class="pill">PAPER MODE</span><button id="howItWorksLink" class="howlink" type="button" data-testid="how-it-works-link" title="How the terminal handles orders — simulated paper trading and wallet-signed swaps">How this works</button><span class="wwrap"><button id="layoutBtn" class="iconbtn" type="button" aria-label="Open layout" title="Layout">▦</button><div class="lpop" id="layoutPop" hidden role="dialog" aria-label="Layout"><div class="lpop-head"><strong>Layout</strong><button class="wclose" id="layoutPopClose" type="button" aria-label="Close layout">×</button></div><div class="lpop-note">Layouts apply to the trading desk (main page). Drag any panel by its header to move it anywhere — the arrows reorder panels within each column.</div><div id="layoutPanelList"></div><div class="lpop-hidden" id="layoutHiddenNote" hidden></div><div class="lpop-sec">Workspaces</div><div id="layoutWsList"></div><div class="searchrow" style="margin-top:8px"><input id="layoutWsName" maxlength="40" placeholder="Name this layout" aria-label="Workspace name" autocomplete="off" spellcheck="false"><button id="layoutWsSave" type="button">Save</button></div></div></span><button id="settingsBtn" class="iconbtn" type="button" aria-label="Open settings" title="Settings">⚙</button></div></header>
+<header class="top"><div class="brand"><div class="mark">ɢ</div><div><h1>GECKO TERMINAL</h1><small>Solana market intelligence</small></div></div><div class="topright"><div class="switchrow viewtabs" role="tablist" aria-label="Terminal views"><button type="button" id="tabTerminal" class="active mode" role="tab" aria-selected="true">Terminal</button><button type="button" id="tabDashboard" class="mode" role="tab" aria-selected="false">Dashboard</button></div><span class="pill">NETWORK&nbsp; / &nbsp;SOLANA</span><span class="status"><i class="dot"></i><span id="feedStatus" data-testid="feed-badge">CONNECTING DATA</span></span><span class="wwrap"><button id="walletBtn" class="walletbtn" type="button">Connect Wallet</button><span id="syncDot" style="display:none;width:8px;height:8px;border-radius:50%;background:#888;vertical-align:middle;margin-left:2px" title="Sync"></span><div class="wdd" id="walletDd" hidden><div class="eyebrow" id="walletDdName" style="margin-top:8px">Wallet</div><div class="waddr" id="walletDdAddr"></div><div class="walletrow"><span>SOL balance</span><strong id="walletSol">—</strong></div><div class="walletrow"><span>USDC balance</span><strong id="walletUsdc">—</strong></div><div class="walletrow"><span>USDT balance</span><strong id="walletUsdt">—</strong></div><div class="wrowbtn"><button type="button" id="walletCopy">Copy address</button><button type="button" id="walletRetryBal">Retry balances</button></div><div class="wrowbtn"><button type="button" id="walletDisconnect" class="danger">Disconnect</button></div></div></span><span class="pill">PAPER MODE</span><button id="howItWorksLink" class="howlink" type="button" data-testid="how-it-works-link" title="How the terminal handles orders — simulated paper trading and wallet-signed swaps">How this works</button><span class="wwrap"><button id="layoutBtn" class="iconbtn" type="button" aria-label="Open layout" title="Layout">▦</button><div class="lpop" id="layoutPop" hidden role="dialog" aria-label="Layout"><div class="lpop-head"><strong>Layout</strong><button class="wclose" id="layoutPopClose" type="button" aria-label="Close layout">×</button></div><div class="lpop-note">Layouts apply to the trading desk (main page). Drag any panel by its header to move it anywhere — the arrows reorder panels within each column.</div><div id="layoutPanelList"></div><div class="lpop-hidden" id="layoutHiddenNote" hidden></div><div class="lpop-sec">Workspaces</div><div id="layoutWsList"></div><div class="searchrow" style="margin-top:8px"><input id="layoutWsName" maxlength="40" placeholder="Name this layout" aria-label="Workspace name" autocomplete="off" spellcheck="false"><button id="layoutWsSave" type="button">Save</button></div></div></span><button id="settingsBtn" class="iconbtn" type="button" aria-label="Open settings" title="Settings">⚙</button></div></header>
 <div class="stats" data-layout-root data-root-key="stats">
 <div class="stat"><div class="eyebrow">SOL / USD</div><div class="big" id="statPrice">$—</div><div class="sub" id="statPriceSub">Live market feed</div></div>
 <div class="stat"><div class="eyebrow">24H CHANGE</div><div class="big" id="statChange" data-testid="hero-chg-24h">—</div><div class="sub">Solana spot market</div></div>
@@ -297,6 +297,41 @@ const fmt=(n,d=2)=>Number(n||0).toLocaleString('en-US',{minimumFractionDigits:d,
 const usd=n=>'$'+fmt(n,2);
 const compact=n=>n>=1e9?(n/1e9).toFixed(2)+'B':n>=1e6?(n/1e6).toFixed(2)+'M':n>=1e3?(n/1e3).toFixed(1)+'K':fmt(n,0);
 function formatPriceUsd(value){const n=Number(value);if(!Number.isFinite(n)||n<=0)return '—';if(n>=0.01)return usd(n);return '$'+n.toPrecision(4)}
+/*__N22_SYNC_START__*/
+/* N2.2 server-side sync (2026-10-24, wallet-as-identity): cross-device
+   persistence for the five syncable namespaces ONLY — settings, slippage,
+   layout, paperlive (wallet-namespaced entries), btConfigs (wallet-namespaced
+   entries). Paper-mode state (the N2.1 v2 store: cash/holdings/orders/history)
+   is NEVER collected, sent, or written by this block — saveState() has no
+   sync hook by design. The sync token lives in memory only (like
+   window.__walletAddress): a reload requires a fresh challenge signature,
+   exactly as the wallet itself requires a fresh connect.
+   Auth (Carlos-approved 2026-10-24 ~07:58 CST, signMessage-for-auth-only):
+   on walletchange-connect the client fetches a challenge, asks the wallet to
+   signMessage ONLY the string "Gecko Terminal sync · <nonce> · <issuedAt>",
+   and exchanges it for a 24 h token. signTransaction is never called
+   anywhere on this page (grep-verified). Failures are silent except for a
+   single toast on sign-in failure — never a modal, never a nag (§8.7).
+   This block sits before saveState() deliberately: the save* hooks below call
+   syncMarkDirty(), and boot (applyLayoutBoot -> saveLayout) runs before the
+   wallet section — syncMarkDirty() is therefore TDZ-safe (try/catch) and the
+   sync state initializes before any save hook can fire. */
+const SYNC_NS_LIST=['settings','slippage','layout','paperlive','btConfigs'];
+let syncState={token:null,pubkey:null,authing:false,pushing:false,timer:0,applying:false};
+let syncLocalTs={}; // ns -> last applied/pushed updatedAt (ms)
+let syncPushedJson={}; // ns -> JSON of the last pushed local data
+function syncSetStatus(s){try{const dot=$('syncDot');if(!dot)return;if(s==='off'){dot.style.display='none';}else{dot.style.display='inline-block';dot.style.background=s==='synced'?'#6fbf6f':s==='syncing'?'#e0a83c':'#d9534f';}const wb=$('walletBtn');if(wb)wb.title=s==='off'?'Connect Wallet':'Sync: '+s;}catch(_){}}
+function syncB64(bytes){let s='';const CH=0x8000;for(let i=0;i<bytes.length;i+=CH){s+=String.fromCharCode.apply(null,bytes.subarray(i,i+CH));}return btoa(s);}
+function syncPost(body){const c=new AbortController(),t=setTimeout(()=>c.abort(),10000);const h={'content-type':'application/json'};if(syncState.token)h['Authorization']='Bearer '+syncState.token;return fetch('/api/sync',{method:'POST',headers:h,body:JSON.stringify(body),signal:c.signal}).then(r=>r.json()).catch(()=>({ok:false,error:'sync_unavailable'})).finally(()=>clearTimeout(t));}
+function syncGetPull(){const c=new AbortController(),t=setTimeout(()=>c.abort(),10000);const h={};if(syncState.token)h['Authorization']='Bearer '+syncState.token;return fetch('/api/sync?action=pull',{headers:h,signal:c.signal}).then(r=>r.json()).catch(()=>({ok:false,error:'sync_unavailable'})).finally(()=>clearTimeout(t));}
+function syncCollect(pk){const out={};try{const raw=localStorage.getItem(SETTINGS_KEY);const p=raw?JSON.parse(raw):null;out.settings=(p&&typeof p==='object')?p:settings;}catch(_){out.settings=settings;}try{out.slippage={bps:slipLoad()};}catch(_){}try{const raw=localStorage.getItem(LAYOUT_KEY);const p=raw?JSON.parse(raw):null;if(p&&typeof p==='object')out.layout=p;}catch(_){}try{const s=plLoadStore();out.paperlive={deployments:(s.deployments&&s.deployments[pk])||[]};}catch(_){}try{const s=btLoadCfgStore();out.btConfigs={configs:(s.configs&&s.configs[pk])||[]};}catch(_){}return out;}
+function syncApplyNamespaces(serverNs,pk){if(!serverNs||typeof serverNs!=='object')return;const local=syncCollect(pk);syncState.applying=true;try{for(const ns of SYNC_NS_LIST){const entry=serverNs[ns];if(!entry||typeof entry.updatedAt!=='number')continue;const localTs=syncLocalTs[ns]||0;if(entry.updatedAt<=localTs)continue;const localJson=local[ns]===undefined?null:JSON.stringify(local[ns]);const serverJson=JSON.stringify(entry.data);try{if(ns==='settings'){if(!entry.data||typeof entry.data!=='object')continue;localStorage.setItem(SETTINGS_KEY,serverJson);settings=loadSettings();applySettingsVisual();}else if(ns==='slippage'){const v=slipValidate(entry.data&&entry.data.bps);if(!v.ok)continue;slipSave(v.bps);const el=$('slippageInput');if(el)el.value=String(v.bps);paintSlipPresets();}else if(ns==='layout'){if(!entry.data||typeof entry.data!=='object')continue;localStorage.setItem(LAYOUT_KEY,serverJson);layout=loadLayout(serverJson);const ws=activeWorkspace();renderPanelPlacement(ws);applyPanelVisibility(ws.hidden);}else if(ns==='paperlive'){if(!entry.data||!Array.isArray(entry.data.deployments))continue;const s=plLoadStore();s.deployments[pk]=entry.data.deployments;plSaveStore(s);plRenderDeploys();}else if(ns==='btConfigs'){if(!entry.data||!Array.isArray(entry.data.configs))continue;const s=btLoadCfgStore();s.configs[pk]=entry.data.configs;btSaveCfgStore(s);btRenderConfigs();}else continue;syncLocalTs[ns]=entry.updatedAt;if(localJson!==null&&localJson!==serverJson)toast('Synced — kept the newer '+ns+' from '+new Date(entry.updatedAt).toLocaleString()+'.');}catch(_){/* corrupt namespace: leave local untouched (N2.1 fail-closed pattern) */}}}finally{syncState.applying=false;}}
+function syncMarkDirty(){try{if(syncState.applying||!syncState.token||!syncState.pubkey)return;clearTimeout(syncState.timer);syncState.timer=setTimeout(syncPushNow,2000);}catch(_){/* TDZ-safe: a save hook firing before this block initializes is a no-op */}}
+async function syncPushNow(){try{if(!syncState.token||!syncState.pubkey||syncState.pushing)return;const pk=syncState.pubkey;const local=syncCollect(pk);const changed={};for(const ns of SYNC_NS_LIST){if(local[ns]===undefined)continue;const j=JSON.stringify(local[ns]);if(syncPushedJson[ns]!==j)changed[ns]={updatedAt:Date.now(),data:local[ns]};}if(!Object.keys(changed).length)return;syncState.pushing=true;syncSetStatus('syncing');const j=await syncPost({action:'push',namespaces:changed});if(j&&j.ok){const after=syncCollect(pk);for(const ns of Object.keys(changed)){syncPushedJson[ns]=JSON.stringify(after[ns]);syncLocalTs[ns]=changed[ns].updatedAt;}syncSetStatus('synced');if(j.namespaces&&typeof j.namespaces==='object'){/* server won a namespace despite our fresh timestamps (clock skew): adopt it */syncApplyNamespaces(j.namespaces,pk);}}else{syncSetStatus('offline');}}catch(_){try{syncSetStatus('offline');}catch(__){}}finally{syncState.pushing=false;}}
+async function syncAuthAndPull(pk){if(syncState.authing)return;if(syncState.token&&syncState.pubkey===pk)return;syncState.authing=true;syncSetStatus('syncing');try{const ch=await syncPost({action:'challenge',pubkey:pk});if(!ch||!ch.ok||!ch.nonce) {syncSetStatus('offline');return;}const message='Gecko Terminal sync · '+ch.nonce+' · '+ch.issuedAt;const adapter=wallet.adapter;if(!adapter||typeof adapter.signMessage!=='function'){syncSetStatus('offline');toast('Sync unavailable — this wallet cannot sign the login challenge.');return;}let sig;try{sig=await adapter.signMessage(new TextEncoder().encode(message));}catch(_){syncSetStatus('off');return;}/* user rejected the challenge signature: sync stays off, silently */const au=await syncPost({action:'auth',pubkey:pk,nonce:ch.nonce,signature:syncB64(sig)});if(!au||!au.ok||!au.token){syncSetStatus('offline');toast('Sync sign-in failed — cross-device sync is off for this session.');return;}syncState.token=au.token;syncState.pubkey=pk;syncPushedJson={};const pull=await syncGetPull();if(pull&&pull.ok)syncApplyNamespaces(pull.namespaces,pk);syncSetStatus('synced');syncPushNow();/* seeds the server with any local-newer namespaces */}catch(_){syncSetStatus('offline');}finally{syncState.authing=false;}}
+function syncClear(){try{clearTimeout(syncState.timer);}catch(_){}syncState.token=null;syncState.pubkey=null;syncState.authing=false;syncState.pushing=false;syncPushedJson={};syncLocalTs={};syncSetStatus('off');}
+document.addEventListener('walletchange',e=>{try{const d=(e&&e.detail)||{};if(d.connected&&d.publicKey)syncAuthAndPull(d.publicKey);else if(!d.connected)syncClear();}catch(_){}});
+/*__N22_SYNC_END__*/
 function saveState(){try{const state={version:2,cash,holdings,orders:orders.map(o=>({side:o.side,mode:o.mode||'paper',type:o.type||'market',baseMint:o.baseMint||WSOL_MINT,baseSymbol:o.baseSymbol||'SOL',quoteSymbol:o.quoteSymbol||'USDC',amount:o.amount,qty:o.qty,price:o.price,limitPrice:o.limitPrice||null,status:o.status||'filled',time:o.time instanceof Date?o.time.toISOString():o.time})),watchlists:watchlists,watchlistsMigrated:true,watchlist:wlLegacyMirror(),search:$('tokenSearch')?$('tokenSearch').value.slice(0,100):'SOL',chartRange,orderType,limitExpirySel,limitOrders:limitOrders.map(o=>({id:o.id,side:o.side,baseMint:o.baseMint,baseSymbol:o.baseSymbol,quoteSymbol:o.quoteSymbol,quoteUsd:o.quoteUsd,amountQuote:o.amountQuote,limitPrice:o.limitPrice,createdAt:o.createdAt,expiresAt:o.expiresAt,status:o.status})),ticketPair:ticketPair?{baseMint:ticketPair.baseMint,baseSymbol:ticketPair.baseSymbol,quoteSymbol:ticketPair.quoteSymbol}:null,histFilter:{mode:histFilter.mode,pair:histFilter.pair,kind:histFilter.kind,sig:String(histFilter.sig||'').slice(0,88)}};localStorage.setItem(STORAGE_KEY,JSON.stringify(state))}catch(_){}}
 /* N4.3: v1 stored a single SOL balance (cash/sol/costBasis). v2 keys holdings by base mint. migrateV1 lifts the old shape into v2 once, then the legacy key is deleted. */
 function migrateV1(old){const h={};const sq=Number(old.sol)||0,cb=Number(old.costBasis)||0;if(sq>0)h[WSOL_MINT]={symbol:'SOL',quoteSymbol:'USDC',qty:sq,avgCost:cb/sq,lastPrice:0};return{version:2,cash:old.cash,holdings:h,orders:(Array.isArray(old.orders)?old.orders:[]).map(o=>Object.assign({},o,{mode:'paper',baseMint:WSOL_MINT,baseSymbol:'SOL',quoteSymbol:'USDC'})),watchlist:old.watchlist,search:old.search,chartRange:old.chartRange};}
@@ -717,7 +752,7 @@ function dashPaperHtml(){
 function dashLiveHtml(){
   const qc=dashQC(),sp=price>0?price:0,w=dashWallet(),pk=w.publicKey||window.__walletAddress||null;
   if(!w.connected||!pk){
-    return'<div class="empty">No wallet connected — the live dashboard shows on-chain balances only.<br><br><button type="button" class="action" data-dash-connect>Connect wallet</button><div class="sub" style="margin-top:8px">Connecting is read-only in this build — the terminal never signs or sends anything.</div></div>';
+    return'<div class="empty">No wallet connected — the live dashboard shows on-chain balances only.<br><br><button type="button" class="action" data-dash-connect>Connect wallet</button><div class="sub" style="margin-top:8px">Connecting is read-only for trading — the terminal signs only the sync login challenge (never a transaction) when you connect.</div></div>';
   }
   const bal=w.balances||{};
   const rows=[{sym:'SOL',qty:bal.sol,px:sp},{sym:'USDC',qty:bal.usdc,px:1},{sym:'USDT',qty:bal.usdt,px:1}];
@@ -873,7 +908,7 @@ function slipValidate(v){ // mirrors swapFlow.parseSlippageInput: integers only,
   return{ok:true,bps};
 }
 function slipLoad(){const fb=(settings&&settings.defaultSlippageBps)||SLIP_DEFAULT;try{const raw=localStorage.getItem(SLIP_KEY);if(raw===null||raw==='')return fb;const p=slipValidate(raw);return p.ok?p.bps:fb;}catch(_){return fb;}} // N5.1: falls back to settings.defaultSlippageBps
-function slipSave(bps){if(!Number.isInteger(bps)||bps<SLIP_MIN||bps>SLIP_MAX)return false;try{localStorage.setItem(SLIP_KEY,String(bps));return true;}catch(_){return false;}}
+function slipSave(bps){if(!Number.isInteger(bps)||bps<SLIP_MIN||bps>SLIP_MAX)return false;try{localStorage.setItem(SLIP_KEY,String(bps));syncMarkDirty();return true;}catch(_){return false;}}
 /* N5.1 settings panel (2026-10-22): six preferences, live-apply, persisted in their
    own versioned key `gecko-terminal:settings-v1` (independent of the N2.1 paper store,
    per the pack's "version settings independently" cross-link with N5.3). Two deliberate
@@ -911,7 +946,7 @@ function loadSettings(){
   s.defaultPair=(typeof s.defaultPair==='string'&&/^[A-Za-z0-9]{1,20}$/.test(s.defaultPair.trim()))?s.defaultPair.trim().toUpperCase():'SOL';
   return s;
 }
-function saveSettings(){try{localStorage.setItem(SETTINGS_KEY,JSON.stringify(settings));}catch(_){}}
+function saveSettings(){try{localStorage.setItem(SETTINGS_KEY,JSON.stringify(settings));}catch(_){}syncMarkDirty();}
 settings=loadSettings();
 function formatPrice(v){ // N5.1: quote-currency-aware price display (USD keeps today's behavior)
   if(settings&&settings.quoteCurrency==='SOL'){
@@ -1152,7 +1187,7 @@ function migrateV1Place(){const p={};for(const id of PANEL_IDS)p[id]=PANEL_HOME[
 let layout=null; // {version, workspaces, activeWorkspaceId} — set by applyLayoutBoot
 let wsSeq=0;
 function activeWorkspace(){return layout.workspaces.find(w=>w.id===layout.activeWorkspaceId)||layout.workspaces[0];}
-function saveLayout(){try{localStorage.setItem(LAYOUT_KEY,JSON.stringify({version:LAYOUT_VERSION,activeWorkspaceId:layout.activeWorkspaceId,workspaces:layout.workspaces.filter(w=>!w.builtIn)}));}catch(_){}}
+function saveLayout(){try{localStorage.setItem(LAYOUT_KEY,JSON.stringify({version:LAYOUT_VERSION,activeWorkspaceId:layout.activeWorkspaceId,workspaces:layout.workspaces.filter(w=>!w.builtIn)}));}catch(_){}syncMarkDirty();}
 function panelEl(id){return document.querySelector('[data-panel="'+id+'"]');}
 function renderPanelPlacement(ws){
   /* N5.6: panels are placed by ws.place[panelId] into the root whose
@@ -2139,7 +2174,7 @@ function btDate(t){return new Date(t*1000).toLocaleDateString(undefined,{month:'
 function btExitLabel(r){return r==='time_stop'?'Time-stop':r==='end_of_data'?'End of data':r==='signal'?'Signal':String(r||'—');}
 function btSgn(v){return (v>=0?'+':'')+fmt(v,2);}
 function btLoadCfgStore(){try{const s=JSON.parse(localStorage.getItem(BT_CFG_KEY)||'null');if(s&&s.version===1&&s.configs)return s;}catch(_){}return{version:1,configs:{}};}
-function btSaveCfgStore(s){try{localStorage.setItem(BT_CFG_KEY,JSON.stringify(s));}catch(_){}}
+function btSaveCfgStore(s){try{localStorage.setItem(BT_CFG_KEY,JSON.stringify(s));}catch(_){}syncMarkDirty();}
 /*__BT_COLLECT_PARAMS_START__*/
 /* N7.4 (2026-10-23): the form→params collection btRun used inline, extracted
    so Deploy-to-paper-live uses the identical strict validation. Behavior is
@@ -2379,7 +2414,7 @@ function plLoadStore(){
  }catch(_){}
  return {version:1,deployments:{}};
 }
-function plSaveStore(s){try{localStorage.setItem(BT_DEPLOY_KEY,JSON.stringify(s));}catch(_){}}
+function plSaveStore(s){try{localStorage.setItem(BT_DEPLOY_KEY,JSON.stringify(s));}catch(_){}syncMarkDirty();}
 /* Strict validation shared by both deploy entry points: unknown scheme or
    unusable shape -> null (no deploy). Params clamp to the scheme's own
    ranges, mirroring btCollectParams; fee/deploy clamp to the API contract. */
@@ -2677,7 +2712,9 @@ function histExportCsv(){
 // @solana/wallet-adapter-wallets, lazy-loaded from CDN on first modal open.
 // Rows are driven by each adapter's readyState — never hand-rolled
 // window.solana detection. Read-only in this item: connect/disconnect +
-// balance display. NO signing anywhere (no signTransaction/signMessage).
+// balance display. NO transaction signing anywhere (no signTransaction).
+// signMessage is used ONLY for the N2.2 sync login challenge — never for a
+// chain transaction (Carlos-approved 2026-10-24, signMessage-for-auth-only).
 // autoConnect stays OFF (N2.2 identity decision later); the wallet address
 // lives in memory only (window.__walletAddress) and is NOT persisted — the
 // N2.1 paper state is untouched. Balances use raw JSON-RPC (getBalance +
@@ -2720,7 +2757,7 @@ async function openWalletModal(){
   const c=classifyWallets(wallet._adapters);
   let html=c.installed.map(a=>walletRowHtml(a,'installed')).join('')+c.installable.map(a=>walletRowHtml(a,'install')).join('');
   if(!c.installed.length&&!c.installable.length)html='<div class="wnote">No supported wallets found.</div>';
-  html+='<div class="wnote">Only wallets detected in this browser can connect.<br>Connecting is read-only in this build — the terminal never signs or sends anything.</div>';
+  html+='<div class="wnote">Only wallets detected in this browser can connect.<br>Connecting is read-only for trading — the terminal signs only the sync login challenge (never a transaction) when you connect.</div>';
   body.innerHTML=html;
 }
 function closeWalletModal(){$('walletModal').hidden=true;}

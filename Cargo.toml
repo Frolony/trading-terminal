@@ -11,6 +11,10 @@ tokio = { version = "1", features = ["full"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 bs58 = "0.5"
 http-body-util = "0.1"
+ed25519-dalek = "2"
+base64 = "0.22"
+hmac = "0.12"
+sha2 = "0.10"
 
 [[bin]]
 name = "health"
@@ -36,6 +40,9 @@ path = "api/backtest.rs"
 [[bin]]
 name = "paperlive"
 path = "api/paperlive.rs"
+[[bin]]
+name = "sync"
+path = "api/sync.rs"
 
 [profile.release]
 codegen-units = 1
