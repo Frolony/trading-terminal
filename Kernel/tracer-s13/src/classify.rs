@@ -172,22 +172,28 @@ fn distinct_venues(hits: &[Option<VenueHit>]) -> Vec<Venue> {
 /// the first match wins — the shapes are specific enough that ordering is
 /// more principled than a confidence horse race:
 ///
-/// 1. [`Label::WashLoop`] — a closed loop overrides every other reading of
+/// 1. [`Label::MarketMaker`] (closed unwind) — a closed loop whose legs are
+///    all liquidity-management legs is inventory unwound home, not
+///    manufactured movement. Evaluated before WashLoop so the more specific
+///    reading wins; a loop with any swap leg, or any unrecognized leg,
+///    falls through to WashLoop — the unwind arm never weakens wash
+///    detection, it only carves out the shape wash cannot honestly claim.
+/// 2. [`Label::WashLoop`] — a closed loop overrides every other reading of
 ///    the same hops; a loop that looks like routing is still a loop.
-/// 2. [`Label::TreasuryTransition`] — our own program's flows are labeled
+/// 3. [`Label::TreasuryTransition`] — our own program's flows are labeled
 ///    as what they are before venue heuristics get a say.
-/// 3. [`Label::PositionOpen`] / [`Label::PositionClose`] — a user wallet
+/// 4. [`Label::PositionOpen`] / [`Label::PositionClose`] — a user wallet
 ///    with a one-sided net answers the tracer's core question ("did anyone
 ///    take a real position?") directly.
-/// 4. [`Label::AggregatorSplit`] — multi-venue pass-through routing.
-/// 5. [`Label::CrossMintRoundTrip`] — a completed swap whose output leg came
+/// 5. [`Label::AggregatorSplit`] — multi-venue pass-through routing.
+/// 6. [`Label::CrossMintRoundTrip`] — a completed swap whose output leg came
 ///    home in a different mint. Evaluated after AggregatorSplit so
 ///    multi-venue routes keep the plumbing reading; single-venue or short
 ///    completed swaps get the round-trip reading. Both can match; the order
 ///    is the overlap rule, stated here.
-/// 6. [`Label::MarketMaker`] — inventory cycling or managed-with-harvest.
-/// 7. [`Label::IncentiveFarming`] — position plus repeated harvest.
-/// 8. [`Label::LiquidityAddRemove`] — pool liquidity moves with no swap legs.
+/// 7. [`Label::MarketMaker`] — inventory cycling or managed-with-harvest.
+/// 8. [`Label::IncentiveFarming`] — position plus repeated harvest.
+/// 9. [`Label::LiquidityAddRemove`] — pool liquidity moves with no swap legs.
 ///
 /// The reported confidence still reflects the evidence strength; the order
 /// only decides ties and overlaps. The sealed verdict enforces the
@@ -206,7 +212,8 @@ pub fn classify(dict: &Dictionary, wf: &Workflow) -> Verdict {
         hits.iter().map(|h| h.map(|v| v.hop)).collect();
     let recognized = hits.iter().any(|h| h.is_some());
 
-    let candidate: Option<(Label, f64, String)> = wash_candidate(wf, &net)
+    let candidate: Option<(Label, f64, String)> = mm_unwind_candidate(&hop_kinds_aligned, wf)
+        .or_else(|| wash_candidate(wf, &net))
         .or_else(|| treasury_candidate(wf, &hits, &has_venue))
         .or_else(|| position_candidate(wf, &net, &venues, recognized))
         .or_else(|| aggregator_candidate(wf, &net, &venues))
@@ -218,17 +225,70 @@ pub fn classify(dict: &Dictionary, wf: &Workflow) -> Verdict {
     Verdict::seal(wf.id, candidate, evidence, net)
 }
 
+/// MarketMaker (closed unwind): the W6.2 stitcher-overlap resolution. A
+/// circular workflow is, by construction (see [`crate::reconstruct`]), a
+/// same-mint return home — but that shape has two readings, and the hop
+/// kinds decide which one is honest. When every hop is a recognized
+/// liquidity-management leg (add, remove, or a fee harvest home) with at
+/// least one add AND at least one remove, the loop is a position that was
+/// built and then fully unwound: inventory came home because the MM closed
+/// it, not because value was manufactured. A loop with any swap leg, any
+/// order/escrow/treasury leg, or any unrecognized leg is NOT provably an
+/// unwind and falls through to [`wash_candidate`] — the arm is deliberately
+/// narrow so it can never launder a wash loop. Confidence mirrors the
+/// wash short-loop discount: 0.80 for a ≥3-leg unwind, 0.75 for the minimal
+/// 2-leg add-and-remove.
+fn mm_unwind_candidate(
+    hop_kinds_aligned: &[Option<HopKind>],
+    wf: &Workflow,
+) -> Option<(Label, f64, String)> {
+    if !wf.is_circular || wf.hops.is_empty() {
+        return None;
+    }
+    // Every leg must be recognized and a liquidity-management leg; one
+    // unrecognized or swap leg voids the unwind reading.
+    if hop_kinds_aligned.iter().any(|k| k.is_none()) {
+        return None;
+    }
+    if hop_kinds_aligned.iter().any(|k| {
+        !matches!(
+            k,
+            Some(HopKind::LiquidityAdd) | Some(HopKind::LiquidityRemove) | Some(HopKind::FeeCollect)
+        )
+    }) {
+        return None;
+    }
+    let adds = hop_kinds_aligned
+        .iter()
+        .filter(|k| matches!(k, Some(HopKind::LiquidityAdd)))
+        .count();
+    let removes = hop_kinds_aligned
+        .iter()
+        .filter(|k| matches!(k, Some(HopKind::LiquidityRemove)))
+        .count();
+    if adds == 0 || removes == 0 {
+        return None;
+    }
+    let origin = wf.origin()?;
+    let conf = if adds + removes >= 3 { 0.80 } else { 0.75 };
+    Some((
+        Label::MarketMaker,
+        conf,
+        format!(
+            "inventory unwound home: {} liquidity adds and {} removes closed the position at {}; no swap legs",
+            adds, removes, origin
+        ),
+    ))
+}
+
 /// WashLoop: the circular, same-mint value-returning shape. By construction
 /// (see [`crate::reconstruct`]) a circular workflow returned the origin's
 /// own mint to the origin wallet — value came home, only fees burned.
 ///
-/// Known limit (W6.2 validation item): the stitcher's circularity rule is
-/// mint-based, so a fully-closed position cycle — an MM inventory unwind
-/// that returns the position mint home — reads as a loop here. The
-/// [`Label::MarketMaker`] class therefore covers cycles that are still open
-/// or swept elsewhere; distinguishing an MM unwind from manufactured
-/// movement at the stitcher belongs to the labeled-route validation pass,
-/// not to this increment.
+/// Carve-out (resolved W6.2): a circular loop whose legs are all
+/// liquidity-management legs is claimed by [`mm_unwind_candidate`] first —
+/// an MM unwind is not manufactured movement. Wash keeps every other
+/// circular loop: swap legs, unrecognized legs, and mixed shapes.
 fn wash_candidate(wf: &Workflow, net: &NetEffect) -> Option<(Label, f64, String)> {
     if !wf.is_circular {
         return None;

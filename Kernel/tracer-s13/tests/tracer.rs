@@ -428,10 +428,9 @@ fn t29_round_trip_guards() {
 // LiquidityAddRemove reading — the more specific interpretation wins by
 // priority. The legs are causally sequenced so reconstruction stitches one
 // workflow (the greedy stitcher follows wallet continuity). The final leg
-// sweeps the removed inventory to a second firm wallet: a fully-closed cycle
-// that returns the position mint home reads as WashLoop by the stitcher's
-// mint-based rule (a documented W6.2 limit), so the test uses the open
-// inventory shape the machine can honestly distinguish.
+// sweeps the removed inventory to a second firm wallet; the fully-closed
+// variant (mint returned home) is covered by T34, which the W6.2
+// unwind arm now reads as MarketMaker instead of WashLoop.
 #[test]
 fn t30_market_maker_cycling_labeled() {
     let verdicts = run(vec![
@@ -524,4 +523,45 @@ fn t33_aggregator_priority_over_round_trip() {
     assert_eq!(verdicts.len(), 1);
     let v = &verdicts[0];
     assert_eq!(v.label(), Some(Label::AggregatorSplit), "multi-venue keeps the plumbing reading");
+}
+
+// T34 — market maker, closed unwind: the W6.2 stitcher-overlap resolution.
+// An add followed by a remove that returns the position mint home IS still
+// a circular workflow (the stitcher flags it — honestly, it is a loop),
+// but the classifier now reads the hop kinds: pure liquidity-management
+// legs with an add and a remove mean inventory unwound home, not
+// manufactured movement. Labels MarketMaker (0.75 for the minimal 2-leg
+// shape), never WashLoop — the false-accusation risk the validation corpus
+// pinned is closed by this arm.
+#[test]
+fn t34_market_maker_closed_unwind_labeled() {
+    let verdicts = run(vec![
+        ev("sig0", 740, 0, "mm4", "pool4", "SOL", 1_000_000_000, "P_clmm", "increaseLiquidity", 5000),
+        ev("sig1", 740, 1, "pool4", "mm4", "SOL", 999_000_000, "P_clmm", "decreaseLiquidity", 5000),
+    ]);
+    assert_eq!(verdicts.len(), 1, "the two legs are one workflow");
+    let v = &verdicts[0];
+    assert_eq!(v.label(), Some(Label::MarketMaker));
+    assert!(v.confidence() >= 0.75, "minimal unwind: {}", v.confidence());
+    assert_ne!(v.label(), Some(Label::WashLoop), "an unwind is not wash");
+    assert!(!v.is_guess());
+    let h = headline(v);
+    assert!(h.contains("Market maker"), "headline names the label: {h}");
+}
+
+// T35 — the unwind arm's guard, proved: a circular loop that mixes a swap
+// leg into liquidity legs is NOT provably an unwind, so WashLoop keeps it.
+// This is the boundary that stops the new arm from laundering wash loops.
+#[test]
+fn t35_circular_with_swap_leg_stays_wash() {
+    let verdicts = run(vec![
+        ev("sig0", 750, 0, "mm4", "pool4", "SOL", 1_000_000_000, "P_clmm", "increaseLiquidity", 5000),
+        ev("sig1", 750, 1, "pool4", "dex1", "SOL", 500_000_000, "P_agg", "swap", 5000),
+        ev("sig2", 750, 2, "dex1", "mm4", "SOL", 499_000_000, "P_agg", "swap", 5000),
+    ]);
+    assert_eq!(verdicts.len(), 1, "the three legs are one workflow");
+    let v = &verdicts[0];
+    assert_eq!(v.label(), Some(Label::WashLoop));
+    assert!(v.confidence() >= 0.85, "3-hop loop: {}", v.confidence());
+    assert_ne!(v.label(), Some(Label::MarketMaker), "a swap leg voids the unwind reading");
 }
