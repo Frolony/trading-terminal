@@ -1,0 +1,14 @@
+[toolchain]
+anchor_version = "0.31.0"
+
+[programs.localnet]
+treasury_program = "FPGSeLBWEiFKdTuqDbJeKhjXeah5H4c3rqsW4Tzn3RAS"
+
+[provider]
+cluster = "localnet"
+# Required by Anchor's config parser; build does not use it. No deployment
+# happens in W4.3, and no keypair at this path is created by this project.
+wallet = "/home/hatch/.config/solana/id.json"
+
+[scripts]
+test = "echo no-ts-tests"

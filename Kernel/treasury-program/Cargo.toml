@@ -1,0 +1,12 @@
+[workspace]
+members = ["programs/*"]
+
+[profile.release]
+overflow-checks = true
+
+# Same SBF pin set as the W3.3 mock build (proven 2026-10-23): the SBF
+# platform toolchain ships cargo 1.79, which cannot parse edition2024
+# manifests. The cpufeatures patch vendored under patches/ predates the
+# sbf target; the relative path keeps this project self-contained.
+[patch.crates-io]
+cpufeatures = { path = "patches/cpufeatures" }
