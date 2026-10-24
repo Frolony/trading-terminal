@@ -942,17 +942,22 @@ function healSizeInput(){ // A33: self-heal — if the held value carries more p
 /* N7.6 (A40, 2026-10-23): unit-aware stored default order size. The v1 store kept a raw
    number displayed with the current quote-currency suffix — switching units silently
    rescales the size after a reload (250 USD -> "250 SOL", ~100x effective size). The
-   store now carries defaultOrderSizeCurrency; quote-currency switches convert the
-   stored amount at the live rate (same path as the in-session ticket conversion), and
-   every fill goes through the same conversion, so in-session and post-reload agree.
-   Pure: only needs `price`, `settings`, `$`, `fillSizeInput`, `document` from the page. */
+   store now carries defaultOrderSizeCurrency, and the pair (amount, currency) is the
+   CANONICAL user notional: quote-currency switches never mutate it (re-denominating
+   the stored amount at each switch's live price would let the default random-walk,
+   e.g. 250 -> 250.53 across two switches — the acceptance demands an exact round-trip).
+   Conversions happen at the point of use — drawer display and ticket fills — through
+   the same live-rate path as the in-session ticket conversion, so in-session and
+   post-reload agree and switching units never silently rescales anything.
+   Pure: only needs `price`, `settings`, `$`, `fillSizeInput` from the page. */
 function roundSizeForCurrency(v,currency){return currency==='SOL'?Number(v.toPrecision(6)):Math.round(v*100)/100;} // display precision per currency
 function usdPerSizeUnit(currency){return currency==='SOL'&&price>0?price:1;} // USD value of one unit of the given currency (1 when the live price is unavailable)
 function sizeToUsd(amount,currency){if(currency==='SOL'&&price<=0)return null;return amount*usdPerSizeUnit(currency);} // stored amount -> USD; null when the live price is needed but unavailable
-function fillDefaultSizeInput(){ // fill #orderAmount from the unit-aware stored default; false when the live price is needed but not yet available (boot defers)
+function fillDefaultSizeInput(){ // fill #orderAmount from the unit-aware stored default; false when SOL units cannot be rendered yet (boot defers to the first feed beat)
   const el=$('orderAmount');if(!el)return false;
   const usd=sizeToUsd(settings.defaultOrderSize,settings.defaultOrderSizeCurrency);
   if(usd==null||!Number.isFinite(usd))return false;
+  if(settings.quoteCurrency==='SOL'&&price<=0)return false; // no live price: cannot render SOL units without fabricating a rate
   fillSizeInput(usd);
   return true;
 }
@@ -962,7 +967,7 @@ function defaultSizeDisplay(){ // stored default rendered in the current quote-c
   return{val:String(roundSizeForCurrency(usd/usdPerSizeUnit(cur),cur)),unit:cur};
 }
 /*__N76_SIZEUNIT_PURE_END__*/
-let bootSizePending=false; // N7.6: boot-time default-size fill deferred until the first live price arrives
+let bootSizePending=false,bootSizeTouched=false; // N7.6: boot-time default-size fill deferred until the first live price arrives; the touched flag (set on real user input only) keeps the deferred fill from ever clobbering typed text
 function syncMetaTheme(){const tc=document.querySelector('meta[name="theme-color"]');if(tc)tc.setAttribute('content',settings.theme==='light'?'#f7f8fa':'#0b0d12');const cs=document.querySelector('meta[name="color-scheme"]');if(cs)cs.setAttribute('content',settings.theme);}
 function applySettingsVisual(){ // re-render every price surface; never touches fills, orders, or the paper account
   document.documentElement.dataset.theme=settings.theme;
@@ -980,15 +985,13 @@ function commitSetting(key,val,opts){
   else if(key==='quoteCurrency'){
     if(val!=='USD'&&val!=='SOL')return;
     const usdBefore=ticketSizeUsd(); // read under the OLD unit before switching
-    const storedUsd=sizeToUsd(settings.defaultOrderSize,settings.defaultOrderSizeCurrency); // stored notional at the live rate
     settings.quoteCurrency=val;
-    if(storedUsd!=null&&Number.isFinite(storedUsd)&&(val==='USD'||price>0)){
-      /* N7.6 (A40): convert the stored default into the new unit at the same live rate as
-         the ticket conversion, so in-session and post-reload agree. When the feed is down
-         (no live price) the stored value is left untouched — never silently rescaled. */
-      settings.defaultOrderSize=roundSizeForCurrency(storedUsd/usdPerSizeUnit(val),val);
-      settings.defaultOrderSizeCurrency=val;
-    }
+    /* N7.6 (A40, design B): the stored default is NOT converted here. The stored
+       (amount, currency) pair is the canonical user notional; re-denominating it at
+       each switch's live price would let the default random-walk (250 -> 250.53 across
+       two switches at different prices). Conversions happen at the point of use —
+       drawer display (defaultSizeDisplay) and ticket fills (fillDefaultSizeInput) —
+       through the same live-rate path, so the round-trip is exact. */
     fillSizeInput(usdBefore); // keep the same notional across the unit switch
   }
   else if(key==='defaultOrderSize'){const n=Number(val);if(!Number.isFinite(n)||n<=0){toast('Default order size must be a number above zero.');paintSettingsDrawer();return;}settings.defaultOrderSize=n;settings.defaultOrderSizeCurrency=settings.quoteCurrency;} // N7.6: the typed value is in the drawer's displayed unit
@@ -1859,10 +1862,9 @@ function syncPricesFromPairs(){ // keep the selected pair + holding valuations o
 }
 function refreshTicket(){
   healSizeInput(); // A33: keep the held size value at display precision (self-heals any raw float)
-  if(bootSizePending&&price>0){ // N7.6: deferred boot fill — one shot, fires on the first live price; never clobbers a user-typed value
+  if(bootSizePending&&price>0){ // N7.6: deferred boot fill — one shot, fires on the first live price; the touched flag (real user input only) keeps it from ever clobbering typed text
     bootSizePending=false;
-    const _bsi=$('orderAmount');
-    if(_bsi&&_bsi.value===''&&document.activeElement!==_bsi)fillDefaultSizeInput();
+    if(!bootSizeTouched)fillDefaultSizeInput();
   }
   const tp=ticketPair,pr=ticketPrice();
   if(!$('ticketPairName'))return;
@@ -1892,7 +1894,7 @@ function updatePortfolio(){const rows=Object.keys(holdings);let posValue=0,total
 $('equity').textContent=dbMoney(equity,qcu,spx);$('pnlSub').textContent=dbSignedMoney(equity-PAPER_START_CASH,qcu,spx)+' total return';$('pnlSub').className='sub '+(equity>=PAPER_START_CASH?'positive':'negative');$('cashBal').textContent=usd(cash);$('cashAvail').textContent=usd(cash);$('posValue').textContent=usd(posValue);$('unrealized').textContent=(unreal>=0?'+':'')+usd(unreal);$('unrealized').className=unreal>=0?'positive':'negative';$('holdingsList').innerHTML=rows.length?rows.map(m=>{const h=holdings[m],px=h.lastPrice>0?h.lastPrice:0,v=h.qty*px,u=v-h.qty*h.avgCost;return '<div class="walletrow"><span>'+esc(h.symbol)+' · '+fmtQty(h.qty)+'</span><strong>'+usd(v)+' <small class="'+(u>=0?'positive':'negative')+'">'+(u>=0?'+':'')+usd(u)+'</small></strong></div>';}).join(''):'<div class="empty">No paper positions yet.</div>';refreshTicket();paintDashboard();saveState()}
 /* N5.3: renderWatchlist lives in the __N53_WATCHLISTS_START__ block (multi-list header card). */
 function setSide(s){hideReview();side=s;$('buyBtn').classList.toggle('active',s==='buy');$('buyBtn').classList.toggle('buy',s==='buy');$('sellBtn').classList.toggle('active',s==='sell');$('sellBtn').classList.toggle('sell',s==='sell');updatePortfolio()}
-$('buyBtn').onclick=()=>setSide('buy');$('sellBtn').onclick=()=>setSide('sell');$('orderAmount').oninput=()=>{hideReview();updatePortfolio();};document.querySelectorAll('[data-amt]').forEach(b=>b.onclick=()=>{hideReview();const v=b.dataset.amt;const tp=ticketPair,pr=ticketPrice(),q=quoteUsd(tp&&tp.quoteSymbol);if(v==='max'){if(side==='buy'){fillSizeInput(maxBuyInput(cash,q)*q);}else{const h=tp&&holdings[tp.baseMint];fillSizeInput(h&&pr>0?maxSellInput(h.qty,pr)*q:0);}}else{fillSizeInput(Number(v));}updatePortfolio()}); // N5.1: presets/MAX fill via fillSizeInput (unit-aware)
+$('buyBtn').onclick=()=>setSide('buy');$('sellBtn').onclick=()=>setSide('sell');$('orderAmount').oninput=()=>{bootSizeTouched=true;hideReview();updatePortfolio();};document.querySelectorAll('[data-amt]').forEach(b=>b.onclick=()=>{hideReview();const v=b.dataset.amt;const tp=ticketPair,pr=ticketPrice(),q=quoteUsd(tp&&tp.quoteSymbol);if(v==='max'){if(side==='buy'){fillSizeInput(maxBuyInput(cash,q)*q);}else{const h=tp&&holdings[tp.baseMint];fillSizeInput(h&&pr>0?maxSellInput(h.qty,pr)*q:0);}}else{fillSizeInput(Number(v));}updatePortfolio()}); // N5.1: presets/MAX fill via fillSizeInput (unit-aware)
 $('tradeForm').onsubmit=e=>{e.preventDefault();if(orderType==='limit')openLimitReview();else openReview();}; // N4.4/N4.5: submit opens the review sheet; the fill/order commits only via confirm
 function renderOrders(){$('orderCount').textContent=orders.length+' ORDERS';$('orders').innerHTML=orders.length?orders.slice(0,6).map(o=>{const bs=o.baseSymbol||'SOL',qs=o.quoteSymbol||'USDC',mode=(o.mode||'paper').toUpperCase();return '<div style="padding:12px 16px;border-bottom:1px solid var(--rowline);display:flex;justify-content:space-between;gap:8px"><div><strong class="'+(o.side==='buy'?'positive':'negative')+'">'+o.side.toUpperCase()+' '+esc(bs)+'/'+esc(qs)+'</strong> <span class="pill" style="font-size:10px;padding:2px 7px">'+mode+'</span>'+(o.type==='limit'?' <span class="pill" style="font-size:10px;padding:2px 7px">LIMIT</span>':'')+(o.status&&o.status!=='filled'?' <span class="pill" style="font-size:10px;padding:2px 7px">'+esc(o.status.toUpperCase())+'</span>':'')+'<div class="sub">'+o.time.toLocaleTimeString()+' · '+fmtQty(o.qty)+' '+esc(bs)+'</div></div><div style="text-align:right"><strong>'+usd(o.amount)+'</strong><div class="sub">@ '+formatPriceUsd(o.price)+'</div></div></div>';}).join(''):'<div class="empty">Your simulated paper orders will appear here.</div>'}
 let resetArmUntil=0,resetLabel=null;$('resetPaper').onclick=()=>{const b=$('resetPaper');if(resetLabel===null)resetLabel=b.textContent;const dirty=orders.length||Object.keys(holdings).length>0||cash!==PAPER_START_CASH||limitOrders.some(o=>o.status==='open');if(dirty&&Date.now()>resetArmUntil){resetArmUntil=Date.now()+5000;b.textContent='Confirm reset?';toast('This also clears your paper order history. Click again within 5 s to confirm.');setTimeout(()=>{if(Date.now()>=resetArmUntil)b.textContent=resetLabel;},5100);return;}resetArmUntil=0;b.textContent=resetLabel;/* N5.3: watchlists are personal data, not paper state — the reset deliberately leaves them (and settings/layout) untouched. */cash=PAPER_START_CASH;holdings={};orders=[];limitOrders=[];histClearPaper();histExpanded.clear();renderOrders();renderLimitOrders();renderHistory();updatePortfolio();saveState();toast('Paper account reset — paper order history cleared.');};
