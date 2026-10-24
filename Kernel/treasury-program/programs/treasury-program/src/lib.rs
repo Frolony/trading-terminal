@@ -380,6 +380,25 @@
 //! paper over it. Threshold B (D-2) starts unset (0): until a
 //! governed path sets it, `launch_stage2` can never commit, which
 //! is the design's intended state, not a gap.
+//! This increment adds `launch_stage2` (design §4.2), the second
+//! §4.2 instruction, in the same transition-executed form as the
+//! init: a Settled `treasury.launch.v1` transition authorizes the
+//! flip of the stage flag on Config from Stage 1 to Stage 2 — never
+//! a config check or a fresh authority signature. The B gate is
+//! enforced by the launch transition (mandatory BACKING_EVIDENCED
+//! constraint report feeding the CONSTRAINTS bit at commit; the
+//! manifest's observation evidences the committed fiat total), not
+//! recomputed by the handler, which has no fiat total, supply, or
+//! price on-chain to compute from; no other instruction checks B ad
+//! hoc. The handler's own gates are Settled + canonical type +
+//! stage still Stage 1 + threshold B set (nonzero) — the last is
+//! the D-2 intended state in executable form: B starts unset at
+//! init and no governed path sets it yet, so until that path lands
+//! a launch execution refuses with `ThresholdUnset` rather than
+//! reading an unset threshold as "any backing passes". No
+//! exact-settle requirement (the effect is a fixed flag flip) and no
+//! execution flag (the flip itself is the one-time guarantee: a
+//! second launch refuses because the stage is no longer Stage 1).
 //! Nothing here is deployed: NO devnet deployment in W4.3, NO mainnet step
 //! exists in W4. No instruction here moves value.
 //!
@@ -474,6 +493,17 @@ pub fn max_outstanding(treasury: u128) -> u128 {
 pub const TREASURY_INIT_TYPE: [u8; 32] = [
     116, 167, 130, 118, 19, 78, 9, 62, 70, 91, 124, 207, 146, 13, 252, 203,
     41, 105, 101, 71, 5, 249, 233, 78, 114, 250, 85, 94, 229, 225, 62, 47,
+];
+
+/// Canonical transition-type id for `treasury.launch.v1`: SHA-256 of
+/// the bytes `treasury.launch.v1`. Only a Settled transition of this
+/// type authorizes `launch_stage2` — the same machine-checkable
+/// domain-tag discipline as the init and policy types. A settled
+/// transition of any other type is not a launch source
+/// (`LaunchMismatch`).
+pub const TREASURY_LAUNCH_TYPE: [u8; 32] = [
+    24, 150, 201, 135, 106, 198, 184, 96, 196, 151, 146, 230, 11, 122, 79, 108,
+    12, 171, 180, 153, 187, 213, 179, 190, 241, 135, 160, 238, 225, 174, 59, 120,
 ];
 
 /// Bonds sleeve, 50% of T (50/25/25 portfolio, Carlos's 2026-10-22
@@ -2262,6 +2292,63 @@ pub mod treasury_program {
         });
         Ok(())
     }
+
+    /// Stage 2 launch (design §4.2): flip the stage flag on Config
+    /// from Stage 1 to Stage 2, executed from a Settled
+    /// `treasury.launch.v1` transition — never from a config check
+    /// or a fresh authority signature.
+    ///
+    /// The Stage 2 gate is enforced by the launch transition, not by
+    /// this handler recomputing B: the design row makes
+    /// BACKING_EVIDENCED a mandatory constraint of the launch
+    /// policy, so an Evaluator's report attesting B = treasury ÷
+    /// (supply × price) meets the threshold in TreasuryState feeds
+    /// the CONSTRAINTS bit at commit, and the manifest's observation
+    /// evidences the committed fiat total. No fiat total, supply, or
+    /// price exists on-chain for this handler to recompute the ratio
+    /// from — the attestation IS the check, and it happens at commit
+    /// time, before any settle. No other instruction checks B ad hoc.
+    ///
+    /// The gate [`can_launch_stage2`] enforces, in order: Settled
+    /// state, the canonical launch type, the stage still being Stage
+    /// 1, and threshold B set (nonzero). The threshold check is the
+    /// D-2 intended state made executable: B starts unset (0) at
+    /// `initialize_treasury`, and no governed path sets it yet — the
+    /// only writer of the field is the init's zero — so until that
+    /// path lands, a launch transition's execution refuses with
+    /// `ThresholdUnset` even though its lifecycle settled. That is
+    /// the design's intended state, not a gap in this instruction:
+    /// an unset threshold must never read as "any backing passes".
+    /// Deliberately no exact-settle requirement, as with
+    /// `initialize_treasury`: the launch's effect is fixed (one flag
+    /// flip), so no declared payload exists for an inexact settle to
+    /// diverge from. Deliberately no one-time execution flag: the
+    /// stage flip is the one-time guarantee — a second launch, or a
+    /// replay of the first, refuses because the stage is no longer
+    /// Stage 1 (`AlreadyLaunched`), and changes no state. The
+    /// executor is permissionless and pays no rent: no account is
+    /// created here, and the authority is the settled transition.
+    /// The flag flip is the activation record later §4.2/§4.3 flows
+    /// read; this instruction itself moves no value.
+    pub fn launch_stage2(
+        ctx: Context<LaunchStage2>,
+        transition_id: u64,
+    ) -> Result<()> {
+        let source = &ctx.accounts.transition_record;
+        can_launch_stage2(
+            source.state,
+            source.transition_type,
+            ctx.accounts.config.stage,
+            ctx.accounts.treasury_state.backing_threshold_ppm,
+        )?;
+        ctx.accounts.config.stage = STAGE_2;
+        emit!(Stage2Launched {
+            transition_id,
+            commit_index: source.commit_index,
+            executor: ctx.accounts.executor.key(),
+        });
+        Ok(())
+    }
 }
 
 /// Who may open planning, as a pure check (design §4.1, kernel
@@ -3294,6 +3381,37 @@ pub fn can_initialize_treasury(
     Ok(())
 }
 
+/// The `launch_stage2` gate, as a pure check (design §4.2):
+/// Settled state first, then the canonical `treasury.launch.v1`
+/// type, then the stage still being Stage 1, then threshold B set.
+/// Order mirrors [`can_initialize_treasury`]: the general failure
+/// first, the bindings last. The threshold check is the D-2 gate in
+/// executable form — an unset (0) threshold refuses, so an unset B
+/// can never read as "any backing passes". Deliberately no
+/// exact-settle check, as with the init: the launch's effect is a
+/// fixed flag flip, so no declared payload exists for an inexact
+/// settle to diverge from. The BACKING_EVIDENCED attestation itself
+/// is judged at commit time through the launch policy's mandatory
+/// constraints (the CONSTRAINTS bit), not here.
+pub fn can_launch_stage2(
+    state: u8,
+    source_type: [u8; 32],
+    stage: u8,
+    backing_threshold_ppm: u64,
+) -> Result<()> {
+    require!(state == STATE_SETTLED, TreasuryError::BadState);
+    require!(
+        source_type == TREASURY_LAUNCH_TYPE,
+        TreasuryError::LaunchMismatch
+    );
+    require!(stage == STAGE_1, TreasuryError::AlreadyLaunched);
+    require!(
+        backing_threshold_ppm != 0,
+        TreasuryError::ThresholdUnset
+    );
+    Ok(())
+}
+
 /// Event for [`treasury_program::submit_constraint_report`] (design
 /// §4.1): the transition, the reporting Evaluator, and the report as
 /// submitted — the authorization context the design requires on every
@@ -3464,6 +3582,19 @@ pub struct TreasuryInitialized {
     pub treasury_state: Pubkey,
     pub lending_book: Pubkey,
     pub fee_vault: Pubkey,
+    pub executor: Pubkey,
+}
+
+/// Event for [`treasury_program::launch_stage2`] (design §4.2,
+/// §6): the authorizing launch transition (id + commit index —
+/// the authorization context) and the permissionless executor.
+/// The stage flag itself is on Config; the event is the execution
+/// receipt, distinct from the launch transition's own lifecycle
+/// events (emitted by `commit` / `settle`).
+#[event]
+pub struct Stage2Launched {
+    pub transition_id: u64,
+    pub commit_index: u64,
     pub executor: Pubkey,
 }
 
@@ -4713,6 +4844,32 @@ pub struct InitializeTreasury<'info> {
     pub system_program: Program<'info, System>,
 }
 
+/// Accounts for [`treasury_program::launch_stage2`].
+#[derive(Accounts)]
+#[instruction(transition_id: u64)]
+pub struct LaunchStage2<'info> {
+    /// Program configuration PDA — mutated: the stage flag flips
+    /// Stage 1 → Stage 2 here and nowhere else (TreasuryState does
+    /// not duplicate it; no other instruction writes it).
+    #[account(mut, seeds = [b"config"], bump = config.bump)]
+    pub config: Account<'info, Config>,
+    /// Treasury state PDA — read for the backing threshold B
+    /// (D-2): launch refuses while it is unset (0). The account
+    /// must already exist, so `initialize_treasury` necessarily ran
+    /// first; there is no launch before a treasury.
+    #[account(seeds = [b"treasury"], bump = treasury_state.bump)]
+    pub treasury_state: Account<'info, TreasuryState>,
+    /// The Settled `treasury.launch.v1` transition authorizing the
+    /// launch (read-only: no flag is written — the stage flip is
+    /// the one-time guarantee).
+    #[account(seeds = [b"transition", transition_id.to_le_bytes().as_ref()], bump = transition_record.bump)]
+    pub transition_record: Account<'info, TransitionRecord>,
+    /// Permissionless executor (signer; pays no rent — no account is
+    /// created here). The authority is the settled transition, not
+    /// this key.
+    pub executor: Signer<'info>,
+}
+
 /// Accounts for [`treasury_program::set_capacity`].
 #[derive(Accounts)]
 #[instruction(resource_id: u16)]
@@ -4966,6 +5123,22 @@ pub enum TreasuryError {
     /// visibly instead of running with two different "vaults".
     #[msg("FeeVault account does not match the Config fee_vault.")]
     VaultMismatch,
+    /// A stage 2 launch does not match its authorizing transition:
+    /// the source transition's type is not the canonical
+    /// `treasury.launch.v1` type. The launch is never executed on a
+    /// transition of another type.
+    #[msg("Stage 2 launch does not match a settled treasury.launch.v1 transition.")]
+    LaunchMismatch,
+    /// The stage flag is no longer Stage 1: Stage 2 has already
+    /// launched. A second launch, or a replay of the first, changes
+    /// no state.
+    #[msg("Stage 2 is already launched: the stage flag is no longer Stage 1.")]
+    AlreadyLaunched,
+    /// The Stage 2 backing threshold B is unset (0, D-2 open): no
+    /// governed path has set it yet, so the launch cannot complete.
+    /// An unset threshold must never read as "any backing passes".
+    #[msg("Stage 2 backing threshold B is unset (D-2 open): no governed path has set it yet.")]
+    ThresholdUnset,
 }
 
 #[cfg(test)]
@@ -6542,6 +6715,43 @@ mod tests {
         assert!(can_initialize_treasury(STATE_SETTLED, [0; 32], true).is_err());
         // A vault key that does not match Config.fee_vault refuses.
         assert!(can_initialize_treasury(STATE_SETTLED, TREASURY_INIT_TYPE, false).is_err());
+    }
+
+    #[test]
+    fn treasury_launch_type_id_is_sha256_of_domain_tag() {
+        // The canonical type id is recomputed from the string, not
+        // trusted as a literal — the same discipline as the init and
+        // policy type ids. (Cross-checked: this hash function
+        // reproduces the existing POLICY_TRANSITION_TYPE and
+        // TREASURY_INIT_TYPE bytes for their own tags.)
+        let computed =
+            anchor_lang::solana_program::hash::hash(b"treasury.launch.v1").to_bytes();
+        assert_eq!(TREASURY_LAUNCH_TYPE, computed);
+        assert_ne!(TREASURY_LAUNCH_TYPE, TREASURY_INIT_TYPE);
+        assert_ne!(TREASURY_LAUNCH_TYPE, POLICY_TRANSITION_TYPE);
+    }
+
+    #[test]
+    fn treasury_launch_gate_matrix() {
+        // Settled + canonical type + Stage 1 + threshold set: passes.
+        // (The threshold value itself is not judged here — any
+        // nonzero B passes this gate; whether B is met is the
+        // BACKING_EVIDENCED attestation judged at commit.)
+        can_launch_stage2(STATE_SETTLED, TREASURY_LAUNCH_TYPE, STAGE_1, 500_000)
+            .expect("settled launch transition authorizes launch");
+        // Any non-Settled state refuses first, whatever the rest is.
+        assert!(can_launch_stage2(STATE_COMMITTED, TREASURY_LAUNCH_TYPE, STAGE_1, 500_000).is_err());
+        assert!(can_launch_stage2(STATE_PLANNING, TREASURY_LAUNCH_TYPE, STAGE_1, 500_000).is_err());
+        // A settled transition of another type is not a launch source.
+        assert!(can_launch_stage2(STATE_SETTLED, TREASURY_INIT_TYPE, STAGE_1, 500_000).is_err());
+        assert!(can_launch_stage2(STATE_SETTLED, POLICY_TRANSITION_TYPE, STAGE_1, 500_000).is_err());
+        assert!(can_launch_stage2(STATE_SETTLED, [0; 32], STAGE_1, 500_000).is_err());
+        // A stage that is no longer Stage 1 refuses: the flip is the
+        // one-time guarantee, so a second launch changes nothing.
+        assert!(can_launch_stage2(STATE_SETTLED, TREASURY_LAUNCH_TYPE, STAGE_2, 500_000).is_err());
+        // An unset threshold (0, D-2 open) refuses: an unset B must
+        // never read as "any backing passes".
+        assert!(can_launch_stage2(STATE_SETTLED, TREASURY_LAUNCH_TYPE, STAGE_1, 0).is_err());
     }
 
     #[test]

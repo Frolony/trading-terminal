@@ -386,3 +386,26 @@ IDL: instructions 16 → 18 (incl. both exception instructions),
 accounts 8 (no new account type), errors 27 → 31
 (`DuplicateException`, `UnknownException`, `InvalidDisposition`,
 `TooManyExceptions`). Program host tests 39 → 41.
+**This increment adds `launch_stage2` (design §4.2)** — the second
+§4.2 instruction, in the same transition-executed form as the init:
+a Settled `treasury.launch.v1` transition authorizes flipping the
+stage flag on Config from Stage 1 to Stage 2, never a config check
+or a fresh authority signature. The B gate is enforced by the launch
+transition (mandatory BACKING_EVIDENCED constraint report feeding the
+CONSTRAINTS bit at commit; the manifest's observation evidences the
+committed fiat total), not recomputed by the handler, which has no
+fiat total, supply, or price on-chain to compute from; no other
+instruction checks B ad hoc. The handler's own gates are Settled +
+canonical type (`TREASURY_LAUNCH_TYPE` = SHA-256 of
+`treasury.launch.v1`, recomputed from the string in the host tests)
++ stage still Stage 1 + threshold B set (nonzero) — the last is the
+D-2 intended state in executable form: B starts unset at init and no
+governed path sets it yet, so until that path lands a launch
+execution refuses with `ThresholdUnset` rather than reading an unset
+threshold as "any backing passes". No exact-settle requirement (the
+effect is a fixed flag flip) and no execution flag (the flip itself
+is the one-time guarantee: a second launch refuses with
+`AlreadyLaunched`). The executor is permissionless and pays no rent.
+IDL: instructions 26 → 27 (incl. `launch_stage2`), accounts 13 (no
+new account type), errors 38 → 41 (`LaunchMismatch`,
+`AlreadyLaunched`, `ThresholdUnset`). Program host tests 59 → 61.
