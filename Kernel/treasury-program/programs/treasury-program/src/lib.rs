@@ -6,15 +6,26 @@
 //! `commit_fail_mask` is computed on-chain; there is NO digest publisher —
 //! the W3.3 mock's trust root does not survive into this program.
 //!
-//! # Scaffold status (this increment: skeleton + `anchor build` + IDL)
+//! # Scaffold status (this increment: kernel vendoring + predicate proof)
 //!
-//! This file is the skeleton only: one genesis instruction
-//! (`initialize_config`, design §4.1) and the `Config` account (design §3).
-//! The kernel crate is NOT yet vendored in, and no governance / treasury /
-//! distribution instruction exists yet — those land in design order in the
-//! next increments (§4.1 governance first, then §4.2 treasury, then §4.3
-//! distribution). Nothing here is deployed: NO devnet deployment in W4.3,
-//! NO mainnet step exists in W4. No instruction here moves value.
+//! One genesis instruction (`initialize_config`, design §4.1) and the
+//! `Config` account (design §3) exist, and the pristine kernel crate is now
+//! vendored in (`kernel_bridge`): placement C is wired, the launch policy
+//! and config are named constants/functions, and host tests prove the full
+//! lifecycle clears the 13-bit mask and commits — while an over-claim
+//! fails COMPAT and commits nothing. **SBF status: GREEN (2026-10-24).**
+//! D-12 closed this morning: the author's `map_or` revision landed
+//! (`3ef5c412`), Carlos adopted Solana 2.2.20 and pushed the revert
+//! (`f3086ac6`) restoring the original `is_none_or` text byte-for-byte,
+//! and `anchor build` on platform-tools v1.48 / rustc 1.84.1 exits 0 with
+//! the full predicate compiled in (see `treasury-program/README.md`).
+//! This increment is verified and staged, not yet pushed — its push rides
+//! the next BUILD run's stable-head check. No governance / treasury /
+//! distribution instruction exists yet
+//! — those land in design order in the next increments (§4.1 governance
+//! instructions first, then §4.2 treasury, then §4.3 distribution).
+//! Nothing here is deployed: NO devnet deployment in W4.3, NO mainnet step
+//! exists in W4. No instruction here moves value.
 //!
 //! The program id in `declare_id!` is a scaffold placeholder generated for
 //! local build / IDL generation only; its keypair was never committed and
@@ -46,6 +57,11 @@
 use anchor_lang::prelude::*;
 
 declare_id!("FPGSeLBWEiFKdTuqDbJeKhjXeah5H4c3rqsW4Tzn3RAS");
+
+/// Bridge to the pristine kernel crate (design §1.2, §4.1).
+/// See `kernel_bridge.rs` for the launch profile, the evidence-check
+/// placement, and the replay-at-commit state discipline.
+pub mod kernel_bridge;
 
 /// Parts-per-million denominator for all rate constants.
 pub const PPM: u128 = 1_000_000;

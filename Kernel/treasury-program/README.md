@@ -1,9 +1,26 @@
 # treasury-program — own treasury program (W4.3 scaffold)
 
-**Status: SKELETON (2026-10-24).** Anchor toolchain + program scaffold at
-`Kernel/treasury-program/` — its own Anchor project, NOT a member of the
-`Kernel/` Cargo workspace. It consumes the kernel crate by path in a later
-increment; this skeleton does not yet vendor the kernel crate in.
+**Status: KERNEL VENDORED, host-proven; SBF-GREEN on the adopted toolchain (2026-10-24).**
+Anchor project at `Kernel/treasury-program/` — its own Anchor project, NOT
+a member of the `Kernel/` Cargo workspace. The pristine kernel crate is now
+a path dependency (`programs/treasury-program/src/kernel_bridge.rs`):
+launch policy + config as named items, host tests proving the full
+lifecycle clears the 13-bit mask and commits while an over-claim fails
+COMPAT and commits nothing (program tests 9/9).
+
+**D-12, closed 2026-10-24 — read before building.** The SBF blocker is
+gone, by both routes in sequence: (a) the kernel's author revised the two
+`Option::is_none_or` call sites (`kernel/src/kernel.rs:401`, `:537`) to the
+1.79-compatible `map_or(true, f)` form (remote `3ef5c412`, 06:21 CST,
+exactly those two lines); then Carlos adopted Solana 2.2.20 (below) and
+pushed the revert (remote `f3086ac6`, 06:38 CST), restoring the author's
+original `is_none_or` text byte-for-byte (remote blob SHA matches the
+archived pristine crate). Final state: original kernel text + Solana
+2.2.20, `anchor build` exit 0, host clippy clean again (the `map_or` form
+had tripped host clippy 1.99's `unnecessary_map_or` — the revert removes
+that friction too). This vendoring increment is verified and staged;
+its push rides the next BUILD run's stable-head check (remote head moved
+at 06:38, minutes before that run's push window — held, not forced).
 
 **Design:** `files/OWN_IDL_DESIGN.md` (W4.1, validated and revised
 2026-10-24; W4.3 GO given by Carlos 2026-10-24 ~03:39 CST). Placement C: the
@@ -32,7 +49,9 @@ than 2× is a design finding — reported, never tuned away silently. CU
 measurement lands with the instruction families (local-validator harness);
 this skeleton's tests are pure-constant checks only.
 
-**Toolchain:** Anchor 0.31.0, Solana 2.1.21, rustc 1.99.1 (see `~/TOOLS.md`).
+**Toolchain:** Anchor 0.31.0, Solana 2.2.20 (platform-tools v1.48 /
+rustc 1.84.1; 2.1.21 kept at `~/workspace/toolchains/solana-2.1.21/` for
+rollback), rustc 1.99.1 host (see `~/TOOLS.md`).
 The SBF pin set (incl. the vendored `patches/cpufeatures`) is the proven
 W3.3 mock set. This project is self-contained: the patch path is relative,
 so it builds without the W3.3 scratch directories.

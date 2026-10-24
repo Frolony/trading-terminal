@@ -18,6 +18,13 @@ idl-build = ["anchor-lang/idl-build"]
 [dependencies]
 anchor-lang = "=0.31.0"
 
+# Placement C (design §1.2): the pristine kernel crate, compiled into the
+# program (no_std SBF). `default-features = false` selects the crate's
+# no_std + alloc build; the program uses only the no_std-compatible API
+# (Amount::from_raw, never the std-only from_f64/to_f64 conveniences).
+# Path from this crate: programs/treasury-program -> Kernel/kernel.
+coordination-kernel = { path = "../../../kernel", default-features = false }
+
 # Same transitive pins as the W3.3 mock build (SBF cargo 1.79 /
 # edition2024 incompatibility, proven 2026-10-23).
 cpufeatures = "=0.2.17"

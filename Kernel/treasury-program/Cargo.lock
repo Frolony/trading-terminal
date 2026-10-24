@@ -467,6 +467,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7c74b8349d32d297c9134b8c88677813a227df8f779daa29bfc29c183fe3dca6"
 
 [[package]]
+name = "coordination-kernel"
+version = "0.2.0"
+
+[[package]]
 name = "cpufeatures"
 version = "0.2.17"
 dependencies = [
@@ -1734,6 +1738,7 @@ version = "0.1.0"
 dependencies = [
  "anchor-lang",
  "blake3",
+ "coordination-kernel",
  "cpufeatures",
  "indexmap",
  "proc-macro-crate 3.3.0",
