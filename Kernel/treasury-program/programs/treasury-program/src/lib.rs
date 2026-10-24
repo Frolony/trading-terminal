@@ -73,6 +73,20 @@
 //! round's aggregates so the check can read its mean. The TransitionRecord
 //! gains `round_count` (SPACE 110 → 114), starting at 1 — the kernel
 //! starts every transition with one empty round.
+//! This increment adds `submit_constraint_report` (design §4.1) and the
+//! frozen constraint set it reports against: `register_transition` now
+//! takes the frozen set (at most [`MAX_CONSTRAINTS`] distinct ids, each
+//! starting Unavailable — the kernel freezes mandatory ∪ proposer
+//! additions at registration), and an Evaluator reports Pass/Fail
+//! against a member of that set while the transition is Registered or
+//! Planning. A report against an id outside the frozen set is
+//! `UnknownConstraint`, never a silent new constraint. Scaffold-form
+//! note, stated plainly: the caller supplies the frozen set at
+//! registration; when PolicyRecords land, registration will derive the
+//! mandatory part from the transition type's policy and union the
+//! proposer's additions, as the kernel does — the set's shape (frozen
+//! at registration, reported against, never extended) does not change.
+//! The TransitionRecord gains `constraints` (SPACE 114 → 382).
 //! Nothing here is deployed: NO devnet deployment in W4.3, NO mainnet step
 //! exists in W4. No instruction here moves value.
 //!
@@ -313,9 +327,11 @@ pub mod treasury_program {
         observation_id: u64,
         expires_at: i64,
         declared_hash: [u8; 32],
+        constraint_ids: Vec<[u8; 32]>,
     ) -> Result<()> {
         let now = ctx.accounts.clock.unix_timestamp;
         validate_transition_expiry(expires_at, now)?;
+        validate_constraint_ids(&constraint_ids)?;
         let record = &mut ctx.accounts.transition_record;
         record.transition_id = transition_id;
         record.state = STATE_REGISTERED;
@@ -325,6 +341,13 @@ pub mod treasury_program {
         record.planning_deadline = 0;
         record.plan_count = 0;
         record.round_count = 1;
+        record.constraints = constraint_ids
+            .iter()
+            .map(|id| ConstraintEntry {
+                id: *id,
+                status: STATUS_UNAVAILABLE,
+            })
+            .collect();
         record.declared_hash = declared_hash;
         record.bump = ctx.bumps.transition_record;
         Ok(())
@@ -522,6 +545,54 @@ pub mod treasury_program {
         });
         Ok(())
     }
+
+    /// Governance lifecycle (design §4.1): submit a constraint report.
+    ///
+    /// Mirrors the kernel's `report_constraint` in check order:
+    /// Evaluator role first (`Unauthorized` otherwise — the kernel's
+    /// `need(caller, Role::Evaluator)`), then Registered-or-Planning
+    /// state (`BadState` otherwise), then membership in the frozen set
+    /// (`UnknownConstraint` — a report cannot invent a constraint the
+    /// transition was not frozen with). The report overwrites the
+    /// entry's status: an Evaluator may correct a report, and the
+    /// CONSTRAINTS bit at commit judges the final set (every entry
+    /// Pass, and the set non-empty — an empty frozen set can never
+    /// commit, exactly as the kernel's mask computes it). The caller
+    /// binding is structural, as with plans and signals: the
+    /// AgentRecord must match the signer (`AgentMismatch` otherwise).
+    /// No new account is created: reports live on the TransitionRecord
+    /// as the frozen set (design §3), not as standalone accounts —
+    /// so a report is one account write, and commit replay reads the
+    /// set from the same record it replays everything else from.
+    pub fn submit_constraint_report(
+        ctx: Context<SubmitConstraintReport>,
+        transition_id: u64,
+        constraint_id: [u8; 32],
+        status: u8,
+    ) -> Result<()> {
+        let _ = transition_id;
+        let caller_key = ctx.accounts.caller.key();
+        let record = &ctx.accounts.agent_record;
+        require!(
+            record.agent == caller_key,
+            TreasuryError::AgentMismatch
+        );
+        let transition = &mut ctx.accounts.transition_record;
+        can_submit_constraint_report(
+            record.is_evaluator,
+            transition.state,
+            transition.constraints.iter().any(|e| e.id == constraint_id),
+            status,
+        )?;
+        set_constraint_status(&mut transition.constraints, constraint_id, status)?;
+        emit!(ConstraintReported {
+            transition_id: transition.transition_id,
+            evaluator: caller_key,
+            constraint_id,
+            status,
+        });
+        Ok(())
+    }
 }
 
 /// Who may open planning, as a pure check (design §4.1, kernel
@@ -640,6 +711,93 @@ pub fn check_monotone_revision(
         TreasuryError::MonotoneRevision
     );
     Ok(())
+}
+
+/// Constraint status codes, in the kernel's `ConstraintStatus` enum
+/// order (kernel.rs): Pass, Fail, Unavailable. A fresh frozen entry is
+/// Unavailable; only an all-Pass, non-empty set clears the CONSTRAINTS
+/// bit at commit.
+pub const STATUS_PASS: u8 = 0;
+pub const STATUS_FAIL: u8 = 1;
+pub const STATUS_UNAVAILABLE: u8 = 2;
+
+/// Who may submit a constraint report, as a pure check (design §4.1,
+/// kernel `report_constraint`, in the kernel's check order minus the
+/// caller binding, which is structural — PDA seeds plus the
+/// AgentRecord match): the caller must hold the Evaluator role, the
+/// transition must be Registered or Planning, the constraint must be a
+/// member of the frozen set, and the status code must be a real status.
+/// An unknown constraint is refused here, not at commit: the frozen set
+/// is fixed at registration, so a report outside it has no entry to
+/// write and must not be recorded anywhere.
+pub fn can_submit_constraint_report(
+    is_evaluator: bool,
+    state: u8,
+    constraint_known: bool,
+    status: u8,
+) -> Result<()> {
+    require!(is_evaluator, TreasuryError::Unauthorized);
+    require!(
+        state == STATE_REGISTERED || state == STATE_PLANNING,
+        TreasuryError::BadState
+    );
+    require!(
+        constraint_known,
+        TreasuryError::UnknownConstraint
+    );
+    require!(
+        status <= STATUS_UNAVAILABLE,
+        TreasuryError::InvalidConstraintStatus
+    );
+    Ok(())
+}
+
+/// Write one report into a frozen set: the entry must exist (an unknown
+/// id is an error, never an append — the set is frozen), and the status
+/// must be a real status code. Re-reporting overwrites: the CONSTRAINTS
+/// bit judges the final set, so a corrected report replaces, not
+/// appends.
+pub fn set_constraint_status(
+    constraints: &mut [ConstraintEntry],
+    constraint_id: [u8; 32],
+    status: u8,
+) -> Result<()> {
+    require!(
+        status <= STATUS_UNAVAILABLE,
+        TreasuryError::InvalidConstraintStatus
+    );
+    let entry = constraints
+        .iter_mut()
+        .find(|e| e.id == constraint_id)
+        .ok_or(TreasuryError::UnknownConstraint)?;
+    entry.status = status;
+    Ok(())
+}
+
+/// A frozen constraint set must fit the account and the kernel's set
+/// shape: at most [`MAX_CONSTRAINTS`] entries, no id twice (a duplicate
+/// id would be one constraint with two statuses at commit replay).
+pub fn validate_constraint_ids(ids: &[[u8; 32]]) -> Result<()> {
+    require!(ids.len() <= MAX_CONSTRAINTS, TreasuryError::InvalidConstraints);
+    for (i, id) in ids.iter().enumerate() {
+        for other in &ids[..i] {
+            require!(id != other, TreasuryError::InvalidConstraints);
+        }
+    }
+    Ok(())
+}
+
+/// Event for [`treasury_program::submit_constraint_report`] (design
+/// §4.1): the transition, the reporting Evaluator, and the report as
+/// submitted — the authorization context the design requires on every
+/// event. The CONSTRAINTS bit is judged at commit over the final set,
+/// never from this event alone.
+#[event]
+pub struct ConstraintReported {
+    pub transition_id: u64,
+    pub evaluator: Pubkey,
+    pub constraint_id: [u8; 32],
+    pub status: u8,
 }
 
 /// Event for [`treasury_program::submit_signal`] (design §4.1): the
@@ -969,17 +1127,36 @@ pub struct OpenPlanning<'info> {
     pub clock: Sysvar<'info, Clock>,
 }
 
+/// Maximum constraints in a frozen set (design §3: the frozen set is
+/// mandatory ∪ proposer additions, fixed at registration). An
+/// account-size bound, not a kernel rule — the launch policy types
+/// carry at most 4 mandatory constraints (alloc), so 8 carries
+/// headroom for proposer additions, and raising the bound is a SPACE
+/// change, not a policy change.
+pub const MAX_CONSTRAINTS: usize = 8;
+
+/// One entry of a transition's frozen constraint set: the kernel's
+/// `ConstraintId` ([u8; 32]) plus its current status, one of the
+/// `STATUS_*` codes. Every entry starts Unavailable at registration;
+/// `submit_constraint_report` overwrites the status, never the set.
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ConstraintEntry {
+    /// The constraint's id (kernel `ConstraintId`).
+    pub id: [u8; 32],
+    /// Current status: Pass (0), Fail (1), or Unavailable (2).
+    pub status: u8,
+}
+
 /// One kernel transition's on-chain record (design §3 `TransitionRecord`,
 /// first fields).
 ///
 /// Per-transition kernel state lives here, serialized (design §1.2:
 /// load → call → store). This slice carries the manifest inputs, the
-/// recorded proposer, the state, the plan count, and the round count;
-/// the frozen
-/// constraint set, objectives flag, rounds/signals, per-transition
-/// exceptions, reconciled flag, and realized hash are added by the
-/// lifecycle instructions that own them — each field lands with the
-/// instruction that writes it, not before.
+/// recorded proposer, the state, the plan count, the round count, and
+/// the frozen constraint set; the objectives flag, rounds/signals,
+/// per-transition exceptions, reconciled flag, and realized hash are
+/// added by the lifecycle instructions that own them — each field lands
+/// with the instruction that writes it, not before.
 #[account]
 pub struct TransitionRecord {
     /// Caller-chosen id (PDA seed component).
@@ -1002,6 +1179,11 @@ pub struct TransitionRecord {
     /// transition with one empty round, and `advance_round` adds one.
     /// `submit_signal` signals the current round, `round_count - 1`.
     pub round_count: u32,
+    /// The frozen constraint set (design §3): fixed at
+    /// `register_transition`, reported against by
+    /// `submit_constraint_report`, never extended after registration.
+    /// Each entry is 32 (id) + 1 (status) bytes.
+    pub constraints: Vec<ConstraintEntry>,
     /// The transition's declared next hash (commit/commitment anchor).
     pub declared_hash: [u8; 32],
     /// PDA bump for the `["transition", id]` seeds.
@@ -1009,8 +1191,9 @@ pub struct TransitionRecord {
 }
 
 impl TransitionRecord {
-    /// 8 (discriminator) + 8 + 1 + 32 + 8 + 8 + 8 + 4 + 4 + 32 + 1.
-    pub const SPACE: usize = 8 + 8 + 1 + 32 + 8 + 8 + 8 + 4 + 4 + 32 + 1;
+    /// 8 (discriminator) + 8 + 1 + 32 + 8 + 8 + 8 + 4 + 4
+    /// + (4 + 8 × 33) + 32 + 1 = 382.
+    pub const SPACE: usize = 8 + 8 + 1 + 32 + 8 + 8 + 8 + 4 + 4 + 268 + 32 + 1;
 }
 
 /// Maximum claims per plan (design §3: a plan is a capacity-claims
@@ -1127,6 +1310,23 @@ pub struct SubmitSignal<'info> {
     pub system_program: Program<'info, System>,
 }
 
+/// Accounts for [`treasury_program::submit_constraint_report`].
+#[derive(Accounts)]
+#[instruction(transition_id: u64)]
+pub struct SubmitConstraintReport<'info> {
+    /// The reporting agent's record (must exist and be bound to the
+    /// signer; the Evaluator role is the gate enforced here).
+    #[account(seeds = [b"agent", caller.key().as_ref()], bump = agent_record.bump)]
+    pub agent_record: Account<'info, AgentRecord>,
+    /// The transition record to report against (Registered or
+    /// Planning). No new account: the report mutates this record's
+    /// frozen constraint set in place (design §3).
+    #[account(mut, seeds = [b"transition", transition_id.to_le_bytes().as_ref()], bump = transition_record.bump)]
+    pub transition_record: Account<'info, TransitionRecord>,
+    /// The reporting Evaluator (signer; pays no rent here).
+    pub caller: Signer<'info>,
+}
+
 /// One agent's signal in one round of a transition (design §3
 /// `Round / Signal`, per-agent leg).
 ///
@@ -1215,6 +1415,18 @@ pub enum TreasuryError {
     /// toward the mean, never away from it.
     #[msg("Monotone revision violated: re-signal moved away from the previous round's mean.")]
     MonotoneRevision,
+    /// The constraint id is not a member of the transition's frozen
+    /// set — a report cannot invent a constraint (design §4.1).
+    #[msg("Unknown constraint: not a member of the transition's frozen set.")]
+    UnknownConstraint,
+    /// The status code is not a kernel `ConstraintStatus` (0 = Pass,
+    /// 1 = Fail, 2 = Unavailable).
+    #[msg("Invalid constraint status: 0 = Pass, 1 = Fail, 2 = Unavailable.")]
+    InvalidConstraintStatus,
+    /// The frozen set breaks its shape: more than MAX_CONSTRAINTS
+    /// entries, or a constraint id supplied twice.
+    #[msg("Invalid constraint set: too many, or a constraint id twice.")]
+    InvalidConstraints,
 }
 
 #[cfg(test)]
@@ -1278,10 +1490,65 @@ mod tests {
     #[test]
     fn observation_and_transition_spaces_match_fields() {
         assert_eq!(Observation::SPACE, 105);
-        // 114: the proposer key (32) joined with open_planning, the
-        // plan count (4) with submit_plan, and the round count (4)
-        // with submit_signal.
-        assert_eq!(TransitionRecord::SPACE, 114);
+        // 382: the proposer key (32) joined with open_planning, the
+        // plan count (4) with submit_plan, the round count (4) with
+        // submit_signal, and the frozen constraint set (4 + 8 x 33)
+        // with submit_constraint_report.
+        assert_eq!(TransitionRecord::SPACE, 382);
+        assert_eq!(MAX_CONSTRAINTS, 8);
+        assert_eq!(STATUS_PASS, 0);
+        assert_eq!(STATUS_FAIL, 1);
+        assert_eq!(STATUS_UNAVAILABLE, 2);
+    }
+
+    #[test]
+    fn submit_constraint_report_gate_matrix() {
+        // Caller binding is structural (AgentRecord match in the
+        // handler), so the helper takes no caller argument.
+        let base = |evaluator: bool, state: u8, known: bool, status: u8| {
+            can_submit_constraint_report(evaluator, state, known, status)
+        };
+        // The clean cases pass: Evaluator, Registered or Planning,
+        // known constraint, real status.
+        assert!(base(true, STATE_REGISTERED, true, STATUS_PASS).is_ok());
+        assert!(base(true, STATE_PLANNING, true, STATUS_FAIL).is_ok());
+        // A non-Evaluator is refused first, whatever else holds.
+        assert!(base(false, STATE_REGISTERED, true, STATUS_PASS).is_err());
+        // Wrong state refuses (Committed, Settled, Rejected, Expired).
+        assert!(base(true, STATE_COMMITTED, true, STATUS_PASS).is_err());
+        assert!(base(true, STATE_SETTLED, true, STATUS_PASS).is_err());
+        // An id outside the frozen set is unknown, never recorded.
+        assert!(base(true, STATE_REGISTERED, false, STATUS_PASS).is_err());
+        // A status code outside 0..=2 is not a status.
+        assert!(base(true, STATE_REGISTERED, true, 3).is_err());
+    }
+
+    #[test]
+    fn constraint_set_validation_and_reporting() {
+        // Empty and distinct sets pass; the bound is 8.
+        assert!(validate_constraint_ids(&[]).is_ok());
+        assert!(validate_constraint_ids(&[[1u8; 32], [2u8; 32]]).is_ok());
+        assert!(validate_constraint_ids(&[[1u8; 32], [1u8; 32]]).is_err());
+        let too_many: Vec<[u8; 32]> = (0..9).map(|b| [b; 32]).collect();
+        assert!(validate_constraint_ids(&too_many).is_err());
+        // Reporting overwrites the entry's status in place.
+        let mut set = vec![
+            ConstraintEntry { id: [1u8; 32], status: STATUS_UNAVAILABLE },
+            ConstraintEntry { id: [2u8; 32], status: STATUS_UNAVAILABLE },
+        ];
+        set_constraint_status(&mut set, [1u8; 32], STATUS_PASS).expect("known id reports");
+        assert_eq!(set[0].status, STATUS_PASS);
+        assert_eq!(set[1].status, STATUS_UNAVAILABLE);
+        // Re-reporting corrects; the set never grows.
+        set_constraint_status(&mut set, [1u8; 32], STATUS_FAIL).expect("re-report lands");
+        assert_eq!(set[0].status, STATUS_FAIL);
+        assert_eq!(set.len(), 2);
+        // An unknown id reports nothing and changes nothing.
+        assert!(set_constraint_status(&mut set, [9u8; 32], STATUS_PASS).is_err());
+        assert_eq!(set[0].status, STATUS_FAIL);
+        // A bad status code is refused before any write.
+        assert!(set_constraint_status(&mut set, [1u8; 32], 3).is_err());
+        assert_eq!(set[0].status, STATUS_FAIL);
     }
 
     #[test]
@@ -1381,6 +1648,10 @@ mod tests {
             planning_deadline: 0,
             plan_count: 0,
             round_count: 1,
+            constraints: vec![ConstraintEntry {
+                id: [5u8; 32],
+                status: STATUS_UNAVAILABLE,
+            }],
             declared_hash: [9u8; 32],
             bump: 255,
         };
@@ -1389,6 +1660,8 @@ mod tests {
         assert_eq!(record.planning_deadline, 0);
         assert_eq!(record.plan_count, 0);
         assert_eq!(record.round_count, 1);
+        assert_eq!(record.constraints.len(), 1);
+        assert_eq!(record.constraints[0].status, STATUS_UNAVAILABLE);
         assert_eq!(record.observation_id, 3);
     }
 

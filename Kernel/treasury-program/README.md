@@ -43,7 +43,17 @@ with one empty round; the monotone-revision check is pure-helper
 tested now and wires on-chain with `advance_round`, which snapshots
 the previous round's mean — until then only round 0 is reachable,
 where the kernel's monotone branch is vacuous).
-Constraint reports and the remaining lifecycle instructions are next.
++ `submit_constraint_report` (Evaluator-only, Registered-or-Planning,
+report against a member of the frozen set — an outside id is
+`UnknownConstraint`, never a new constraint; reports live on the
+TransitionRecord, not standalone accounts, and overwrite the entry's
+status). `register_transition` now takes the frozen set (≤ 8 distinct
+ids, all Unavailable at registration; TransitionRecord SPACE 114 →
+382). Scaffold-form note: the caller supplies the frozen set at
+registration; when PolicyRecords land, registration derives the
+mandatory part from the transition type's policy and unions the
+proposer's additions, as the kernel does.
+`submit_objectives_check` and the remaining lifecycle instructions are next.
 
 **Design:** `files/OWN_IDL_DESIGN.md` (W4.1, validated and revised
 2026-10-24; W4.3 GO given by Carlos 2026-10-24 ~03:39 CST). Placement C: the
