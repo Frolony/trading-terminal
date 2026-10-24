@@ -219,7 +219,7 @@ the brief outline flash marks the landing panel without touching its copy.*/
 @keyframes execflash{0%{box-shadow:0 0 0 4px rgba(66,214,160,.35)}100%{box-shadow:0 0 0 0 transparent}}
 @media(prefers-reduced-motion:reduce){#execPathPanel.execflash{animation:none}}
 </style></head><body><div class="app">
-<header class="top"><div class="brand"><div class="mark">T</div><div><h1>TURNPOOL</h1><small>Solana market intelligence</small></div></div><div class="topright"><div class="switchrow viewtabs" role="tablist" aria-label="Terminal views"><button type="button" id="tabTerminal" class="active mode" role="tab" aria-selected="true">Terminal</button><button type="button" id="tabDashboard" class="mode" role="tab" aria-selected="false">Dashboard</button></div><span class="pill">NETWORK&nbsp; / &nbsp;SOLANA</span><span class="status"><i class="dot"></i><span id="feedStatus" data-testid="feed-badge">CONNECTING DATA</span></span><span class="wwrap"><button id="walletBtn" class="walletbtn" type="button">Connect Wallet</button><span id="syncDot" style="display:none;width:8px;height:8px;border-radius:50%;background:#888;vertical-align:middle;margin-left:2px" title="Sync"></span><div class="wdd" id="walletDd" hidden><div class="eyebrow" id="walletDdName" style="margin-top:8px">Wallet</div><div class="waddr" id="walletDdAddr"></div><div class="walletrow"><span>Sync</span><strong id="walletSyncLine">Sync off</strong></div><div class="walletrow"><span>SOL balance</span><strong id="walletSol">—</strong></div><div class="walletrow"><span>USDC balance</span><strong id="walletUsdc">—</strong></div><div class="walletrow"><span>USDT balance</span><strong id="walletUsdt">—</strong></div><div class="wrowbtn"><button type="button" id="walletCopy">Copy address</button><button type="button" id="walletRetryBal">Retry balances</button></div><div class="wrowbtn"><button type="button" id="walletDisconnect" class="danger">Disconnect</button></div></div></span><span class="pill">PAPER MODE</span><button id="howItWorksLink" class="howlink" type="button" data-testid="how-it-works-link" title="How the terminal handles orders — simulated paper trading and wallet-signed swaps">How this works</button><span class="wwrap"><button id="layoutBtn" class="iconbtn" type="button" aria-label="Open layout" title="Layout">▦</button><div class="lpop" id="layoutPop" hidden role="dialog" aria-label="Layout"><div class="lpop-head"><strong>Layout</strong><button class="wclose" id="layoutPopClose" type="button" aria-label="Close layout">×</button></div><div class="lpop-note">Layouts apply to the trading desk (main page). Drag any panel by its header to move it anywhere — the arrows reorder panels within each column.</div><div id="layoutPanelList"></div><div class="lpop-hidden" id="layoutHiddenNote" hidden></div><div class="lpop-sec">Workspaces</div><div id="layoutWsList"></div><div class="searchrow" style="margin-top:8px"><input id="layoutWsName" maxlength="40" placeholder="Name this layout" aria-label="Workspace name" autocomplete="off" spellcheck="false"><button id="layoutWsSave" type="button">Save</button></div></div></span><button id="resetUiBtn" class="resetuibtn" type="button" data-testid="reset-ui-btn" aria-label="Reset UI layout" title="Reset UI layout — restore every panel to its home position">↺ Reset UI</button><button id="settingsBtn" class="iconbtn" type="button" aria-label="Open settings" title="Settings">⚙</button></div></header>
+<header class="top"><div class="brand"><div class="mark">T</div><div><h1>TURNPOOL</h1><small>Solana market intelligence</small></div></div><div class="topright"><div class="switchrow viewtabs" role="tablist" aria-label="Terminal views"><button type="button" id="tabTerminal" class="active mode" role="tab" aria-selected="true">Terminal</button><button type="button" id="tabDashboard" class="mode" role="tab" aria-selected="false">Dashboard</button></div><span class="pill">NETWORK&nbsp; / &nbsp;SOLANA</span><span class="status"><i class="dot"></i><span id="feedStatus" data-testid="feed-badge">CONNECTING DATA</span></span><span class="wwrap"><button id="walletBtn" class="walletbtn" type="button">Connect Wallet</button><span id="syncDot" style="display:none;width:8px;height:8px;border-radius:50%;background:#888;vertical-align:middle;margin-left:2px" title="Sync"></span><div class="wdd" id="walletDd" hidden><div class="eyebrow" id="walletDdName" style="margin-top:8px">Wallet</div><div class="waddr" id="walletDdAddr"></div><div class="walletrow"><span>Sync</span><strong id="walletSyncLine">Sync off</strong></div><div class="walletrow"><span>SOL balance</span><strong id="walletSol">—</strong></div><div class="walletrow"><span>USDC balance</span><strong id="walletUsdc">—</strong></div><div class="walletrow"><span>USDT balance</span><strong id="walletUsdt">—</strong></div><div class="wrowbtn"><button type="button" id="walletCopy">Copy address</button><button type="button" id="walletRetryBal">Retry balances</button></div><div id="walletRoster"></div><div class="wrowbtn"><button type="button" id="walletAddBtn">Connect another wallet</button><button type="button" id="walletDisconnect" class="danger">Disconnect active wallet</button></div></div></span><span class="pill">PAPER MODE</span><button id="howItWorksLink" class="howlink" type="button" data-testid="how-it-works-link" title="How the terminal handles orders — simulated paper trading and wallet-signed swaps">How this works</button><span class="wwrap"><button id="layoutBtn" class="iconbtn" type="button" aria-label="Open layout" title="Layout">▦</button><div class="lpop" id="layoutPop" hidden role="dialog" aria-label="Layout"><div class="lpop-head"><strong>Layout</strong><button class="wclose" id="layoutPopClose" type="button" aria-label="Close layout">×</button></div><div class="lpop-note">Layouts apply to the trading desk (main page). Drag any panel by its header to move it anywhere — the arrows reorder panels within each column.</div><div id="layoutPanelList"></div><div class="lpop-hidden" id="layoutHiddenNote" hidden></div><div class="lpop-sec">Workspaces</div><div id="layoutWsList"></div><div class="searchrow" style="margin-top:8px"><input id="layoutWsName" maxlength="40" placeholder="Name this layout" aria-label="Workspace name" autocomplete="off" spellcheck="false"><button id="layoutWsSave" type="button">Save</button></div></div></span><button id="resetUiBtn" class="resetuibtn" type="button" data-testid="reset-ui-btn" aria-label="Reset UI layout" title="Reset UI layout — restore every panel to its home position">↺ Reset UI</button><button id="settingsBtn" class="iconbtn" type="button" aria-label="Open settings" title="Settings">⚙</button></div></header>
 <div class="stats" data-layout-root data-root-key="stats">
 <div class="stat" data-panel="solstat" data-drag-handle><div class="eyebrow">SOL / USD</div><div class="big" id="statPrice">$—</div><div class="sub" id="statPriceSub">Live market feed</div></div>
 <div class="stat" data-panel="chgstat" data-drag-handle><div class="eyebrow">24H CHANGE</div><div class="big" id="statChange" data-testid="hero-chg-24h">—</div><div class="sub">Solana spot market</div></div>
@@ -2918,7 +2918,7 @@ const WADAPTER_CDN='https://esm.sh/@solana/wallet-adapter-wallets@0.19';
 const WSTANDARD_CDN='https://esm.sh/@wallet-standard/app@1.1.1'; // N4.9: same version already in the frontend tree (transitive dep of wallet-adapter); lazy-loaded with the adapters, failure falls back to adapters-only
 const WALLET_USDC_MINT='EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'; // frontend/src/solana/tokens.ts
 const WALLET_USDT_MINT='Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB'; // frontend/src/solana/tokens.ts
-const wallet={connected:false,publicKey:null,name:null,icon:null,adapter:null,balances:{sol:null,usdc:null,usdt:null},balErr:{},balLoading:false,_adapters:null,_connecting:false};
+const wallet={connected:false,publicKey:null,name:null,icon:null,adapter:null,balances:{sol:null,usdc:null,usdt:null},balErr:{},balLoading:false,_adapters:null,_connecting:false,roster:[]};
 let ticketMode='paper'; // N4.3: 'live' unlocks only via LIVE_TRADING_ENABLED (human-flipped after N4.2 acceptance + §8.4)
 window.__walletState={connected:false,publicKey:null,balances:null}; // read-only exposure for the ticket
 function truncateAddr(a){if(!a||a.length<8)return a||'—';return a.slice(0,4)+'…'+a.slice(-4);}
@@ -3025,8 +3025,11 @@ function connectErrorCopy(name,cls){const n=name||'Wallet';if(cls==='no-account'
 function paintWalletModal(){
   const body=$('walletModalBody');
   const c=walletModalRows();
-  let html=c.installed.map(a=>walletRowHtml(a,'installed')).join('')+c.installable.map(a=>walletRowHtml(a,'install')).join('');
-  if(!c.installed.length&&!c.installable.length)html='<div class="wnote">No supported wallets found.</div>';
+  const connectable=c.installed.filter(a=>!walletRosterHasAdapter(a));
+  let html='';
+  if(wallet.roster.length)html+='<div class="wroster-head">Connected wallets — one is active; the header, ticket and sync follow the active wallet.</div>'+wallet.roster.map(walletRosterRowHtml).join('');
+  html+=connectable.map(a=>walletRowHtml(a,'installed')).join('')+c.installable.map(a=>walletRowHtml(a,'install')).join('');
+  if(!connectable.length&&!c.installable.length&&!wallet.roster.length)html='<div class="wnote">No supported wallets found.</div>';
   html+='<div class="wnote">Only wallets detected in this browser can connect — any Wallet Standard wallet, plus Phantom and Solflare.<br>Connecting is read-only for trading — the terminal signs only the sync login challenge (never a transaction) when you connect.</div>';
   if(wallet._lastConnectError)html='<div class="werr">'+esc(wallet._lastConnectError.msg)+'</div>'+html;
   body.innerHTML=html;
@@ -3068,8 +3071,58 @@ function renderWalletDd(){
   set('walletUsdc',wallet.balances.usdc,'USDC',wallet.balErr.usdc);
   set('walletUsdt',wallet.balances.usdt,'USDT',wallet.balErr.usdt);
   paintWalletSync(); // N2.5: the menu's only repaint path also repaints sync — no repaint can leave a stale Sync line behind
+  renderWalletRoster();
+}
+/* N2.4 (2026-10-24): multi-wallet sessions. The roster holds every
+   connected wallet (adapter + standard shim alike) in memory only — nothing
+   about a second wallet is persisted, matching the N2.2 memory-only rule.
+   Exactly one wallet is ACTIVE: wallet.* (connected/publicKey/name/adapter/
+   balances) mirrors it, so the header pill, the ticket, and sync binding
+   all follow the active wallet with no other call-site changes. A background
+   wallet stays connected in its extension; only the active wallet syncs. */
+function walletRosterFind(pk){if(!pk)return null;for(const e of wallet.roster){if(e.pubkey===pk)return e;}return null;}
+function walletRosterHasAdapter(a){if(!a)return false;for(const e of wallet.roster){if(e.adapter===a)return true;}return false;}
+function walletRosterSyncShort(entry){
+  if(wallet.publicKey!==entry.pubkey)return 'Sync off';
+  if(syncState.status==='synced')return 'Sync on';
+  if(syncState.status==='syncing')return 'Sync — signing in…';
+  if(syncState.status==='offline')return 'Sync failed';
+  return 'Sync off';
+}
+function walletRosterRowHtml(entry){
+  const active=wallet.publicKey===entry.pubkey;
+  const btn=active?'<span class="wactive">Active</span>':'<button type="button" data-roster-switch="'+esc(entry.pubkey)+'">Switch to active</button>';
+  return '<div class="wroster-row"><span class="wname">'+esc(entry.name||'Wallet')+'<small>'+esc(truncateAddr(entry.pubkey))+' · '+walletRosterSyncShort(entry)+'</small></span>'+btn+'<button type="button" data-roster-disconnect="'+esc(entry.pubkey)+'">Disconnect</button></div>';
+}
+function renderWalletRoster(){
+  const el=$('walletRoster');if(!el)return;
+  if(!wallet.connected||!wallet.roster.length){el.innerHTML='';return;}
+  el.innerHTML='<div class="wroster-head">Wallets</div>'+wallet.roster.map(walletRosterRowHtml).join('');
+}
+function setWalletActive(pk,announce){
+  if(!pk||wallet.publicKey===pk)return false;
+  const entry=walletRosterFind(pk);if(!entry)return false;
+  const out=walletRosterFind(wallet.publicKey);
+  if(out){out.balances=wallet.balances;out.balErr=wallet.balErr;}
+  try{syncClear();}catch(e){}
+  wallet.connected=true;wallet.publicKey=pk;wallet.name=entry.name;wallet.icon=entry.icon;wallet.adapter=entry.adapter;
+  wallet.balances=entry.balances||{sol:null,usdc:null,usdt:null};wallet.balErr=entry.balErr||{};wallet.balLoading=false;
+  window.__walletAddress=pk;
+  window.__walletState={connected:true,publicKey:pk,name:entry.name,balances:null};
+  const b=$('walletBtn');if(b){b.textContent=truncateAddr(pk);b.classList.add('connected');}
+  $('walletDdName').textContent=entry.name||'Wallet';
+  $('walletDdAddr').textContent=pk;
+  renderWalletDd();
+  $('ticketNote').textContent='Wallet '+truncateAddr(pk)+' connected · paper mode — no real orders or funds';
+  try{document.dispatchEvent(new CustomEvent('walletchange',{detail:{connected:true,publicKey:pk}}));}catch(e){}
+  if(announce!==false)toast('Active wallet switched to '+truncateAddr(pk)+' — sync sign-in runs for this wallet.');
+  refreshWalletBalances();
+  return true;
 }
 function setWalletConnected(a,pk){
+  const existing=walletRosterFind(pk);
+  if(existing){existing.adapter=a;existing.name=a.name;existing.icon=a.icon;if(wallet.publicKey!==pk)setWalletActive(pk);return;}
+  wallet.roster.push({adapter:a,name:a.name,icon:a.icon,pubkey:pk,balances:{sol:null,usdc:null,usdt:null},balErr:{}});
   wallet.connected=true;wallet.publicKey=pk;wallet.name=a.name;wallet.icon=a.icon;wallet.adapter=a;
   wallet.balances={sol:null,usdc:null,usdt:null};wallet.balErr={};
   window.__walletAddress=pk; // N2.2/N7.3 identity hook — memory-only, never persisted
@@ -3078,12 +3131,13 @@ function setWalletConnected(a,pk){
   $('walletDdName').textContent=a.name||'Wallet';
   $('walletDdAddr').textContent=pk;
   renderWalletDd();
+  renderWalletRoster();
   paintWalletSync(); // N2.5: anchor the menu Sync line to live syncState at connect
   $('ticketNote').textContent='Wallet '+truncateAddr(pk)+' connected · paper mode — no real orders or funds';
   try{document.dispatchEvent(new CustomEvent('walletchange',{detail:{connected:true,publicKey:pk}}));}catch(e){}
 }
 async function connectWallet(a){
-  if(wallet._connecting||wallet.connected)return;
+  if(wallet._connecting)return; // N2.4: a connected first wallet never blocks connecting a second; setWalletConnected dedupes by pubkey
   wallet._connecting=true;wallet._lastConnectError=null;
   try{
     await a.connect();
@@ -3108,17 +3162,40 @@ async function refreshWalletBalances(){
     getSplBalance(pk,WALLET_USDT_MINT).catch(()=>mark('usdt'))
   ]);
   if(!wallet.connected||wallet.publicKey!==pk){wallet.balLoading=false;return;} // disconnected mid-flight
-  wallet.balances={sol:results[0],usdc:results[1],usdt:results[2]};wallet.balLoading=false;
+  wallet.balances={sol:results[0],usdc:results[1],usdt:results[2]};wallet.balLoading=false;const entry=walletRosterFind(pk);if(entry){entry.balances=wallet.balances;entry.balErr=wallet.balErr;}
   window.__walletState.balances={sol:results[0],usdc:results[1],usdt:results[2]};
   renderWalletDd();
 }
-async function disconnectWallet(){
-  const a=wallet.adapter;
+async function disconnectWallet(pk){
+  const targetPk=pk||wallet.publicKey;
+  if(!targetPk)return;
+  const entry=walletRosterFind(targetPk);
+  if(!entry)return;
+  if(targetPk!==wallet.publicKey){
+    wallet.roster=wallet.roster.filter(e=>e.pubkey!==targetPk);
+    try{await entry.adapter.disconnect();}catch(e){}
+    renderWalletRoster();
+    try{if(!$('walletModal').hidden)paintWalletModal();}catch(e){}
+    toast((entry.name||'Wallet')+' disconnected — the active wallet is unchanged.');
+    return;
+  }
+  const a=entry.adapter;
+  wallet.roster=wallet.roster.filter(e=>e.pubkey!==targetPk);
+  try{await a.disconnect();}catch(e){}
+  if(wallet.roster.length){
+    const next=wallet.roster[0];
+    $('walletDd').hidden=true;
+    setWalletActive(next.pubkey,false);
+    try{if(!$('walletModal').hidden)paintWalletModal();}catch(e){}
+    toast((entry.name||'Wallet')+' disconnected · '+(next.name||'Wallet')+' is now the active wallet.');
+    return;
+  }
   wallet.connected=false;wallet.publicKey=null;wallet.name=null;wallet.icon=null;wallet.adapter=null;
   wallet.balances={sol:null,usdc:null,usdt:null};wallet.balErr={};wallet.balLoading=false;
   try{delete window.__walletAddress;}catch(e){window.__walletAddress=null;}
   window.__walletState={connected:false,publicKey:null,balances:null};
-  if(a){try{await a.disconnect();}catch(e){}}
+  /* N2.4: the adapter was already disconnected above (all three paths
+     disconnect before reaching this tail) — no second disconnect here. */
   const b=$('walletBtn');b.textContent='Connect Wallet';b.classList.remove('connected');
   $('walletDd').hidden=true;
   $('ticketNote').textContent='No wallet connected · no real orders or funds';
@@ -3147,11 +3224,22 @@ function bindWalletUi(){
   document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!modal.hidden)closeWalletModal();});
   document.addEventListener('click',e=>{const dd=$('walletDd');if(!dd.hidden&&!e.target.closest('.wwrap'))dd.hidden=true;});
   body.addEventListener('click',e=>{
+    const sw=e.target.closest?e.target.closest('[data-roster-switch]'):null;
+    if(sw){setWalletActive(sw.dataset.rosterSwitch);closeWalletModal();return;}
+    const dc=e.target.closest?e.target.closest('[data-roster-disconnect]'):null;
+    if(dc){disconnectWallet(dc.dataset.rosterDisconnect).then(()=>{try{if(!$('walletModal').hidden)paintWalletModal();}catch(_){}});return;}
     const rb=e.target.closest?e.target.closest('[data-wallet]'):null;
     if(rb){const a=(wallet._connectables&&wallet._connectables[rb.dataset.wallet])||(wallet._adapters||[]).find(x=>x.name===rb.dataset.wallet);if(a){connectWallet(a);return;}}
     if(e.target.closest&&e.target.closest('#walletLibRetry')){wallet._adapters=null;wallet._stdApi=null;wallet._stdList=[];openWalletModal();}
   });
   $('walletDisconnect').onclick=()=>disconnectWallet();
+  $('walletAddBtn').onclick=()=>openWalletModal();
+  $('walletDd').addEventListener('click',e=>{
+    const sw=e.target.closest?e.target.closest('[data-roster-switch]'):null;
+    if(sw){setWalletActive(sw.dataset.rosterSwitch);return;}
+    const dc=e.target.closest?e.target.closest('[data-roster-disconnect]'):null;
+    if(dc){disconnectWallet(dc.dataset.rosterDisconnect);return;}
+  });
   $('walletCopy').onclick=()=>{const pk=wallet.publicKey;if(!pk)return;if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(pk).then(()=>toast('Address copied.'),()=>toast('Copy failed — select the address manually.'));}else toast('Copy not available in this browser.');};
   $('walletRetryBal').onclick=()=>refreshWalletBalances();
   $('paperModeBtn').onclick=()=>setTicketMode('paper');
