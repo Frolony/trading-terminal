@@ -881,18 +881,27 @@ function slipSave(bps){if(!Number.isInteger(bps)||bps<SLIP_MIN||bps>SLIP_MAX)ret
    edit survives reload rather than reverting to the default as the pack's test 6
    (written before the shared store existed) describes. */
 const SETTINGS_KEY='gecko-terminal:settings-v1';
-const SETTINGS_VERSION=1;
-const DEFAULT_SETTINGS=Object.freeze({version:SETTINGS_VERSION,theme:'dark',density:'comfortable',defaultPair:'SOL',defaultOrderSize:100,defaultSlippageBps:50,quoteCurrency:'USD'});
+const SETTINGS_VERSION=2;
+const DEFAULT_SETTINGS=Object.freeze({version:SETTINGS_VERSION,theme:'dark',density:'comfortable',defaultPair:'SOL',defaultOrderSize:100,defaultOrderSizeCurrency:'USD',defaultSlippageBps:50,quoteCurrency:'USD'});
 function loadSettings(){
   let parsed={};
   try{parsed=JSON.parse(localStorage.getItem(SETTINGS_KEY)||'{}')||{};}catch(_){parsed={};}
-  if(!parsed||parsed.version!==SETTINGS_VERSION)parsed={};
+  const wasV1=parsed&&parsed.version===1; // N7.6: v1 stores migrate; anything else unparseable resets
+  if(!parsed||(parsed.version!==SETTINGS_VERSION&&!wasV1))parsed={};
   const s=Object.assign({},DEFAULT_SETTINGS,parsed);
   s.version=SETTINGS_VERSION;
   if(s.theme!=='dark'&&s.theme!=='light')s.theme='dark';
   if(s.density!=='comfortable'&&s.density!=='compact')s.density='comfortable';
   if(s.quoteCurrency!=='USD'&&s.quoteCurrency!=='SOL')s.quoteCurrency='USD';
   if(typeof s.defaultOrderSize!=='number'||!(s.defaultOrderSize>0))s.defaultOrderSize=100;
+  if(wasV1&&typeof parsed.defaultOrderSizeCurrency!=='string'){
+    /* N7.6 (A40) migration: v1 stored the raw number and always DISPLAYED it with the
+       stored quoteCurrency suffix — so the evidence-consistent unit is the stored
+       currency. (A v1 number typed under a different currency was already ambiguous;
+       no better evidence exists.) */
+    s.defaultOrderSizeCurrency=s.quoteCurrency;
+  }
+  if(s.defaultOrderSizeCurrency!=='USD'&&s.defaultOrderSizeCurrency!=='SOL')s.defaultOrderSizeCurrency='USD';
   const dp=slipValidate(s.defaultSlippageBps);
   s.defaultSlippageBps=dp.ok?dp.bps:50;
   s.defaultPair=(typeof s.defaultPair==='string'&&/^[A-Za-z0-9]{1,20}$/.test(s.defaultPair.trim()))?s.defaultPair.trim().toUpperCase():'SOL';
@@ -929,6 +938,31 @@ function healSizeInput(){ // A33: self-heal — if the held value carries more p
     if(dec>2)el.value=(Math.round(n*100)/100).toFixed(2);
   }
 }
+/*__N76_SIZEUNIT_PURE_START__*/
+/* N7.6 (A40, 2026-10-23): unit-aware stored default order size. The v1 store kept a raw
+   number displayed with the current quote-currency suffix — switching units silently
+   rescales the size after a reload (250 USD -> "250 SOL", ~100x effective size). The
+   store now carries defaultOrderSizeCurrency; quote-currency switches convert the
+   stored amount at the live rate (same path as the in-session ticket conversion), and
+   every fill goes through the same conversion, so in-session and post-reload agree.
+   Pure: only needs `price`, `settings`, `$`, `fillSizeInput`, `document` from the page. */
+function roundSizeForCurrency(v,currency){return currency==='SOL'?Number(v.toPrecision(6)):Math.round(v*100)/100;} // display precision per currency
+function usdPerSizeUnit(currency){return currency==='SOL'&&price>0?price:1;} // USD value of one unit of the given currency (1 when the live price is unavailable)
+function sizeToUsd(amount,currency){if(currency==='SOL'&&price<=0)return null;return amount*usdPerSizeUnit(currency);} // stored amount -> USD; null when the live price is needed but unavailable
+function fillDefaultSizeInput(){ // fill #orderAmount from the unit-aware stored default; false when the live price is needed but not yet available (boot defers)
+  const el=$('orderAmount');if(!el)return false;
+  const usd=sizeToUsd(settings.defaultOrderSize,settings.defaultOrderSizeCurrency);
+  if(usd==null||!Number.isFinite(usd))return false;
+  fillSizeInput(usd);
+  return true;
+}
+function defaultSizeDisplay(){ // stored default rendered in the current quote-currency unit for the settings drawer
+  const cur=settings.quoteCurrency,usd=sizeToUsd(settings.defaultOrderSize,settings.defaultOrderSizeCurrency);
+  if(usd==null||!Number.isFinite(usd)||(cur==='SOL'&&price<=0))return{val:String(settings.defaultOrderSize),unit:settings.defaultOrderSizeCurrency}; // price down: show as stored, honestly
+  return{val:String(roundSizeForCurrency(usd/usdPerSizeUnit(cur),cur)),unit:cur};
+}
+/*__N76_SIZEUNIT_PURE_END__*/
+let bootSizePending=false; // N7.6: boot-time default-size fill deferred until the first live price arrives
 function syncMetaTheme(){const tc=document.querySelector('meta[name="theme-color"]');if(tc)tc.setAttribute('content',settings.theme==='light'?'#f7f8fa':'#0b0d12');const cs=document.querySelector('meta[name="color-scheme"]');if(cs)cs.setAttribute('content',settings.theme);}
 function applySettingsVisual(){ // re-render every price surface; never touches fills, orders, or the paper account
   document.documentElement.dataset.theme=settings.theme;
@@ -946,10 +980,18 @@ function commitSetting(key,val,opts){
   else if(key==='quoteCurrency'){
     if(val!=='USD'&&val!=='SOL')return;
     const usdBefore=ticketSizeUsd(); // read under the OLD unit before switching
+    const storedUsd=sizeToUsd(settings.defaultOrderSize,settings.defaultOrderSizeCurrency); // stored notional at the live rate
     settings.quoteCurrency=val;
+    if(storedUsd!=null&&Number.isFinite(storedUsd)&&(val==='USD'||price>0)){
+      /* N7.6 (A40): convert the stored default into the new unit at the same live rate as
+         the ticket conversion, so in-session and post-reload agree. When the feed is down
+         (no live price) the stored value is left untouched — never silently rescaled. */
+      settings.defaultOrderSize=roundSizeForCurrency(storedUsd/usdPerSizeUnit(val),val);
+      settings.defaultOrderSizeCurrency=val;
+    }
     fillSizeInput(usdBefore); // keep the same notional across the unit switch
   }
-  else if(key==='defaultOrderSize'){const n=Number(val);if(!Number.isFinite(n)||n<=0){toast('Default order size must be a number above zero.');paintSettingsDrawer();return;}settings.defaultOrderSize=n;}
+  else if(key==='defaultOrderSize'){const n=Number(val);if(!Number.isFinite(n)||n<=0){toast('Default order size must be a number above zero.');paintSettingsDrawer();return;}settings.defaultOrderSize=n;settings.defaultOrderSizeCurrency=settings.quoteCurrency;} // N7.6: the typed value is in the drawer's displayed unit
   else if(key==='defaultSlippageBps'){
     const p=slipValidate(val);
     if(!p.ok){toast(p.error);paintSettingsDrawer();return;}
@@ -986,11 +1028,12 @@ function segHtml(key,options,label){
 }
 function paintSettingsDrawer(){
   const body=$('settingsBody');if(!body)return;
+  const dsd=defaultSizeDisplay(); // N7.6: stored default rendered in the current quote-currency unit
   body.innerHTML='<div class="setsection"><div class="settitle">Terminal</div>'+
     '<div class="setrow">'+segHtml('theme',[{val:'dark',label:'Dark'},{val:'light',label:'Light'}],'Theme')+'<div class="sethint">Applies instantly, including the chart.</div></div>'+
     '<div class="setrow">'+segHtml('density',[{val:'comfortable',label:'Comfortable'},{val:'compact',label:'Compact'}],'Density')+'<div class="sethint">Compact tightens rows, panels and the ticket.</div></div>'+
     '<div class="setrow"><label for="setPair">Default pair</label><div class="inputwrap"><input id="setPair" maxlength="20" autocomplete="off" spellcheck="false" value="'+esc(settings.defaultPair)+'"></div><div class="sethint">Ticket starts on this pair when you have no saved selection. Your last-viewed pair always wins.</div></div>'+
-    '<div class="setrow"><label for="setSize">Default order size</label><div class="inputwrap"><input id="setSize" inputmode="decimal" value="'+esc(String(settings.defaultOrderSize))+'"><span>'+esc(settings.quoteCurrency)+'</span></div><div class="sethint">Fills the ticket size on load and on pair change.</div></div>'+
+    '<div class="setrow"><label for="setSize">Default order size</label><div class="inputwrap"><input id="setSize" inputmode="decimal" value="'+esc(dsd.val)+'"><span>'+esc(dsd.unit)+'</span></div><div class="sethint">Fills the ticket size on load and on pair change. Converted automatically when you switch quote currency.</div></div>'+
     '<div class="setrow"><label for="setSlip">Default slippage</label><div class="inputwrap"><input id="setSlip" inputmode="numeric" value="'+esc(String(settings.defaultSlippageBps))+'"><span>bps</span></div><div class="sethint">Seeds the ticket and /raydium/ slippage (1–1000 bps). Per-quote edits stay per-quote.</div></div>'+
     '<div class="setrow">'+segHtml('quoteCurrency',[{val:'USD',label:'USD'},{val:'SOL',label:'SOL'}],'Quote currency')+'<div class="sethint">Price display unit — pairs, hero and ticket show SOL terms. Paper fills still settle in USD.</div></div>'+
     '<button class="ghostbtn" id="setReset" type="button">Reset to defaults</button>'+
@@ -1030,7 +1073,7 @@ function applySettingsBoot(){
   document.documentElement.dataset.theme=settings.theme;
   document.documentElement.dataset.density=settings.density;
   syncMetaTheme();
-  fillSizeInput(settings.defaultOrderSize);
+  if(!fillDefaultSizeInput())bootSizePending=true; // N7.6: the live price is not up yet — defer the unit-aware boot fill to the first feed beat
 }
 /*__N52_LAYOUT_START__*/
 /* N5.2 customizable layout (2026-10-22): show/hide + reorder the desk panels
@@ -1804,7 +1847,7 @@ function selectTicketPair(p){ // p: DexScreener-shaped pair row
   const px=Number(p.priceUsd),ch=p.priceChange&&p.priceChange.h24;
   ticketPair={baseMint:p.baseToken.address,baseSymbol:String(p.baseToken.symbol||'TOKEN').slice(0,20),quoteSymbol:String((p.quoteToken&&p.quoteToken.symbol)||'USDC').slice(0,10),price:Number.isFinite(px)&&px>0?px:0,change24h:ch==null||!Number.isFinite(Number(ch))?null:Number(ch)};
   const lp=$('limitPrice');if(lp)lp.value=''; // N4.5: re-prefill the limit price for the new pair
-  fillSizeInput(settings.defaultOrderSize); // N5.1: default size fills on pair change
+  fillDefaultSizeInput(); // N7.6: unit-aware default size fills on pair change
   refreshTicket();updatePortfolio();saveState(); // N4.5/A17: persist the selection
   toast(ticketPair.baseSymbol+'/'+ticketPair.quoteSymbol+' selected for paper trading.');
   const amt=$('orderAmount');if(amt)amt.focus();
@@ -1816,6 +1859,11 @@ function syncPricesFromPairs(){ // keep the selected pair + holding valuations o
 }
 function refreshTicket(){
   healSizeInput(); // A33: keep the held size value at display precision (self-heals any raw float)
+  if(bootSizePending&&price>0){ // N7.6: deferred boot fill — one shot, fires on the first live price; never clobbers a user-typed value
+    bootSizePending=false;
+    const _bsi=$('orderAmount');
+    if(_bsi&&_bsi.value===''&&document.activeElement!==_bsi)fillDefaultSizeInput();
+  }
   const tp=ticketPair,pr=ticketPrice();
   if(!$('ticketPairName'))return;
   $('ticketPairName').textContent=tp?tp.baseSymbol+' / '+tp.quoteSymbol:'—';
@@ -2748,7 +2796,7 @@ async function disconnectWallet(){
   toast('Wallet disconnected.');
 }
 const LIVE_TRADING_ENABLED=false; // N4.3 safety contract: human-only flag — flips only after the N4.2 end-to-end acceptance (proven swap) + the §8.4 real-money decision. The timer never flips this. While false, the Live branch below is dead code.
-function clearTicketDraft(){const a=$('orderAmount');if(a)fillSizeInput(settings.defaultOrderSize);refreshTicket();} // N5.1: no draft survives a mode flip; refill the default size
+function clearTicketDraft(){fillDefaultSizeInput();refreshTicket();} // N7.6: unit-aware default refill; no draft survives a mode flip
 function setTicketMode(m){
   hideReview();
   if(m==='live'){
