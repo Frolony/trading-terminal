@@ -93,9 +93,38 @@ fits vacuously; commit's PLANS bit refuses it anyway). When stocks
 land, the handler sums the transition's PlanRecord claims against
 them through the same helper. TransitionRecord gains `reconciled`,
 SPACE 407 → 408. Program host tests 29 → 31.
-`commit`, `record_evidence`, `settle`, exceptions,
-`policy_transition`, `reject_transition`, `expire_transition` are
-next, in design order.
++ `commit` (permissionless, as in the kernel — the predicate decides,
+not the caller; Committable-only, `BadState` otherwise; the full
+13-bit `commit_fail_mask` computed on-chain by a pure helper, proven
+bit by bit plus a kernel-parity case; a non-zero mask refuses with
+`CommitFailed`, changes nothing, emits no event, and logs the mask with
+`msg!` — Anchor error codes are unit variants, so the code alone cannot
+carry it). On a clear mask the transition moves to Committed and the
+`DeclaredChain` advances to the declared hash. The handler reads the
+mask's inputs from on-chain records only: constraint reports and the
+objectives flag on the TransitionRecord, the last round's aggregates on
+the same record, the observation account (FRESH), the Clock, PlanRecord
+accounts passed as remaining accounts (PLANS expiries, COMPAT
+aggregate), and the `DeclaredChain` (LINEAGE, created at genesis by
+`initialize_config` at index 0 / zero hash — no create-on-first-use
+path, and no `init_if_needed` cargo feature). Remaining-accounts
+completeness is enforced: exactly `plan_count` accounts, each
+program-owned, each naming this transition, each pubkey distinct —
+anything else is `PlanMismatch`, never a partial mask. Honest interims,
+stated in the code: CapacityStock accounts do not exist yet, so COMPAT
+is judged against the empty stock set (a plan with claims fails,
+fail-closed; an empty-claim plan fits vacuously and can commit);
+EXCEPTIONS is clear because no exception records exist yet, and
+CAPABILITY is clear because no transition type carries requirements yet
+— both bits are computed, and their inputs land with their owning
+instructions. Recording lineage required one honest change to an earlier
+slice: `register_transition` now takes the manifest's parent index and
+parent hash and freezes them on the record (SPACE 408 → 448). New errors
+`CommitFailed`, `ObservationMismatch`, `PlanMismatch`, IDL errors
+21 → 24, instructions 13 → 14, accounts 6 → 7. Program host tests
+31 → 34.
+`record_evidence`, `settle`, exceptions, `policy_transition`,
+`reject_transition`, `expire_transition` are next, in design order.
 
 **Design:** `files/OWN_IDL_DESIGN.md` (W4.1, validated and revised
 2026-10-24; W4.3 GO given by Carlos 2026-10-24 ~03:39 CST). Placement C: the

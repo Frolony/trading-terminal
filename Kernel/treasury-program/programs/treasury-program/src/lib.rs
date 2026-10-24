@@ -142,6 +142,47 @@
 //! through this same helper instead of the empty-map evaluation; the
 //! flag's meaning does not change. The TransitionRecord gains
 //! `reconciled` (SPACE 407 → 408).
+//! This increment adds `commit` (design §4.1): permissionless, like the
+//! kernel's (the predicate decides, not the caller) — Committable state
+//! only (`BadState` otherwise), and the full 13-bit `commit_fail_mask`
+//! computed on-chain by the pure `commit_fail_mask` helper below, bit for
+//! bit as the kernel computes it (proven by a per-bit test matrix plus a
+//! kernel-parity case). A non-zero mask refuses with `CommitFailed` and
+//! changes nothing — no state move, no event, and (a failed transaction
+//! rolls back, so) no chain advance; the mask itself is logged with
+//! `msg!`, because Anchor error codes are unit variants and cannot carry
+//! it — the detail is in the program logs and is recomputable from the
+//! public account state, never hidden. On a clear mask the transition
+//! moves to Committed and the `DeclaredChain` advances to the transition's
+//! declared hash, exactly as the kernel's `commit` advances its declared
+//! state. The handler reads what the mask needs from on-chain records:
+//! constraint reports and the objectives flag from the TransitionRecord,
+//! the last round's aggregates from the same record, the observation
+//! account for FRESH, the Clock for planning/expiry, PlanRecord accounts
+//! (passed as remaining accounts) for PLANS expiries and the COMPAT claim
+//! aggregate, and the `DeclaredChain` for LINEAGE. Two completeness rules
+//! make the remaining-accounts read sound: the caller must pass exactly
+//! `plan_count` PlanRecords, each program-owned, each naming this
+//! transition, each pubkey distinct — a missing, foreign, or duplicate
+//! plan is `PlanMismatch`, never a silently partial mask. One honest
+//! interim, stated plainly: CapacityStock accounts do not exist yet, so
+//! the COMPAT aggregate is judged against the stock set that exists
+//! today, which is empty — the same empty-map evaluation `reconcile`
+//! performs, so a plan with claims fails COMPAT (fail-closed) while an
+//! empty-claim plan fits vacuously and can commit; when stocks land,
+//! the handler passes them to the same `fits_capacity` helper. The
+//! EXCEPTIONS bit is clear because no exception records exist yet
+//! (`raise_exception` / `resolve_exception` land next); the CAPABILITY
+//! bit is clear because no transition type carries required capabilities
+//! yet (`require_capability` lands with PolicyRecords) — both bits are
+//! computed, not assumed away, and their inputs land with their owning
+//! instructions. Recording lineage required one honest change to an
+//! earlier slice: `register_transition` now takes the manifest's parent
+//! index and parent hash and freezes them on the record — lineage inputs
+//! are manifest inputs, frozen at registration, judged at commit — so
+//! the TransitionRecord gains `parent_index` and `parent_hash` (SPACE
+//! 408 → 448). No on-chain account exists yet (no deployment in W4.3),
+//! so no migration is owed.
 //! Nothing here is deployed: NO devnet deployment in W4.3, NO mainnet step
 //! exists in W4. No instruction here moves value.
 //!
@@ -238,6 +279,16 @@ pub mod treasury_program {
         config.fee_vault = fee_vault;
         config.stage = STAGE_1;
         config.bump = ctx.bumps.config;
+        // Genesis declared chain (design §3): index 0, zero hash —
+        // the kernel's genesis `SystemState`. Created here, at
+        // genesis, so `commit` never needs a create-on-first-use path
+        // (and never needs the `init_if_needed` cargo feature): the
+        // chain exists before any transition, and only `commit` on a
+        // clear mask advances it.
+        let chain = &mut ctx.accounts.declared_chain;
+        chain.index = 0;
+        chain.hash = [0; 32];
+        chain.bump = ctx.bumps.declared_chain;
         Ok(())
     }
 
@@ -362,18 +413,22 @@ pub mod treasury_program {
     /// Governance lifecycle (design §4.1): register a transition.
     ///
     /// Creates the TransitionRecord in Registered state and freezes the
-    /// transition's manifest inputs (observation, expiry, declared hash).
-    /// The manifest's observation must already exist: the account
-    /// constraint on `observation` enforces that (UnknownObservation in
-    /// the design taxonomy — enforced by account existence, not a
-    /// returned error). The manifest expiry must be in the future
-    /// (BadWindow otherwise). Lineage is deliberately NOT checked here:
-    /// it is judged at commit against the head at commit time (design
-    /// §1.1, bit 10). The frozen constraint set, plans, rounds, and
-    /// signals are stored on this record by later lifecycle
-    /// instructions; this slice creates the record with the planning
-    /// deadline unset (0) until `open_planning` sets it, and
-    /// `objectives_ok` false until `submit_objectives_check` reports.
+    /// transition's manifest inputs (observation, expiry, declared hash,
+    /// and — since the `commit` slice — the parent index and parent hash
+    /// the LINEAGE bit will be judged against). The manifest's
+    /// observation must already exist: the account constraint on
+    /// `observation` enforces that (UnknownObservation in the design
+    /// taxonomy — enforced by account existence, not a returned error).
+    /// The manifest expiry must be in the future (BadWindow otherwise).
+    /// Lineage is deliberately NOT checked here: it is judged at commit
+    /// against the head at commit time (design §1.1, bit 10) — but the
+    /// parent it is judged against is frozen here, at registration,
+    /// because it is a manifest input, not a commit-time claim. The
+    /// frozen constraint set, plans, rounds, and signals are stored on
+    /// this record by later lifecycle instructions; this slice creates
+    /// the record with the planning deadline unset (0) until
+    /// `open_planning` sets it, and `objectives_ok` false until
+    /// `submit_objectives_check` reports.
     /// The payer's key
     /// is recorded as the proposer: the kernel records the proposer at
     /// registration (`kernel.rs` `register_transition`), and
@@ -384,6 +439,8 @@ pub mod treasury_program {
         observation_id: u64,
         expires_at: i64,
         declared_hash: [u8; 32],
+        parent_index: u64,
+        parent_hash: [u8; 32],
         constraint_ids: Vec<[u8; 32]>,
     ) -> Result<()> {
         let now = ctx.accounts.clock.unix_timestamp;
@@ -411,6 +468,8 @@ pub mod treasury_program {
             })
             .collect();
         record.declared_hash = declared_hash;
+        record.parent_index = parent_index;
+        record.parent_hash = parent_hash;
         record.bump = ctx.bumps.transition_record;
         Ok(())
     }
@@ -807,6 +866,159 @@ pub mod treasury_program {
         });
         Ok(())
     }
+
+    /// Governance lifecycle (design §4.1): commit a transition.
+    ///
+    /// Permissionless, as in the kernel — the kernel ignores its commit
+    /// caller, so no AgentRecord is required and the predicate, not the
+    /// caller, decides. The transition must be Committable (`BadState`
+    /// otherwise — the kernel's `set_state` allows Committable →
+    /// Committed and nothing else into Committed). The full 13-bit mask
+    /// is then computed by the pure `commit_fail_mask` helper from
+    /// on-chain records only: constraint reports and the objectives
+    /// flag on the TransitionRecord, the last round's aggregates on the
+    /// same record, the observation account (FRESH), the Clock
+    /// (planning deadline, manifest expiry), the PlanRecord accounts
+    /// passed as remaining accounts (PLANS expiries, COMPAT aggregate),
+    /// and the `DeclaredChain` (LINEAGE). A non-zero mask refuses with
+    /// `CommitFailed` and changes nothing — no state move, no event,
+    /// no chain advance (a failed transaction rolls back in any case).
+    /// The
+    /// mask is logged with `msg!`: Anchor error codes are unit
+    /// variants, so the code alone cannot carry it — the detail is in
+    /// the program logs and recomputable from public account state.
+    /// On a clear mask the transition moves to Committed and the chain
+    /// advances to the transition's declared hash, exactly as the
+    /// kernel's `commit` advances its declared state and debits
+    /// capacity. The debit itself is the COMPAT check: with no
+    /// CapacityStock accounts yet, the aggregate is judged against the
+    /// empty stock set (see the `commit_fail_mask` docs), so only an
+    /// empty-claim plan can commit today — a plan with claims fails
+    /// COMPAT, fail-closed, until stocks land and the handler passes
+    /// them to `fits_capacity`. The chain account is created at genesis
+    /// by `initialize_config` (index 0, zero hash — the kernel's genesis
+    /// declared state) and read here; a missing chain fails validation,
+    /// fail-closed. Remaining-accounts completeness is enforced, not
+    /// assumed: exactly `plan_count` accounts, each program-owned, each
+    /// naming this transition, each pubkey distinct — anything else is
+    /// `PlanMismatch`, never a partial mask. The observation id is an
+    /// instruction argument (the proven pattern of `register_transition`)
+    /// and must match the record's, else `ObservationMismatch` — the
+    /// FRESH bit is never judged through a stranger's observation.
+    pub fn commit(
+        ctx: Context<Commit>,
+        transition_id: u64,
+        observation_id: u64,
+    ) -> Result<()> {
+        let _ = transition_id;
+        let transition = &ctx.accounts.transition_record;
+        require!(
+            transition.state == STATE_COMMITTABLE,
+            TreasuryError::BadState
+        );
+        require!(
+            observation_id == transition.observation_id,
+            TreasuryError::ObservationMismatch
+        );
+        // Remaining accounts are this transition's plans, and only
+        // those: exactly plan_count of them, program-owned, naming
+        // this transition, pubkeys distinct. A caller who omits a plan
+        // would otherwise get a mask computed over a partial claim set
+        // — a weaker predicate wearing a complete mask's clothes.
+        let plan_count = transition.plan_count as usize;
+        require!(
+            ctx.remaining_accounts.len() == plan_count,
+            TreasuryError::PlanMismatch
+        );
+        let mut claims: Vec<(u16, u64)> = Vec::new();
+        let mut min_plan_expiry: Option<i64> = None;
+        let mut seen: Vec<Pubkey> = Vec::new();
+        for account in ctx.remaining_accounts.iter() {
+            require!(
+                account.owner == &crate::ID,
+                TreasuryError::PlanMismatch
+            );
+            require!(
+                !seen.contains(account.key),
+                TreasuryError::PlanMismatch
+            );
+            seen.push(*account.key);
+            let data = account.data.borrow();
+            let mut slice: &[u8] = &data;
+            let plan = PlanRecord::try_deserialize(&mut slice)
+                .map_err(|_| TreasuryError::PlanMismatch)?;
+            require!(
+                plan.transition_id == transition.transition_id,
+                TreasuryError::PlanMismatch
+            );
+            for claim in plan.claims.iter() {
+                claims.push((claim.resource_id, claim.amount));
+            }
+            min_plan_expiry = Some(match min_plan_expiry {
+                Some(prev) => prev.min(plan.expires_at),
+                None => plan.expires_at,
+            });
+        }
+        // The stock set that exists today is empty (see handler docs):
+        // the same empty-map evaluation `reconcile` performs. When
+        // CapacityStock accounts land, they are passed here instead.
+        let fits = fits_capacity(&claims, &[]);
+        let policy = kernel_bridge::launch_policy();
+        let now = ctx.accounts.clock.unix_timestamp;
+        let constraint_statuses: Vec<u8> = transition
+            .constraints
+            .iter()
+            .map(|entry| entry.status)
+            .collect();
+        let inputs = CommitInputs {
+            constraint_statuses: &constraint_statuses,
+            objectives_ok: transition.objectives_ok,
+            require_objectives: policy.require_objectives,
+            round_total: transition.current_round_total,
+            round_weighted: transition.current_round_weighted,
+            quorum_required: policy.quorum_required.raw(),
+            confidence_threshold: policy.confidence_threshold.raw(),
+            reconciled: transition.reconciled,
+            fits,
+            unresolved_blocking: 0,
+            obs_timestamp: ctx.accounts.observation.timestamp,
+            obs_expiry: ctx.accounts.observation.expiry,
+            obs_confidence: ctx.accounts.observation.confidence,
+            min_obs_confidence: policy.min_obs_confidence.raw(),
+            now,
+            planning_deadline: transition.planning_deadline,
+            expires_at: transition.expires_at,
+            parent_index: transition.parent_index,
+            parent_hash: transition.parent_hash,
+            chain_index: ctx.accounts.declared_chain.index,
+            chain_hash: ctx.accounts.declared_chain.hash,
+            plan_count: transition.plan_count,
+            min_plan_expiry,
+            capability_covered: true,
+        };
+        let mask = commit_fail_mask(&inputs);
+        if mask != 0 {
+            msg!("commit refused: commit_fail_mask={:#06x}", mask);
+            return Err(TreasuryError::CommitFailed.into());
+        }
+        let transition = &mut ctx.accounts.transition_record;
+        transition.state = STATE_COMMITTED;
+        let chain = &mut ctx.accounts.declared_chain;
+        chain.index = chain
+            .index
+            .checked_add(1)
+            .ok_or(TreasuryError::Overflow)?;
+        chain.hash = transition.declared_hash;
+        // The bump stays as genesis set it: this account's seeds use
+        // its stored bump (`bump = declared_chain.bump`), so it is not
+        // in `ctx.bumps` and must not be re-derived here.
+        emit!(Committed {
+            transition_id: transition.transition_id,
+            commit_index: chain.index,
+            declared_hash: transition.declared_hash,
+        });
+        Ok(())
+    }
 }
 
 /// Who may open planning, as a pure check (design §4.1, kernel
@@ -1061,6 +1273,197 @@ pub fn fits_capacity(claims: &[(u16, u64)], stocks: &[(u16, u64)]) -> bool {
     })
 }
 
+/// The commit gate, as a pure check (design §4.1, kernel `commit`):
+/// only a Committable transition may commit — the kernel's `set_state`
+/// allows Committable → Committed and nothing else into Committed.
+/// The mask itself is judged separately, by `commit_fail_mask` below;
+/// a Committable transition with a non-zero mask still refuses, with
+/// `CommitFailed`, and changes nothing.
+pub fn can_commit(state: u8) -> Result<()> {
+    require!(state == STATE_COMMITTABLE, TreasuryError::BadState);
+    Ok(())
+}
+
+/// The 13 `commit_fail_mask` bit values (kernel `kernel.rs:20-34`,
+/// design §1.1). Local constants, not re-exported from the kernel
+/// crate, so the program's mask computation reads standalone — and a
+/// test below pins them equal to the kernel's `FailMask` values, so
+/// any drift between the two fails loudly instead of silently.
+pub const MASK_CONSTRAINTS: u32 = 1;
+pub const MASK_OBJECTIVES: u32 = 2;
+pub const MASK_QUORUM: u32 = 4;
+pub const MASK_CONFIDENCE: u32 = 8;
+pub const MASK_COMPAT: u32 = 16;
+pub const MASK_EXCEPTIONS: u32 = 32;
+pub const MASK_FRESH: u32 = 64;
+pub const MASK_PLANNING_OPEN: u32 = 128;
+pub const MASK_EXPIRED: u32 = 256;
+pub const MASK_LINEAGE: u32 = 512;
+pub const MASK_PLANS: u32 = 1024;
+pub const MASK_CAPABILITY: u32 = 2048;
+pub const MASK_DIALECT: u32 = 4096;
+
+/// Every input the 13-bit predicate reads, as values — no accounts,
+/// no Clock, no caller. The `commit` handler assembles this struct
+/// from on-chain records; the helper judges it. Keeping the predicate
+/// pure is what makes the per-bit test matrix possible, and what keeps
+/// the on-chain predicate exactly the kernel's predicate: the kernel's
+/// `commit_fail_mask` reads the same fields in the same order, and the
+/// bit comments below name the kernel term each line mirrors.
+pub struct CommitInputs<'a> {
+    /// Final statuses of the frozen constraint set (kernel
+    /// `constraints` values; empty set is infeasible).
+    pub constraint_statuses: &'a [u8],
+    /// The independent objectives verdict (kernel `objectives_ok`).
+    pub objectives_ok: bool,
+    /// Whether the transition type's policy requires objectives.
+    pub require_objectives: bool,
+    /// Last round's effective-weight total (kernel round `total`).
+    pub round_total: u64,
+    /// Last round's weighted-support sum (kernel round `weighted`).
+    pub round_weighted: u64,
+    /// Launch policy quorum (kernel `quorum_required`, raw).
+    pub quorum_required: u64,
+    /// Launch policy confidence threshold (raw).
+    pub confidence_threshold: u64,
+    /// The `reconcile` verdict (kernel `reconciled`).
+    pub reconciled: bool,
+    /// The re-checked capacity fit (kernel `fits_capacity`, judged
+    /// by the caller over the stock set that exists today).
+    pub fits: bool,
+    /// Unresolved blocking exceptions on this transition (kernel
+    /// `unresolved_blocking`; 0 until exceptions land).
+    pub unresolved_blocking: u32,
+    /// Observation timestamp (kernel observation `timestamp`).
+    pub obs_timestamp: i64,
+    /// Observation expiry (kernel observation `expiry`).
+    pub obs_expiry: i64,
+    /// Observation confidence (raw).
+    pub obs_confidence: u64,
+    /// Launch policy minimum observation confidence (raw).
+    pub min_obs_confidence: u64,
+    /// On-chain time, from the Clock sysvar (kernel `now`).
+    pub now: i64,
+    /// Planning deadline set by `open_planning`.
+    pub planning_deadline: i64,
+    /// Manifest expiry.
+    pub expires_at: i64,
+    /// Manifest parent index (frozen at registration).
+    pub parent_index: u64,
+    /// Manifest parent hash (frozen at registration).
+    pub parent_hash: [u8; 32],
+    /// Declared chain head index at commit time.
+    pub chain_index: u64,
+    /// Declared chain head hash at commit time.
+    pub chain_hash: [u8; 32],
+    /// Plans submitted (kernel `plans.len()`).
+    pub plan_count: u32,
+    /// Earliest plan expiry, if any plan exists (kernel
+    /// `min(expires_at)`; `None` when no plan exists).
+    pub min_plan_expiry: Option<i64>,
+    /// Whether every capability required of the transition type is
+    /// covered by plan authors' influence (kernel
+    /// `capability_covered`; true until requirements land).
+    pub capability_covered: bool,
+}
+
+/// The kernel's one predicate, computed on-chain (kernel
+/// `commit_fail_mask`, design §1.1 bit by bit). Mask 0 ⟺ commit.
+/// DIALECT is computed and always clear, exactly as the kernel's
+/// `dialect_deps_ok` stub always passes — present in the mask, never
+/// set at launch, never smuggled into a version check. CONFIDENCE with
+/// a zero round total is 0 (the kernel's `confidence_of` returns zero
+/// for an empty round), so an empty round fails CONFIDENCE and QUORUM
+/// together, never divides by zero. The caller supplies `fits`
+/// pre-computed by `fits_capacity` over the stocks that exist today;
+/// the COMPAT bit itself is `reconciled && fits`, re-checked here, so
+/// a stale `reconciled` value can never commit on its own.
+pub fn commit_fail_mask(inputs: &CommitInputs) -> u32 {
+    let mut mask = 0u32;
+    // CONSTRAINTS: empty set is infeasible; Unavailable is not Pass.
+    if inputs.constraint_statuses.is_empty()
+        || inputs
+            .constraint_statuses
+            .iter()
+            .any(|status| *status != STATUS_PASS)
+    {
+        mask |= MASK_CONSTRAINTS;
+    }
+    // OBJECTIVES: enforced only when the policy requires objectives.
+    if inputs.require_objectives && !inputs.objectives_ok {
+        mask |= MASK_OBJECTIVES;
+    }
+    // QUORUM: last round's total against the required quorum.
+    if inputs.round_total < inputs.quorum_required {
+        mask |= MASK_QUORUM;
+    }
+    // CONFIDENCE: last round's weighted mean against the threshold;
+    // a zero total has no mean, so its confidence is zero.
+    let confidence = if inputs.round_total == 0 {
+        0u64
+    } else {
+        let mean = (inputs.round_weighted as u128) * (SUPPORT_ONE_RAW as u128)
+            / (inputs.round_total as u128);
+        u64::try_from(mean).unwrap_or(u64::MAX)
+    };
+    if confidence < inputs.confidence_threshold {
+        mask |= MASK_CONFIDENCE;
+    }
+    // COMPAT: reconciled AND the fit, re-checked — never either alone.
+    if !(inputs.reconciled && inputs.fits) {
+        mask |= MASK_COMPAT;
+    }
+    // EXCEPTIONS: per-transition, blocking dispositions only; the
+    // caller passes the unresolved-blocking count, 0 until exceptions
+    // land — the bit is computed, not skipped.
+    if inputs.unresolved_blocking != 0 {
+        mask |= MASK_EXCEPTIONS;
+    }
+    // FRESH: observation timestamp ≤ now < expiry, confidence ≥ min.
+    if inputs.now < inputs.obs_timestamp
+        || inputs.now >= inputs.obs_expiry
+        || inputs.obs_confidence < inputs.min_obs_confidence
+    {
+        mask |= MASK_FRESH;
+    }
+    // PLANNING_OPEN: planning must have closed (deadline reached).
+    if inputs.now < inputs.planning_deadline {
+        mask |= MASK_PLANNING_OPEN;
+    }
+    // EXPIRED: the manifest must still be live.
+    if inputs.now >= inputs.expires_at {
+        mask |= MASK_EXPIRED;
+    }
+    // LINEAGE: parent must equal the declared chain head right now —
+    // judged at commit time, so a race loser re-registers (K-1).
+    if inputs.parent_index != inputs.chain_index
+        || inputs.parent_hash != inputs.chain_hash
+    {
+        mask |= MASK_LINEAGE;
+    }
+    // PLANS: at least one plan, every plan unexpired. No plans, or no
+    // expiry to judge (a count/expiry mismatch the handler must never
+    // produce), fails — a planless transition carries no claims and
+    // can never commit.
+    if inputs.plan_count == 0
+        || inputs
+            .min_plan_expiry
+            .is_none_or(|expiry| inputs.now >= expiry)
+    {
+        mask |= MASK_PLANS;
+    }
+    // CAPABILITY: covered by plan authors' influence, or no
+    // requirement exists (the kernel's `capability_covered` returns
+    // true when nothing is required of the type).
+    if !inputs.capability_covered {
+        mask |= MASK_CAPABILITY;
+    }
+    // DIALECT: the kernel's Phase-7 stub always passes. Computed here
+    // as always-clear, deliberately — no version check is smuggled
+    // into a bit the kernel leaves open.
+    mask
+}
+
 /// A round's weighted mean support, as the kernel computes it at
 /// `submit_signal` time for the previous round: `weighted * ONE /
 /// total`, in u128, floored — the kernel's
@@ -1175,6 +1578,19 @@ pub struct Reconciled {
     pub fits: bool,
 }
 
+/// Event for [`treasury_program::commit`] (design §4.1, §6): the
+/// transition, the commit index the chain advanced to, and the
+/// declared hash that is now the chain head — the authorization
+/// context the design requires on every event. A refused commit emits
+/// nothing: the mask is in the program logs, and the absence of this
+/// event is the receipt that nothing committed.
+#[event]
+pub struct Committed {
+    pub transition_id: u64,
+    pub commit_index: u64,
+    pub declared_hash: [u8; 32],
+}
+
 /// Event for [`treasury_program::submit_signal`] (design §4.1): the
 /// transition, the signalling agent, and the signal as submitted — the
 /// authorization context the design requires on every event. The
@@ -1274,6 +1690,17 @@ pub struct InitializeConfig<'info> {
         bump
     )]
     pub config: Account<'info, Config>,
+    /// Declared chain head PDA, seeds `["chain"]`. One-time init at
+    /// genesis (index 0, zero hash); only `commit` advances it, and
+    /// only on a clear mask.
+    #[account(
+        init,
+        payer = authority,
+        space = DeclaredChain::SPACE,
+        seeds = [b"chain"],
+        bump
+    )]
+    pub declared_chain: Account<'info, DeclaredChain>,
     /// Genesis authority (the governance multisig at genesis). Pays rent.
     #[account(mut)]
     pub authority: Signer<'info>,
@@ -1591,14 +2018,20 @@ pub struct TransitionRecord {
     pub reconciled: bool,
     /// The transition's declared next hash (commit/commitment anchor).
     pub declared_hash: [u8; 32],
+    /// Manifest parent index, frozen at registration — the LINEAGE
+    /// bit is judged against the declared chain head at commit time,
+    /// and this is the parent it must equal.
+    pub parent_index: u64,
+    /// Manifest parent hash, frozen at registration with the index.
+    pub parent_hash: [u8; 32],
     /// PDA bump for the `["transition", id]` seeds.
     pub bump: u8,
 }
 
 impl TransitionRecord {
     /// 8 (discriminator) + 8 + 1 + 32 + 8 + 8 + 8 + 4 + 4
-    /// + 8 + 8 + 8 + (4 + 8 × 33) + 1 + 1 + 32 + 1 = 408.
-    pub const SPACE: usize = 8 + 8 + 1 + 32 + 8 + 8 + 8 + 4 + 4 + 8 + 8 + 8 + 268 + 1 + 1 + 32 + 1;
+    /// + 8 + 8 + 8 + (4 + 8 × 33) + 1 + 1 + 32 + 8 + 32 + 1 = 448.
+    pub const SPACE: usize = 8 + 8 + 1 + 32 + 8 + 8 + 8 + 4 + 4 + 8 + 8 + 8 + 268 + 1 + 1 + 32 + 8 + 32 + 1;
 }
 
 /// Maximum claims per plan (design §3: a plan is a capacity-claims
@@ -1751,6 +2184,59 @@ pub struct Reconcile<'info> {
     pub clock: Sysvar<'info, Clock>,
 }
 
+/// Accounts for [`treasury_program::commit`].
+#[derive(Accounts)]
+#[instruction(transition_id: u64, observation_id: u64)]
+pub struct Commit<'info> {
+    /// The transition record to commit (must be Committable).
+    #[account(mut, seeds = [b"transition", transition_id.to_le_bytes().as_ref()], bump = transition_record.bump)]
+    pub transition_record: Account<'info, TransitionRecord>,
+    /// The manifest's observation — the FRESH bit reads through it.
+    /// The instruction argument must match the record's observation
+    /// id (checked in the handler); a stranger's observation is never
+    /// judged. Seeds bind it to that id, as at registration.
+    #[account(seeds = [b"observation", observation_id.to_le_bytes().as_ref()], bump = observation.bump)]
+    pub observation: Account<'info, Observation>,
+    /// The declared chain head (design §3): the LINEAGE bit is judged
+    /// against it, and a clear mask advances it. Created at genesis
+    /// by `initialize_config` (index 0, zero hash — the kernel's
+    /// genesis declared state); a missing chain account fails
+    /// validation, fail-closed. Only `commit` mutates it, and only on
+    /// a clear mask.
+    #[account(mut, seeds = [b"chain"], bump = declared_chain.bump)]
+    pub declared_chain: Account<'info, DeclaredChain>,
+    /// The caller (signer; pays no rent here). Permissionless, as in
+    /// the kernel — the kernel ignores its commit caller, and no
+    /// AgentRecord is required.
+    pub caller: Signer<'info>,
+    /// Clock sysvar: planning deadline and manifest expiry are judged
+    /// on-chain, and `now` feeds the whole mask.
+    pub clock: Sysvar<'info, Clock>,
+}
+
+/// The declared chain head (design §3 `SystemState`, program-owned).
+///
+/// The kernel's declared state made persistent: the index and hash the
+/// LINEAGE bit is judged against at commit time, advanced by exactly
+/// one commit at a time (commits serialize on this account's write
+/// lock, as the design states plainly). Genesis is index 0 with the
+/// zero hash — the kernel's genesis `SystemState` — and the first
+/// commit against it must carry that parent, or fail LINEAGE.
+#[account]
+pub struct DeclaredChain {
+    /// Commits landed so far (genesis 0).
+    pub index: u64,
+    /// Head hash (genesis zero hash).
+    pub hash: [u8; 32],
+    /// PDA bump for the `["chain"]` seeds.
+    pub bump: u8,
+}
+
+impl DeclaredChain {
+    /// 8 (discriminator) + 8 + 32 + 1.
+    pub const SPACE: usize = 8 + 8 + 32 + 1;
+}
+
 /// Accounts for [`treasury_program::submit_objectives_check`].
 #[derive(Accounts)]
 #[instruction(transition_id: u64)]
@@ -1895,6 +2381,24 @@ pub enum TreasuryError {
     /// `PlanningStillOpen`). At the deadline itself it passes.
     #[msg("Planning is still open: now has not reached the planning deadline.")]
     PlanningStillOpen,
+    /// The commit predicate refused: the 13-bit mask is non-zero.
+    /// Anchor error codes are unit variants, so the mask itself is not
+    /// carried here — it is logged with `msg!` by the `commit`
+    /// handler and is recomputable from the public account state.
+    /// A refused commit changes no state and emits no event.
+    #[msg("Commit refused: commit_fail_mask is non-zero (see program logs).")]
+    CommitFailed,
+    /// The observation id passed to `commit` does not match the
+    /// transition record's manifest observation — the FRESH bit is
+    /// never judged through a stranger's observation.
+    #[msg("Observation id does not match the transition's manifest observation.")]
+    ObservationMismatch,
+    /// A remaining-accounts plan does not belong to this commit: the
+    /// count differs from `plan_count`, an account is not
+    /// program-owned, names another transition, or is listed twice.
+    /// The mask is never computed over a partial plan set.
+    #[msg("Remaining plan accounts do not match this transition's plan set.")]
+    PlanMismatch,
 }
 
 #[cfg(test)]
@@ -1964,8 +2468,10 @@ mod tests {
         // with submit_constraint_report, the objectives flag (1)
         // with submit_objectives_check, and the round aggregates
         // (8 + 8) plus the previous-round mean (8) with advance_round,
-        // and the reconciled flag (1) with reconcile.
-        assert_eq!(TransitionRecord::SPACE, 408);
+        // the reconciled flag (1) with reconcile, and the lineage
+        // inputs (8 + 32) with commit.
+        assert_eq!(TransitionRecord::SPACE, 448);
+        assert_eq!(DeclaredChain::SPACE, 49);
         assert_eq!(MAX_CONSTRAINTS, 8);
         assert_eq!(STATUS_PASS, 0);
         assert_eq!(STATUS_FAIL, 1);
@@ -2220,6 +2726,8 @@ mod tests {
             objectives_ok: false,
             reconciled: false,
             declared_hash: [9u8; 32],
+            parent_index: 0,
+            parent_hash: [0; 32],
             bump: 255,
         };
         assert_eq!(record.state, STATE_REGISTERED);
@@ -2388,5 +2896,217 @@ mod tests {
         // The empty-stock-map evaluation the handler performs today:
         // any claim fails, no claims fit — fail-closed until stocks land.
         assert!(!fits_capacity(&[(0, 1)], &[]));
+    }
+
+    #[test]
+    fn commit_gate_matrix() {
+        // Only Committable commits — the kernel's set_state gate.
+        assert!(can_commit(STATE_COMMITTABLE).is_ok());
+        assert!(can_commit(STATE_REGISTERED).is_err());
+        assert!(can_commit(STATE_PLANNING).is_err());
+        assert!(can_commit(STATE_COMMITTED).is_err());
+        assert!(can_commit(STATE_SETTLED).is_err());
+        assert!(can_commit(STATE_REJECTED).is_err());
+        assert!(can_commit(STATE_EXPIRED).is_err());
+    }
+
+    #[test]
+    fn commit_mask_bit_values_match_kernel() {
+        // The program's local constants must equal the kernel crate's
+        // FailMask values, or the on-chain predicate has drifted from
+        // the crate it vendors — a loud failure, never a silent one.
+        assert_eq!(MASK_CONSTRAINTS, coordination_kernel::FailMask::CONSTRAINTS);
+        assert_eq!(MASK_OBJECTIVES, coordination_kernel::FailMask::OBJECTIVES);
+        assert_eq!(MASK_QUORUM, coordination_kernel::FailMask::QUORUM);
+        assert_eq!(MASK_CONFIDENCE, coordination_kernel::FailMask::CONFIDENCE);
+        assert_eq!(MASK_COMPAT, coordination_kernel::FailMask::COMPAT);
+        assert_eq!(MASK_EXCEPTIONS, coordination_kernel::FailMask::EXCEPTIONS);
+        assert_eq!(MASK_FRESH, coordination_kernel::FailMask::FRESH);
+        assert_eq!(
+            MASK_PLANNING_OPEN,
+            coordination_kernel::FailMask::PLANNING_OPEN
+        );
+        assert_eq!(MASK_EXPIRED, coordination_kernel::FailMask::EXPIRED);
+        assert_eq!(MASK_LINEAGE, coordination_kernel::FailMask::LINEAGE);
+        assert_eq!(MASK_PLANS, coordination_kernel::FailMask::PLANS);
+        assert_eq!(MASK_CAPABILITY, coordination_kernel::FailMask::CAPABILITY);
+        assert_eq!(MASK_DIALECT, coordination_kernel::FailMask::DIALECT);
+    }
+
+    /// The all-clear input set, mirroring the kernel_bridge
+    /// well-formed lifecycle: one Pass constraint, objectives not
+    /// required, round total 1.0 against a 1.0 quorum, weighted mean
+    /// 0.9 against a 0.5 threshold, reconciled with a fitting (empty)
+    /// claim set, no blocking exceptions, fresh 0.9-confidence
+    /// observation, planning closed, manifest live, genesis lineage,
+    /// one unexpired plan, capabilities covered. The closure mutates
+    /// one field per case; the mask is computed inside, so the
+    /// borrowed statuses slice never outlives this function.
+    fn mask_with<F>(mut flip: F) -> u32
+    where
+        F: FnMut(&mut CommitInputs<'_>),
+    {
+        let statuses = [STATUS_PASS];
+        let mut inputs = CommitInputs {
+            constraint_statuses: &statuses,
+            objectives_ok: false,
+            require_objectives: false,
+            round_total: 1_000_000,
+            round_weighted: 900_000,
+            quorum_required: 1_000_000,
+            confidence_threshold: 500_000,
+            reconciled: true,
+            fits: true,
+            unresolved_blocking: 0,
+            obs_timestamp: 1_100,
+            obs_expiry: 10_000,
+            obs_confidence: 900_000,
+            min_obs_confidence: 500_000,
+            now: 1_150,
+            planning_deadline: 1_113,
+            expires_at: 11_000,
+            parent_index: 0,
+            parent_hash: [0; 32],
+            chain_index: 0,
+            chain_hash: [0; 32],
+            plan_count: 1,
+            min_plan_expiry: Some(6_100),
+            capability_covered: true,
+        };
+        flip(&mut inputs);
+        commit_fail_mask(&inputs)
+    }
+
+    #[test]
+    fn commit_mask_bit_matrix() {
+        // Each flip sets exactly its own bit and no other — the
+        // per-bit proof that the on-chain predicate is the kernel's.
+        // Multi-bit cases name every bit they set; a case that sets
+        // an unnamed bit fails here instead of passing quietly.
+        assert_eq!(mask_with(|_| {}), 0);
+        // CONSTRAINTS: a Fail report, an Unavailable report, an empty set.
+        assert_eq!(
+            mask_with(|i| i.constraint_statuses = &[STATUS_FAIL]),
+            MASK_CONSTRAINTS
+        );
+        assert_eq!(
+            mask_with(|i| i.constraint_statuses = &[STATUS_UNAVAILABLE]),
+            MASK_CONSTRAINTS
+        );
+        assert_eq!(
+            mask_with(|i| i.constraint_statuses = &[]),
+            MASK_CONSTRAINTS
+        );
+        // OBJECTIVES: required and unreported.
+        assert_eq!(
+            mask_with(|i| {
+                i.require_objectives = true;
+                i.objectives_ok = false;
+            }),
+            MASK_OBJECTIVES
+        );
+        // A required-but-reported objectives check clears it.
+        assert_eq!(
+            mask_with(|i| {
+                i.require_objectives = true;
+                i.objectives_ok = true;
+            }),
+            0
+        );
+        // QUORUM: total below required. Confidence stays clear: the
+        // mean over the smaller total is still above threshold.
+        assert_eq!(mask_with(|i| i.round_total = 999_999), MASK_QUORUM);
+        // CONFIDENCE: mean below threshold, total still at quorum.
+        assert_eq!(
+            mask_with(|i| i.round_weighted = 499_999),
+            MASK_CONFIDENCE
+        );
+        // Empty round fails QUORUM and CONFIDENCE together, never
+        // divides by zero.
+        assert_eq!(
+            mask_with(|i| {
+                i.round_total = 0;
+                i.round_weighted = 0;
+            }),
+            MASK_QUORUM | MASK_CONFIDENCE
+        );
+        // COMPAT: unreconciled, or reconciled-but-not-fitting.
+        assert_eq!(mask_with(|i| i.reconciled = false), MASK_COMPAT);
+        assert_eq!(mask_with(|i| i.fits = false), MASK_COMPAT);
+        // EXCEPTIONS: one unresolved blocking exception.
+        assert_eq!(
+            mask_with(|i| i.unresolved_blocking = 1),
+            MASK_EXCEPTIONS
+        );
+        // FRESH: future-dated, expired, low-confidence observation.
+        assert_eq!(mask_with(|i| i.obs_timestamp = 1_151), MASK_FRESH);
+        assert_eq!(mask_with(|i| i.obs_expiry = 1_150), MASK_FRESH);
+        assert_eq!(mask_with(|i| i.obs_confidence = 499_999), MASK_FRESH);
+        // PLANNING_OPEN: now before the deadline. FRESH stays clear
+        // (now is still inside the observation window).
+        assert_eq!(mask_with(|i| i.now = 1_112), MASK_PLANNING_OPEN);
+        // EXPIRED: now at the manifest expiry. FRESH sets too (the
+        // observation expired at 10_000) and PLANS sets too (the
+        // earliest plan expired at 6_100) — all three named.
+        assert_eq!(
+            mask_with(|i| i.now = 11_000),
+            MASK_EXPIRED | MASK_FRESH | MASK_PLANS
+        );
+        // LINEAGE: wrong index, wrong hash.
+        assert_eq!(mask_with(|i| i.chain_index = 1), MASK_LINEAGE);
+        assert_eq!(mask_with(|i| i.chain_hash = [1; 32]), MASK_LINEAGE);
+        // PLANS: no plans, or the earliest plan expired.
+        assert_eq!(
+            mask_with(|i| {
+                i.plan_count = 0;
+                i.min_plan_expiry = None;
+            }),
+            MASK_PLANS
+        );
+        assert_eq!(
+            mask_with(|i| i.min_plan_expiry = Some(1_150)),
+            MASK_PLANS
+        );
+        // CAPABILITY: an uncovered requirement.
+        assert_eq!(
+            mask_with(|i| i.capability_covered = false),
+            MASK_CAPABILITY
+        );
+        // Everything bad at once: all bits except DIALECT, which the
+        // kernel's stub leaves always clear.
+        let worst = mask_with(|i| {
+            i.constraint_statuses = &[];
+            i.require_objectives = true;
+            i.objectives_ok = false;
+            i.round_total = 0;
+            i.round_weighted = 0;
+            i.reconciled = false;
+            i.fits = false;
+            i.unresolved_blocking = 3;
+            i.obs_timestamp = 9_999;
+            i.obs_confidence = 0;
+            i.planning_deadline = 9_999;
+            i.expires_at = 1_000;
+            i.chain_index = 7;
+            i.plan_count = 0;
+            i.min_plan_expiry = None;
+            i.capability_covered = false;
+        });
+        assert_eq!(
+            worst,
+            MASK_CONSTRAINTS
+                | MASK_OBJECTIVES
+                | MASK_QUORUM
+                | MASK_CONFIDENCE
+                | MASK_COMPAT
+                | MASK_EXCEPTIONS
+                | MASK_FRESH
+                | MASK_PLANNING_OPEN
+                | MASK_EXPIRED
+                | MASK_LINEAGE
+                | MASK_PLANS
+                | MASK_CAPABILITY
+        );
+        assert_eq!(worst & MASK_DIALECT, 0);
     }
 }
