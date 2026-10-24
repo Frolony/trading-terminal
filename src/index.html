@@ -136,6 +136,9 @@ a.wrow{text-decoration:none}
 [data-density="compact"] .chart{height:190px}
 .iconbtn{border:1px solid var(--line);background:var(--panel);color:var(--muted);border-radius:8px;padding:7px 11px;font-size:15px;line-height:1}
 .iconbtn:hover{color:var(--text);border-color:var(--hoverline)}
+/*N5.8 Reset UI (2026-10-24, A47 — Carlos: "a very vibrant reset UI button"): gradient, dark text, glow — unmissable in the header, beside the Layout button.*/
+.resetuibtn{border:0;border-radius:8px;padding:8px 12px;font-size:12px;font-weight:800;letter-spacing:.3px;color:#06130d;background:linear-gradient(135deg,#42d6a0,#7ee0ff);box-shadow:0 0 14px rgba(66,214,160,.55);cursor:pointer;white-space:nowrap}
+.resetuibtn:hover{box-shadow:0 0 20px rgba(66,214,160,.85)}
 /* N5.4 personal dashboard (2026-10-22): header view tabs + dashboard sections. */
 .viewtabs{width:196px;flex:none}
 .viewtabs button{padding:7px 6px;font-size:11px;letter-spacing:.6px;text-transform:uppercase}
@@ -216,7 +219,7 @@ the brief outline flash marks the landing panel without touching its copy.*/
 @keyframes execflash{0%{box-shadow:0 0 0 4px rgba(66,214,160,.35)}100%{box-shadow:0 0 0 0 transparent}}
 @media(prefers-reduced-motion:reduce){#execPathPanel.execflash{animation:none}}
 </style></head><body><div class="app">
-<header class="top"><div class="brand"><div class="mark">ɢ</div><div><h1>GECKO TERMINAL</h1><small>Solana market intelligence</small></div></div><div class="topright"><div class="switchrow viewtabs" role="tablist" aria-label="Terminal views"><button type="button" id="tabTerminal" class="active mode" role="tab" aria-selected="true">Terminal</button><button type="button" id="tabDashboard" class="mode" role="tab" aria-selected="false">Dashboard</button></div><span class="pill">NETWORK&nbsp; / &nbsp;SOLANA</span><span class="status"><i class="dot"></i><span id="feedStatus" data-testid="feed-badge">CONNECTING DATA</span></span><span class="wwrap"><button id="walletBtn" class="walletbtn" type="button">Connect Wallet</button><span id="syncDot" style="display:none;width:8px;height:8px;border-radius:50%;background:#888;vertical-align:middle;margin-left:2px" title="Sync"></span><div class="wdd" id="walletDd" hidden><div class="eyebrow" id="walletDdName" style="margin-top:8px">Wallet</div><div class="waddr" id="walletDdAddr"></div><div class="walletrow"><span>SOL balance</span><strong id="walletSol">—</strong></div><div class="walletrow"><span>USDC balance</span><strong id="walletUsdc">—</strong></div><div class="walletrow"><span>USDT balance</span><strong id="walletUsdt">—</strong></div><div class="wrowbtn"><button type="button" id="walletCopy">Copy address</button><button type="button" id="walletRetryBal">Retry balances</button></div><div class="wrowbtn"><button type="button" id="walletDisconnect" class="danger">Disconnect</button></div></div></span><span class="pill">PAPER MODE</span><button id="howItWorksLink" class="howlink" type="button" data-testid="how-it-works-link" title="How the terminal handles orders — simulated paper trading and wallet-signed swaps">How this works</button><span class="wwrap"><button id="layoutBtn" class="iconbtn" type="button" aria-label="Open layout" title="Layout">▦</button><div class="lpop" id="layoutPop" hidden role="dialog" aria-label="Layout"><div class="lpop-head"><strong>Layout</strong><button class="wclose" id="layoutPopClose" type="button" aria-label="Close layout">×</button></div><div class="lpop-note">Layouts apply to the trading desk (main page). Drag any panel by its header to move it anywhere — the arrows reorder panels within each column.</div><div id="layoutPanelList"></div><div class="lpop-hidden" id="layoutHiddenNote" hidden></div><div class="lpop-sec">Workspaces</div><div id="layoutWsList"></div><div class="searchrow" style="margin-top:8px"><input id="layoutWsName" maxlength="40" placeholder="Name this layout" aria-label="Workspace name" autocomplete="off" spellcheck="false"><button id="layoutWsSave" type="button">Save</button></div></div></span><button id="settingsBtn" class="iconbtn" type="button" aria-label="Open settings" title="Settings">⚙</button></div></header>
+<header class="top"><div class="brand"><div class="mark">ɢ</div><div><h1>GECKO TERMINAL</h1><small>Solana market intelligence</small></div></div><div class="topright"><div class="switchrow viewtabs" role="tablist" aria-label="Terminal views"><button type="button" id="tabTerminal" class="active mode" role="tab" aria-selected="true">Terminal</button><button type="button" id="tabDashboard" class="mode" role="tab" aria-selected="false">Dashboard</button></div><span class="pill">NETWORK&nbsp; / &nbsp;SOLANA</span><span class="status"><i class="dot"></i><span id="feedStatus" data-testid="feed-badge">CONNECTING DATA</span></span><span class="wwrap"><button id="walletBtn" class="walletbtn" type="button">Connect Wallet</button><span id="syncDot" style="display:none;width:8px;height:8px;border-radius:50%;background:#888;vertical-align:middle;margin-left:2px" title="Sync"></span><div class="wdd" id="walletDd" hidden><div class="eyebrow" id="walletDdName" style="margin-top:8px">Wallet</div><div class="waddr" id="walletDdAddr"></div><div class="walletrow"><span>SOL balance</span><strong id="walletSol">—</strong></div><div class="walletrow"><span>USDC balance</span><strong id="walletUsdc">—</strong></div><div class="walletrow"><span>USDT balance</span><strong id="walletUsdt">—</strong></div><div class="wrowbtn"><button type="button" id="walletCopy">Copy address</button><button type="button" id="walletRetryBal">Retry balances</button></div><div class="wrowbtn"><button type="button" id="walletDisconnect" class="danger">Disconnect</button></div></div></span><span class="pill">PAPER MODE</span><button id="howItWorksLink" class="howlink" type="button" data-testid="how-it-works-link" title="How the terminal handles orders — simulated paper trading and wallet-signed swaps">How this works</button><span class="wwrap"><button id="layoutBtn" class="iconbtn" type="button" aria-label="Open layout" title="Layout">▦</button><div class="lpop" id="layoutPop" hidden role="dialog" aria-label="Layout"><div class="lpop-head"><strong>Layout</strong><button class="wclose" id="layoutPopClose" type="button" aria-label="Close layout">×</button></div><div class="lpop-note">Layouts apply to the trading desk (main page). Drag any panel by its header to move it anywhere — the arrows reorder panels within each column.</div><div id="layoutPanelList"></div><div class="lpop-hidden" id="layoutHiddenNote" hidden></div><div class="lpop-sec">Workspaces</div><div id="layoutWsList"></div><div class="searchrow" style="margin-top:8px"><input id="layoutWsName" maxlength="40" placeholder="Name this layout" aria-label="Workspace name" autocomplete="off" spellcheck="false"><button id="layoutWsSave" type="button">Save</button></div></div></span><button id="resetUiBtn" class="resetuibtn" type="button" data-testid="reset-ui-btn" aria-label="Reset UI layout" title="Reset UI layout — restore every panel to its home position">↺ Reset UI</button><button id="settingsBtn" class="iconbtn" type="button" aria-label="Open settings" title="Settings">⚙</button></div></header>
 <div class="stats" data-layout-root data-root-key="stats">
 <div class="stat"><div class="eyebrow">SOL / USD</div><div class="big" id="statPrice">$—</div><div class="sub" id="statPriceSub">Live market feed</div></div>
 <div class="stat"><div class="eyebrow">24H CHANGE</div><div class="big" id="statChange" data-testid="hero-chg-24h">—</div><div class="sub">Solana spot market</div></div>
@@ -1406,7 +1409,40 @@ function applyLayoutBoot(){
   applyPanelVisibility(ws.hidden);
   saveLayout();
   wireLayoutPop();
+  wireResetUi(); /* N5.8: vibrant header Reset UI button */
   wirePanelDrag(); /* N5.6: free drag-and-drop wiring */
+}
+/* N5.8 layout recovery (2026-10-24, A47 + A45 mitigation): the header Reset UI
+   button restores the shipped default layout — every panel back in its true
+   home container (PANEL_HOME), in shipped order, all visible — so any mangled
+   or panel-losing layout has a one-control recovery. It never mutates a
+   built-in: on Trader/Watcher it forks first (same fork-on-edit rule as every
+   other layout edit), then overwrites the fork. Two-click confirm mirrors the
+   paper-account reset pattern so it cannot fire by accident. */
+const SHIPPED_LAYOUT_ORDER=['chart','pairs','dashboard','ticket','watchlist'];
+let resetUiArmUntil=0,resetUiLabel=null;
+function resetUiToDefault(){
+  const f=forkActiveWorkspace();const ws=f.ws;
+  ws.place=Object.assign({},PANEL_HOME);
+  ws.order=[...SHIPPED_LAYOUT_ORDER];
+  ws.hidden=[];
+  setActiveWorkspace(ws.id);
+  toast('Layout reset — every panel is back in its home position.');
+}
+function wireResetUi(){
+  const b=$('resetUiBtn');if(!b)return;
+  b.onclick=()=>{
+    if(resetUiLabel===null)resetUiLabel=b.textContent;
+    if(Date.now()>resetUiArmUntil){
+      resetUiArmUntil=Date.now()+5000;
+      b.textContent='Confirm reset?';
+      toast('Reset UI restores the shipped layout and shows every panel. Click again within 5 s to confirm.');
+      setTimeout(()=>{if(Date.now()>=resetUiArmUntil)b.textContent=resetUiLabel;},5100);
+      return;
+    }
+    resetUiArmUntil=0;b.textContent=resetUiLabel;
+    resetUiToDefault();
+  };
 }
 /*__N52_LAYOUT_END__*/
 /*__N56_DRAG_START__*/
@@ -1418,7 +1454,12 @@ function applyLayoutBoot(){
    scrolling from anywhere else still works — that plus the Layout popover
    arrows is the touch/keyboard fallback. A 6 px movement threshold keeps plain
    clicks working and keeps header buttons/inputs (pairs Retry) from ever
-   starting a drag. While dragging, a .drop-line insertion indicator marks the
+   starting a drag. N5.8 drag auto-scroll (2026-10-24, A46): while a drag is
+   active, a requestAnimationFrame loop scrolls the page when the pointer
+   rests near the top/bottom viewport edge, speed proportional to proximity,
+   so a panel can be carried the full height of the page in one motion; the
+   drop target is refreshed after each scroll step because scrolling shifts
+   content under the pointer. While dragging, a .drop-line insertion indicator marks the
    landing slot; the panel node itself never moves until commit, so cancel is
    trivial and nothing is ever destroyed/recreated — ticket input, chart canvas
    and feed subscriptions survive. Commit forks built-in workspaces (fork-on-edit,
@@ -1427,7 +1468,7 @@ function applyLayoutBoot(){
    real drag is swallowed (exactly one, capture phase) so it can't toggle
    anything (e.g. the watchlist card's drawer). */
 const DRAG_THRESHOLD_PX=6;
-let dragState=null; /* {panelId,handle,startX,startY,dragging,originParent,originNext,dropRoot,dropIndex,pointerId} | null */
+let dragState=null; /* {panelId,handle,startX,startY,lastX,lastY,dragging,originParent,originNext,dropRoot,dropIndex,pointerId} | null */
 let dropLineEl=null;
 let suppressClickAfterDrag=false;
 function dragPanelId(handle){const p=handle&&handle.closest?handle.closest('[data-panel]'):null;return p?p.getAttribute('data-panel'):null;}
@@ -1439,7 +1480,7 @@ function armPanelDrag(e){
   if(!handle||isInteractiveTarget(e.target))return; /* header buttons/inputs never arm a drag */
   const panelId=dragPanelId(handle);
   if(!panelId||!PANEL_IDS.includes(panelId))return;
-  dragState={panelId:panelId,handle:handle,startX:e.clientX,startY:e.clientY,dragging:false,originParent:null,originNext:null,dropRoot:null,dropIndex:0,pointerId:e.pointerId};
+  dragState={panelId:panelId,handle:handle,startX:e.clientX,startY:e.clientY,lastX:e.clientX,lastY:e.clientY,dragging:false,originParent:null,originNext:null,dropRoot:null,dropIndex:0,pointerId:e.pointerId};
 }
 function layoutRootAt(x,y){
   const roots=document.querySelectorAll('[data-layout-root]');
@@ -1481,14 +1522,37 @@ function startPanelDrag(d){
   if(panel){d.originParent=panel.parentNode;d.originNext=panel.nextSibling;panel.classList.add('dragging');}
   try{d.handle.setPointerCapture(d.pointerId);}catch(_){}
   if(document.body)document.body.classList.add('panel-dragging');
+  startDragAutoScroll();
 }
 function endPanelDragVisual(d){
   const panel=panelEl(d.panelId);
   if(panel)panel.classList.remove('dragging');
   if(document.body)document.body.classList.remove('panel-dragging');
   hideDropLine();
+  stopDragAutoScroll();
   try{if(d.handle.hasPointerCapture&&d.handle.hasPointerCapture(d.pointerId))d.handle.releasePointerCapture(d.pointerId);}catch(_){}
 }
+function dragAutoScrollDelta(clientY,viewportH){
+  /* N5.8: px per animation frame; 0 outside the 90 px edge zones, growing
+     linearly to 16 px/frame at the very edge. Pure function — unit-tested. */
+  const EDGE=90;
+  if(clientY<EDGE)return -(2+14*(EDGE-clientY)/EDGE);
+  if(clientY>viewportH-EDGE)return 2+14*(clientY-(viewportH-EDGE))/EDGE;
+  return 0;
+}
+let dragScrollRaf=0;
+function dragAutoScrollStep(){
+  dragScrollRaf=0;
+  const d=dragState;if(!d||!d.dragging)return;
+  const dy=dragAutoScrollDelta(d.lastY,window.innerHeight||0);
+  if(dy!==0){
+    try{window.scrollBy(0,dy);}catch(_){}
+    movePanelDrag(d,d.lastX,d.lastY);
+  }
+  dragScrollRaf=window.requestAnimationFrame(dragAutoScrollStep);
+}
+function startDragAutoScroll(){if(!dragScrollRaf)dragScrollRaf=window.requestAnimationFrame(dragAutoScrollStep);}
+function stopDragAutoScroll(){if(dragScrollRaf){try{window.cancelAnimationFrame(dragScrollRaf);}catch(_){}dragScrollRaf=0;}}
 function movePanelDrag(d,x,y){
   const root=layoutRootAt(x,y);
   if(!root){d.dropRoot=null;hideDropLine();return;}
@@ -1536,6 +1600,7 @@ function commitPanelDrag(d,panelId,targetRootKey,dropIdx){
 }
 function onPanelDragMove(e){
   const d=dragState;if(!d||e.pointerId!==d.pointerId)return;
+  d.lastX=e.clientX;d.lastY=e.clientY;
   if(!d.dragging){
     if(Math.hypot(e.clientX-d.startX,e.clientY-d.startY)<DRAG_THRESHOLD_PX)return;
     startPanelDrag(d);
