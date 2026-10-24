@@ -18,9 +18,10 @@ original `is_none_or` text byte-for-byte (remote blob SHA matches the
 archived pristine crate). Final state: original kernel text + Solana
 2.2.20, `anchor build` exit 0, host clippy clean again (the `map_or` form
 had tripped host clippy 1.99's `unnecessary_map_or` — the revert removes
-that friction too). This vendoring increment is verified and staged;
-its push rides the next BUILD run's stable-head check (remote head moved
-at 06:38, minutes before that run's push window — held, not forced).
+that friction too). The vendoring increment is PUSHED (remote
+`0df20ec7`, 2026-10-24 ~07:06 CST). This run adds the §4.1 admin-setup
+slice: `AgentRecord` + `register_agent` / `grant_role` / `revoke_role`
+(genesis-direct form; role-gated lifecycle instructions next).
 
 **Design:** `files/OWN_IDL_DESIGN.md` (W4.1, validated and revised
 2026-10-24; W4.3 GO given by Carlos 2026-10-24 ~03:39 CST). Placement C: the
