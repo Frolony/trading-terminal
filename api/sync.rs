@@ -13,7 +13,7 @@
 //   POST /api/sync {action:"push", namespaces} (Bearer)    -> {namespaces: merged}
 //
 // Auth: the client asks the wallet to signMessage exactly
-//   "Gecko Terminal sync · <nonce> · <issuedAt>"
+//   "Turnpool sync · <nonce> · <issuedAt>"
 // (signMessage for the login challenge ONLY — never signTransaction, never a
 // chain transaction). The server verifies the ed25519 signature against the
 // pubkey, then issues a 24 h HMAC token (SYNC_HMAC_SECRET). The token is the
@@ -82,7 +82,7 @@ fn hex_encode(bytes: &[u8]) -> String {
 /// The exact string the wallet signs for the login challenge. The client
 /// builds the identical string; any drift here breaks auth by design.
 fn challenge_message(nonce: &str, issued_at: u64) -> String {
-    format!("Gecko Terminal sync · {} · {}", nonce, issued_at)
+    format!("Turnpool sync · {} · {}", nonce, issued_at)
 }
 
 fn random_nonce() -> String {
@@ -656,7 +656,7 @@ mod tests {
     fn challenge_message_is_stable() {
         assert_eq!(
             challenge_message("abc123", 1700000000),
-            "Gecko Terminal sync · abc123 · 1700000000"
+            "Turnpool sync · abc123 · 1700000000"
         );
     }
 

@@ -15,7 +15,7 @@
 //   points)', '50 bps = 0.50%. Maximum: 500 bps = 5.', 'Connect Phantom, Backpack, or another Wallet
 //   Standard-compatible wallet to sign.', the non-custodial paragraph 'The backend only requests quotes
 //   and builds unsigned transactions. Your wallet signs locally; the backend never receives a seed phrase
-//   or private key. Always verify amounts and wallet prompts.', back link '← Back to Gecko Terminal' →
+//   or private key. Always verify amounts and wallet prompts.', back link '← Back to Turnpool' →
 //   '/', quote facts ('est.', 'min', N route leg(s), impact 0, '25 s refresh'), and 'Review & swap'
 //   disabled until a wallet is connected; frontend/index.html (document title
 //   'Raydium Swap | Gecko Terminal'); styles.css.partial (.shell/.topbar/.panel/.eyebrow/.field-label/
@@ -233,7 +233,7 @@ if(reviewQuote){
 }
 const rvConfirmArmed=reviewQuote!==null&&prepareState==='ready'&&rvBlockers.length===0;
 return(<div className="shell">
-<header className="topbar"><div><p className="eyebrow">NON-CUSTODIAL SOLANA SWAPS</p><h1>Raydium Swap</h1><p className="tagline">Gecko Terminal · Raydium Trade API</p></div><div className="wallet-col"><WalletMultiButton/><p className="wallet-hint">Connect Phantom, Backpack, or another Wallet Standard-compatible wallet to sign.</p></div></header>
+<header className="topbar"><div><p className="eyebrow">NON-CUSTODIAL SOLANA SWAPS</p><h1>Raydium Swap</h1><p className="tagline">Turnpool · Raydium Trade API</p></div><div className="wallet-col"><WalletMultiButton/><p className="wallet-hint">Connect Phantom, Backpack, or another Wallet Standard-compatible wallet to sign.</p></div></header>
 <section className="panel"><div className="panel-heading"><div><p className="eyebrow">TRADE ROUTE</p><h2>Swap tokens</h2></div><span className="network">Solana Mainnet</span></div>
 <label className="field-label" htmlFor="pair">Pair preset</label>
 <select id="pair" value={pairId} onChange={e=>onPairChange(e.target.value)} disabled={busy}>{PAIRS.map(p=><option key={p.id} value={p.id}>{p.baseSymbol} / {p.quoteSymbol}</option>)}</select>
@@ -318,5 +318,5 @@ return(<div className="shell">
 {error?(<p className="error">{error}</p>):null}
 <div className="wallet-row"><button type="button" className="btn btn-primary" onClick={()=>{clearSwapState();void onQuote();}} disabled={busy}>{busy?'Working…':'Get quote'}</button><button type="button" className="btn" onClick={()=>{void onReview();}} disabled={!connected||!quote||busy||phase==='signing'||phase==='pending'}>Review &amp; swap</button></div>
 <p className="noncustodial">The backend only requests quotes and builds unsigned transactions. Your wallet signs locally; the backend never receives a seed phrase or private key. Always verify amounts and wallet prompts.</p>
-<a className="back-link" href="/">← Back to Gecko Terminal</a>
+<a className="back-link" href="/">← Back to Turnpool</a>
 </section></div>);}
