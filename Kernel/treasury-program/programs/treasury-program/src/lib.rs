@@ -2747,6 +2747,107 @@ pub mod treasury_program {
         });
         Ok(())
     }
+
+    /// Default settlement (design §4.2, D-3): the window protocol's
+    /// maturing-loan step, after the tranche and before new borrow /
+    /// exit / reinvest in the pinned protocol order. It settles the
+    /// loan `borrow` created, and only that loan: principal settles
+    /// against the borrower's locked position, interest is forgiven
+    /// (no interest ever accrues on the record — the 12% rate lives
+    /// only on the `LoanIssued` event — so there is nothing to
+    /// collect), and the next-slot dividend is forfeited on the
+    /// PRE-DEFAULT position (D-3, pinned: loans are from cash in
+    /// treasury, the position is untouched at borrow time and reduced
+    /// only here). The event carries `position_before_raw` — that
+    /// pre-default position IS the forfeiture base — and the
+    /// `skip_next_dividend` flag is set on the record in the same
+    /// instruction.
+    ///
+    /// Operator-settled, deliberately not holder-signed and not
+    /// standing-authorization-gated: the defaulter does not settle
+    /// their own default, and must not be able to veto it by
+    /// revoking the standing authorization (design §5's standing
+    /// authorization covers claim executions — `pay_tranche`,
+    /// `execute_whale_tranche`, `collect_fees` — and
+    /// `settle_default` is not among them). The authority is the
+    /// Committed window flow transition plus the operator's
+    /// `OPERATOR_SETTLE` capability, as in `pay_tranche`.
+    ///
+    /// Two readings are stated, not buried. First, `window_id` is
+    /// the loan's (borrow) window — the HolderRecord PDA seeds bind
+    /// it — while the authorizing transition may be a LATER
+    /// window's committed flow transition: loans mature 60 days
+    /// after borrow, so tying the transition to the borrow window
+    /// would make a matured settlement unreachable. The gate
+    /// therefore judges the transition's state and canonical type,
+    /// not a transition-to-window identity (the kernel's
+    /// TransitionRecord carries no window field to check one
+    /// against). Second, default means unpaid AT maturity: the
+    /// Clock-judged `now` must reach `loan_maturity`, never a
+    /// client timestamp — a pre-maturity settlement refuses, so no
+    /// operator seizes a position before it is due.
+    ///
+    /// Honest scope, as in `pay_tranche` / `borrow`: this slice
+    /// records the settlement as bookkeeping — position reduced by
+    /// principal, loan cleared, book outstanding and count reduced,
+    /// skip flag set — and does NOT move tokens (the program holds
+    /// no token accounts yet). Two gaps are carried, named here so
+    /// no later slice inherits them silently: (a) the skipped slot
+    /// is a FUTURE window's separate HolderRecord, so honoring the
+    /// skip at that window's `pay_tranche` is still owed; (b) the
+    /// `exit` slice must not let a position drop below its
+    /// outstanding loan, or a legitimate settlement would refuse
+    /// here on `DefaultExceedsPosition` instead of settling.
+    pub fn settle_default(
+        ctx: Context<SettleDefault>,
+        transition_id: u64,
+        window_id: u64,
+        holder: Pubkey,
+    ) -> Result<()> {
+        let now = Clock::get()?.unix_timestamp;
+        can_settle_default(
+            ctx.accounts.transition_record.state,
+            ctx.accounts.transition_record.transition_type,
+            ctx.accounts.operator_record.active,
+            ctx.accounts
+                .operator_record
+                .capabilities
+                .contains(&OPERATOR_SETTLE),
+            ctx.accounts.holder_record.loan_principal_raw,
+            ctx.accounts.holder_record.position_raw,
+            now,
+            ctx.accounts.holder_record.loan_maturity,
+        )?;
+        let principal = ctx.accounts.holder_record.loan_principal_raw;
+        let position_before = ctx.accounts.holder_record.position_raw;
+        let record = &mut ctx.accounts.holder_record;
+        record.position_raw = record
+            .position_raw
+            .checked_sub(principal)
+            .ok_or(TreasuryError::Overflow)?;
+        record.loan_principal_raw = 0;
+        record.loan_maturity = 0;
+        record.skip_next_dividend = true;
+        let book = &mut ctx.accounts.lending_book;
+        book.outstanding_raw = book
+            .outstanding_raw
+            .checked_sub(principal)
+            .ok_or(TreasuryError::Overflow)?;
+        book.active_loans = book
+            .active_loans
+            .checked_sub(1)
+            .ok_or(TreasuryError::Overflow)?;
+        emit!(DefaultSettled {
+            window_id,
+            holder,
+            principal_raw: principal,
+            position_before_raw: position_before,
+            transition_id,
+            commit_index: ctx.accounts.transition_record.commit_index,
+            declared_hash: ctx.accounts.transition_record.declared_hash,
+        });
+        Ok(())
+    }
 }
 
 /// Who may open planning, as a pure check (design §4.1, kernel
@@ -3948,6 +4049,51 @@ pub fn can_borrow(
     Ok(())
 }
 
+/// The `settle_default` gate, as a pure check (design §4.2, D-3):
+/// the authorizing transition must be Committed and of the
+/// canonical window type (executions ride commit, before settle);
+/// the operator must be active and hold `OPERATOR_SETTLE` (the
+/// defaulter signs nothing and cannot veto by revoking the
+/// standing authorization — see the handler docs); a loan must
+/// actually be active; the Clock-judged `now` must have reached
+/// the loan's maturity (default means unpaid at maturity, and a
+/// pre-maturity seizure refuses); and the principal must fit
+/// inside the locked position (a shortfall refuses fail-closed —
+/// the `exit` slice must prevent the position dropping below an
+/// outstanding loan, or this refusal is what a legitimate
+/// settlement meets). Order mirrors `can_borrow`: the transition
+/// binding first, the operator next, the loan's own rules last.
+pub fn can_settle_default(
+    state: u8,
+    transition_type: [u8; 32],
+    operator_active: bool,
+    operator_has_settle: bool,
+    existing_loan_raw: u64,
+    position_raw: u64,
+    now: i64,
+    loan_maturity: i64,
+) -> Result<()> {
+    require!(state == STATE_COMMITTED, TreasuryError::BadState);
+    require!(
+        transition_type == TREASURY_WINDOW_TYPE,
+        TreasuryError::DefaultMismatch
+    );
+    require!(
+        operator_active && operator_has_settle,
+        TreasuryError::Unauthorized
+    );
+    require!(
+        existing_loan_raw != 0,
+        TreasuryError::NoActiveLoan
+    );
+    require!(now >= loan_maturity, TreasuryError::LoanNotMatured);
+    require!(
+        existing_loan_raw <= position_raw,
+        TreasuryError::DefaultExceedsPosition
+    );
+    Ok(())
+}
+
 /// A window's rotation slot (design §4.2, D-1): the 12-slot
 /// rotation, so the slot is the window id mod 12. The window id
 /// itself is the unique lock-cycle identifier and is never reduced
@@ -4226,6 +4372,26 @@ pub struct LoanIssued {
     pub amount_raw: u64,
     pub rate_ppm: u64,
     pub maturity: i64,
+    pub transition_id: u64,
+    pub commit_index: u64,
+    pub declared_hash: [u8; 32],
+}
+
+/// Event for [`treasury_program::settle_default`] (design §4.2,
+/// §6, D-3): the loan's window, the holder, the principal settled
+/// against the position, and `position_before_raw` — the
+/// pre-default position, which IS the forfeiture base for the
+/// next-slot dividend the defaulter forfeits (interest forgiven,
+/// so no interest figure appears) — plus the authorization
+/// context, the Committed window flow transition's id, commit
+/// index, and declared hash. The settlement here is bookkeeping,
+/// not a token movement: the program holds no token accounts yet.
+#[event]
+pub struct DefaultSettled {
+    pub window_id: u64,
+    pub holder: Pubkey,
+    pub principal_raw: u64,
+    pub position_before_raw: u64,
     pub transition_id: u64,
     pub commit_index: u64,
     pub declared_hash: [u8; 32],
@@ -5753,6 +5919,45 @@ pub struct Borrow<'info> {
     pub lending_book: Account<'info, LendingBook>,
 }
 
+/// Accounts for [`treasury_program::settle_default`].
+#[derive(Accounts)]
+#[instruction(transition_id: u64, window_id: u64, holder: Pubkey)]
+pub struct SettleDefault<'info> {
+    /// The settling operator (signer). Not a named key: execution
+    /// is capability-gated, and the record below is what the gate
+    /// reads. The defaulter signs nothing, and the holder's
+    /// standing authorization is deliberately NOT checked — a
+    /// defaulter must not veto their own default settlement by
+    /// revoking it (see the handler docs).
+    pub operator: Signer<'info>,
+    /// The operator's agent record, seeds-bound to the signer.
+    /// Must be active and hold `OPERATOR_SETTLE` (design §5).
+    #[account(seeds = [b"agent", operator.key().as_ref()], bump = operator_record.bump)]
+    pub operator_record: Account<'info, AgentRecord>,
+    /// The window flow transition, seeds-bound to its id. Must be
+    /// Committed and of the canonical window type — the authority
+    /// for this settlement. It may be a later window's transition
+    /// than the loan's window: loans mature 60 days after borrow.
+    #[account(seeds = [b"transition", transition_id.to_le_bytes().as_ref()], bump = transition_record.bump)]
+    pub transition_record: Account<'info, TransitionRecord>,
+    /// The loan's window, seeds-bound to its id. Read-only here:
+    /// settlement moves neither the roster nor the snapshot — but
+    /// the account's presence binds the settlement to an opened
+    /// window, not to a bare id.
+    #[account(seeds = [b"window", window_id.to_le_bytes().as_ref()], bump = window_state.bump)]
+    pub window_state: Account<'info, WindowState>,
+    /// The holder's record for the loan's window, seeds-bound to
+    /// the window and the holder. Mutated: position reduced by the
+    /// principal, loan cleared, skip-next-dividend flag set.
+    #[account(mut, seeds = [b"holder", window_id.to_le_bytes().as_ref(), holder.as_ref()], bump = holder_record.bump)]
+    pub holder_record: Account<'info, HolderRecord>,
+    /// The lending book PDA — mutated: outstanding reduced by the
+    /// settled principal and the active-loan count decremented,
+    /// here and nowhere else.
+    #[account(mut, seeds = [b"lending-book"], bump = lending_book.bump)]
+    pub lending_book: Account<'info, LendingBook>,
+}
+
 /// Accounts for [`treasury_program::set_capacity`].
 #[derive(Accounts)]
 #[instruction(resource_id: u16)]
@@ -6090,6 +6295,27 @@ pub enum TreasuryError {
     /// period-start snapshot total (60-day terms, math doc §4).
     #[msg("Lending book cap exceeded: the new outstanding would pass T/12 of the window's period-start total.")]
     BookCapExceeded,
+    /// A default settlement does not match its window: the
+    /// authorizing transition is not a canonical
+    /// `treasury.window.v1` transition. A settlement names its
+    /// authority by type, never by claim.
+    #[msg("Default-settlement window mismatch: authorizing transition is not a treasury.window.v1 transition.")]
+    DefaultMismatch,
+    /// The holder has no active loan in this window: a default
+    /// settlement settles exactly one loan, and there is none.
+    #[msg("No active loan: a default settlement settles an existing loan, and this holder has none in this window.")]
+    NoActiveLoan,
+    /// The loan has not matured: default means unpaid at maturity,
+    /// and a pre-maturity settlement would seize a position before
+    /// it is due. The Clock judges maturity, never a client time.
+    #[msg("Loan not matured: default settlement requires the loan's maturity to have passed.")]
+    LoanNotMatured,
+    /// The default principal exceeds the holder's locked position:
+    /// settlement refuses fail-closed rather than settling part of
+    /// a loan or driving the position negative. The `exit` slice
+    /// must prevent a position dropping below an outstanding loan.
+    #[msg("Default exceeds position: the settled principal must fit inside the holder's locked position.")]
+    DefaultExceedsPosition,
 }
 
 #[cfg(test)]
@@ -8024,5 +8250,81 @@ mod tests {
             STATE_COMMITTED, TREASURY_WINDOW_TYPE, 13, 13, 0, 10_000, 100, 0, 1_200,
         )
         .expect("a loan at the small-snapshot book cap passes");
+    }
+
+    #[test]
+    fn settle_default_gate_matrix() {
+        // Happy path: Committed window transition, an active
+        // operator with the settle capability, a 5,000 loan against
+        // a 10,000 position, settled exactly at maturity.
+        can_settle_default(
+            STATE_COMMITTED, TREASURY_WINDOW_TYPE, true, true, 5_000, 10_000, 1_000,
+            1_000,
+        )
+        .expect("a matured default against a sufficient position passes");
+        // Past maturity passes too: the gate is a floor, not a
+        // deadline — a late settlement is still a settlement.
+        can_settle_default(
+            STATE_COMMITTED, TREASURY_WINDOW_TYPE, true, true, 5_000, 10_000, 5_000,
+            1_000,
+        )
+        .expect("a late settlement passes");
+        // A principal equal to the whole position passes: the
+        // position zeroes, it does not go negative.
+        can_settle_default(
+            STATE_COMMITTED, TREASURY_WINDOW_TYPE, true, true, 10_000, 10_000, 1_000,
+            1_000,
+        )
+        .expect("a full-position settlement passes");
+        // Pre-commit and post-commit states refuse: settlements
+        // ride commit, before settle.
+        for state in [
+            STATE_COMMITTABLE,
+            STATE_SETTLED,
+            STATE_REJECTED,
+            STATE_EXPIRED,
+        ] {
+            assert!(can_settle_default(
+                state, TREASURY_WINDOW_TYPE, true, true, 5_000, 10_000, 1_000, 1_000
+            )
+            .is_err());
+        }
+        // Wrong transition type refuses as a mismatch.
+        assert!(can_settle_default(
+            STATE_COMMITTED, TREASURY_LAUNCH_TYPE, true, true, 5_000, 10_000, 1_000,
+            1_000
+        )
+        .is_err());
+        // An inactive operator, and an operator without the settle
+        // capability, both refuse: execution is capability-gated.
+        assert!(can_settle_default(
+            STATE_COMMITTED, TREASURY_WINDOW_TYPE, false, true, 5_000, 10_000, 1_000,
+            1_000
+        )
+        .is_err());
+        assert!(can_settle_default(
+            STATE_COMMITTED, TREASURY_WINDOW_TYPE, true, false, 5_000, 10_000, 1_000,
+            1_000
+        )
+        .is_err());
+        // No active loan refuses: there is nothing to settle.
+        assert!(can_settle_default(
+            STATE_COMMITTED, TREASURY_WINDOW_TYPE, true, true, 0, 10_000, 1_000, 1_000
+        )
+        .is_err());
+        // Before maturity refuses: default means unpaid AT
+        // maturity, and a pre-maturity seizure is not a settlement.
+        assert!(can_settle_default(
+            STATE_COMMITTED, TREASURY_WINDOW_TYPE, true, true, 5_000, 10_000, 999,
+            1_000
+        )
+        .is_err());
+        // A principal above the position refuses fail-closed: no
+        // partial settlement, no negative position.
+        assert!(can_settle_default(
+            STATE_COMMITTED, TREASURY_WINDOW_TYPE, true, true, 10_001, 10_000, 1_000,
+            1_000
+        )
+        .is_err());
     }
 }

@@ -545,3 +545,39 @@ before it. IDL: instructions 30 → 31 (incl. `borrow`), accounts
 matrix). Next, in design order: `settle_default` (which settles
 the loans `borrow` creates), then the rest of the window's
 execution family.
+**This increment adds `settle_default` (design §4.2, D-3)** — the
+seventh §4.2 instruction and the window protocol's maturing-loan
+step (after the tranche, before new borrow / exit / reinvest):
+principal settles against the borrower's locked position,
+interest is forgiven (no interest ever accrues on the record —
+the 12% rate lives only on the `LoanIssued` event), and the
+next-slot dividend is forfeited on the PRE-DEFAULT position
+(D-3, pinned), carried on the `DefaultSettled` event as
+`position_before_raw` with the `skip_next_dividend` flag set in
+the same instruction. Operator-settled, deliberately not
+holder-signed and not standing-authorization-gated: the
+defaulter does not settle their own default and must not veto it
+by revoking the authorization (design §5's standing authorization
+covers claim executions, and `settle_default` is not among them);
+the authority is the Committed window flow transition plus the
+operator's `OPERATOR_SETTLE` capability. Two readings stated
+plainly: `window_id` is the loan's (borrow) window while the
+authorizing transition may be a later window's committed flow
+transition — loans mature 60 days after borrow, so tying the
+transition to the borrow window would make a matured settlement
+unreachable — and default means unpaid AT maturity, so the
+Clock-judged `now` must reach `loan_maturity` (a pre-maturity
+settlement refuses). A principal above the position refuses
+fail-closed. Honest scope, as in the sibling slices: bookkeeping
+only (position reduced, loan cleared, book outstanding and count
+reduced), no token movement yet. Two gaps carried, named: the
+skipped slot is a future window's separate HolderRecord, so
+honoring the skip at that window's `pay_tranche` is still owed;
+and the `exit` slice must not let a position drop below its
+outstanding loan, or a legitimate settlement would meet
+`DefaultExceedsPosition` instead. IDL: instructions 31 → 32
+(incl. `settle_default`), accounts 15 (no new account type),
+errors 54 → 58 (`DefaultMismatch`, `NoActiveLoan`,
+`LoanNotMatured`, `DefaultExceedsPosition`). Program host tests
+71 → 72 (the settle-default gate matrix). Next, in design order:
+`exit`, then the whale schedule, then §4.3 distribution.
