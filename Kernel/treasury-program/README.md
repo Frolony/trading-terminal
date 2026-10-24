@@ -78,7 +78,22 @@ support (that round's SignalRecord), which `submit_signal` does not
 yet take as an account — until that wiring lands, commit replay
 enforces the check (the kernel's `submit_signal` during replay
 refuses a violating sequence).
-`reconcile`, `commit`, `record_evidence`, `settle`, exceptions,
++ `reconcile` (permissionless, as in the kernel — the kernel
+ignores its caller; Planning-only, and only at or past the planning
+deadline, `PlanningStillOpen` before it; a false fit still advances
+the state to Committable — the COMPAT bit at commit, re-checked,
+then refuses every commit; new error `PlanningStillOpen`, IDL
+errors 20 → 21). The fit rule is proven as a pure helper (aggregate
+claims per resource, checked addition, missing stock or over-claim
+fails, overflow fails); the handler evaluates it against the stock
+set that exists today, which is empty — no CapacityStock accounts
+exist yet — so a plan-bearing transition reconciles false
+(fail-closed) and a plan-free one reconciles true (empty aggregate
+fits vacuously; commit's PLANS bit refuses it anyway). When stocks
+land, the handler sums the transition's PlanRecord claims against
+them through the same helper. TransitionRecord gains `reconciled`,
+SPACE 407 → 408. Program host tests 29 → 31.
+`commit`, `record_evidence`, `settle`, exceptions,
 `policy_transition`, `reject_transition`, `expire_transition` are
 next, in design order.
 

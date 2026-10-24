@@ -123,6 +123,25 @@
 //! commit replay (the kernel's `submit_signal` during replay refuses
 //! a violating sequence), not at signal time. That wiring is the next
 //! signal-side increment, not this one.
+//! This increment adds `reconcile` (design §4.1): permissionless, like
+//! the kernel's (the kernel ignores its caller) — Planning state only,
+//! and only once the planning deadline has passed (`PlanningStillOpen`
+//! before it, at the deadline itself it passes, exactly as the kernel's
+//! `now < planning_deadline` test). A false fit still advances the
+//! state to Committable — the kernel's fail-closed shape: the COMPAT
+//! bit then refuses every commit, and `commit` re-checks the fit
+//! anyway. The fit rule itself is proven here as a pure helper
+//! (aggregate claims per resource, checked addition, a missing stock
+//! or an over-claim fails, overflow fails): the handler evaluates it
+//! against the stock set that exists today, which is empty — no
+//! CapacityStock accounts exist yet — so a plan-bearing transition
+//! reconciles false (fail-closed) and a plan-free one reconciles true
+//! (the empty aggregate fits vacuously; the PLANS bit will still
+//! refuse it at commit). When CapacityStock accounts land, the handler
+//! sums the transition's PlanRecord claims against the real stocks
+//! through this same helper instead of the empty-map evaluation; the
+//! flag's meaning does not change. The TransitionRecord gains
+//! `reconciled` (SPACE 407 → 408).
 //! Nothing here is deployed: NO devnet deployment in W4.3, NO mainnet step
 //! exists in W4. No instruction here moves value.
 //!
@@ -383,6 +402,7 @@ pub mod treasury_program {
         record.current_round_weighted = 0;
         record.prev_round_mean = 0;
         record.objectives_ok = false;
+        record.reconciled = false;
         record.constraints = constraint_ids
             .iter()
             .map(|id| ConstraintEntry {
@@ -741,6 +761,52 @@ pub mod treasury_program {
         });
         Ok(())
     }
+
+    /// Governance lifecycle (design §4.1): reconcile a transition.
+    ///
+    /// Mirrors the kernel's `reconcile` in check order: the transition
+    /// must be Planning (`BadState` otherwise — the kernel's
+    /// `set_state` allows Planning → Committable and nothing else into
+    /// Committable), and `now` must be at or past the planning
+    /// deadline (`PlanningStillOpen` otherwise; at the deadline itself
+    /// it passes, as the kernel's `now < planning_deadline` test).
+    /// The caller is permissionless, as in the kernel (the kernel
+    /// ignores its reconcile caller): no AgentRecord is required. On
+    /// success the state moves to Committable and `reconciled` records
+    /// the capacity fit — computed once, here. A false fit still
+    /// advances the state: the COMPAT bit at commit (`reconciled &&
+    /// fits`, re-checked) then refuses every commit of the transition,
+    /// and its only exits are reject/expire. That is the kernel's
+    /// fail-closed shape, not a half-state: a transition that cannot
+    /// fit never commits, and no claim is partially applied.
+    /// Staging note, stated plainly: the fit is evaluated against the
+    /// stock set that exists today, which is empty — CapacityStock
+    /// accounts do not exist yet — so a plan-bearing transition
+    /// reconciles false and a plan-free one reconciles true (the empty
+    /// aggregate fits vacuously; commit's PLANS bit refuses it anyway
+    /// for having no plans). The `fits_capacity` helper below is the
+    /// full rule, proven by tests; when stocks land, this handler sums
+    /// the transition's PlanRecord claims against them through it.
+    pub fn reconcile(
+        ctx: Context<Reconcile>,
+        transition_id: u64,
+    ) -> Result<()> {
+        let _ = transition_id;
+        let transition = &mut ctx.accounts.transition_record;
+        let now = ctx.accounts.clock.unix_timestamp;
+        can_reconcile(transition.state, now, transition.planning_deadline)?;
+        // Empty-stock-map evaluation (see handler docs): no stock
+        // account exists yet, so only a transition with no plans at
+        // all can fit — any claim names a stock that does not exist.
+        let fits = transition.plan_count == 0;
+        transition.reconciled = fits;
+        transition.state = STATE_COMMITTABLE;
+        emit!(Reconciled {
+            transition_id: transition.transition_id,
+            fits,
+        });
+        Ok(())
+    }
 }
 
 /// Who may open planning, as a pure check (design §4.1, kernel
@@ -941,6 +1007,60 @@ pub fn can_advance_round(
     Ok(())
 }
 
+/// Who may reconcile a transition, as a pure check (design §4.1,
+/// kernel `reconcile`, in the kernel's check order): the transition
+/// must be Planning, and `now` must be at or past the planning
+/// deadline. The caller is permissionless (the kernel ignores its
+/// reconcile caller), so no caller argument appears here. The fit
+/// itself is not a gate here: a false fit still advances the state
+/// (see [`fits_capacity`]), and the COMPAT bit refuses the commit.
+pub fn can_reconcile(state: u8, now: i64, planning_deadline: i64) -> Result<()> {
+    require!(state == STATE_PLANNING, TreasuryError::BadState);
+    require!(
+        now >= planning_deadline,
+        TreasuryError::PlanningStillOpen
+    );
+    Ok(())
+}
+
+/// The kernel's capacity-fit rule (kernel `fits_capacity`): aggregate
+/// every plan's claims per resource (checked addition — an overflow
+/// fails the fit, never wraps), then require every aggregate to name
+/// an existing stock holding at least the aggregate. A claimed
+/// resource with no stock fails, exactly as the kernel's
+/// `is_some_and` test fails it; an empty claim set fits vacuously.
+/// Claims and stocks are `(resource_id, amount)` pairs; duplicate
+/// resource ids in either list are summed (claims) or take the larger
+/// (stocks) — callers pass distinct keys, and the aggregation is
+/// order-independent either way.
+pub fn fits_capacity(claims: &[(u16, u64)], stocks: &[(u16, u64)]) -> bool {
+    let mut agg: Vec<(u16, u64)> = Vec::new();
+    for (resource, amount) in claims {
+        let mut found = false;
+        for entry in agg.iter_mut() {
+            if entry.0 == *resource {
+                match entry.1.checked_add(*amount) {
+                    Some(sum) => entry.1 = sum,
+                    None => return false,
+                }
+                found = true;
+                break;
+            }
+        }
+        if !found {
+            agg.push((*resource, *amount));
+        }
+    }
+    agg.iter().all(|(resource, total)| {
+        stocks
+            .iter()
+            .filter(|(id, _)| id == resource)
+            .map(|(_, cap)| *cap)
+            .max()
+            .is_some_and(|cap| *total <= cap)
+    })
+}
+
 /// A round's weighted mean support, as the kernel computes it at
 /// `submit_signal` time for the previous round: `weighted * ONE /
 /// total`, in u128, floored — the kernel's
@@ -1042,6 +1162,17 @@ pub struct ObjectivesReported {
 pub struct RoundAdvanced {
     pub transition_id: u64,
     pub round: u32,
+}
+
+/// Event for [`treasury_program::reconcile`] (design §4.1): the
+/// transition and the fit as computed — a false fit still advances
+/// the state to Committable, and the COMPAT bit at commit is what
+/// refuses it. The event is the receipt that reconcile ran, not a
+/// promise that the transition can commit.
+#[event]
+pub struct Reconciled {
+    pub transition_id: u64,
+    pub fits: bool,
 }
 
 /// Event for [`treasury_program::submit_signal`] (design §4.1): the
@@ -1398,10 +1529,10 @@ pub struct ConstraintEntry {
 /// load → call → store). This slice carries the manifest inputs, the
 /// recorded proposer, the state, the plan count, the round count, the
 /// current-round aggregates, the previous-round mean, the frozen
-/// constraint set, and the objectives flag; per-transition exceptions,
-/// reconciled flag, and realized hash are added by the lifecycle
-/// instructions that own them — each field lands with the instruction
-/// that writes it, not before.
+/// constraint set, the objectives flag, and the reconciled flag;
+/// per-transition exceptions and the realized hash are added by the
+/// lifecycle instructions that own them — each field lands with the
+/// instruction that writes it, not before.
 #[account]
 pub struct TransitionRecord {
     /// Caller-chosen id (PDA seed component).
@@ -1451,6 +1582,13 @@ pub struct TransitionRecord {
     /// policy does not require objectives, so the bit is clear
     /// regardless, but the flag is recorded, not assumed.
     pub objectives_ok: bool,
+    /// The capacity-fit verdict from `reconcile` (kernel `reconciled`):
+    /// false at registration, set once by `reconcile` when the
+    /// transition moves Planning → Committable. A false value still
+    /// advances the state — the COMPAT bit at commit is
+    /// `reconciled && fits`, re-checked, so a false verdict can never
+    /// commit. It is a verdict, not a gate that blocks the state move.
+    pub reconciled: bool,
     /// The transition's declared next hash (commit/commitment anchor).
     pub declared_hash: [u8; 32],
     /// PDA bump for the `["transition", id]` seeds.
@@ -1459,8 +1597,8 @@ pub struct TransitionRecord {
 
 impl TransitionRecord {
     /// 8 (discriminator) + 8 + 1 + 32 + 8 + 8 + 8 + 4 + 4
-    /// + 8 + 8 + 8 + (4 + 8 × 33) + 1 + 32 + 1 = 407.
-    pub const SPACE: usize = 8 + 8 + 1 + 32 + 8 + 8 + 8 + 4 + 4 + 8 + 8 + 8 + 268 + 1 + 32 + 1;
+    /// + 8 + 8 + 8 + (4 + 8 × 33) + 1 + 1 + 32 + 1 = 408.
+    pub const SPACE: usize = 8 + 8 + 1 + 32 + 8 + 8 + 8 + 4 + 4 + 8 + 8 + 8 + 268 + 1 + 1 + 32 + 1;
 }
 
 /// Maximum claims per plan (design §3: a plan is a capacity-claims
@@ -1593,6 +1731,24 @@ pub struct AdvanceRound<'info> {
     /// no AgentRecord is required, so revision timing cannot be gated
     /// by a role the kernel does not gate it by.
     pub caller: Signer<'info>,
+}
+
+/// Accounts for [`treasury_program::reconcile`].
+#[derive(Accounts)]
+#[instruction(transition_id: u64)]
+pub struct Reconcile<'info> {
+    /// The transition record to move Planning → Committable.
+    /// No new account: the state and the `reconciled` flag both live
+    /// on this record (design §3).
+    #[account(mut, seeds = [b"transition", transition_id.to_le_bytes().as_ref()], bump = transition_record.bump)]
+    pub transition_record: Account<'info, TransitionRecord>,
+    /// The caller (signer; pays no rent here). Permissionless, as in
+    /// the kernel — the kernel ignores its reconcile caller, so no
+    /// AgentRecord is required and revision timing cannot be gated
+    /// by a role the kernel does not gate it by.
+    pub caller: Signer<'info>,
+    /// Clock sysvar: the planning deadline is judged on-chain.
+    pub clock: Sysvar<'info, Clock>,
 }
 
 /// Accounts for [`treasury_program::submit_objectives_check`].
@@ -1734,6 +1890,11 @@ pub enum TreasuryError {
     /// round would create a round with nothing to revise from.
     #[msg("Current round is empty: effective-weight total is zero.")]
     RoundEmpty,
+    /// Planning is still open: `now` has not reached the planning
+    /// deadline, so the transition cannot be reconciled yet (kernel
+    /// `PlanningStillOpen`). At the deadline itself it passes.
+    #[msg("Planning is still open: now has not reached the planning deadline.")]
+    PlanningStillOpen,
 }
 
 #[cfg(test)]
@@ -1802,8 +1963,9 @@ mod tests {
         // submit_signal, the frozen constraint set (4 + 8 x 33)
         // with submit_constraint_report, the objectives flag (1)
         // with submit_objectives_check, and the round aggregates
-        // (8 + 8) plus the previous-round mean (8) with advance_round.
-        assert_eq!(TransitionRecord::SPACE, 407);
+        // (8 + 8) plus the previous-round mean (8) with advance_round,
+        // and the reconciled flag (1) with reconcile.
+        assert_eq!(TransitionRecord::SPACE, 408);
         assert_eq!(MAX_CONSTRAINTS, 8);
         assert_eq!(STATUS_PASS, 0);
         assert_eq!(STATUS_FAIL, 1);
@@ -2056,6 +2218,7 @@ mod tests {
                 status: STATUS_UNAVAILABLE,
             }],
             objectives_ok: false,
+            reconciled: false,
             declared_hash: [9u8; 32],
             bump: 255,
         };
@@ -2068,6 +2231,7 @@ mod tests {
         assert_eq!(record.current_round_weighted, 0);
         assert_eq!(record.prev_round_mean, 0);
         assert!(!record.objectives_ok);
+        assert!(!record.reconciled);
         assert_eq!(record.constraints.len(), 1);
         assert_eq!(record.constraints[0].status, STATUS_UNAVAILABLE);
         assert_eq!(record.observation_id, 3);
@@ -2153,5 +2317,76 @@ mod tests {
         );
         // Overflow is an error, never a wrapped deadline.
         assert!(planning_deadline(i64::MAX, kernel_bridge::PLANNING_WINDOW).is_err());
+    }
+
+    #[test]
+    fn reconcile_gate_matrix() {
+        // Caller binding is permissionless (the kernel ignores its
+        // reconcile caller), so the helper takes no caller argument.
+        let base = |state: u8, now: i64, deadline: i64| {
+            can_reconcile(state, now, deadline)
+        };
+        // The clean cases pass: Planning, at or past the deadline.
+        assert!(base(STATE_PLANNING, 200, 200).is_ok());
+        assert!(base(STATE_PLANNING, 201, 200).is_ok());
+        // Wrong state refuses, even past the deadline — only Planning
+        // moves to Committable (the kernel's set_state gate).
+        assert!(base(STATE_REGISTERED, 201, 200).is_err());
+        assert!(base(STATE_COMMITTABLE, 201, 200).is_err());
+        assert!(base(STATE_COMMITTED, 201, 200).is_err());
+        assert!(base(STATE_SETTLED, 201, 200).is_err());
+        // Before the deadline refuses, in Planning or not — checked
+        // after the state, as in the kernel.
+        assert!(base(STATE_PLANNING, 199, 200).is_err());
+        // Check order, as in the kernel: a non-Planning transition
+        // before its deadline reports BadState, not PlanningStillOpen.
+        let wrong_state_early = base(STATE_REGISTERED, 199, 200);
+        assert!(wrong_state_early.is_err());
+        assert_eq!(
+            wrong_state_early.unwrap_err(),
+            anchor_lang::error::Error::from(TreasuryError::BadState).into()
+        );
+        let still_open = base(STATE_PLANNING, 199, 200);
+        assert_eq!(
+            still_open.unwrap_err(),
+            anchor_lang::error::Error::from(TreasuryError::PlanningStillOpen)
+                .into()
+        );
+    }
+
+    #[test]
+    fn capacity_fit_follows_kernel_rules() {
+        // Empty claims fit vacuously, even with no stocks at all —
+        // the kernel's all() over an empty aggregate is true.
+        assert!(fits_capacity(&[], &[]));
+        assert!(fits_capacity(&[], &[(0, 1_000)]));
+        // Exact fit passes; one unit over fails.
+        assert!(fits_capacity(&[(0, 1_000)], &[(0, 1_000)]));
+        assert!(!fits_capacity(&[(0, 1_001)], &[(0, 1_000)]));
+        // A claimed resource with no stock fails — the kernel's
+        // is_some_and test — even when other stocks are ample.
+        assert!(!fits_capacity(&[(1, 1)], &[(0, 1_000_000)]));
+        // Aggregates sum across plans: two claims on one stock that
+        // fit singly but not together fail.
+        assert!(fits_capacity(&[(0, 600), (0, 400)], &[(0, 1_000)]));
+        assert!(!fits_capacity(&[(0, 600), (0, 401)], &[(0, 1_000)]));
+        // Multiple resources are judged independently.
+        assert!(fits_capacity(
+            &[(0, 100), (1, 200)],
+            &[(0, 100), (1, 200)]
+        ));
+        assert!(!fits_capacity(
+            &[(0, 100), (1, 201)],
+            &[(0, 100), (1, 200)]
+        ));
+        // An overflowing aggregate fails the fit, never wraps into
+        // a small number that would fit.
+        assert!(!fits_capacity(
+            &[(0, u64::MAX), (0, 1)],
+            &[(0, u64::MAX)]
+        ));
+        // The empty-stock-map evaluation the handler performs today:
+        // any claim fails, no claims fit — fail-closed until stocks land.
+        assert!(!fits_capacity(&[(0, 1)], &[]));
     }
 }
