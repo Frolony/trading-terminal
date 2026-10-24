@@ -1521,6 +1521,7 @@ function applyLayoutBoot(){
   try{raw=localStorage.getItem(LAYOUT_KEY);}catch(_){raw=null;}
   layout=loadLayout(raw); // corrupt/missing/version-mismatch → built-ins, Trader active (never a blank page)
   const ws=activeWorkspace();
+  balanceWorkspaceColumns(ws,null); /* N5.10: a stored tower layout balances on load, before first paint */
   renderPanelPlacement(ws);
   applyPanelVisibility(ws.hidden);
   saveLayout();
@@ -1695,6 +1696,55 @@ function isNoOpDrop(panelId,key,idx){
      drag that released at its origin spuriously forked "Trader (custom)"). */
   return visiblePanelsOf(key).indexOf(panelId)===idx;
 }
+/* N5.10 smart layout rotation / anti-stack balancing (2026-10-24, Carlos:
+   "prevents a straight line of blobs accumulating vertically"): after a drop
+   (commitPanelDrag) or a stored-layout load (applyLayoutBoot), if one desk
+   column holds visibly more panels than the other by more than
+   N510_MAX_COUNT_DIFF, the lowest panels of the over-tall column rotate to
+   the end of the shorter column until the counts are within the band.
+   Rules, in order: only the two vertical columns balance (maincol/sidecol —
+   the stats row is horizontal, not a tower); hidden panels never count and
+   are never moved; the panel the user just placed is never moved (an
+   older, lower panel rotates instead); Reset UI homes are untouched (it
+   writes PANEL_HOME directly and never calls this); the place map and the
+   order are both rewritten, so the balanced result persists and syncs
+   through the existing layout namespace. Count is the tower metric: panel
+   heights vary, but a vertical stack of blobs is a count problem first,
+   and a count rule is deterministic in a harness and in the live page
+   alike (no layout-thrash reads at drop time). */
+const N510_BALANCE_COLUMNS=['maincol','sidecol'];
+const N510_MAX_COUNT_DIFF=2;
+function balanceWorkspaceColumns(ws,justPlacedId){
+  const moved=[];
+  const rankOf=id=>{const i=ws.order.indexOf(id);return i<0?PANEL_IDS.length:i;};
+  const colVisible=key=>PANEL_IDS.filter(id=>ws.place[id]===key&&!ws.hidden.includes(id)).sort((a,b)=>rankOf(a)-rankOf(b));
+  for(let guard=0;guard<PANEL_IDS.length;guard++){
+    const counts={};N510_BALANCE_COLUMNS.forEach(k=>counts[k]=colVisible(k).length);
+    const tall=counts.maincol>=counts.sidecol?'maincol':'sidecol';
+    const short=tall==='maincol'?'sidecol':'maincol';
+    if(counts[tall]-counts[short]<=N510_MAX_COUNT_DIFF)break;
+    const candidates=colVisible(tall).slice().reverse().filter(id=>id!==justPlacedId);
+    if(!candidates.length)break;
+    const moveId=candidates[0];
+    ws.place[moveId]=short;
+    moved.push(moveId);
+    /* Rebuild the order container-grouped (ROOT_KEYS order), each root's
+       visible panels in old-rank order with the moved panel forced last in
+       its new column, then that root's hidden panels in old-rank order. */
+    const newOrder=[];
+    ROOT_KEYS.forEach(key=>{
+      const vis=PANEL_IDS.filter(id=>ws.place[id]===key&&!ws.hidden.includes(id)).sort((a,b)=>{
+        const ra=id=>id===moveId?Infinity:rankOf(id);
+        return ra(a)-ra(b);
+      });
+      const hid=PANEL_IDS.filter(id=>ws.place[id]===key&&ws.hidden.includes(id)).sort((a,b)=>rankOf(a)-rankOf(b));
+      newOrder.push(...vis,...hid);
+    });
+    PANEL_IDS.forEach(id=>{if(!newOrder.includes(id))newOrder.push(id);});
+    ws.order=newOrder;
+  }
+  return moved;
+}
 function commitPanelDrag(d,panelId,targetRootKey,dropIdx){
   /* Rebuild the global order rank so each root's panels sort into the new
      visual sequence (container-grouped, roots in DOM order — the popover
@@ -1712,6 +1762,7 @@ function commitPanelDrag(d,panelId,targetRootKey,dropIdx){
   });
   PANEL_IDS.forEach(id=>{if(!newOrder.includes(id))newOrder.push(id);});
   ws.order=newOrder;
+  balanceWorkspaceColumns(ws,panelId); /* N5.10: rotate overflow off a tower column, never the just-dropped panel */
   setActiveWorkspace(ws.id);
   toast(forked?'Saved as a copy — rename it in Layouts.':'Layout saved.');
 }
