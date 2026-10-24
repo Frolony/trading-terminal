@@ -43,6 +43,9 @@ path = "api/paperlive.rs"
 [[bin]]
 name = "sync"
 path = "api/sync.rs"
+[[bin]]
+name = "account"
+path = "api/account.rs"
 
 [profile.release]
 codegen-units = 1
