@@ -31,11 +31,16 @@ pub enum Venue {
     /// v3's rotational-exit machinery: exit schedules, controlled exits,
     /// rotational extraction slots.
     ControlledExit,
-    /// Our own program (W4.1 design): enroll, pay_tranche, borrow,
-    /// settle_default, open_window, exit, schedule_whale_exit. Recognized so
-    /// the tracer can audit our own treasury flows as workflows (W4.4
-    /// dogfood) — pinned program id only; family names are known at design
-    /// time, the deployed address is not.
+    /// Our own program: the 9 instruction families the W3.3 mock treasury
+    /// actually executed on devnet (`55jcLQiTRH9o46RZAFqsmY7C9w3bp35TiU1pjq62pzoU`;
+    /// rotation_cycle.py DISC + W3.3.2 whale runs, gas report §1):
+    /// propose_commit, open_window, enroll, pay_tranche, borrow,
+    /// settle_default, exit, schedule_whale_exit, pay_whale_tranche.
+    /// Recognized so the tracer can audit our own treasury flows as
+    /// workflows (W4.4 dogfood) — pinned program id only; the pin is an
+    /// observed deployment, never a remembered address. (The mock's
+    /// one-time `initialize` is excluded by design: genesis, not a
+    /// recurring treasury flow.)
     TreasuryProgram,
     /// Fee / operator / config plumbing. Recognized so fee extraction is
     /// labeled as plumbing, never mistaken for position-taking.
@@ -198,6 +203,11 @@ pub static VENUE_DICTIONARY: &[VenueEntry] = &[
     entry!(Venue::TreasuryProgram, HopKind::TreasuryFlow, "open_window"),
     entry!(Venue::TreasuryProgram, HopKind::TreasuryFlow, "exit"),
     entry!(Venue::TreasuryProgram, HopKind::TreasuryFlow, "schedule_whale_exit"),
+    // The mock's remaining executed families (W3.3 devnet; found missing by
+    // the W6.2 swarm-ground-truth pass — the dictionary must recognize our
+    // own program's full executed surface).
+    entry!(Venue::TreasuryProgram, HopKind::TreasuryFlow, "propose_commit"),
+    entry!(Venue::TreasuryProgram, HopKind::TreasuryFlow, "pay_whale_tranche"),
 ];
 
 /// The default dictionary: every S11 entry, program ids unpinned.
