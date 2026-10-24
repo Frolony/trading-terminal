@@ -41,6 +41,19 @@
 //! The W6.2 gate stays CLOSED after this pass: no label is user-facing
 //! until real labeled mainnet routes validate the corpus (plus the ledger
 //! consult's readings on real routes).
+//!
+//! Sixth-pass note (2026-10-24 ~03:0x CST): the blob-collapse half of the
+//! filed S13 rendering rule landed as code (`src/blob.rs`, `tests/blob.rs`);
+//! it does not touch this gate. The mainnet chain-walk for the MUGDUCK
+//! relay fixture started this run and verified, from live mainnet RPC,
+//! hiiD…WSt7's full 3-signature set (inbound 4QAPTsYn… slot 434128140,
+//! outbound 382TYN8w… slot 434128146, dust sweep wswmUVmv… slot 434129897,
+//! a 4,989,848-lamport system transfer to 3AKnhG… at 16:09:08 UTC) —
+//! then the public RPC endpoint answered 429 and the walk STOPPED there,
+//! per the loop's hard rate-limit rule: no retry, no alternate endpoint.
+//! The downstream hops' full addresses and signatures are therefore still
+//! unverified in this run, and NO real-route fixture was added on partial
+//! data. Resume the walk next run; the gate stays closed until then.
 
 use tracer_s13::attestation::{
     attest, AttestationLabel, AttestationRecord, CausalTime, RealizedEvent,

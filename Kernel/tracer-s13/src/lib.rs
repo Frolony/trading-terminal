@@ -43,6 +43,13 @@
 //!    verdict's rationale with the ledger reading and changes neither the
 //!    label nor the confidence; full-vs-partial on real mainnet routes is
 //!    still a W6.2 gate item.
+//! 7. **Blob-collapse judgment** ([`blob`], W6.2 sixth pass): Carlos's
+//!    blob-rendering rule (2026-10-24 ~02:26) as code — a workflow renders
+//!    as ONE blob only when every gate passes (non-circular, ≥2 hops,
+//!    single mint, no venue signal, value conserved within tolerance,
+//!    single-use intermediates, single-operation cadence, unbroken
+//!    linkage); a refused merge names every failed gate, never a guessed
+//!    merge. Entrance/exit boundary judgments are a later increment.
 //!
 //! ## Deliberate limits of this increment
 //!
@@ -72,6 +79,7 @@ pub mod classify;
 pub mod summary;
 pub mod attestation;
 pub mod position_state;
+pub mod blob;
 
 pub use dictionary::{default_dictionary, Dictionary, HopKind, Venue, VenueHit, VENUE_DICTIONARY};
 pub use ingest::TransferEvent;
@@ -83,3 +91,4 @@ pub use attestation::{
     AttestationRecord, AttestationVerdict, CausalTime, RealizedEvent,
 };
 pub use position_state::{CloseReading, PositionLedger, PositionStatus};
+pub use blob::{blob_headline, collapse_decision, BlobDecision, BlobParams};

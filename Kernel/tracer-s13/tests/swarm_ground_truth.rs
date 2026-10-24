@@ -407,7 +407,7 @@ fn swarm_ground_truth_workflows() {
         }
     }
     println!("--- summary: {passed}/{} cases passed ---", corpus.len());
-    println!("--- gate: STILL CLOSED. Devnet-swarm half landed; remaining: real labeled mainnet routes (+ position-ledger consult validated on real routes). No label is user-facing. ---");
+    println!("--- gate: STILL CLOSED. Devnet-swarm half landed; remaining: real labeled mainnet routes (+ position-ledger consult validated on real routes). Sixth pass landed blob-collapse judgment (src/blob.rs) and verified hiiD's mainnet signature set before a public-RPC 429 halted the MUGDUCK relay chain-walk; no real-route fixture added on partial data. No label is user-facing. ---");
     println!("=== end of W6.2 validation report ===");
 
     assert!(
