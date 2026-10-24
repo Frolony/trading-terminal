@@ -19,9 +19,14 @@ archived pristine crate). Final state: original kernel text + Solana
 2.2.20, `anchor build` exit 0, host clippy clean again (the `map_or` form
 had tripped host clippy 1.99's `unnecessary_map_or` — the revert removes
 that friction too). The vendoring increment is PUSHED (remote
-`0df20ec7`, 2026-10-24 ~07:06 CST). This run adds the §4.1 admin-setup
-slice: `AgentRecord` + `register_agent` / `grant_role` / `revoke_role`
-(genesis-direct form; role-gated lifecycle instructions next).
+`0df20ec7`, 2026-10-24 ~07:06 CST). The §4.1 admin-setup slice landed
+(remote `1a5f53b7`, 2026-10-24 ~07:21 CST): `AgentRecord` +
+`register_agent` / `grant_role` / `revoke_role` (genesis-direct form).
+This increment adds the first lifecycle instructions in design order:
+`post_observation` (Oracle-only, Clock-judged) + `register_transition`
+(TransitionRecord in Registered state; observation must already exist;
+lineage judged at commit, not here). Constraint reports, plans,
+signals, and the remaining lifecycle instructions are next.
 
 **Design:** `files/OWN_IDL_DESIGN.md` (W4.1, validated and revised
 2026-10-24; W4.3 GO given by Carlos 2026-10-24 ~03:39 CST). Placement C: the

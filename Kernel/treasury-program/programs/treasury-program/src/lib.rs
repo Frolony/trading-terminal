@@ -29,9 +29,14 @@
 //! After genesis, changes to what these calls control are executed as
 //! committed `treasury.policy.v1` transitions (design §4.1), never by a
 //! fresh authority signature alone — that execution path is a later
-//! increment. The lifecycle instructions (`post_observation`,
-//! `register_transition`, …) land next, in design order, then §4.2
-//! treasury, then §4.3 distribution.
+//! increment. This increment adds the first lifecycle instructions in
+//! design order: `post_observation` (Oracle-only, Clock-judged freshness)
+//! and `register_transition` (creates the TransitionRecord in Registered
+//! state; the manifest's observation must already exist — the account
+//! constraint enforces it; lineage is judged at commit, not here).
+//! Constraint reports, plans, signals, and the remaining lifecycle
+//! instructions land next, in design order, then §4.2 treasury, then
+//! §4.3 distribution.
 //! Nothing here is deployed: NO devnet deployment in W4.3, NO mainnet step
 //! exists in W4. No instruction here moves value.
 //!
@@ -205,6 +210,116 @@ pub mod treasury_program {
         );
         ctx.accounts.agent_record.apply_role(role, false)
     }
+
+    /// Governance lifecycle (design §4.1): post an observation.
+    ///
+    /// Feeds every transition: a transition's manifest names its
+    /// observation, and the FRESH bit is judged through it at commit.
+    /// Only an active Oracle may post (design §4.1: Oracle role, via the
+    /// Attestor's `may_observe`). Freshness is judged against the Clock
+    /// sysvar, never a client timestamp: a future-dated observation is
+    /// rejected, and an expiry at or before the timestamp is a bad
+    /// window. Confidence is recorded as recorded; the policy minimum
+    /// (`min_obs_confidence`) is enforced at commit, not here. The
+    /// `init` constraint makes the observation id one-time — a second
+    /// post with the same id fails and changes no state (Duplicate in
+    /// the design taxonomy).
+    pub fn post_observation(
+        ctx: Context<PostObservation>,
+        observation_id: u64,
+        timestamp: i64,
+        expiry: i64,
+        confidence: u64,
+        content_hash: [u8; 32],
+    ) -> Result<()> {
+        let record = &ctx.accounts.agent_record;
+        require!(
+            record.agent == ctx.accounts.oracle.key(),
+            TreasuryError::AgentMismatch
+        );
+        require!(
+            record.active && record.is_oracle,
+            TreasuryError::Unauthorized
+        );
+        let now = ctx.accounts.clock.unix_timestamp;
+        validate_observation_window(timestamp, expiry, now)?;
+        let observation = &mut ctx.accounts.observation;
+        observation.observation_id = observation_id;
+        observation.oracle = ctx.accounts.oracle.key();
+        observation.timestamp = timestamp;
+        observation.expiry = expiry;
+        observation.confidence = confidence;
+        observation.content_hash = content_hash;
+        observation.bump = ctx.bumps.observation;
+        Ok(())
+    }
+
+    /// Governance lifecycle (design §4.1): register a transition.
+    ///
+    /// Creates the TransitionRecord in Registered state and freezes the
+    /// transition's manifest inputs (observation, expiry, declared hash).
+    /// The manifest's observation must already exist: the account
+    /// constraint on `observation` enforces that (UnknownObservation in
+    /// the design taxonomy — enforced by account existence, not a
+    /// returned error). The manifest expiry must be in the future
+    /// (BadWindow otherwise). Lineage is deliberately NOT checked here:
+    /// it is judged at commit against the head at commit time (design
+    /// §1.1, bit 10). The frozen constraint set, plans, rounds, and
+    /// signals are stored on this record by later lifecycle
+    /// instructions; this slice creates the record with the planning
+    /// deadline unset (0) until `open_planning` sets it.
+    pub fn register_transition(
+        ctx: Context<RegisterTransition>,
+        transition_id: u64,
+        observation_id: u64,
+        expires_at: i64,
+        declared_hash: [u8; 32],
+    ) -> Result<()> {
+        let now = ctx.accounts.clock.unix_timestamp;
+        validate_transition_expiry(expires_at, now)?;
+        let record = &mut ctx.accounts.transition_record;
+        record.transition_id = transition_id;
+        record.state = STATE_REGISTERED;
+        record.observation_id = observation_id;
+        record.expires_at = expires_at;
+        record.planning_deadline = 0;
+        record.declared_hash = declared_hash;
+        record.bump = ctx.bumps.transition_record;
+        Ok(())
+    }
+}
+
+/// TransitionRecord states (design §3): the kernel's seven, exactly, in
+/// the kernel's order — Registered, Planning, Committable, Committed,
+/// Settled, Rejected, Expired.
+pub const STATE_REGISTERED: u8 = 0;
+pub const STATE_PLANNING: u8 = 1;
+pub const STATE_COMMITTABLE: u8 = 2;
+pub const STATE_COMMITTED: u8 = 3;
+pub const STATE_SETTLED: u8 = 4;
+pub const STATE_REJECTED: u8 = 5;
+pub const STATE_EXPIRED: u8 = 6;
+
+/// Validate an observation's window against on-chain time (design §4.1).
+///
+/// Future-dated observations are verification theater, not data: the
+/// timestamp must not exceed `now`. An expiry at or before the
+/// timestamp is not a window at all.
+pub fn validate_observation_window(timestamp: i64, expiry: i64, now: i64) -> Result<()> {
+    require!(
+        timestamp <= now,
+        TreasuryError::ObservationFromFuture
+    );
+    require!(expiry > timestamp, TreasuryError::BadWindow);
+    Ok(())
+}
+
+/// Validate a transition manifest's expiry against on-chain time
+/// (design §4.1): a manifest already expired at registration is a bad
+/// window and creates nothing.
+pub fn validate_transition_expiry(expires_at: i64, now: i64) -> Result<()> {
+    require!(expires_at > now, TreasuryError::BadWindow);
+    Ok(())
 }
 
 /// Genesis accounts for [`treasury_program::initialize_config`].
@@ -342,6 +457,125 @@ impl AgentRecord {
     }
 }
 
+/// Accounts for [`treasury_program::post_observation`].
+#[derive(Accounts)]
+#[instruction(observation_id: u64)]
+pub struct PostObservation<'info> {
+    /// The posting Oracle's agent record (must exist, be active, and
+    /// hold the Oracle role). Seeds bind it to the signer.
+    #[account(mut, seeds = [b"agent", oracle.key().as_ref()], bump = agent_record.bump)]
+    pub agent_record: Account<'info, AgentRecord>,
+    /// The posting Oracle (signer; pays rent for the observation).
+    #[account(mut)]
+    pub oracle: Signer<'info>,
+    /// Observation PDA, seeds `["observation", observation_id]`.
+    /// One-time init: a duplicate id fails and changes no state.
+    #[account(
+        init,
+        payer = oracle,
+        space = Observation::SPACE,
+        seeds = [b"observation", observation_id.to_le_bytes().as_ref()],
+        bump
+    )]
+    pub observation: Account<'info, Observation>,
+    /// Rent sysvar, required by the `init` constraint.
+    pub system_program: Program<'info, System>,
+    /// Clock sysvar: freshness is judged on-chain, never from a client
+    /// timestamp (design §4.1, the FRESH bit's anchor).
+    pub clock: Sysvar<'info, Clock>,
+}
+
+/// One Oracle-posted observation (design §3 `Observation`).
+///
+/// The FRESH bit reads through this account at commit: `timestamp ≤ now
+/// < expiry` and `confidence ≥ Policy.min_obs_confidence`. The content
+/// hash is the observation's content binding; the content itself lives
+/// off-chain and is attested by the hash.
+#[account]
+pub struct Observation {
+    /// Caller-chosen id (PDA seed component).
+    pub observation_id: u64,
+    /// The posting Oracle's key.
+    pub oracle: Pubkey,
+    /// Observation timestamp (must be ≤ Clock time at posting).
+    pub timestamp: i64,
+    /// Expiry: the observation is fresh only while `now < expiry`.
+    pub expiry: i64,
+    /// Confidence, kernel fixed-point raw (SCALE 1_000_000).
+    pub confidence: u64,
+    /// Content hash binding the off-chain observation content.
+    pub content_hash: [u8; 32],
+    /// PDA bump for the `["observation", id]` seeds.
+    pub bump: u8,
+}
+
+impl Observation {
+    /// 8 (discriminator) + 8 + 32 + 8 + 8 + 8 + 32 + 1.
+    pub const SPACE: usize = 8 + 8 + 32 + 8 + 8 + 8 + 32 + 1;
+}
+
+/// Accounts for [`treasury_program::register_transition`].
+#[derive(Accounts)]
+#[instruction(transition_id: u64, observation_id: u64)]
+pub struct RegisterTransition<'info> {
+    /// The manifest's observation — must already exist (design §4.1:
+    /// UnknownObservation if it does not; enforced by this account
+    /// constraint, not by a returned error).
+    #[account(seeds = [b"observation", observation_id.to_le_bytes().as_ref()], bump = observation.bump)]
+    pub observation: Account<'info, Observation>,
+    /// TransitionRecord PDA, seeds `["transition", transition_id]`.
+    /// One-time init: a duplicate id fails and changes no state.
+    #[account(
+        init,
+        payer = payer,
+        space = TransitionRecord::SPACE,
+        seeds = [b"transition", transition_id.to_le_bytes().as_ref()],
+        bump
+    )]
+    pub transition_record: Account<'info, TransitionRecord>,
+    /// Caller (pays rent). Registration itself is permissionless in the
+    /// design table — no role gates who may create a transition; the
+    /// predicate, not the caller, decides at commit.
+    #[account(mut)]
+    pub payer: Signer<'info>,
+    /// Rent sysvar, required by the `init` constraint.
+    pub system_program: Program<'info, System>,
+    /// Clock sysvar: the manifest expiry is judged on-chain.
+    pub clock: Sysvar<'info, Clock>,
+}
+
+/// One kernel transition's on-chain record (design §3 `TransitionRecord`,
+/// first fields).
+///
+/// Per-transition kernel state lives here, serialized (design §1.2:
+/// load → call → store). This slice carries the manifest inputs and the
+/// state; the frozen constraint set, objectives flag, rounds/signals,
+/// plans, per-transition exceptions, reconciled flag, and realized hash
+/// are added by the lifecycle instructions that own them — each field
+/// lands with the instruction that writes it, not before.
+#[account]
+pub struct TransitionRecord {
+    /// Caller-chosen id (PDA seed component).
+    pub transition_id: u64,
+    /// One of the `STATE_*` constants (kernel's seven states).
+    pub state: u8,
+    /// The manifest's observation id (FRESH reads through it).
+    pub observation_id: u64,
+    /// Manifest expiry (past it, the transition can only expire).
+    pub expires_at: i64,
+    /// Planning deadline, set by `open_planning`; 0 until then.
+    pub planning_deadline: i64,
+    /// The transition's declared next hash (commit/commitment anchor).
+    pub declared_hash: [u8; 32],
+    /// PDA bump for the `["transition", id]` seeds.
+    pub bump: u8,
+}
+
+impl TransitionRecord {
+    /// 8 (discriminator) + 8 + 1 + 8 + 8 + 8 + 32 + 1.
+    pub const SPACE: usize = 8 + 8 + 1 + 8 + 8 + 8 + 32 + 1;
+}
+
 /// Program errors (design §4 taxonomy, first entries).
 #[error_code]
 pub enum TreasuryError {
@@ -360,6 +594,13 @@ pub enum TreasuryError {
     /// Reputation outside 0–100 units.
     #[msg("Reputation out of bounds: 0 to 100 units.")]
     InvalidReputation,
+    /// Observation timestamp is after on-chain time — future-dated.
+    #[msg("Observation timestamp is in the future.")]
+    ObservationFromFuture,
+    /// The window is not a window: expiry at/before timestamp, or a
+    /// manifest already expired at registration.
+    #[msg("Bad window: expiry must be after the timestamp / in the future.")]
+    BadWindow,
 }
 
 #[cfg(test)]
@@ -418,5 +659,61 @@ mod tests {
         // An unknown code changes nothing and errors.
         assert!(record.apply_role(3, true).is_err());
         assert!(record.is_admin && !record.is_oracle && !record.is_evaluator);
+    }
+
+    #[test]
+    fn observation_and_transition_spaces_match_fields() {
+        assert_eq!(Observation::SPACE, 105);
+        assert_eq!(TransitionRecord::SPACE, 74);
+    }
+
+    #[test]
+    fn transition_states_follow_kernel_order() {
+        // Design §3: the kernel's seven states, exactly, in order.
+        assert_eq!(STATE_REGISTERED, 0);
+        assert_eq!(STATE_PLANNING, 1);
+        assert_eq!(STATE_COMMITTABLE, 2);
+        assert_eq!(STATE_COMMITTED, 3);
+        assert_eq!(STATE_SETTLED, 4);
+        assert_eq!(STATE_REJECTED, 5);
+        assert_eq!(STATE_EXPIRED, 6);
+    }
+
+    #[test]
+    fn observation_window_validation() {
+        // Valid window passes.
+        assert!(validate_observation_window(100, 200, 150).is_ok());
+        // Future-dated observation is rejected (verification theater).
+        assert!(validate_observation_window(200, 300, 150).is_err());
+        // Expiry at the timestamp is not a window.
+        assert!(validate_observation_window(100, 100, 150).is_err());
+        // Expiry before the timestamp is not a window.
+        assert!(validate_observation_window(100, 90, 150).is_err());
+        // Timestamp exactly at now is not future-dated.
+        assert!(validate_observation_window(150, 200, 150).is_ok());
+    }
+
+    #[test]
+    fn transition_expiry_validation() {
+        assert!(validate_transition_expiry(200, 150).is_ok());
+        // Already expired at registration creates nothing.
+        assert!(validate_transition_expiry(150, 150).is_err());
+        assert!(validate_transition_expiry(100, 150).is_err());
+    }
+
+    #[test]
+    fn fresh_transition_record_starts_registered() {
+        let record = TransitionRecord {
+            transition_id: 7,
+            state: STATE_REGISTERED,
+            observation_id: 3,
+            expires_at: 1_000,
+            planning_deadline: 0,
+            declared_hash: [9u8; 32],
+            bump: 255,
+        };
+        assert_eq!(record.state, STATE_REGISTERED);
+        assert_eq!(record.planning_deadline, 0);
+        assert_eq!(record.observation_id, 3);
     }
 }
