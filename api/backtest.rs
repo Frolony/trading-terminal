@@ -44,8 +44,9 @@
 //                    period (aroon pure variants).
 //   Params that are not tunable for the chosen scheme are rejected with
 //   INVALID_PARAM (strict contract so the N7.3 UI knows what's editable).
-// Response: {ok, scheme:{id,name,playbook_no,playbook_asset,playbook_edge_pp?,
-//   tunable,params}, pair, pool_address, source,
+// Response: {ok, run_id ("bt-<scheme>-<12 hex fnv1a>", deterministic for the
+//   experiment), run_at (ISO-8601 UTC of computation), run_epoch, scheme:{id,name,
+//   playbook_no,playbook_asset,playbook_edge_pp?,tunable,params}, pair, pool_address, source,
 //   data:{from,to,bars,trading_from,warmup_bars,forming_excluded,from_param?,
 //   to_param?,target_days,complete,note?},
 //   fee:{fee_bps_per_side,deploy_pct,fill,long_only,one_position,benchmark},
@@ -127,6 +128,41 @@ fn parse_query(req: &Request) -> Query {
         }
     }
     q
+}
+
+// ---- N7.5 (A39): immutable run identifier. ----
+// The run ID is a pure function of everything that determines the result
+// (scheme, source, params, range, fee, deploy, target days, and the actual
+// data window the engine ran on), so an identical experiment on identical
+// data re-audits to the identical ID. run_at stamps when the result was
+// computed (UTC). Cached hits keep the original run's stamp — the ID is
+// still what a fresh run would produce.
+fn fnv1a64(s: &str) -> u64 {
+    let mut h: u64 = 0xcbf29ce484222325;
+    for b in s.bytes() {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    h
+}
+
+// Epoch seconds → ISO-8601 UTC ("2026-10-24T04:20:00Z"). Hand-rolled so the
+// backtest binary needs no date crate (Howard Hinnant's days→civil date).
+fn epoch_to_iso(ts: u64) -> String {
+    let days = (ts / 86400) as i64;
+    let secs = ts % 86400;
+    let z = days + 719468;
+    let era = z.div_euclid(146097);
+    let doe = z - era * 146097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = if m <= 2 { y + 1 } else { y };
+    format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
+        year, m, d, secs / 3600, (secs % 3600) / 60, secs % 60)
 }
 
 #[tokio::main]
@@ -219,6 +255,21 @@ async fn handler(req: Request) -> Result<Value, Error> {
     let warmup = built.warmup_bars;
     let res = run_engine(&mut built, &bars_all, warmup, false, fee_bps, deploy_pct);
 
+    // N7.5 (A39) — immutable run identifier, computed AFTER the data window is
+    // known so the ID binds to the exact bars the engine ran on. (Placed before
+    // scheme_map because built.params is moved into the response below.)
+    let run_identity = format!("bt|{}|{}|{}|{:?}|{:?}|{}|{}|{}|{}|{}|{}",
+        built.def.id,
+        ohlcv_source::cache_key(&source, 1, target_days),
+        serde_json::to_string(&built.params).unwrap_or_default(),
+        q.from, q.to, fee_bps, deploy_pct, target_days,
+        bars_all.first().map(|b| b.0).unwrap_or(0),
+        bars_all.last().map(|b| b.0).unwrap_or(0),
+        n);
+    let run_id = format!("bt-{}-{:012x}", built.def.id, fnv1a64(&run_identity) & 0xFFFFFFFFFFFF);
+    let run_epoch = now_secs;
+    let run_at = epoch_to_iso(run_epoch);
+
     let mut scheme_map = serde_json::Map::with_capacity(8);
     scheme_map.insert("id".to_string(), json!(built.def.id));
     scheme_map.insert("name".to_string(), json!(built.name));
@@ -245,6 +296,9 @@ async fn handler(req: Request) -> Result<Value, Error> {
 
     let resp = json!({
         "ok": true,
+        "run_id": run_id,
+        "run_at": run_at,
+        "run_epoch": run_epoch,
         "scheme": Value::Object(scheme_map),
         "pair": pair_label,
         "pool_address": pool_addr,
@@ -277,4 +331,46 @@ async fn handler(req: Request) -> Result<Value, Error> {
         guard.insert(cache_key, (Instant::now(), resp.clone()));
     }
     Ok(resp)
+}
+
+#[cfg(test)]
+mod n75_runid_tests {
+    use super::*;
+
+    #[test]
+    fn epoch_to_iso_epoch_is_1970() {
+        assert_eq!(epoch_to_iso(0), "1970-01-01T00:00:00Z");
+    }
+
+    #[test]
+    fn epoch_to_iso_known_date() {
+        // 2026-10-24T00:00:00Z — verified against `date -u`.
+        assert_eq!(epoch_to_iso(1792800000), "2026-10-24T00:00:00Z");
+        assert_eq!(epoch_to_iso(1792800061), "2026-10-24T00:01:01Z");
+    }
+
+    #[test]
+    fn epoch_to_iso_leap_day() {
+        // 2024-02-29T12:00:00Z (leap year) — the date math must not drift.
+        assert_eq!(epoch_to_iso(1709208000), "2024-02-29T12:00:00Z");
+    }
+
+    #[test]
+    fn fnv1a64_deterministic_and_sensitive() {
+        let a = fnv1a64("bt|supertrend-cross|sol-usd-1-730|{\"atr_period\":10}|None|None|26|95|730");
+        let b = fnv1a64("bt|supertrend-cross|sol-usd-1-730|{\"atr_period\":10}|None|None|26|95|730");
+        assert_eq!(a, b);
+        assert_ne!(a, fnv1a64("bt|supertrend-cross|sol-usd-1-730|{\"atr_period\":11}|None|None|26|95|730"));
+        assert_ne!(a, fnv1a64(""));
+    }
+
+    #[test]
+    fn run_id_shape() {
+        // Mirrors the format! in the handler: bt-<scheme>-<12 lowercase hex>.
+        let id = format!("bt-{}-{:012x}", "supertrend-cross", fnv1a64("x") & 0xFFFFFFFFFFFF);
+        assert!(id.starts_with("bt-supertrend-cross-"));
+        let hex: String = id.rsplit('-').next().unwrap().to_string();
+        assert_eq!(hex.len(), 12);
+        assert!(hex.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
+    }
 }

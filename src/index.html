@@ -2126,6 +2126,7 @@ async function btRun(){
   const j=await r.json();
   if(!j||j.ok!==true)throw Error((j&&j.error)?j.error+(j.message?': '+j.message:''):'backtest failed');
   btLastCfg={scheme:c.scheme.id,params:Object.fromEntries(Object.keys(c.params).map(k=>[k,String(c.params[k])])),pair:c.pair,from:c.from,to:c.to,fee_bps:String(c.fee_bps),deploy_pct:String(c.deploy_pct),range:btRange};
+  btLastCfg.runId=j.run_id||null;btLastCfg.runAt=j.run_at||null; /* N7.5 */
   await btRenderResults(j);
   $('btStatus').textContent='Done · '+(j.cached?'cached result':'fresh result');
  }catch(e){console.error('backtest failed',e);$('btResults').innerHTML='<div class="empty">Backtest failed: '+esc(e.message||e)+'</div>';$('btStatus').textContent='Failed';}
@@ -2186,14 +2187,38 @@ async function btRenderResults(j){
  h+='<div class="sub" style="margin-top:12px">Data: '+btDate(d.from)+' → '+btDate(d.to)+' · '+d.bars+' daily bars · warmup '+d.warmup_bars+' · source '+esc(j.source)+' · pair '+esc(j.pair)+'</div>';
  h+='<div class="sub">Fee model: '+f.fee_bps_per_side+' bps/side · '+f.deploy_pct+'% deploy · fill-at-close · long-only · one position'+(j.cached?' · cached':'')+'</div>';
  if(s.playbook_edge_pp!=null)h+='<div class="sub">Playbook historical context: #'+s.playbook_no+' on '+esc(s.playbook_asset)+' measured +'+s.playbook_edge_pp+'pp — historical, not a promise.</div>';
+ h+=btRunIdHtml(j.run_id,j.run_at); /* N7.5 */
  h+='<div class="sub" style="margin-top:8px">'+esc(j.disclaimer)+'</div>';
  $('btResults').innerHTML=h;
+ btWireRunIdCopy(j.run_id,j.run_at); /* N7.5 */
  try{
   const or=await fetch('/api/ohlcv?pair='+encodeURIComponent($('btPair').value));
   const oj=await or.json();
   btDrawCurves(j,oj);
  }catch(e){console.error('BH curve fetch failed',e);btDrawCurves(j,null);}
 }
+/*__N75_RUNID_START__*/
+/* N7.5 (A39): immutable run identifier — the server stamps every completed
+   backtest with a deterministic run ID (a pure function of the experiment:
+   scheme, source, params, range, fee, deploy, and the actual data window) plus
+   the UTC run timestamp. btRenderResults renders btRunIdHtml in the provenance
+   block and btWireRunIdCopy wires the Copy button. Identical params + data →
+   identical ID, so a result can be re-audited against a saved config or a
+   paper-live deployment. Saved configs and paper-live deployments carry the ID
+   of the backtest run they came from (btLastCfg.runId → cfg.runId → dep.runId). */
+function btRunIdHtml(runId,runAt){
+ const id=String(runId||''),at=String(runAt||'');
+ if(!id)return '';
+ return '<div class="sub" style="margin-top:8px">Run ID: <code class="btcode" style="user-select:all">'+esc(id)+'</code>'
+  +(at?' · <span title="UTC time this result was computed">'+esc(at)+'</span>':'')
+  +' <button type="button" class="action" id="btRunIdCopy" title="Copy the run ID and timestamp">Copy</button></div>';
+}
+function btWireRunIdCopy(runId,runAt){
+ const b=$('btRunIdCopy');if(!b)return;
+ b.onclick=()=>{const txt=String(runId||'')+(runAt?' @ '+runAt:'');
+  if(navigator.clipboard&&navigator.clipboard.writeText)navigator.clipboard.writeText(txt).then(()=>toast('Run ID copied.'),()=>toast('Copy failed — select the run ID manually.'));else toast('Copy not available in this browser.');};
+}
+/*__N75_RUNID_END__*/
 function btDrawCurves(j,oj){
  const svg=$('btCurve');if(!svg)return;
  const curve=j.result.equity_curve;
@@ -2240,7 +2265,7 @@ function btRenderConfigs(){
  const store=btLoadCfgStore(),list=store.configs[btIdentity()]||[];
  const box=$('btCfgList');
  if(!list.length){box.innerHTML='<div class="empty">No saved configurations yet. Run a backtest, name it, and save it here.</div>';return;}
- box.innerHTML=list.map((c,i)=>'<div class="btcfg"><div><strong>'+esc(c.name)+'</strong><div class="sub">'+esc(c.scheme)+' · '+esc(c.pair)+' · fee '+esc(c.fee_bps)+'bps · deploy '+esc(c.deploy_pct)+'%</div></div><div style="display:flex;gap:6px"><button type="button" class="action" data-btdeploy="'+i+'">Deploy</button><button type="button" class="action" data-btload="'+i+'">Load</button><button type="button" class="action sell" data-btdel="'+i+'">Delete</button></div></div>').join('');
+ box.innerHTML=list.map((c,i)=>'<div class="btcfg"><div><strong>'+esc(c.name)+'</strong><div class="sub">'+esc(c.scheme)+' · '+esc(c.pair)+' · fee '+esc(c.fee_bps)+'bps · deploy '+esc(c.deploy_pct)+'%'+(c.runId?' · run <span style="user-select:all">'+esc(String(c.runId))+'</span>':'')+'</div></div><div style="display:flex;gap:6px"><button type="button" class="action" data-btdeploy="'+i+'">Deploy</button><button type="button" class="action" data-btload="'+i+'">Load</button><button type="button" class="action sell" data-btdel="'+i+'">Delete</button></div></div>').join('');
  box.querySelectorAll('[data-btdeploy]').forEach(b=>b.onclick=()=>plDeploySaved(Number(b.dataset.btdeploy)));
  box.querySelectorAll('[data-btload]').forEach(b=>b.onclick=()=>btLoadConfig(Number(b.dataset.btload)));
  box.querySelectorAll('[data-btdel]').forEach(b=>b.onclick=()=>{const s2=btLoadCfgStore(),l=s2.configs[btIdentity()]||[];const gone=l.splice(Number(b.dataset.btdel),1)[0];btSaveCfgStore(s2);btRenderConfigs();toast('Deleted '+(gone?gone.name:'configuration')+'.');});
@@ -2319,7 +2344,8 @@ function plNormalizeCfg(raw){
  const fee=Math.min(1000,Math.max(0,plNum(raw.fee_bps,26)));
  const dep=Math.min(100,Math.max(1,plNum(raw.deploy_pct,95)));
  const pair=BT_PAIRS.some(x=>x.id===raw.pair)?raw.pair:BT_PAIRS[0].id;
- return {scheme:s.id,params:params,pair:pair,fee_bps:fee,deploy_pct:dep};
+ return {scheme:s.id,params:params,pair:pair,fee_bps:fee,deploy_pct:dep,
+  runId:raw.runId?String(raw.runId).slice(0,64):null,runAt:raw.runAt?String(raw.runAt).slice(0,32):null}; /* N7.5 */
 }
 function plDeployCfg(cfg,name){
  const store=plLoadStore(),id=btIdentity();
@@ -2329,6 +2355,7 @@ function plDeployCfg(cfg,name){
   name:String(name||'Paper-live deployment').slice(0,80),
   scheme:cfg.scheme,params:cfg.params,pair:cfg.pair,
   fee_bps:cfg.fee_bps,deploy_pct:cfg.deploy_pct,
+  runId:cfg.runId||null,runAt:cfg.runAt||null, /* N7.5: the backtest run this deployment was deployed from */
   deployed_at:nowS,createdAt:new Date().toISOString()};
  list.unshift(dep);
  while(list.length>25)list.pop();
@@ -2372,7 +2399,7 @@ function plCardShell(d,i){
  const paramTxt=Object.keys(d.params||{}).map(k=>k+'='+d.params[k]).join(' · ');
  return '<div class="plcard" id="plcard_'+i+'" data-plid="'+esc(d.id)+'">'
   +'<div class="plhead"><span class="pltitle">'+esc(d.name||label)+'</span></div>'
-  +'<div class="sub">'+esc(label)+(paramTxt?' · '+esc(paramTxt):'')+' · '+esc(plPairLabel(d.pair))+' · fee '+esc(String(d.fee_bps))+'bps · deploy '+esc(String(d.deploy_pct))+'% · deployed '+btDate(d.deployed_at)+'</div>'
+  +'<div class="sub">'+esc(label)+(paramTxt?' · '+esc(paramTxt):'')+' · '+esc(plPairLabel(d.pair))+' · fee '+esc(String(d.fee_bps))+'bps · deploy '+esc(String(d.deploy_pct))+'% · deployed '+btDate(d.deployed_at)+(d.runId?' · run <span style="user-select:all">'+esc(d.runId)+'</span>':'')+'</div>'
   +'<div id="plbody_'+i+'"><div class="empty">Loading paper-live track record…</div></div>'
   +'<div class="plactions"><button type="button" class="action" data-plrefresh="'+i+'">Refresh</button><button type="button" class="action sell" data-plundeploy="'+i+'">Undeploy</button></div>'
   +'<div class="sub" style="margin-top:6px">Simulated fills at daily closes — not trading. The record lives on this device only.</div>'
