@@ -12,8 +12,11 @@
 //                                                          -> {namespaces}
 //   POST /api/sync {action:"push", namespaces} (Bearer)    -> {namespaces: merged}
 //
-// Auth: the client asks the wallet to signMessage exactly
-//   "Turnpool sync · <nonce> · <issuedAt>"
+// Auth: the client asks the wallet to signMessage exactly the
+// plain-language message from challenge_message (N2.3) — site name +
+// purpose, an explicit "cannot move funds" line, nonce/issued-at labeled
+// as security codes. The client builder (syncChallengeMessage in
+// src/index.html) must stay byte-identical to it.
 // (signMessage for the login challenge ONLY — never signTransaction, never a
 // chain transaction). The server verifies the ed25519 signature against the
 // pubkey, then issues a 24 h HMAC token (SYNC_HMAC_SECRET). The token is the
@@ -80,9 +83,14 @@ fn hex_encode(bytes: &[u8]) -> String {
 }
 
 /// The exact string the wallet signs for the login challenge. The client
-/// builds the identical string; any drift here breaks auth by design.
+/// builds the identical string (syncChallengeMessage); any drift here
+/// breaks auth by design. Plain language (N2.3): purpose first, an explicit
+/// cannot-move-funds line, nonce/issued-at labeled as security codes.
 fn challenge_message(nonce: &str, issued_at: u64) -> String {
-    format!("Turnpool sync · {} · {}", nonce, issued_at)
+    format!(
+        "Sign in to Turnpool sync\nThis signs you in so your settings follow this wallet across devices.\nThis signature cannot move funds, approve transactions, or spend anything.\nSecurity code: {}\nIssued at: {}",
+        nonce, issued_at
+    )
 }
 
 fn random_nonce() -> String {
@@ -656,7 +664,7 @@ mod tests {
     fn challenge_message_is_stable() {
         assert_eq!(
             challenge_message("abc123", 1700000000),
-            "Turnpool sync · abc123 · 1700000000"
+            "Sign in to Turnpool sync\nThis signs you in so your settings follow this wallet across devices.\nThis signature cannot move funds, approve transactions, or spend anything.\nSecurity code: abc123\nIssued at: 1700000000"
         );
     }
 
