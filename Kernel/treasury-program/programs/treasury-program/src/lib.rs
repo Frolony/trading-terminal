@@ -61,6 +61,18 @@
 //! lands with its owning increment), so this slice enforces the
 //! active half of eligibility and defers the group-overlap half — the
 //! gap is documented, not papered over.
+//! This increment adds `submit_signal` (design §4.1): Registered-or-
+//! Planning state, support in range, eligible (active) agent, one signal
+//! per agent per round (the SignalRecord PDA seeds enforce the duplicate
+//! rule — a second signal from the same agent in the same round fails at
+//! account creation). The kernel's monotone-revision rule is pure-helper
+//! tested here but its on-chain wiring awaits `advance_round`: only
+//! round 0 is reachable until rounds advance, and the kernel's monotone
+//! branch is vacuous in round 0 (it compares against a previous round
+//! that does not exist yet); `advance_round` will snapshot the previous
+//! round's aggregates so the check can read its mean. The TransitionRecord
+//! gains `round_count` (SPACE 110 → 114), starting at 1 — the kernel
+//! starts every transition with one empty round.
 //! Nothing here is deployed: NO devnet deployment in W4.3, NO mainnet step
 //! exists in W4. No instruction here moves value.
 //!
@@ -312,6 +324,7 @@ pub mod treasury_program {
         record.expires_at = expires_at;
         record.planning_deadline = 0;
         record.plan_count = 0;
+        record.round_count = 1;
         record.declared_hash = declared_hash;
         record.bump = ctx.bumps.transition_record;
         Ok(())
@@ -435,6 +448,80 @@ pub mod treasury_program {
         });
         Ok(())
     }
+
+    /// Governance lifecycle (design §4.1): submit a signal for a transition.
+    ///
+    /// Mirrors the kernel's `submit_signal` in check order: support in
+    /// range (`SupportOutOfRange` — support is a kernel `Amount`, so
+    /// 1_000_000 raw is 1.0 and anything above it is out of range),
+    /// Registered-or-Planning state (`BadState` otherwise — signals are
+    /// accepted in both states, exactly as the kernel allows), the
+    /// round index under `max_rounds` from the launch policy
+    /// (`RoundsExhausted`), the round matching the transition's
+    /// current round (`BadState` — a stale round index names a PDA
+    /// that is not the live round), and the agent active (`NotEligible`;
+    /// the group-overlap half of kernel eligibility awaits
+    /// `relevant_groups` on the record, the same carried gap as plans).
+    /// The signal agent == caller rule is structural: the
+    /// `SignalRecord` PDA seeds bind the signal to the signer, and the
+    /// AgentRecord must match the signer (`AgentMismatch` otherwise).
+    /// The duplicate rule is structural too: the seeds bind one signal
+    /// per (transition, round, agent), so a second signal in the same
+    /// round fails at account creation and changes no state
+    /// (`AlreadySignalled` in the design taxonomy, enforced by account
+    /// existence, like the plan duplicate before it). The raw weight is
+    /// stored as supplied; the effective weight (raw × relevance ×
+    /// influence × group policy, FlatWeights at launch) is computed
+    /// when the recorded signals are replayed through the kernel at
+    /// commit — the program never trusts a client-computed total.
+    /// Monotone revision, stated plainly: the kernel refuses a
+    /// re-signal that moves farther from the previous round's weighted
+    /// mean than the agent's previous signal did, but that check needs
+    /// the previous round's mean, which only exists once a round has
+    /// advanced — and rounds cannot advance until `advance_round`
+    /// lands. The pure check is written and tested now (see
+    /// [`check_monotone_revision`]); its on-chain wiring lands with
+    /// `advance_round`, which snapshots the previous round's
+    /// aggregates onto the TransitionRecord. Until then only round 0
+    /// is reachable, where the kernel's monotone branch is vacuous.
+    pub fn submit_signal(
+        ctx: Context<SubmitSignal>,
+        transition_id: u64,
+        round: u32,
+        raw: u64,
+        support: u64,
+    ) -> Result<()> {
+        let _ = transition_id;
+        let caller_key = ctx.accounts.caller.key();
+        let record = &ctx.accounts.agent_record;
+        require!(
+            record.agent == caller_key,
+            TreasuryError::AgentMismatch
+        );
+        let transition = &mut ctx.accounts.transition_record;
+        can_submit_signal(
+            record.active,
+            transition.state,
+            support,
+            round,
+            kernel_bridge::launch_policy().max_rounds,
+            transition.round_count.checked_sub(1).unwrap_or(0),
+        )?;
+        let signal = &mut ctx.accounts.signal_record;
+        signal.transition_id = transition.transition_id;
+        signal.round = round;
+        signal.agent = caller_key;
+        signal.raw = raw;
+        signal.support = support;
+        signal.bump = ctx.bumps.signal_record;
+        emit!(SignalSubmitted {
+            transition_id: transition.transition_id,
+            agent: caller_key,
+            raw,
+            support,
+        });
+        Ok(())
+    }
 }
 
 /// Who may open planning, as a pure check (design §4.1, kernel
@@ -494,6 +581,78 @@ pub fn can_submit_plan(
     require!(plan_count < max_plans, TreasuryError::TooManyPlans);
     require!(plan_expires_at > now, TreasuryError::BadWindow);
     Ok(())
+}
+
+/// Support ceiling, kernel `Amount::ONE` in raw units (SCALE 1_000_000):
+/// a signal's support is a fraction of the round's weight, so anything
+/// above 1.0 is out of range by construction.
+pub const SUPPORT_ONE_RAW: u64 = 1_000_000;
+
+/// Who may submit a signal, as a pure check (design §4.1, kernel
+/// `submit_signal`, in the kernel's check order minus the caller
+/// binding and the duplicate rule, both structural — PDA seeds plus the
+/// AgentRecord match, and one SignalRecord per (transition, round,
+/// agent)): support in range first, then Registered-or-Planning state,
+/// then the round index under `max_rounds` and equal to the
+/// transition's current round (a stale round is a bad state, not a
+/// signal for a round that is not live), then the agent active (the
+/// active half of kernel eligibility — the group-overlap half awaits
+/// `relevant_groups`, as with plans).
+pub fn can_submit_signal(
+    agent_active: bool,
+    state: u8,
+    support: u64,
+    round: u32,
+    max_rounds: u32,
+    current_round: u32,
+) -> Result<()> {
+    require!(
+        support <= SUPPORT_ONE_RAW,
+        TreasuryError::SupportOutOfRange
+    );
+    require!(
+        state == STATE_REGISTERED || state == STATE_PLANNING,
+        TreasuryError::BadState
+    );
+    require!(round < max_rounds, TreasuryError::RoundsExhausted);
+    require!(round == current_round, TreasuryError::BadState);
+    require!(agent_active, TreasuryError::NotEligible);
+    Ok(())
+}
+
+/// The kernel's monotone-revision rule for a re-signal (kernel
+/// `submit_signal`): let `mean` be the previous round's weighted mean
+/// support and `prev_support` the agent's previous-round signal. The
+/// new support is admissible only if it is no farther from the mean
+/// than the previous signal was: `|support - mean| <=
+/// |prev_support - mean|`. A revision that moves away from the mean
+/// (revision happens between rounds, never by jumping farther away)
+/// is refused. Pure and tested now; the on-chain wiring lands with
+/// `advance_round`, which snapshots the previous round's mean — until
+/// then only round 0 is reachable and this branch is vacuous.
+pub fn check_monotone_revision(
+    prev_support: u64,
+    prev_mean: u64,
+    support: u64,
+) -> Result<()> {
+    require!(
+        support.abs_diff(prev_mean) <= prev_support.abs_diff(prev_mean),
+        TreasuryError::MonotoneRevision
+    );
+    Ok(())
+}
+
+/// Event for [`treasury_program::submit_signal`] (design §4.1): the
+/// transition, the signalling agent, and the signal as submitted — the
+/// authorization context the design requires on every event. The
+/// effective weight is computed at commit replay, never trusted from
+/// the client, so it is not in the event.
+#[event]
+pub struct SignalSubmitted {
+    pub transition_id: u64,
+    pub agent: Pubkey,
+    pub raw: u64,
+    pub support: u64,
 }
 
 /// A plan's claims must fit the account and the kernel's keyed-map
@@ -815,7 +974,8 @@ pub struct OpenPlanning<'info> {
 ///
 /// Per-transition kernel state lives here, serialized (design §1.2:
 /// load → call → store). This slice carries the manifest inputs, the
-/// recorded proposer, the state, and the plan count; the frozen
+/// recorded proposer, the state, the plan count, and the round count;
+/// the frozen
 /// constraint set, objectives flag, rounds/signals, per-transition
 /// exceptions, reconciled flag, and realized hash are added by the
 /// lifecycle instructions that own them — each field lands with the
@@ -838,6 +998,10 @@ pub struct TransitionRecord {
     /// Plans submitted so far, counted by `submit_plan` so the
     /// kernel's `TooManyPlans` rule is enforceable on-chain.
     pub plan_count: u32,
+    /// Rounds so far, starting at 1 — the kernel starts every
+    /// transition with one empty round, and `advance_round` adds one.
+    /// `submit_signal` signals the current round, `round_count - 1`.
+    pub round_count: u32,
     /// The transition's declared next hash (commit/commitment anchor).
     pub declared_hash: [u8; 32],
     /// PDA bump for the `["transition", id]` seeds.
@@ -845,8 +1009,8 @@ pub struct TransitionRecord {
 }
 
 impl TransitionRecord {
-    /// 8 (discriminator) + 8 + 1 + 32 + 8 + 8 + 8 + 4 + 32 + 1.
-    pub const SPACE: usize = 8 + 8 + 1 + 32 + 8 + 8 + 8 + 4 + 32 + 1;
+    /// 8 (discriminator) + 8 + 1 + 32 + 8 + 8 + 8 + 4 + 4 + 32 + 1.
+    pub const SPACE: usize = 8 + 8 + 1 + 32 + 8 + 8 + 8 + 4 + 4 + 32 + 1;
 }
 
 /// Maximum claims per plan (design §3: a plan is a capacity-claims
@@ -933,6 +1097,64 @@ impl PlanRecord {
     pub const SPACE: usize = 8 + 8 + 32 + 8 + 164 + 32 + 1;
 }
 
+/// Accounts for [`treasury_program::submit_signal`].
+#[derive(Accounts)]
+#[instruction(transition_id: u64, round: u32)]
+pub struct SubmitSignal<'info> {
+    /// The signalling agent's record (must exist and be bound to the
+    /// signer; active flag is the eligibility half enforced here).
+    #[account(seeds = [b"agent", caller.key().as_ref()], bump = agent_record.bump)]
+    pub agent_record: Account<'info, AgentRecord>,
+    /// The transition record to signal against (Registered or Planning).
+    #[account(mut, seeds = [b"transition", transition_id.to_le_bytes().as_ref()], bump = transition_record.bump)]
+    pub transition_record: Account<'info, TransitionRecord>,
+    /// SignalRecord PDA, seeds `["signal", transition_id, round, caller]`.
+    /// One-time init: a second signal from the same agent in the same
+    /// round fails and changes no state (AlreadySignalled in the
+    /// design taxonomy).
+    #[account(
+        init,
+        payer = caller,
+        space = SignalRecord::SPACE,
+        seeds = [b"signal", transition_id.to_le_bytes().as_ref(), round.to_le_bytes().as_ref(), caller.key().as_ref()],
+        bump
+    )]
+    pub signal_record: Account<'info, SignalRecord>,
+    /// The signalling agent (signer; pays rent for the signal record).
+    #[account(mut)]
+    pub caller: Signer<'info>,
+    /// Rent sysvar, required by the `init` constraint.
+    pub system_program: Program<'info, System>,
+}
+
+/// One agent's signal in one round of a transition (design §3
+/// `Round / Signal`, per-agent leg).
+///
+/// The kernel's round aggregates (total, weighted) are computed at
+/// commit replay from these records — they are not stored here, so no
+/// client-supplied total can be trusted. The monotone-revision mean
+/// likewise comes from replay, not from this record.
+#[account]
+pub struct SignalRecord {
+    /// The transition this signal belongs to (PDA seed component).
+    pub transition_id: u64,
+    /// The round signalled (PDA seed component).
+    pub round: u32,
+    /// The signalling agent's key (PDA seed component).
+    pub agent: Pubkey,
+    /// The raw weight supplied (kernel `Amount` raw, SCALE 1_000_000).
+    pub raw: u64,
+    /// Support, kernel `Amount` raw, at most [`SUPPORT_ONE_RAW`].
+    pub support: u64,
+    /// PDA bump for the `["signal", transition_id, round, agent]` seeds.
+    pub bump: u8,
+}
+
+impl SignalRecord {
+    /// 8 (discriminator) + 8 + 4 + 32 + 8 + 8 + 1.
+    pub const SPACE: usize = 8 + 8 + 4 + 32 + 8 + 8 + 1;
+}
+
 /// Program errors (design §4 taxonomy, first entries).
 #[error_code]
 pub enum TreasuryError {
@@ -982,6 +1204,17 @@ pub enum TreasuryError {
     /// entries, or a resource id claimed twice.
     #[msg("Invalid claims: too many, or a resource claimed twice.")]
     InvalidClaims,
+    /// Signal support above kernel `Amount::ONE` (1_000_000 raw).
+    #[msg("Signal support out of range: at most 1.0.")]
+    SupportOutOfRange,
+    /// The round index is at or beyond `max_rounds` (3 at launch).
+    #[msg("Rounds exhausted: round index at or beyond max_rounds.")]
+    RoundsExhausted,
+    /// A re-signal moved farther from the previous round's weighted
+    /// mean than the agent's previous signal — revision must move
+    /// toward the mean, never away from it.
+    #[msg("Monotone revision violated: re-signal moved away from the previous round's mean.")]
+    MonotoneRevision,
 }
 
 #[cfg(test)]
@@ -1045,9 +1278,54 @@ mod tests {
     #[test]
     fn observation_and_transition_spaces_match_fields() {
         assert_eq!(Observation::SPACE, 105);
-        // 110: the proposer key (32) joined with open_planning, and the
-        // plan count (4) with submit_plan.
-        assert_eq!(TransitionRecord::SPACE, 110);
+        // 114: the proposer key (32) joined with open_planning, the
+        // plan count (4) with submit_plan, and the round count (4)
+        // with submit_signal.
+        assert_eq!(TransitionRecord::SPACE, 114);
+    }
+
+    #[test]
+    fn signal_record_space_matches_fields() {
+        // 8 + 8 + 4 + 32 + 8 + 8 + 1 = 69.
+        assert_eq!(SignalRecord::SPACE, 69);
+        assert_eq!(SUPPORT_ONE_RAW, 1_000_000);
+    }
+
+    #[test]
+    fn submit_signal_gate_matrix() {
+        // Caller binding and the duplicate rule are structural (PDA
+        // seeds + AgentRecord match; one SignalRecord per
+        // (transition, round, agent)), so the helper takes no caller
+        // argument. max_rounds 3, current round 0 at launch.
+        let base = |state: u8, support: u64, round: u32, active: bool| {
+            can_submit_signal(active, state, support, round, 3, 0)
+        };
+        // The clean cases pass: Registered or Planning, round 0.
+        assert!(base(STATE_REGISTERED, 500_000, 0, true).is_ok());
+        assert!(base(STATE_PLANNING, 1_000_000, 0, true).is_ok());
+        // Support above 1.0 is out of range, checked first.
+        assert!(base(STATE_REGISTERED, 1_000_001, 0, true).is_err());
+        // Wrong state refuses (Committed, Settled, Rejected, Expired).
+        assert!(base(STATE_COMMITTED, 500_000, 0, true).is_err());
+        assert!(base(STATE_SETTLED, 500_000, 0, true).is_err());
+        // Round at max_rounds is exhausted; a stale round is bad state.
+        assert!(base(STATE_PLANNING, 500_000, 3, true).is_err());
+        assert!(base(STATE_PLANNING, 500_000, 1, true).is_err());
+        // Inactive agents are not eligible.
+        assert!(base(STATE_PLANNING, 500_000, 0, false).is_err());
+    }
+
+    #[test]
+    fn monotone_revision_gate() {
+        // Mean 600_000, previous signal 500_000 (|diff| 100_000).
+        // Moving toward the mean passes; holding passes; moving away fails.
+        assert!(check_monotone_revision(500_000, 600_000, 600_000).is_ok());
+        assert!(check_monotone_revision(500_000, 600_000, 550_000).is_ok());
+        assert!(check_monotone_revision(500_000, 600_000, 500_000).is_ok());
+        assert!(check_monotone_revision(500_000, 600_000, 499_999).is_err());
+        assert!(check_monotone_revision(500_000, 600_000, 700_001).is_err());
+        // Exactly as far as before is admissible (no farther).
+        assert!(check_monotone_revision(500_000, 600_000, 700_000).is_ok());
     }
 
     #[test]
@@ -1102,6 +1380,7 @@ mod tests {
             expires_at: 1_000,
             planning_deadline: 0,
             plan_count: 0,
+            round_count: 1,
             declared_hash: [9u8; 32],
             bump: 255,
         };
@@ -1109,6 +1388,7 @@ mod tests {
         assert_eq!(record.proposer, proposer);
         assert_eq!(record.planning_deadline, 0);
         assert_eq!(record.plan_count, 0);
+        assert_eq!(record.round_count, 1);
         assert_eq!(record.observation_id, 3);
     }
 

@@ -35,8 +35,15 @@ TransitionRecord gains `plan_count`, SPACE 106 → 110, so TooManyPlans
 is enforceable on-chain). Carried gap, stated in the code: the kernel's
 group-overlap half of plan eligibility awaits `relevant_groups` on the
 record (manifest completion); this slice enforces the active half.
-Constraint reports, signals, and the remaining lifecycle instructions
-are next.
++ `submit_signal` (Registered-or-Planning, support ≤ 1.0, eligible
+agent, one signal per agent per round via PDA seeds, round matched to
+the transition's current round; TransitionRecord gains `round_count`,
+SPACE 110 → 114, starting at 1 — the kernel starts every transition
+with one empty round; the monotone-revision check is pure-helper
+tested now and wires on-chain with `advance_round`, which snapshots
+the previous round's mean — until then only round 0 is reachable,
+where the kernel's monotone branch is vacuous).
+Constraint reports and the remaining lifecycle instructions are next.
 
 **Design:** `files/OWN_IDL_DESIGN.md` (W4.1, validated and revised
 2026-10-24; W4.3 GO given by Carlos 2026-10-24 ~03:39 CST). Placement C: the
