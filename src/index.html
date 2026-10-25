@@ -2817,15 +2817,73 @@ function btSaveConfig(){
  while(list.length>25)list.shift();
  btSaveCfgStore(store);$('btCfgName').value='';btRenderConfigs();toast('Configuration saved.');
 }
+/*__N79_SAVED_DEPLOYED_START__*/
+/* === N7.9 (A63, 2026-10-25): saved configurations vs paper-tracked deployments ===
+   Carlos's live report: the Lab claimed "No saved configurations yet" directly
+   above his named paper-tracked deployment. Root cause: two independent stores
+   (saved configs vs deployments) with deploy copying, never linking — a saved
+   entry could be deleted (or sync-overwritten) while its deployment survived,
+   leaving the empty-state copy flatly contradicting the card below it.
+   The fix keeps the stores independent (deployments are NEVER cascade-
+   deleted) but makes the surfaces agree:
+   (1) every deploy ensures a matching saved entry (same name + runId);
+   (2) the empty state is truthful when deployments exist but saved configs
+       do not — it points at the deployment cards' Load & save action;
+   (3) deployment cards gain Load & save, restoring a stranded deployment
+       into the form AND the saved list;
+   (4) deleting a saved config that a deployment was deployed from is a
+       two-step confirm whose copy and toast say the deployment stays.
+   Name is the saved list's key (btSaveConfig replaces by name), so ensure
+   keeps at most one entry per name: same name + same runId is a no-op,
+   same name + different runId replaces (the deployed run is the newer one).
+   A deployment counts as "deployed from" a saved config when the names match
+   AND the runIds match whenever both are known (a null runId on either side
+   falls back to the name alone — pre-N7.5 deployments carry no runId). */
+function btCfgKey(c){return String(c.name)+'|'+String(c.runId||'');}
+function btDeploymentsForCfg(name,runId){
+ const list=(plLoadStore().deployments[btIdentity()]||[]);
+ return list.filter(d=>d.name===name&&(runId&&d.runId?d.runId===runId:true));
+}
+function btEnsureSavedCfg(cfg,name){
+ const store=btLoadCfgStore(),id=btIdentity();
+ const list=store.configs[id]||(store.configs[id]=[]);
+ const entry=Object.assign({name:String(name).slice(0,60),savedAt:new Date().toISOString()},cfg);
+ const ix=list.findIndex(c=>c.name===entry.name);
+ if(ix>=0&&String(list[ix].runId||'')===String(entry.runId||''))return 'kept';
+ if(ix>=0)list[ix]=entry;else list.push(entry);
+ while(list.length>25)list.shift();
+ btSaveCfgStore(store);btRenderConfigs();
+ return ix>=0?'replaced':'added';
+}
+let btDeleteArmKey=null;
 function btRenderConfigs(){
  const store=btLoadCfgStore(),list=store.configs[btIdentity()]||[];
  const box=$('btCfgList');
- if(!list.length){box.innerHTML='<div class="empty">No saved configurations yet. Run a backtest, name it, and save it here.</div>';return;}
- box.innerHTML=list.map((c,i)=>'<div class="btcfg"><div><strong>'+esc(c.name)+'</strong><div class="sub">'+esc(c.scheme)+' · '+esc(c.pair)+' · fee '+esc(c.fee_bps)+'bps · deploy '+esc(c.deploy_pct)+'%'+(c.runId?' · run <span style="user-select:all">'+esc(String(c.runId))+'</span>':'')+'</div></div><div style="display:flex;gap:6px"><button type="button" class="action" data-btdeploy="'+i+'">Deploy</button><button type="button" class="action" data-btload="'+i+'">Load</button><button type="button" class="action sell" data-btdel="'+i+'">Delete</button></div></div>').join('');
+ if(!list.length){
+  const deps=(plLoadStore().deployments[btIdentity()]||[]);
+  if(deps.length)box.innerHTML='<div class="empty">No saved configurations here — but '+deps.length+' paper-tracked deployment'+(deps.length>1?'s':'')+' below '+(deps.length>1?'use':'uses')+' configurations. Use a deployment card\'s "Load &amp; save" button to restore one into this list.</div>';
+  else box.innerHTML='<div class="empty">No saved configurations yet. Run a backtest, name it, and save it here.</div>';
+  return;
+ }
+ box.innerHTML=list.map((c,i)=>{
+  const linked=btDeploymentsForCfg(c.name,c.runId).length;
+  const armed=btDeleteArmKey===btCfgKey(c);
+  const delLabel=armed?(linked?'Confirm delete — deployments stay':'Confirm delete'):'Delete';
+  return '<div class="btcfg"><div><strong>'+esc(c.name)+'</strong><div class="sub">'+esc(c.scheme)+' · '+esc(c.pair)+' · fee '+esc(c.fee_bps)+'bps · deploy '+esc(c.deploy_pct)+'%'+(c.runId?' · run <span style="user-select:all">'+esc(String(c.runId))+'</span>':'')+'</div></div><div style="display:flex;gap:6px"><button type="button" class="action" data-btdeploy="'+i+'">Deploy</button><button type="button" class="action" data-btload="'+i+'">Load</button><button type="button" class="action sell" data-btdel="'+i+'">'+delLabel+'</button></div></div>';
+ }).join('');
  box.querySelectorAll('[data-btdeploy]').forEach(b=>b.onclick=()=>plDeploySaved(Number(b.dataset.btdeploy)));
  box.querySelectorAll('[data-btload]').forEach(b=>b.onclick=()=>btLoadConfig(Number(b.dataset.btload)));
- box.querySelectorAll('[data-btdel]').forEach(b=>b.onclick=()=>{const s2=btLoadCfgStore(),l=s2.configs[btIdentity()]||[];const gone=l.splice(Number(b.dataset.btdel),1)[0];btSaveCfgStore(s2);btRenderConfigs();toast('Deleted '+(gone?gone.name:'configuration')+'.');});
+ box.querySelectorAll('[data-btdel]').forEach(b=>b.onclick=()=>{
+  const s2=btLoadCfgStore(),l=s2.configs[btIdentity()]||[];
+  const idx=Number(b.dataset.btdel),target=l[idx];
+  if(!target)return;
+  if(btDeleteArmKey!==btCfgKey(target)){btDeleteArmKey=btCfgKey(target);btRenderConfigs();setTimeout(function(){if(btDeleteArmKey===btCfgKey(target)){btDeleteArmKey=null;btRenderConfigs();}},8000);return;}
+  const linked=btDeploymentsForCfg(target.name,target.runId).length;
+  const gone=l.splice(idx,1)[0];btDeleteArmKey=null;btSaveCfgStore(s2);btRenderConfigs();
+  toast('Deleted '+(gone?gone.name:'configuration')+'.'+(linked?' '+linked+' paper-tracked deployment'+(linked>1?'s':'')+' from this configuration stay'+(linked>1?'':'s')+' deployed — deployments are independent copies, never cascade-deleted.':''));
+ });
 }
+/*__N79_SAVED_DEPLOYED_END__*/
 function btLoadConfig(i){
  const list=(btLoadCfgStore().configs[btIdentity()]||[]),c=list[i];
  if(!c)return;
@@ -2927,7 +2985,9 @@ function plDeployCurrent(){
  const cfg=plNormalizeCfg(btLastCfg);
  if(!cfg){toast('Could not deploy: unknown scheme.');return;}
  const s=BT_SCHEMES.find(x=>x.id===cfg.scheme);
- plDeployCfg(cfg,(s?s.label:cfg.scheme)+' · '+new Date().toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'}));
+ const depName=(s?s.label:cfg.scheme)+' · '+new Date().toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'});
+ plDeployCfg(cfg,depName);
+ btEnsureSavedCfg(btLastCfg,depName); /* N7.9: a deployed config is always in Saved Configurations */
 }
 /* Per saved-config row button. */
 function plDeploySaved(i){
@@ -2936,6 +2996,29 @@ function plDeploySaved(i){
  const cfg=plNormalizeCfg(c);
  if(!cfg){toast('Could not deploy: unknown scheme.');return;}
  plDeployCfg(cfg,c.name||('Saved configuration · '+new Date().toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'})));
+ btEnsureSavedCfg(c,c.name||('Saved configuration · '+new Date().toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'}))); /* N7.9: no-op when the entry already exists; keeps the invariant at both deploy entry points */
+}
+/* N7.9: restore a deployment into the form AND the saved list. Deployments
+   carry no range window, so the form lands on Full history with no custom
+   dates; btLastCfg is set so the restored config can be Run, then Saved,
+   exactly like a loaded saved config (btFormDirty compares against it). */
+function plLoadDeploy(d){
+ const s=BT_SCHEMES.find(x=>x.id===d.scheme);
+ if(!s)return;
+ $('btScheme').value=d.scheme;btRenderParams();
+ Object.keys(d.params||{}).forEach(k=>{const el=$('btp_'+k);if(el)el.value=d.params[k];});
+ if($('btp_fee_bps'))$('btp_fee_bps').value=d.fee_bps;
+ if($('btp_deploy_pct'))$('btp_deploy_pct').value=d.deploy_pct;
+ if($('btPair'))$('btPair').value=d.pair;
+ btRange='full';
+ document.querySelectorAll('[data-btrange]').forEach(x=>{x.classList.toggle('on',x.dataset.btrange==='full');x.setAttribute('aria-pressed',x.dataset.btrange==='full'?'true':'false');});
+ $('btCustomRange').style.display='none';
+ if($('btFrom'))$('btFrom').value='';
+ if($('btTo'))$('btTo').value='';
+ const name=d.name||(s.label+' · '+new Date().toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'}));
+ btLastCfg={scheme:d.scheme,params:Object.fromEntries(Object.keys(d.params||{}).map(k=>[k,String(d.params[k])])),pair:d.pair,from:null,to:null,fee_bps:String(d.fee_bps),deploy_pct:String(d.deploy_pct),range:'full',runId:d.runId||null,runAt:d.runAt||null};
+ btEnsureSavedCfg(btLastCfg,name);
+ toast('Loaded "'+name+'" into the form and saved it. Press Run backtest.');
 }
 function plPairLabel(id){const p=BT_PAIRS.find(x=>x.id===id);return p?p.label:String(id);}
 function plSpark(curve){
@@ -2957,7 +3040,7 @@ function plCardShell(d,i){
   +'<div class="plhead"><span class="pltitle">'+esc(d.name||label)+'</span></div>'
   +'<div class="sub">'+esc(label)+(paramTxt?' · '+esc(paramTxt):'')+' · '+esc(plPairLabel(d.pair))+' · fee '+esc(String(d.fee_bps))+'bps · deploy '+esc(String(d.deploy_pct))+'% · deployed '+btDate(d.deployed_at)+(d.runId?' · run <span style="user-select:all">'+esc(d.runId)+'</span>':'')+'</div>'
   +'<div id="plbody_'+i+'"><div class="empty">Loading paper-tracked track record…</div></div>'
-  +'<div class="plactions"><button type="button" class="action" data-plrefresh="'+i+'">Refresh</button><button type="button" class="action sell" data-plundeploy="'+i+'">Undeploy</button></div>'
+  +'<div class="plactions"><button type="button" class="action" data-plloadsave="'+i+'">Load &amp; save</button><button type="button" class="action" data-plrefresh="'+i+'">Refresh</button><button type="button" class="action sell" data-plundeploy="'+i+'">Undeploy</button></div>'
   +'<div class="sub" style="margin-top:6px">Simulated fills at daily closes — not trading. The record lives on this device only.</div>'
   +'</div>';
 }
@@ -2993,6 +3076,8 @@ function plCardHtml(d,j){
 function plWireCard(i,d){
  const card=$('plcard_'+i);
  if(!card||card.dataset.plid!==d.id)return;
+ const lb=card.querySelector('[data-plloadsave]');
+ if(lb)lb.onclick=function(){plLoadDeploy(d);}; /* N7.9 */
  const rb=card.querySelector('[data-plrefresh]');
  if(rb)rb.onclick=function(){plFetchDeploy(d,i);};
  const ub=card.querySelector('[data-plundeploy]');
