@@ -137,11 +137,230 @@
       "instruction": "settle",
       "note": "slice-3 GATED measurement: exact settle (realized == declared), 1 attribution (+5 units to the plan author)",
       "result": "Success"
+    },
+    {
+      "cu": 12198,
+      "instruction": "policy_transition:init",
+      "note": "slice-4 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 18291,
+      "instruction": "post_observation:2",
+      "note": "slice-4 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 14150,
+      "instruction": "register_transition:2",
+      "note": "slice-4 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 10393,
+      "instruction": "open_planning:2",
+      "note": "slice-4 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 22215,
+      "instruction": "submit_plan:2",
+      "note": "slice-4 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 17144,
+      "instruction": "submit_signal:2",
+      "note": "slice-4 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 7706,
+      "instruction": "submit_constraint_report:2",
+      "note": "slice-4 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 8652,
+      "instruction": "reconcile:2",
+      "note": "slice-4 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 17633,
+      "instruction": "commit:2",
+      "note": "slice-4 setup (repeat of the gated instruction; the gate was paid at slice 2)",
+      "result": "Success"
+    },
+    {
+      "cu": 16913,
+      "instruction": "record_evidence:2",
+      "note": "slice-4 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 12860,
+      "instruction": "settle:2",
+      "note": "slice-4 setup (repeat of the gated instruction)",
+      "result": "Success"
+    },
+    {
+      "cu": 27485,
+      "instruction": "initialize_treasury",
+      "note": "slice-4 baseline (no §2.2 estimate)",
+      "result": "Success"
+    },
+    {
+      "cu": 12198,
+      "instruction": "policy_transition:window-sha",
+      "note": "slice-4 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 10791,
+      "instruction": "post_observation:3",
+      "note": "slice-4 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 20150,
+      "instruction": "register_transition:3",
+      "note": "slice-4 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 10393,
+      "instruction": "open_planning:3",
+      "note": "slice-4 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 17715,
+      "instruction": "submit_plan:3",
+      "note": "slice-4 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 17144,
+      "instruction": "submit_signal:3",
+      "note": "slice-4 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 7706,
+      "instruction": "submit_constraint_report:3",
+      "note": "slice-4 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 8652,
+      "instruction": "reconcile:3",
+      "note": "slice-4 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 17633,
+      "instruction": "commit:3",
+      "note": "slice-4 setup (repeat of the gated instruction)",
+      "result": "Success"
+    },
+    {
+      "cu": 19913,
+      "instruction": "record_evidence:3",
+      "note": "slice-4 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 12860,
+      "instruction": "settle:3",
+      "note": "slice-4 setup (repeat of the gated instruction)",
+      "result": "Success"
+    },
+    {
+      "cu": 15445,
+      "instruction": "open_window",
+      "note": "slice-4 baseline (no §2.2 estimate)",
+      "result": "Success"
+    },
+    {
+      "cu": 14050,
+      "instruction": "enroll",
+      "note": "slice-4 baseline (no §2.2 estimate)",
+      "result": "Success"
+    },
+    {
+      "cu": 9927,
+      "instruction": "register_agent:operator",
+      "note": "slice-4 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 6172,
+      "instruction": "grant_capability:operator",
+      "note": "slice-4 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 12291,
+      "instruction": "post_observation:4",
+      "note": "slice-4 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 15650,
+      "instruction": "register_transition:4",
+      "note": "slice-4 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 10393,
+      "instruction": "open_planning:4",
+      "note": "slice-4 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 20715,
+      "instruction": "submit_plan:4",
+      "note": "slice-4 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 30644,
+      "instruction": "submit_signal:4",
+      "note": "slice-4 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 7706,
+      "instruction": "submit_constraint_report:4",
+      "note": "slice-4 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 8652,
+      "instruction": "reconcile:4",
+      "note": "slice-4 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 17633,
+      "instruction": "commit:4",
+      "note": "slice-4 setup (repeat of the gated instruction)",
+      "result": "Success"
+    },
+    {
+      "cu": 11703,
+      "design_estimate_cu": "7000",
+      "gate": "pass",
+      "gate_2x_band_cu": "3500-14000",
+      "instruction": "pay_tranche",
+      "note": "slice-4 GATED measurement: operator-settled tranche payout on a Committed window flow transition (window 0, cohort 0, $6.26 raw)",
+      "result": "Success"
     }
   ],
   "mollusk_svm": "0.16.2",
   "program_id": "FPGSeLBWEiFKdTuqDbJeKhjXeah5H4c3rqsW4Tzn3RAS",
   "program_so_sha256": "a447e9074a049e18a96f05a97f7ae72ef7ceb15ea3882989d92ac181cfd8c4fc",
-  "slice": 3,
-  "slice_note": "slice-1 genesis/admin chain + slice-2 full governance lifecycle to a committed transition + slice-3 evidence and exact settle; commit is the first GATED measurement (design §2.2 25-40K EST, 2x band 12.5-80K), settle the second (design §2.2 8-12K EST, 2x band 4-24K)"
+  "slice": 4,
+  "slice_note": "slice-1 genesis/admin chain + slice-2 full governance lifecycle + slice-3 evidence and exact settle + slice-4 init lifecycle to a settled transition, initialize_treasury, open_window (window 0), enroll, flow lifecycle stopped at commit, and the first GATED value-moving measurement pay_tranche (design §2.2 ~7K EST, 2x band 3.5-14K); launch_stage2 unmeasured by design (ThresholdUnset, D-2) and borrow unmeasured (book cap over a zero snapshot — no deposit instruction yet)"
 }

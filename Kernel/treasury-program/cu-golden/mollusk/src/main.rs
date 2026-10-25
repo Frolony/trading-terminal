@@ -1,12 +1,15 @@
-//! W4.3 CU golden-test harness (mollusk-svm path), slice 3.
+//! W4.3 CU golden-test harness (mollusk-svm path), slice 4.
 //!
-//! Extends slice 2's chain past commit with the second GATED
-//! measurement: `record_evidence` over the committed transition, then
-//! `settle` (exact: realized hash == declared hash, one attribution
-//! of +5 units to the plan's author) executed in-process (no validator,
-//! no network, no devnet, no mainnet). Every instruction must succeed;
-//! any failure aborts with a non-zero exit, so a golden file is never
-//! written from a failed chain.
+//! Extends slice 3's chain with the value-moving family, first member:
+//! a full `treasury.init.v1` lifecycle (transition 2) through settle,
+//! `initialize_treasury` on it, a settled `treasury.window.v1`
+//! lifecycle (transition 3, SHA type) as the window-open source,
+//! `open_window` on it (window 0), `enroll` of a holder into window 0,
+//! a window-flow lifecycle (transition 4, SHA type) stopped at commit,
+//! and the first GATED value-moving measurement: `pay_tranche` against
+//! design §2.2 (~7,000 CU EST, 2x band 3,500-14,000 CU). Every
+//! instruction must succeed; any failure aborts with a non-zero exit,
+//! so a golden file is never written from a failed chain.
 //!
 //! Slice 2's `commit` stays gated against design §2.2 (25,000-40,000 CU
 //! EST, 2x band 12,500-80,000 CU); slice 3's `settle` is gated against
@@ -17,6 +20,25 @@
 //! values are minimal-chain costs; larger transitions cost more and
 //! are measured next. `record_evidence` has no §2.2 estimate, so it is
 //! recorded as baseline, not gated.
+//!
+//! Slice-4 harness correction, stated plainly: slice 1 passed an
+//! arbitrary pubkey ([2;32]) as `initialize_config`'s fee_vault, but
+//! `initialize_treasury` requires the fee-vault account's key to equal
+//! `config.fee_vault` AND to be the `[b"fee-vault"]` PDA (its `init`
+//! seeds), so no `initialize_treasury` could ever succeed on slice 1's
+//! config. Slice 4 derives the fee vault as the real PDA, so the
+//! treasury actually initializes. Slice-1/2/3 CU must reproduce
+//! identically under this change (a pubkey value cannot move CU); the
+//! scratch run verifies that before landing.
+//!
+//! Slice-4 scope boundary, also plain: `launch_stage2` is NOT measured
+//! here — it refuses `ThresholdUnset` by design (D-2: B is unset until
+//! Carlos sets it, and an unset threshold must never read as a pass),
+//! so no success chain exists for it yet. `borrow` is NOT measured
+//! here either: its book cap is T/12 over the window's period-start
+//! snapshot, and `initialize_treasury` funds the treasury at zero with
+//! no deposit instruction yet on-chain — any positive borrow refuses
+//! the cap. Both are next-slice work, not hidden gaps.
 //!
 //! Clock discipline: mollusk's clock starts at unix_timestamp 0 and
 //! warp resets it, so this harness sets `mollusk.sysvars.clock`
@@ -51,6 +73,9 @@ const MOLLUSK_SVM_VERSION: &str = "0.16.2";
 const NOW0: i64 = 1_000_000;
 const PLANNING_WINDOW: u64 = 3_600;
 const NOW1: i64 = NOW0 + PLANNING_WINDOW as i64; // 1,003,600 = deadline
+const NOW2: i64 = 2_000_000; // slice-4 phase C (init lifecycle planning)
+const NOW3: i64 = 3_000_000; // slice-4 phase E (settled window lifecycle planning)
+const NOW4: i64 = 4_000_000; // slice-4 phase G (flow lifecycle planning)
 
 fn disc(name: &str) -> Vec<u8> {
     Sha256::digest(format!("global:{name}").as_bytes())[..8].to_vec()
@@ -90,6 +115,33 @@ fn type_window() -> [u8; 32] {
     t[..18].copy_from_slice(b"treasury.window.v1");
     t
 }
+
+fn type_window_sha() -> [u8; 32] {
+    // SHA-256("treasury.window.v1"), the program's canonical id.
+    // Slice 2's harness type_window() is the literal string padded
+    // with zeros, which is NOT this id: commit never checks the type
+    // against the constant, so slice 2 passed, but open_window and
+    // pay_tranche do — a literal-type transition fails them with
+    // WindowMismatch. Slice 4 uses the SHA id for every transition
+    // that must authorize a treasury instruction.
+    [
+        4, 183, 159, 106, 50, 193, 247, 212, 60, 77, 35, 78, 18, 62, 225, 63,
+        78, 121, 164, 9, 39, 178, 22, 107, 67, 20, 222, 160, 106, 231, 127, 207,
+    ]
+}
+
+fn type_init() -> [u8; 32] {
+    // SHA-256("treasury.init.v1"), the canonical id in the program.
+    [
+        116, 167, 130, 118, 19, 78, 9, 62, 70, 91, 124, 207, 146, 13, 252, 203,
+        41, 105, 101, 71, 5, 249, 233, 78, 114, 250, 85, 94, 229, 225, 62, 47,
+    ]
+}
+
+const OPERATOR_SETTLE: [u8; 32] = [
+    72, 124, 97, 111, 249, 107, 133, 84, 171, 144, 180, 21, 142, 58, 188, 30,
+    25, 51, 152, 11, 111, 68, 99, 175, 120, 72, 162, 74, 234, 38, 52, 101,
+];
 
 /// Runs one instruction, asserts success, prints its measured CU, and
 /// returns the threaded accounts plus the measured CU.
@@ -148,13 +200,21 @@ fn main() {
     mollusk.sysvars.clock.unix_timestamp = NOW0;
 
     let authority = Pubkey::new_from_array([1u8; 32]);
-    let fee_vault = Pubkey::new_from_array([2u8; 32]);
     let agent = Pubkey::new_from_array([3u8; 32]);
     let proposer = Pubkey::new_from_array([4u8; 32]);
     let evaluator = Pubkey::new_from_array([5u8; 32]);
     let oracle = Pubkey::new_from_array([6u8; 32]);
+    let operator = Pubkey::new_from_array([7u8; 32]);
+    let holder = Pubkey::new_from_array([8u8; 32]);
     let (config, _) = pda(&[b"config"], &program_id);
     let (chain, _) = pda(&[b"chain"], &program_id);
+    // Slice-4 correction: the fee vault is its PDA, not a placeholder.
+    let (fee_vault, _) = pda(&[b"fee-vault"], &program_id);
+    let (treasury_state, _) = pda(&[b"treasury"], &program_id);
+    let (lending_book, _) = pda(&[b"lending-book"], &program_id);
+    let (window_state, _) = pda(&[b"window", &0u64.to_le_bytes()], &program_id);
+    let (holder_record, _) = pda(&[b"holder", &0u64.to_le_bytes(), holder.as_ref()], &program_id);
+    let (operator_record, _) = pda(&[b"agent", operator.as_ref()], &program_id);
     let (agent_record, _) = pda(&[b"agent", agent.as_ref()], &program_id);
     let (proposer_record, _) = pda(&[b"agent", proposer.as_ref()], &program_id);
     let (evaluator_record, _) = pda(&[b"agent", evaluator.as_ref()], &program_id);
@@ -167,6 +227,31 @@ fn main() {
     let (plan, _) = pda(&[b"plan", &1u64.to_le_bytes(), proposer.as_ref()], &program_id);
     let (signal, _) = pda(
         &[b"signal", &1u64.to_le_bytes(), &0u32.to_le_bytes(), proposer.as_ref()],
+        &program_id,
+    );
+    let (policy_init, _) = pda(&[b"policy", type_init().as_ref()], &program_id);
+    let (observation2, _) = pda(&[b"observation", &2u64.to_le_bytes()], &program_id);
+    let (transition2, _) = pda(&[b"transition", &2u64.to_le_bytes()], &program_id);
+    let (evidence2, _) = pda(&[b"evidence", &2u64.to_le_bytes()], &program_id);
+    let (plan2, _) = pda(&[b"plan", &2u64.to_le_bytes(), proposer.as_ref()], &program_id);
+    let (signal2, _) = pda(
+        &[b"signal", &2u64.to_le_bytes(), &0u32.to_le_bytes(), proposer.as_ref()],
+        &program_id,
+    );
+    let (observation3, _) = pda(&[b"observation", &3u64.to_le_bytes()], &program_id);
+    let (transition3, _) = pda(&[b"transition", &3u64.to_le_bytes()], &program_id);
+    let (plan3, _) = pda(&[b"plan", &3u64.to_le_bytes(), proposer.as_ref()], &program_id);
+    let (signal3, _) = pda(
+        &[b"signal", &3u64.to_le_bytes(), &0u32.to_le_bytes(), proposer.as_ref()],
+        &program_id,
+    );
+    let (policy_sha, _) = pda(&[b"policy", type_window_sha().as_ref()], &program_id);
+    let (evidence3, _) = pda(&[b"evidence", &3u64.to_le_bytes()], &program_id);
+    let (observation4, _) = pda(&[b"observation", &4u64.to_le_bytes()], &program_id);
+    let (transition4, _) = pda(&[b"transition", &4u64.to_le_bytes()], &program_id);
+    let (plan4, _) = pda(&[b"plan", &4u64.to_le_bytes(), proposer.as_ref()], &program_id);
+    let (signal4, _) = pda(
+        &[b"signal", &4u64.to_le_bytes(), &0u32.to_le_bytes(), proposer.as_ref()],
         &program_id,
     );
 
@@ -197,6 +282,30 @@ fn main() {
         (proposer, funded()),
         (evaluator, funded()),
         (oracle, funded()),
+        (operator, funded()),
+        (holder, funded()),
+        (fee_vault, empty.clone()),
+        (treasury_state, empty.clone()),
+        (lending_book, empty.clone()),
+        (window_state, empty.clone()),
+        (holder_record, empty.clone()),
+        (operator_record, empty.clone()),
+        (policy_init, empty.clone()),
+        (observation2, empty.clone()),
+        (transition2, empty.clone()),
+        (evidence2, empty.clone()),
+        (plan2, empty.clone()),
+        (signal2, empty.clone()),
+        (observation3, empty.clone()),
+        (transition3, empty.clone()),
+        (plan3, empty.clone()),
+        (signal3, empty.clone()),
+        (policy_sha, empty.clone()),
+        (evidence3, empty.clone()),
+        (observation4, empty.clone()),
+        (transition4, empty.clone()),
+        (plan4, empty.clone()),
+        (signal4, empty.clone()),
     ];
     let mut measured: Vec<serde_json::Value> = Vec::new();
     let mut push = |label: &str, cu: u64, note: &str| {
@@ -699,13 +808,791 @@ fn main() {
         "proposer reputation not credited +5 units on exact settle"
     );
 
+    // ---- Slice 4: treasury init + window open + enroll + first value-moving measurement ----
+    // (a) Init lifecycle, transition 2 (treasury.init.v1). Parent is
+    // the slice-2/3 chain head (index 1, hash [7;32]) — LINEAGE judged
+    // against a real parent, not the genesis head.
+    mollusk.sysvars.clock.unix_timestamp = NOW2;
+    upsert(&mut accounts, mollusk.sysvars.keyed_account_for_clock_sysvar());
+    let constraint_c_init = [11u8; 32];
+    let mut data = disc("policy_transition");
+    data.extend_from_slice(&type_init());
+    data.extend_from_slice(&1_000_000u64.to_le_bytes());
+    data.extend_from_slice(&500_000u64.to_le_bytes());
+    data.extend_from_slice(&500_000u64.to_le_bytes());
+    data.push(0u8);
+    data.extend_from_slice(&PLANNING_WINDOW.to_le_bytes());
+    data.extend_from_slice(&3u32.to_le_bytes());
+    data.extend_from_slice(&4u32.to_le_bytes());
+    data.extend_from_slice(&vec32(&[constraint_c_init]));
+    data.extend_from_slice(&vec32(&[]));
+    let ix = Instruction::new_with_bytes(
+        program_id,
+        &data,
+        vec![
+            AccountMeta::new_readonly(config, false),
+            AccountMeta::new(policy_init, false),
+            AccountMeta::new(authority, true),
+            AccountMeta::new_readonly(system_id, false),
+        ],
+    );
+    let (next, cu) = run(&mollusk, "policy_transition:init", &ix, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({"instruction": "policy_transition:init", "cu": cu, "result": "Success", "note": "slice-4 setup"}));
+
+    let mut data = disc("post_observation");
+    data.extend_from_slice(&2u64.to_le_bytes());
+    data.extend_from_slice(&NOW2.to_le_bytes());
+    data.extend_from_slice(&3_000_000i64.to_le_bytes());
+    data.extend_from_slice(&1_000_000u64.to_le_bytes());
+    data.extend_from_slice(&[8u8; 32]);
+    let ix = Instruction::new_with_bytes(
+        program_id,
+        &data,
+        vec![
+            AccountMeta::new(oracle_record, false),
+            AccountMeta::new(oracle, true),
+            AccountMeta::new(observation2, false),
+            AccountMeta::new_readonly(system_id, false),
+            AccountMeta::new_readonly(clock_id, false),
+        ],
+    );
+    let (next, cu) = run(&mollusk, "post_observation:2", &ix, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({"instruction": "post_observation:2", "cu": cu, "result": "Success", "note": "slice-4 setup"}));
+
+    let mut data = disc("register_transition");
+    data.extend_from_slice(&2u64.to_le_bytes());
+    data.extend_from_slice(&2u64.to_le_bytes());
+    data.extend_from_slice(&type_init());
+    data.extend_from_slice(&4_000_000i64.to_le_bytes());
+    data.extend_from_slice(&[17u8; 32]);
+    data.extend_from_slice(&1u64.to_le_bytes());
+    data.extend_from_slice(&[7u8; 32]);
+    data.extend_from_slice(&vec32(&[]));
+    let ix = Instruction::new_with_bytes(
+        program_id,
+        &data,
+        vec![
+            AccountMeta::new_readonly(observation2, false),
+            AccountMeta::new_readonly(policy_init, false),
+            AccountMeta::new(transition2, false),
+            AccountMeta::new(proposer, true),
+            AccountMeta::new_readonly(system_id, false),
+            AccountMeta::new_readonly(clock_id, false),
+        ],
+    );
+    let (next, cu) = run(&mollusk, "register_transition:2", &ix, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({"instruction": "register_transition:2", "cu": cu, "result": "Success", "note": "slice-4 setup"}));
+
+    let mut data = disc("open_planning");
+    data.extend_from_slice(&2u64.to_le_bytes());
+    let ix = Instruction::new_with_bytes(
+        program_id,
+        &data,
+        vec![
+            AccountMeta::new_readonly(proposer_record, false),
+            AccountMeta::new(transition2, false),
+            AccountMeta::new_readonly(policy_init, false),
+            AccountMeta::new(proposer, true),
+            AccountMeta::new_readonly(clock_id, false),
+        ],
+    );
+    let (next, cu) = run(&mollusk, "open_planning:2", &ix, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({"instruction": "open_planning:2", "cu": cu, "result": "Success", "note": "slice-4 setup"}));
+
+    let mut data = disc("submit_plan");
+    data.extend_from_slice(&2u64.to_le_bytes());
+    data.extend_from_slice(&vec_claims(&[(7u16, 100u64)]));
+    data.extend_from_slice(&4_000_000i64.to_le_bytes());
+    let ix = Instruction::new_with_bytes(
+        program_id,
+        &data,
+        vec![
+            AccountMeta::new_readonly(proposer_record, false),
+            AccountMeta::new(transition2, false),
+            AccountMeta::new_readonly(policy_init, false),
+            AccountMeta::new(plan2, false),
+            AccountMeta::new(proposer, true),
+            AccountMeta::new_readonly(system_id, false),
+            AccountMeta::new_readonly(clock_id, false),
+        ],
+    );
+    let (next, cu) = run(&mollusk, "submit_plan:2", &ix, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({"instruction": "submit_plan:2", "cu": cu, "result": "Success", "note": "slice-4 setup"}));
+
+    let mut data = disc("submit_signal");
+    data.extend_from_slice(&2u64.to_le_bytes());
+    data.extend_from_slice(&0u32.to_le_bytes());
+    data.extend_from_slice(&1_000_000u64.to_le_bytes());
+    data.extend_from_slice(&1_000_000u64.to_le_bytes());
+    let ix = Instruction::new_with_bytes(
+        program_id,
+        &data,
+        vec![
+            AccountMeta::new_readonly(proposer_record, false),
+            AccountMeta::new(transition2, false),
+            AccountMeta::new_readonly(policy_init, false),
+            AccountMeta::new(signal2, false),
+            AccountMeta::new(proposer, true),
+            AccountMeta::new_readonly(system_id, false),
+        ],
+    );
+    let (next, cu) = run(&mollusk, "submit_signal:2", &ix, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({"instruction": "submit_signal:2", "cu": cu, "result": "Success", "note": "slice-4 setup"}));
+
+    let mut data = disc("submit_constraint_report");
+    data.extend_from_slice(&2u64.to_le_bytes());
+    data.extend_from_slice(&constraint_c_init);
+    data.push(0u8);
+    let ix = Instruction::new_with_bytes(
+        program_id,
+        &data,
+        vec![
+            AccountMeta::new_readonly(evaluator_record, false),
+            AccountMeta::new(transition2, false),
+            AccountMeta::new(evaluator, true),
+        ],
+    );
+    let (next, cu) = run(&mollusk, "submit_constraint_report:2", &ix, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({"instruction": "submit_constraint_report:2", "cu": cu, "result": "Success", "note": "slice-4 setup"}));
+
+    // Phase D: planning deadline for transition 2.
+    mollusk.sysvars.clock.unix_timestamp = NOW2 + PLANNING_WINDOW as i64;
+    upsert(&mut accounts, mollusk.sysvars.keyed_account_for_clock_sysvar());
+    let mut data = disc("reconcile");
+    data.extend_from_slice(&2u64.to_le_bytes());
+    let mut metas = vec![
+        AccountMeta::new(transition2, false),
+        AccountMeta::new(proposer, true),
+        AccountMeta::new_readonly(clock_id, false),
+    ];
+    metas.push(AccountMeta::new(plan2, false));
+    metas.push(AccountMeta::new(stock, false));
+    let ix = Instruction::new_with_bytes(program_id, &data, metas);
+    let (next, cu) = run(&mollusk, "reconcile:2", &ix, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({"instruction": "reconcile:2", "cu": cu, "result": "Success", "note": "slice-4 setup"}));
+
+    let mut data = disc("commit");
+    data.extend_from_slice(&2u64.to_le_bytes());
+    data.extend_from_slice(&2u64.to_le_bytes());
+    let mut metas = vec![
+        AccountMeta::new(transition2, false),
+        AccountMeta::new_readonly(policy_init, false),
+        AccountMeta::new_readonly(observation2, false),
+        AccountMeta::new(chain, false),
+        AccountMeta::new(proposer, true),
+        AccountMeta::new_readonly(clock_id, false),
+    ];
+    metas.push(AccountMeta::new(plan2, false));
+    metas.push(AccountMeta::new_readonly(proposer_record, false));
+    metas.push(AccountMeta::new(stock, false));
+    let ix = Instruction::new_with_bytes(program_id, &data, metas);
+    let (next, cu) = run(&mollusk, "commit:2", &ix, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({"instruction": "commit:2", "cu": cu, "result": "Success", "note": "slice-4 setup (repeat of the gated instruction; the gate was paid at slice 2)"}));
+    let ch = accounts.iter().find(|(k, _)| *k == chain).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(ch.data[8..16].try_into().unwrap()), 2u64, "chain index not 2 after commit:2");
+    assert_eq!(&ch.data[16..48], &[17u8; 32], "chain hash is not transition 2's declared hash");
+
+    let mut data = disc("record_evidence");
+    data.extend_from_slice(&2u64.to_le_bytes());
+    data.extend_from_slice(&[17u8; 32]);
+    let ix = Instruction::new_with_bytes(
+        program_id,
+        &data,
+        vec![
+            AccountMeta::new_readonly(oracle_record, false),
+            AccountMeta::new_readonly(transition2, false),
+            AccountMeta::new(evidence2, false),
+            AccountMeta::new(oracle, true),
+            AccountMeta::new_readonly(system_id, false),
+        ],
+    );
+    let (next, cu) = run(&mollusk, "record_evidence:2", &ix, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({"instruction": "record_evidence:2", "cu": cu, "result": "Success", "note": "slice-4 setup"}));
+
+    let mut data = disc("settle");
+    data.extend_from_slice(&2u64.to_le_bytes());
+    data.extend_from_slice(&[17u8; 32]);
+    data.extend_from_slice(&1u32.to_le_bytes());
+    data.extend_from_slice(proposer.as_ref());
+    data.extend_from_slice(&5_000_000i64.to_le_bytes());
+    let mut metas = vec![
+        AccountMeta::new_readonly(oracle_record, false),
+        AccountMeta::new(transition2, false),
+        AccountMeta::new_readonly(evidence2, false),
+        AccountMeta::new_readonly(oracle, true),
+    ];
+    metas.push(AccountMeta::new(proposer_record, false));
+    metas.push(AccountMeta::new(plan2, false));
+    let ix = Instruction::new_with_bytes(program_id, &data, metas);
+    let (next, cu) = run(&mollusk, "settle:2", &ix, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({"instruction": "settle:2", "cu": cu, "result": "Success", "note": "slice-4 setup (repeat of the gated instruction)"}));
+    let tr2 = accounts.iter().find(|(k, _)| *k == transition2).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(tr2.data[48], 4u8, "transition 2 is not SETTLED");
+    assert_eq!(&tr2.data[256..288], &[17u8; 32], "realized hash not recorded on settle:2");
+    let pr = accounts.iter().find(|(k, _)| *k == proposer_record).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(
+        u64::from_le_bytes(pr.data[52..60].try_into().unwrap()),
+        10_000_000u64,
+        "proposer reputation not 10,000,000 raw after settle:2"
+    );
+
+    // (b) initialize_treasury on the settled init transition.
+    let mut data = disc("initialize_treasury");
+    data.extend_from_slice(&2u64.to_le_bytes());
+    let ix = Instruction::new_with_bytes(
+        program_id,
+        &data,
+        vec![
+            AccountMeta::new_readonly(config, false),
+            AccountMeta::new_readonly(transition2, false),
+            AccountMeta::new(treasury_state, false),
+            AccountMeta::new(lending_book, false),
+            AccountMeta::new(fee_vault, false),
+            AccountMeta::new(authority, true),
+            AccountMeta::new_readonly(system_id, false),
+        ],
+    );
+    let (next, cu) = run(&mollusk, "initialize_treasury", &ix, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({"instruction": "initialize_treasury", "cu": cu, "result": "Success", "note": "slice-4 baseline (no §2.2 estimate)"}));
+    let ts = accounts.iter().find(|(k, _)| *k == treasury_state).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(ts.data.len(), 65, "TreasuryState size changed");
+    assert_eq!(u64::from_le_bytes(ts.data[56..64].try_into().unwrap()), 0u64, "window_count not 0 at initialize_treasury");
+    let lb = accounts.iter().find(|(k, _)| *k == lending_book).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(lb.data[8..16].try_into().unwrap()), 0u64, "lending book outstanding not 0 at initialize_treasury");
+
+    // (c2) Settled window lifecycle, transition 3 (SHA window type).
+    // This is the transition open_window must ride: Settled AND of
+    // the canonical SHA type. Slice 2's transition 1 is Settled but
+    // of the literal-padded type, so it fails open_window's type
+    // check (proven by the first scratch run: WindowMismatch).
+    mollusk.sysvars.clock.unix_timestamp = NOW3;
+    upsert(&mut accounts, mollusk.sysvars.keyed_account_for_clock_sysvar());
+    let mut data = disc("policy_transition");
+    data.extend_from_slice(&type_window_sha());
+    data.extend_from_slice(&1_000_000u64.to_le_bytes());
+    data.extend_from_slice(&500_000u64.to_le_bytes());
+    data.extend_from_slice(&500_000u64.to_le_bytes());
+    data.push(0u8);
+    data.extend_from_slice(&PLANNING_WINDOW.to_le_bytes());
+    data.extend_from_slice(&3u32.to_le_bytes());
+    data.extend_from_slice(&4u32.to_le_bytes());
+    data.extend_from_slice(&vec32(&[constraint_c1]));
+    data.extend_from_slice(&vec32(&[]));
+    let ix = Instruction::new_with_bytes(
+        program_id,
+        &data,
+        vec![
+            AccountMeta::new_readonly(config, false),
+            AccountMeta::new(policy_sha, false),
+            AccountMeta::new(authority, true),
+            AccountMeta::new_readonly(system_id, false),
+        ],
+    );
+    let (next, cu) = run(&mollusk, "policy_transition:window-sha", &ix, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({"instruction": "policy_transition:window-sha", "cu": cu, "result": "Success", "note": "slice-4 setup"}));
+    let mut data = disc("post_observation");
+    data.extend_from_slice(&3u64.to_le_bytes());
+    data.extend_from_slice(&NOW3.to_le_bytes());
+    data.extend_from_slice(&4_000_000i64.to_le_bytes());
+    data.extend_from_slice(&1_000_000u64.to_le_bytes());
+    data.extend_from_slice(&[8u8; 32]);
+    let ix = Instruction::new_with_bytes(
+        program_id,
+        &data,
+        vec![
+            AccountMeta::new(oracle_record, false),
+            AccountMeta::new(oracle, true),
+            AccountMeta::new(observation3, false),
+            AccountMeta::new_readonly(system_id, false),
+            AccountMeta::new_readonly(clock_id, false),
+        ],
+    );
+    let (next, cu) = run(&mollusk, "post_observation:3", &ix, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({"instruction": "post_observation:3", "cu": cu, "result": "Success", "note": "slice-4 setup"}));
+    let mut data = disc("register_transition");
+    data.extend_from_slice(&3u64.to_le_bytes());
+    data.extend_from_slice(&3u64.to_le_bytes());
+    data.extend_from_slice(&type_window_sha());
+    data.extend_from_slice(&5_000_000i64.to_le_bytes());
+    data.extend_from_slice(&[27u8; 32]);
+    data.extend_from_slice(&2u64.to_le_bytes());
+    data.extend_from_slice(&[17u8; 32]);
+    data.extend_from_slice(&vec32(&[]));
+    let ix = Instruction::new_with_bytes(
+        program_id,
+        &data,
+        vec![
+            AccountMeta::new_readonly(observation3, false),
+            AccountMeta::new_readonly(policy_sha, false),
+            AccountMeta::new(transition3, false),
+            AccountMeta::new(proposer, true),
+            AccountMeta::new_readonly(system_id, false),
+            AccountMeta::new_readonly(clock_id, false),
+        ],
+    );
+    let (next, cu) = run(&mollusk, "register_transition:3", &ix, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({"instruction": "register_transition:3", "cu": cu, "result": "Success", "note": "slice-4 setup"}));
+    let mut data = disc("open_planning");
+    data.extend_from_slice(&3u64.to_le_bytes());
+    let ix = Instruction::new_with_bytes(
+        program_id,
+        &data,
+        vec![
+            AccountMeta::new_readonly(proposer_record, false),
+            AccountMeta::new(transition3, false),
+            AccountMeta::new_readonly(policy_sha, false),
+            AccountMeta::new(proposer, true),
+            AccountMeta::new_readonly(clock_id, false),
+        ],
+    );
+    let (next, cu) = run(&mollusk, "open_planning:3", &ix, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({"instruction": "open_planning:3", "cu": cu, "result": "Success", "note": "slice-4 setup"}));
+    let mut data = disc("submit_plan");
+    data.extend_from_slice(&3u64.to_le_bytes());
+    data.extend_from_slice(&vec_claims(&[(7u16, 100u64)]));
+    data.extend_from_slice(&5_000_000i64.to_le_bytes());
+    let ix = Instruction::new_with_bytes(
+        program_id,
+        &data,
+        vec![
+            AccountMeta::new_readonly(proposer_record, false),
+            AccountMeta::new(transition3, false),
+            AccountMeta::new_readonly(policy_sha, false),
+            AccountMeta::new(plan3, false),
+            AccountMeta::new(proposer, true),
+            AccountMeta::new_readonly(system_id, false),
+            AccountMeta::new_readonly(clock_id, false),
+        ],
+    );
+    let (next, cu) = run(&mollusk, "submit_plan:3", &ix, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({"instruction": "submit_plan:3", "cu": cu, "result": "Success", "note": "slice-4 setup"}));
+    let mut data = disc("submit_signal");
+    data.extend_from_slice(&3u64.to_le_bytes());
+    data.extend_from_slice(&0u32.to_le_bytes());
+    data.extend_from_slice(&1_000_000u64.to_le_bytes());
+    data.extend_from_slice(&1_000_000u64.to_le_bytes());
+    let ix = Instruction::new_with_bytes(
+        program_id,
+        &data,
+        vec![
+            AccountMeta::new_readonly(proposer_record, false),
+            AccountMeta::new(transition3, false),
+            AccountMeta::new_readonly(policy_sha, false),
+            AccountMeta::new(signal3, false),
+            AccountMeta::new(proposer, true),
+            AccountMeta::new_readonly(system_id, false),
+        ],
+    );
+    let (next, cu) = run(&mollusk, "submit_signal:3", &ix, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({"instruction": "submit_signal:3", "cu": cu, "result": "Success", "note": "slice-4 setup"}));
+    let mut data = disc("submit_constraint_report");
+    data.extend_from_slice(&3u64.to_le_bytes());
+    data.extend_from_slice(&constraint_c1);
+    data.push(0u8);
+    let ix = Instruction::new_with_bytes(
+        program_id,
+        &data,
+        vec![
+            AccountMeta::new_readonly(evaluator_record, false),
+            AccountMeta::new(transition3, false),
+            AccountMeta::new(evaluator, true),
+        ],
+    );
+    let (next, cu) = run(&mollusk, "submit_constraint_report:3", &ix, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({"instruction": "submit_constraint_report:3", "cu": cu, "result": "Success", "note": "slice-4 setup"}));
+    mollusk.sysvars.clock.unix_timestamp = NOW3 + PLANNING_WINDOW as i64;
+    upsert(&mut accounts, mollusk.sysvars.keyed_account_for_clock_sysvar());
+    let mut data = disc("reconcile");
+    data.extend_from_slice(&3u64.to_le_bytes());
+    let mut metas = vec![
+        AccountMeta::new(transition3, false),
+        AccountMeta::new(proposer, true),
+        AccountMeta::new_readonly(clock_id, false),
+    ];
+    metas.push(AccountMeta::new(plan3, false));
+    metas.push(AccountMeta::new(stock, false));
+    let ix = Instruction::new_with_bytes(program_id, &data, metas);
+    let (next, cu) = run(&mollusk, "reconcile:3", &ix, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({"instruction": "reconcile:3", "cu": cu, "result": "Success", "note": "slice-4 setup"}));
+    let mut data = disc("commit");
+    data.extend_from_slice(&3u64.to_le_bytes());
+    data.extend_from_slice(&3u64.to_le_bytes());
+    let mut metas = vec![
+        AccountMeta::new(transition3, false),
+        AccountMeta::new_readonly(policy_sha, false),
+        AccountMeta::new_readonly(observation3, false),
+        AccountMeta::new(chain, false),
+        AccountMeta::new(proposer, true),
+        AccountMeta::new_readonly(clock_id, false),
+    ];
+    metas.push(AccountMeta::new(plan3, false));
+    metas.push(AccountMeta::new_readonly(proposer_record, false));
+    metas.push(AccountMeta::new(stock, false));
+    let ix = Instruction::new_with_bytes(program_id, &data, metas);
+    let (next, cu) = run(&mollusk, "commit:3", &ix, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({"instruction": "commit:3", "cu": cu, "result": "Success", "note": "slice-4 setup (repeat of the gated instruction)"}));
+    let ch = accounts.iter().find(|(k, _)| *k == chain).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(ch.data[8..16].try_into().unwrap()), 3u64, "chain index not 3 after commit:3");
+    assert_eq!(&ch.data[16..48], &[27u8; 32], "chain hash is not transition 3's declared hash");
+    let st = accounts.iter().find(|(k, _)| *k == stock).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(st.data[10..18].try_into().unwrap()), 999_700u64, "stock not 999,700 after commit:3");
+    let mut data = disc("record_evidence");
+    data.extend_from_slice(&3u64.to_le_bytes());
+    data.extend_from_slice(&[27u8; 32]);
+    let ix = Instruction::new_with_bytes(
+        program_id,
+        &data,
+        vec![
+            AccountMeta::new_readonly(oracle_record, false),
+            AccountMeta::new_readonly(transition3, false),
+            AccountMeta::new(evidence3, false),
+            AccountMeta::new(oracle, true),
+            AccountMeta::new_readonly(system_id, false),
+        ],
+    );
+    let (next, cu) = run(&mollusk, "record_evidence:3", &ix, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({"instruction": "record_evidence:3", "cu": cu, "result": "Success", "note": "slice-4 setup"}));
+    let mut data = disc("settle");
+    data.extend_from_slice(&3u64.to_le_bytes());
+    data.extend_from_slice(&[27u8; 32]);
+    data.extend_from_slice(&1u32.to_le_bytes());
+    data.extend_from_slice(proposer.as_ref());
+    data.extend_from_slice(&5_000_000i64.to_le_bytes());
+    let mut metas = vec![
+        AccountMeta::new_readonly(oracle_record, false),
+        AccountMeta::new(transition3, false),
+        AccountMeta::new_readonly(evidence3, false),
+        AccountMeta::new_readonly(oracle, true),
+    ];
+    metas.push(AccountMeta::new(proposer_record, false));
+    metas.push(AccountMeta::new(plan3, false));
+    let ix = Instruction::new_with_bytes(program_id, &data, metas);
+    let (next, cu) = run(&mollusk, "settle:3", &ix, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({"instruction": "settle:3", "cu": cu, "result": "Success", "note": "slice-4 setup (repeat of the gated instruction)"}));
+    let tr3 = accounts.iter().find(|(k, _)| *k == transition3).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(tr3.data[48], 4u8, "transition 3 is not SETTLED");
+    assert_eq!(&tr3.data[256..288], &[27u8; 32], "realized hash not recorded on settle:3");
+    let pr = accounts.iter().find(|(k, _)| *k == proposer_record).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(
+        u64::from_le_bytes(pr.data[52..60].try_into().unwrap()),
+        15_000_000u64,
+        "proposer reputation not 15,000,000 raw after settle:3"
+    );
+
+    // (c) open_window on transition 3's settled SHA-type window transition, window 0.
+    let mut data = disc("open_window");
+    data.extend_from_slice(&3u64.to_le_bytes());
+    data.extend_from_slice(&0u64.to_le_bytes());
+    let ix = Instruction::new_with_bytes(
+        program_id,
+        &data,
+        vec![
+            AccountMeta::new(treasury_state, false),
+            AccountMeta::new_readonly(lending_book, false),
+            AccountMeta::new_readonly(transition3, false),
+            AccountMeta::new(window_state, false),
+            AccountMeta::new(authority, true),
+            AccountMeta::new_readonly(system_id, false),
+        ],
+    );
+    let (next, cu) = run(&mollusk, "open_window", &ix, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({"instruction": "open_window", "cu": cu, "result": "Success", "note": "slice-4 baseline (no §2.2 estimate)"}));
+    let ts = accounts.iter().find(|(k, _)| *k == treasury_state).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(ts.data[56..64].try_into().unwrap()), 1u64, "window_count not 1 after open_window");
+    let ws = accounts.iter().find(|(k, _)| *k == window_state).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(ws.data.len(), 121, "WindowState size changed");
+    assert_eq!(u64::from_le_bytes(ws.data[8..16].try_into().unwrap()), 0u64, "window_id not 0");
+    assert_eq!(u64::from_le_bytes(ws.data[72..80].try_into().unwrap()), 3u64, "window source transition not 3");
+
+    // (d) enroll the holder into window 0 (cohort 0 = 0 mod 12).
+    let mut data = disc("enroll");
+    data.extend_from_slice(&0u64.to_le_bytes());
+    data.extend_from_slice(&10_000_000u64.to_le_bytes());
+    let ix = Instruction::new_with_bytes(
+        program_id,
+        &data,
+        vec![
+            AccountMeta::new_readonly(treasury_state, false),
+            AccountMeta::new(window_state, false),
+            AccountMeta::new(holder_record, false),
+            AccountMeta::new(holder, true),
+            AccountMeta::new_readonly(system_id, false),
+        ],
+    );
+    let (next, cu) = run(&mollusk, "enroll", &ix, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({"instruction": "enroll", "cu": cu, "result": "Success", "note": "slice-4 baseline (no §2.2 estimate)"}));
+    let hr = accounts.iter().find(|(k, _)| *k == holder_record).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(hr.data[48..56].try_into().unwrap()), 0u64, "holder cohort not 0");
+    assert_eq!(u64::from_le_bytes(hr.data[56..64].try_into().unwrap()), 10_000_000u64, "holder position not 10,000,000");
+    assert_eq!(hr.data[89], 1u8, "standing authorization not true at enroll");
+
+    // (e) Operator setup: register + OPERATOR_SETTLE capability.
+    let mut data = disc("register_agent");
+    data.extend_from_slice(operator.as_ref());
+    data.extend_from_slice(&vec_u16(&[]));
+    data.extend_from_slice(&0u64.to_le_bytes());
+    data.extend_from_slice(&0u64.to_le_bytes());
+    let ix = Instruction::new_with_bytes(
+        program_id,
+        &data,
+        vec![
+            AccountMeta::new_readonly(config, false),
+            AccountMeta::new(operator_record, false),
+            AccountMeta::new(authority, true),
+            AccountMeta::new_readonly(system_id, false),
+        ],
+    );
+    let (next, cu) = run(&mollusk, "register_agent:operator", &ix, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({"instruction": "register_agent:operator", "cu": cu, "result": "Success", "note": "slice-4 setup"}));
+    let mut data = disc("grant_capability");
+    data.extend_from_slice(operator.as_ref());
+    data.extend_from_slice(&OPERATOR_SETTLE);
+    let ix = Instruction::new_with_bytes(
+        program_id,
+        &data,
+        vec![
+            AccountMeta::new_readonly(config, false),
+            AccountMeta::new(operator_record, false),
+            AccountMeta::new(authority, true),
+        ],
+    );
+    let (next, cu) = run(&mollusk, "grant_capability:operator", &ix, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({"instruction": "grant_capability:operator", "cu": cu, "result": "Success", "note": "slice-4 setup"}));
+
+    // (f) Window-flow lifecycle, transition 4 (window type), parent
+    // (2, [17;32]); stopped at commit — executions ride commit, and a
+    // Settled transition would refuse every payout.
+    mollusk.sysvars.clock.unix_timestamp = NOW4;
+    upsert(&mut accounts, mollusk.sysvars.keyed_account_for_clock_sysvar());
+    let mut data = disc("post_observation");
+    data.extend_from_slice(&4u64.to_le_bytes());
+    data.extend_from_slice(&NOW4.to_le_bytes());
+    data.extend_from_slice(&5_000_000i64.to_le_bytes());
+    data.extend_from_slice(&1_000_000u64.to_le_bytes());
+    data.extend_from_slice(&[8u8; 32]);
+    let ix = Instruction::new_with_bytes(
+        program_id,
+        &data,
+        vec![
+            AccountMeta::new(oracle_record, false),
+            AccountMeta::new(oracle, true),
+            AccountMeta::new(observation4, false),
+            AccountMeta::new_readonly(system_id, false),
+            AccountMeta::new_readonly(clock_id, false),
+        ],
+    );
+    let (next, cu) = run(&mollusk, "post_observation:4", &ix, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({"instruction": "post_observation:4", "cu": cu, "result": "Success", "note": "slice-4 setup"}));
+    let mut data = disc("register_transition");
+    data.extend_from_slice(&4u64.to_le_bytes());
+    data.extend_from_slice(&4u64.to_le_bytes());
+    data.extend_from_slice(&type_window_sha());
+    data.extend_from_slice(&7_000_000i64.to_le_bytes());
+    data.extend_from_slice(&[37u8; 32]);
+    data.extend_from_slice(&3u64.to_le_bytes());
+    data.extend_from_slice(&[27u8; 32]);
+    data.extend_from_slice(&vec32(&[]));
+    let ix = Instruction::new_with_bytes(
+        program_id,
+        &data,
+        vec![
+            AccountMeta::new_readonly(observation4, false),
+            AccountMeta::new_readonly(policy_sha, false),
+            AccountMeta::new(transition4, false),
+            AccountMeta::new(proposer, true),
+            AccountMeta::new_readonly(system_id, false),
+            AccountMeta::new_readonly(clock_id, false),
+        ],
+    );
+    let (next, cu) = run(&mollusk, "register_transition:4", &ix, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({"instruction": "register_transition:4", "cu": cu, "result": "Success", "note": "slice-4 setup"}));
+    let mut data = disc("open_planning");
+    data.extend_from_slice(&4u64.to_le_bytes());
+    let ix = Instruction::new_with_bytes(
+        program_id,
+        &data,
+        vec![
+            AccountMeta::new_readonly(proposer_record, false),
+            AccountMeta::new(transition4, false),
+            AccountMeta::new_readonly(policy_sha, false),
+            AccountMeta::new(proposer, true),
+            AccountMeta::new_readonly(clock_id, false),
+        ],
+    );
+    let (next, cu) = run(&mollusk, "open_planning:4", &ix, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({"instruction": "open_planning:4", "cu": cu, "result": "Success", "note": "slice-4 setup"}));
+    let mut data = disc("submit_plan");
+    data.extend_from_slice(&4u64.to_le_bytes());
+    data.extend_from_slice(&vec_claims(&[(7u16, 100u64)]));
+    data.extend_from_slice(&7_000_000i64.to_le_bytes());
+    let ix = Instruction::new_with_bytes(
+        program_id,
+        &data,
+        vec![
+            AccountMeta::new_readonly(proposer_record, false),
+            AccountMeta::new(transition4, false),
+            AccountMeta::new_readonly(policy_sha, false),
+            AccountMeta::new(plan4, false),
+            AccountMeta::new(proposer, true),
+            AccountMeta::new_readonly(system_id, false),
+            AccountMeta::new_readonly(clock_id, false),
+        ],
+    );
+    let (next, cu) = run(&mollusk, "submit_plan:4", &ix, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({"instruction": "submit_plan:4", "cu": cu, "result": "Success", "note": "slice-4 setup"}));
+    let mut data = disc("submit_signal");
+    data.extend_from_slice(&4u64.to_le_bytes());
+    data.extend_from_slice(&0u32.to_le_bytes());
+    data.extend_from_slice(&1_000_000u64.to_le_bytes());
+    data.extend_from_slice(&1_000_000u64.to_le_bytes());
+    let ix = Instruction::new_with_bytes(
+        program_id,
+        &data,
+        vec![
+            AccountMeta::new_readonly(proposer_record, false),
+            AccountMeta::new(transition4, false),
+            AccountMeta::new_readonly(policy_sha, false),
+            AccountMeta::new(signal4, false),
+            AccountMeta::new(proposer, true),
+            AccountMeta::new_readonly(system_id, false),
+        ],
+    );
+    let (next, cu) = run(&mollusk, "submit_signal:4", &ix, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({"instruction": "submit_signal:4", "cu": cu, "result": "Success", "note": "slice-4 setup"}));
+    let mut data = disc("submit_constraint_report");
+    data.extend_from_slice(&4u64.to_le_bytes());
+    data.extend_from_slice(&constraint_c1);
+    data.push(0u8);
+    let ix = Instruction::new_with_bytes(
+        program_id,
+        &data,
+        vec![
+            AccountMeta::new_readonly(evaluator_record, false),
+            AccountMeta::new(transition4, false),
+            AccountMeta::new(evaluator, true),
+        ],
+    );
+    let (next, cu) = run(&mollusk, "submit_constraint_report:4", &ix, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({"instruction": "submit_constraint_report:4", "cu": cu, "result": "Success", "note": "slice-4 setup"}));
+    mollusk.sysvars.clock.unix_timestamp = NOW4 + PLANNING_WINDOW as i64;
+    upsert(&mut accounts, mollusk.sysvars.keyed_account_for_clock_sysvar());
+    let mut data = disc("reconcile");
+    data.extend_from_slice(&4u64.to_le_bytes());
+    let mut metas = vec![
+        AccountMeta::new(transition4, false),
+        AccountMeta::new(proposer, true),
+        AccountMeta::new_readonly(clock_id, false),
+    ];
+    metas.push(AccountMeta::new(plan4, false));
+    metas.push(AccountMeta::new(stock, false));
+    let ix = Instruction::new_with_bytes(program_id, &data, metas);
+    let (next, cu) = run(&mollusk, "reconcile:4", &ix, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({"instruction": "reconcile:4", "cu": cu, "result": "Success", "note": "slice-4 setup"}));
+    let mut data = disc("commit");
+    data.extend_from_slice(&4u64.to_le_bytes());
+    data.extend_from_slice(&4u64.to_le_bytes());
+    let mut metas = vec![
+        AccountMeta::new(transition4, false),
+        AccountMeta::new_readonly(policy_sha, false),
+        AccountMeta::new_readonly(observation4, false),
+        AccountMeta::new(chain, false),
+        AccountMeta::new(proposer, true),
+        AccountMeta::new_readonly(clock_id, false),
+    ];
+    metas.push(AccountMeta::new(plan4, false));
+    metas.push(AccountMeta::new_readonly(proposer_record, false));
+    metas.push(AccountMeta::new(stock, false));
+    let ix = Instruction::new_with_bytes(program_id, &data, metas);
+    let (next, cu) = run(&mollusk, "commit:4", &ix, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({"instruction": "commit:4", "cu": cu, "result": "Success", "note": "slice-4 setup (repeat of the gated instruction)"}));
+    let tr3 = accounts.iter().find(|(k, _)| *k == transition4).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(tr3.data[48], 3u8, "transition 4 is not COMMITTED");
+    let ch = accounts.iter().find(|(k, _)| *k == chain).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(ch.data[8..16].try_into().unwrap()), 4u64, "chain index not 4 after commit:4");
+    assert_eq!(&ch.data[16..48], &[37u8; 32], "chain hash is not transition 3's declared hash");
+    let st = accounts.iter().find(|(k, _)| *k == stock).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(st.data[10..18].try_into().unwrap()), 999_600u64, "stock not 999,600 after four 100 debits");
+
+    // (g) pay_tranche — THE GATED VALUE-MOVING MEASUREMENT.
+    // Operator-settled under the standing authorization, $6.26 in raw
+    // units (SCALE 1e6) — the operating dividend figure, used here as
+    // a harness amount, not a promise.
+    let mut data = disc("pay_tranche");
+    data.extend_from_slice(&4u64.to_le_bytes());
+    data.extend_from_slice(&0u64.to_le_bytes());
+    data.extend_from_slice(holder.as_ref());
+    data.extend_from_slice(&6_260_000u64.to_le_bytes());
+    let ix = Instruction::new_with_bytes(
+        program_id,
+        &data,
+        vec![
+            AccountMeta::new(operator, true),
+            AccountMeta::new_readonly(operator_record, false),
+            AccountMeta::new_readonly(transition4, false),
+            AccountMeta::new_readonly(window_state, false),
+            AccountMeta::new(holder_record, false),
+        ],
+    );
+    let (next, cu) = run(&mollusk, "pay_tranche", &ix, &accounts);
+    accounts = next;
+    let gate = if (3_500..=14_000).contains(&cu) { "pass" } else { "DESIGN-FINDING" };
+    measured.push(serde_json::json!({
+        "instruction": "pay_tranche",
+        "cu": cu,
+        "result": "Success",
+        "note": "slice-4 GATED measurement: operator-settled tranche payout on a Committed window flow transition (window 0, cohort 0, $6.26 raw)",
+        "design_estimate_cu": "7000",
+        "gate_2x_band_cu": "3500-14000",
+        "gate": gate,
+    }));
+    let hr = accounts.iter().find(|(k, _)| *k == holder_record).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(hr.data[64..72].try_into().unwrap()), 6_260_000u64, "accrued dividend not 6,260,000 after pay_tranche");
+    assert_eq!(hr.data[98], 1u8, "tranche_paid flag not set after pay_tranche");
+    let tr3 = accounts.iter().find(|(k, _)| *k == transition4).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(tr3.data[48], 3u8, "transition 4 moved from COMMITTED by pay_tranche");
+
     let golden = serde_json::json!({
         "harness": "cu-golden-mollusk",
         "mollusk_svm": MOLLUSK_SVM_VERSION,
         "program_id": PROGRAM_ID,
         "program_so_sha256": so_sha256,
-        "slice": 3,
-        "slice_note": "slice-1 genesis/admin chain + slice-2 full governance lifecycle to a committed transition + slice-3 evidence and exact settle; commit is the first GATED measurement (design §2.2 25-40K EST, 2x band 12.5-80K), settle the second (design §2.2 8-12K EST, 2x band 4-24K)",
+        "slice": 4,
+        "slice_note": "slice-1 genesis/admin chain + slice-2 full governance lifecycle + slice-3 evidence and exact settle + slice-4 init lifecycle to a settled transition, initialize_treasury, open_window (window 0), enroll, flow lifecycle stopped at commit, and the first GATED value-moving measurement pay_tranche (design §2.2 ~7K EST, 2x band 3.5-14K); launch_stage2 unmeasured by design (ThresholdUnset, D-2) and borrow unmeasured (book cap over a zero snapshot — no deposit instruction yet)",
         "clock": {"phase_a_unix_timestamp": NOW0, "planning_window_s": PLANNING_WINDOW, "phase_b_unix_timestamp": NOW1},
         "instructions": measured,
     });
