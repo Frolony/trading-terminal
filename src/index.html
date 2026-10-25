@@ -1336,8 +1336,8 @@ const PANEL_LABELS={chart:'Chart',lab:'Strategy Lab',pairs:'Market pairs',dashbo
    main column, ticket top of the side column); Watcher swaps pairs above chart and
    hides the ticket. */
 const BUILT_IN_WORKSPACES=Object.freeze([
-  {id:'builtin-trader',name:'Trader',builtIn:true,order:['chart','lab','pairs','dashboard','discovery','ticket','portfolio','orders','limits','history','execpath','solstat','chgstat','equitystat','watchlist'],hidden:['dashboard'],place:{chart:'maincol',lab:'maincol',pairs:'maincol',dashboard:'maincol',discovery:'maincol',ticket:'sidecol',portfolio:'sidecol',orders:'sidecol',limits:'sidecol',history:'sidecol',execpath:'sidecol',solstat:'stats',chgstat:'stats',equitystat:'stats',watchlist:'stats'}},
-  {id:'builtin-watcher',name:'Watcher',builtIn:true,order:['pairs','lab','chart','dashboard','discovery','ticket','portfolio','orders','limits','history','execpath','solstat','chgstat','equitystat','watchlist'],hidden:['ticket','dashboard'],place:{chart:'maincol',lab:'maincol',pairs:'maincol',dashboard:'maincol',discovery:'maincol',ticket:'sidecol',portfolio:'sidecol',orders:'sidecol',limits:'sidecol',history:'sidecol',execpath:'sidecol',solstat:'stats',chgstat:'stats',equitystat:'stats',watchlist:'stats'}},
+  {id:'builtin-trader',name:'Trader',builtIn:true,order:['dashboard','chart','lab','pairs','discovery','ticket','portfolio','orders','limits','history','execpath','solstat','chgstat','equitystat','watchlist'],hidden:['dashboard'],place:{chart:'maincol',lab:'maincol',pairs:'maincol',dashboard:'maincol',discovery:'maincol',ticket:'sidecol',portfolio:'sidecol',orders:'sidecol',limits:'sidecol',history:'sidecol',execpath:'sidecol',solstat:'stats',chgstat:'stats',equitystat:'stats',watchlist:'stats'}},
+  {id:'builtin-watcher',name:'Watcher',builtIn:true,order:['dashboard','pairs','lab','chart','discovery','ticket','portfolio','orders','limits','history','execpath','solstat','chgstat','equitystat','watchlist'],hidden:['ticket','dashboard'],place:{chart:'maincol',lab:'maincol',pairs:'maincol',dashboard:'maincol',discovery:'maincol',ticket:'sidecol',portfolio:'sidecol',orders:'sidecol',limits:'sidecol',history:'sidecol',execpath:'sidecol',solstat:'stats',chgstat:'stats',equitystat:'stats',watchlist:'stats'}},
 ]);
 function sanitizeWorkspace(ws){
   ws=ws||{};
@@ -1414,14 +1414,27 @@ function renderPanelPlacement(ws){
      rank. DOM-node moves only — ticket input, chart canvas and feed
      subscriptions survive cross-container moves exactly as they survived
      v1 slot swaps. Every root child is a panel now (N5.9 part 2); the
-     snapshot's node branch stays for sections added later. */
+     snapshot's node branch stays for sections added later.
+     N5.12 (dashboard pin): the dashboard panel is anchored to the top slot
+     of maincol at RENDER time, regardless of its saved place or order rank —
+     it is forced into maincol's group and sorted first there, so every other
+     panel keeps its saved relative order around it. A hidden dashboard still
+     occupies that first slot (display:none), so the next panel is visually
+     on top; unhiding it restores it to the top without any place-map edit. */
   const rank=id=>{const i=ws.order.indexOf(id);return i<0?PANEL_IDS.length:i;};
   const byRoot={};
   PANEL_IDS.forEach(id=>{
-    const key=(ws.place&&ROOT_KEYS.includes(ws.place[id]))?ws.place[id]:PANEL_HOME[id];
+    let key=(ws.place&&ROOT_KEYS.includes(ws.place[id]))?ws.place[id]:PANEL_HOME[id];
+    if(id==='dashboard')key='maincol'; /* N5.12 pin: saved place never moves it out */
     (byRoot[key]=byRoot[key]||[]).push(id);
   });
-  Object.keys(byRoot).forEach(key=>byRoot[key].sort((a,b)=>rank(a)-rank(b)));
+  Object.keys(byRoot).forEach(key=>byRoot[key].sort((a,b)=>{
+    if(key==='maincol'){
+      if(a==='dashboard')return -1;
+      if(b==='dashboard')return 1;
+    }
+    return rank(a)-rank(b);
+  }));
   /* Resolve every panel element BEFORE any root is processed: each root's pass
      detaches panels that later roots still want, and querySelector cannot find
      a detached node — the old per-root lazy lookup silently dropped
@@ -1662,7 +1675,8 @@ function applyLayoutBoot(){
    other layout edit), then overwrites the fork. Two-click confirm mirrors the
    paper-account reset pattern so it cannot fire by accident. */
 /* N5.9: Reset UI restores all 15 panels, in shipped order, all visible. */
-const SHIPPED_LAYOUT_ORDER=['chart','lab','pairs','dashboard','discovery','ticket','portfolio','orders','limits','history','execpath','solstat','chgstat','equitystat','watchlist'];
+/* N5.12: the shipped default order starts with the dashboard (the pin's home). */
+const SHIPPED_LAYOUT_ORDER=['dashboard','chart','lab','pairs','discovery','ticket','portfolio','orders','limits','history','execpath','solstat','chgstat','equitystat','watchlist'];
 let resetUiArmUntil=0,resetUiLabel=null;
 function resetUiToDefault(){
   const f=forkActiveWorkspace();const ws=f.ws;
@@ -1723,6 +1737,7 @@ function armPanelDrag(e){
   if(!handle||isInteractiveTarget(e.target))return; /* header buttons/inputs never arm a drag */
   const panelId=dragPanelId(handle);
   if(!panelId||!PANEL_IDS.includes(panelId))return;
+  if(panelId==='dashboard')return; /* N5.12: the dashboard's drag handle is inert for position — the pin owns its slot */
   dragState={panelId:panelId,handle:handle,startX:e.clientX,startY:e.clientY,lastX:e.clientX,lastY:e.clientY,dragging:false,originParent:null,originNext:null,dropRoot:null,dropIndex:0,pointerId:e.pointerId};
 }
 function layoutRootAt(x,y){
@@ -1842,13 +1857,17 @@ const N510_MAX_COUNT_DIFF=2;
 function balanceWorkspaceColumns(ws,justPlacedId){
   const moved=[];
   const rankOf=id=>{const i=ws.order.indexOf(id);return i<0?PANEL_IDS.length:i;};
-  const colVisible=key=>PANEL_IDS.filter(id=>ws.place[id]===key&&!ws.hidden.includes(id)).sort((a,b)=>rankOf(a)-rankOf(b));
+  /* N5.12: the dashboard counts as a maincol panel (that is where it renders,
+     whatever its saved place says) and is never a rotation candidate — the
+     balancer never rotates the pin out of its column. */
+  const effPlace=id=>id==='dashboard'?'maincol':ws.place[id];
+  const colVisible=key=>PANEL_IDS.filter(id=>effPlace(id)===key&&!ws.hidden.includes(id)).sort((a,b)=>rankOf(a)-rankOf(b));
   for(let guard=0;guard<PANEL_IDS.length;guard++){
     const counts={};N510_BALANCE_COLUMNS.forEach(k=>counts[k]=colVisible(k).length);
     const tall=counts.maincol>=counts.sidecol?'maincol':'sidecol';
     const short=tall==='maincol'?'sidecol':'maincol';
     if(counts[tall]-counts[short]<=N510_MAX_COUNT_DIFF)break;
-    const candidates=colVisible(tall).slice().reverse().filter(id=>id!==justPlacedId);
+    const candidates=colVisible(tall).slice().reverse().filter(id=>id!==justPlacedId&&id!=='dashboard');
     if(!candidates.length)break;
     const moveId=candidates[0];
     ws.place[moveId]=short;
@@ -1871,6 +1890,10 @@ function balanceWorkspaceColumns(ws,justPlacedId){
   return moved;
 }
 function commitPanelDrag(d,panelId,targetRootKey,dropIdx){
+  /* N5.12: the dashboard's position is pinned — a drag commit for it is a
+     no-op (no fork, no save, no toast); the render pin restores it on the
+     next placement pass. Defense in depth behind the arm guard below. */
+  if(panelId==='dashboard')return;
   /* Rebuild the global order rank so each root's panels sort into the new
      visual sequence (container-grouped, roots in DOM order — the popover
      arrows keep their v1 within-container behavior). Hidden panels trail
