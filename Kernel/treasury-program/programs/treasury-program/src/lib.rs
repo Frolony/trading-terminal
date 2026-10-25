@@ -559,6 +559,28 @@ pub const TREASURY_EXIT_TYPE: [u8; 32] = [
     209, 166, 62, 101, 10, 160, 167, 184, 155, 53, 66, 198, 210, 241, 254, 109,
 ];
 
+/// Canonical transition-type id for `treasury.alloc.v1`: SHA-256 of
+/// the bytes `treasury.alloc.v1`. Only a Committed transition of this
+/// type authorizes `allocate` — the distribution layer's governed
+/// lifecycle (design §4.3, W5.1 spec §1), not a transfer with a memo
+/// field. The same machine-checkable domain-tag discipline as the
+/// window, exit, init, and launch types.
+///
+/// Allocation class stocks take capacity stock ids 3 and above
+/// (design §3, W5.1 spec §7); ids 0, 1, 2 are the launch stocks
+/// (treasury tranche, lending book, exit window).
+pub const TREASURY_ALLOC_TYPE: [u8; 32] = [
+    149, 52, 177, 254, 97, 18, 240, 30, 146, 43, 72, 246, 227, 165, 46, 240,
+    215, 210, 71, 203, 118, 123, 165, 1, 207, 170, 122, 61, 54, 157, 214, 89,
+];
+
+/// Evidence labels (W5.1 spec §4): descriptions of provenance, never
+/// guarantees of truth. AUDITED means an auditor signed a scope; it
+/// does not mean the scope was sufficient.
+pub const EVIDENCE_SELF_DECLARED: u8 = 0;
+pub const EVIDENCE_ATTESTED: u8 = 1;
+pub const EVIDENCE_AUDITED: u8 = 2;
+
 /// Operator-settlement capability id (design §5): SHA-256 of the
 /// bytes `operator.settle`. The payout instructions check this id
 /// against the operator's AgentRecord capabilities — "Operator" is
@@ -3170,6 +3192,105 @@ pub mod treasury_program {
         });
         Ok(())
     }
+
+    /// Distribution (design §4.3, W5.1 spec §1): execute one
+    /// allocation under a Committed `treasury.alloc.v1`
+    /// transition. Operator-settled, like `pay_tranche`: the
+    /// operator executes, and the committed transition is the
+    /// authority — the recipient signs nothing, and no holder
+    /// standing authorization is involved (the recipient is
+    /// not a holder with one; the allocation's authority is
+    /// the transition, not a delegation).
+    ///
+    /// What this instruction checks, and what it does not.
+    /// The four mandatory constraints (EVIDENCE_LABELED,
+    /// RULE_VERSION_PINNED, STOCK_SUFFICIENT,
+    /// STANDING_PERMITS) and the class proposal capability
+    /// are commit-time gates: they feed the CONSTRAINTS and
+    /// CAPABILITY bits of the mask `commit` judged, and a
+    /// transition that failed them never reached Committed.
+    /// This instruction does not re-judge them — it checks
+    /// execution-shape facts only (Committed alloc type,
+    /// operator settle capability, class-stock id range,
+    /// positive amount, pinned rule version, valid evidence
+    /// label, nonzero recipient). The class stock's debit
+    /// already happened at commit, atomically, through the
+    /// transition's Plan.claims (the `borrow` precedent) —
+    /// it is not re-debited here, and the reserve/float
+    /// boundary (W5.1 spec §7: class stocks are sized by
+    /// governance from surplus beyond the operating reserve
+    /// and the retained dividend float) is a governance
+    /// sizing rule at stock creation, not re-checked here.
+    ///
+    /// Two gaps are stated, not buried. First, amount
+    /// authority: execution takes no plan accounts, so this
+    /// slice cannot verify the executed amount equals the
+    /// committed claim — the operator-supplied amount is
+    /// bounded only by the checks in [`can_allocate`], the
+    /// same honesty class as `pay_tranche`'s
+    /// operator-supplied amount. Binding execution to the
+    /// committed claim total is a future slice's job, and
+    /// until it lands this instruction must not be read as
+    /// proving the amount was the committed one. Second,
+    /// rule-version existence: the version is pinned
+    /// (nonzero) here, but no rule registry account exists
+    /// yet to prove the version names a published rule
+    /// document — that check lands with the registry.
+    ///
+    /// One allocation per committed transition, enforced by
+    /// the account, not by prose: the AllocationRecord PDA
+    /// is seeded by the transition id, so a second `allocate`
+    /// under the same transition fails at account creation
+    /// and a committed transition cannot be executed twice.
+    ///
+    /// Honest scope, as in the sibling slices: this slice
+    /// records the allocation as bookkeeping and does NOT
+    /// move tokens (the program holds no token accounts
+    /// yet). The token disbursement step lands separately,
+    /// and this instruction must not be read as a payout.
+    pub fn allocate(
+        ctx: Context<Allocate>,
+        transition_id: u64,
+        class_stock_id: u16,
+        amount_raw: u64,
+        rule_version: u64,
+        evidence_label: u8,
+        recipient: Pubkey,
+    ) -> Result<()> {
+        can_allocate(
+            ctx.accounts.transition_record.state,
+            ctx.accounts.transition_record.transition_type,
+            ctx.accounts.operator_record.active,
+            ctx.accounts
+                .operator_record
+                .capabilities
+                .contains(&OPERATOR_SETTLE),
+            class_stock_id,
+            amount_raw,
+            rule_version,
+            evidence_label,
+            recipient,
+        )?;
+        let record = &mut ctx.accounts.allocation_record;
+        record.transition_id = transition_id;
+        record.class_stock_id = class_stock_id;
+        record.amount_raw = amount_raw;
+        record.rule_version = rule_version;
+        record.evidence_label = evidence_label;
+        record.recipient = recipient;
+        record.bump = ctx.bumps.allocation_record;
+        emit!(AllocationMade {
+            transition_id,
+            class_stock_id,
+            amount_raw,
+            rule_version,
+            evidence_label,
+            recipient,
+            commit_index: ctx.accounts.transition_record.commit_index,
+            declared_hash: ctx.accounts.transition_record.declared_hash,
+        });
+        Ok(())
+    }
 }
 
 /// Who may open planning, as a pure check (design §4.1, kernel
@@ -4623,6 +4744,68 @@ pub fn can_execute_whale_tranche(
     Ok(amount_raw)
 }
 
+/// The `allocate` gate, as a pure check (design §4.3, W5.1
+/// spec §§1, 4, 7): the distribution transition must be
+/// Committed and of the canonical alloc type, and the
+/// executing operator must be an active agent holding
+/// `OPERATOR_SETTLE` — execution is capability-gated, and
+/// the committed transition, not the operator's discretion,
+/// is the authority. The class stock must be an allocation
+/// class stock (id 3 or above: ids 0–2 are the launch
+/// stocks, and an allocation drawn against one would be a
+/// category error wearing a stock id). The amount must be
+/// positive; the rule version must be pinned (nonzero —
+/// existence against a published rule document awaits the
+/// rule registry); the evidence label must be one of the
+/// three spec labels; the recipient must be a nonzero key.
+/// Order mirrors the sibling gates: the transition binding
+/// first, the operator gate next, the shape rules last.
+/// Deliberately not checked here, and why: the four
+/// mandatory constraints and the class proposal capability
+/// are commit-time gates already judged by `commit`'s mask;
+/// the class-stock debit already happened at commit through
+/// Plan.claims; and the amount-vs-committed-claim equality
+/// needs plan accounts this instruction does not take (see
+/// the `allocate` handler docs — a future slice binds it).
+pub fn can_allocate(
+    state: u8,
+    transition_type: [u8; 32],
+    operator_active: bool,
+    operator_has_settle: bool,
+    class_stock_id: u16,
+    amount_raw: u64,
+    rule_version: u64,
+    evidence_label: u8,
+    recipient: Pubkey,
+) -> Result<()> {
+    require!(state == STATE_COMMITTED, TreasuryError::BadState);
+    require!(
+        transition_type == TREASURY_ALLOC_TYPE,
+        TreasuryError::AllocationMismatch
+    );
+    require!(
+        operator_active && operator_has_settle,
+        TreasuryError::Unauthorized
+    );
+    require!(
+        class_stock_id >= 3,
+        TreasuryError::InvalidClassStock
+    );
+    require!(amount_raw != 0, TreasuryError::InvalidAmount);
+    require!(rule_version != 0, TreasuryError::InvalidRuleVersion);
+    require!(
+        evidence_label == EVIDENCE_SELF_DECLARED
+            || evidence_label == EVIDENCE_ATTESTED
+            || evidence_label == EVIDENCE_AUDITED,
+        TreasuryError::InvalidEvidenceLabel
+    );
+    require!(
+        recipient != Pubkey::default(),
+        TreasuryError::InvalidRecipient
+    );
+    Ok(())
+}
+
 /// A window's rotation slot (design §4.2, D-1): the 12-slot
 /// rotation, so the slot is the window id mod 12. The window id
 /// itself is the unique lock-cycle identifier and is never reduced
@@ -4984,6 +5167,24 @@ pub struct WhaleTrancheExecuted {
     pub tranches_executed: u64,
     pub tranches_total: u64,
     pub transition_id: u64,
+    pub commit_index: u64,
+    pub declared_hash: [u8; 32],
+}
+
+/// Allocation executed (design §4.3, §6): the `allocate` event,
+/// carrying the committed transition's authorization context
+/// on every event, as §6 requires — plus the class stock, the
+/// rule version judged under, and the evidence label, so the
+/// tracer can reconstruct the allocation's governance chain
+/// from events alone.
+#[event]
+pub struct AllocationMade {
+    pub transition_id: u64,
+    pub class_stock_id: u16,
+    pub amount_raw: u64,
+    pub rule_version: u64,
+    pub evidence_label: u8,
+    pub recipient: Pubkey,
     pub commit_index: u64,
     pub declared_hash: [u8; 32],
 }
@@ -5994,6 +6195,45 @@ impl ExitSchedule {
     pub const SPACE: usize = 8 + 32 + 8 + 8 + 8 + 8 + 8 + 1;
 }
 
+/// One executed allocation (design §4.3, W5.1 spec §1): the
+/// receipt of an `allocate` under a Committed `treasury.alloc.v1`
+/// transition. Seeded by the transition id, so one committed
+/// transition executes at most one allocation — the record's
+/// existence is the consumed flag, and no separate flag field
+/// can drift from it.
+#[account]
+pub struct AllocationRecord {
+    /// The authorizing transition's id (PDA seed component).
+    pub transition_id: u64,
+    /// The allocation class stock drawn (id 3 or above; the
+    /// class stocks of W5.1 spec §7, distinct from the three
+    /// launch stocks). The debit itself happened at commit
+    /// through Plan.claims; this field records which class
+    /// stock the committed claim named.
+    pub class_stock_id: u16,
+    /// The executed amount, kernel fixed-point raw.
+    pub amount_raw: u64,
+    /// The rule-document version the allocation was judged
+    /// under (W5.1 spec §2: every proposal records the
+    /// version it was judged under). Nonzero; existence
+    /// against a published document awaits the rule
+    /// registry.
+    pub rule_version: u64,
+    /// The evidence label at execution (0 = SELF-DECLARED,
+    /// 1 = ATTESTED, 2 = AUDITED — W5.1 spec §4). A label
+    /// describes provenance, never truth.
+    pub evidence_label: u8,
+    /// The allocation's recipient key.
+    pub recipient: Pubkey,
+    /// PDA bump for the `["allocation", transition_id]` seeds.
+    pub bump: u8,
+}
+
+impl AllocationRecord {
+    /// 8 (discriminator) + 8 + 2 + 8 + 8 + 1 + 32 + 1.
+    pub const SPACE: usize = 8 + 8 + 2 + 8 + 8 + 1 + 32 + 1;
+}
+
 /// Accounts for [`treasury_program::submit_signal`].
 #[derive(Accounts)]
 #[instruction(transition_id: u64, round: u32)]
@@ -6712,6 +6952,42 @@ pub struct ExecuteWhaleTranche<'info> {
     pub exit_schedule: Account<'info, ExitSchedule>,
 }
 
+/// Accounts for [`treasury_program::allocate`].
+#[derive(Accounts)]
+#[instruction(transition_id: u64, class_stock_id: u16, amount_raw: u64, rule_version: u64, evidence_label: u8, recipient: Pubkey)]
+pub struct Allocate<'info> {
+    /// The executing operator (signer). Not a named key:
+    /// execution is capability-gated, and the record below
+    /// is what the gate reads. Pays the allocation record's
+    /// rent — hence `mut`.
+    #[account(mut)]
+    pub operator: Signer<'info>,
+    /// The operator's agent record, seeds-bound to the signer.
+    /// Must be active and hold `OPERATOR_SETTLE` (design §5).
+    #[account(seeds = [b"agent", operator.key().as_ref()], bump = operator_record.bump)]
+    pub operator_record: Account<'info, AgentRecord>,
+    /// The allocation transition, seeds-bound to its id.
+    /// Must be Committed and of the canonical
+    /// `treasury.alloc.v1` type — the authority for this
+    /// allocation, not the operator's discretion.
+    #[account(seeds = [b"transition", transition_id.to_le_bytes().as_ref()], bump = transition_record.bump)]
+    pub transition_record: Account<'info, TransitionRecord>,
+    /// The allocation record PDA — created here, and nowhere
+    /// else, so a second `allocate` under the same transition
+    /// fails at account creation and the committed
+    /// transition executes at most once.
+    #[account(
+        init,
+        payer = operator,
+        space = AllocationRecord::SPACE,
+        seeds = [b"allocation", transition_id.to_le_bytes().as_ref()],
+        bump
+    )]
+    pub allocation_record: Account<'info, AllocationRecord>,
+    /// System program for the allocation record's rent.
+    pub system_program: Program<'info, System>,
+}
+
 /// Accounts for [`treasury_program::set_capacity`].
 #[derive(Accounts)]
 #[instruction(resource_id: u16)]
@@ -7144,6 +7420,28 @@ pub enum TreasuryError {
     /// still fit inside the position after the tranche.
     #[msg("Tranche would drop the position below an outstanding loan.")]
     TrancheBelowLoan,
+    /// The authorizing transition is not a `treasury.alloc.v1`
+    /// transition: an allocation executes only under its own
+    /// type's committed transition, never under a window or
+    /// exit transition.
+    #[msg("Allocation transition mismatch: authorizing transition is not a treasury.alloc.v1 transition.")]
+    AllocationMismatch,
+    /// The class stock id is a launch stock (0–2), not an
+    /// allocation class stock (3 or above, design §3).
+    #[msg("Invalid allocation class stock: allocation classes take capacity stock ids 3 and above; ids 0-2 are the launch stocks.")]
+    InvalidClassStock,
+    /// The rule version is zero: an allocation must pin the
+    /// rule-document version it was judged under (W5.1 §2).
+    #[msg("Invalid rule version: an allocation must pin a nonzero rule-document version.")]
+    InvalidRuleVersion,
+    /// The evidence label is not one of the three spec
+    /// labels (0 = SELF-DECLARED, 1 = ATTESTED, 2 = AUDITED).
+    #[msg("Invalid evidence label: 0 = SELF-DECLARED, 1 = ATTESTED, 2 = AUDITED.")]
+    InvalidEvidenceLabel,
+    /// The recipient key is the default key: an allocation
+    /// needs a real recipient.
+    #[msg("Invalid allocation recipient: the recipient key must be nonzero.")]
+    InvalidRecipient,
 }
 
 #[cfg(test)]
@@ -9508,5 +9806,86 @@ mod tests {
             100_000, 250_000, 300_000, 0, 600_000, 99_999
         )
         .is_err());
+    }
+
+    #[test]
+    fn allocate_gate_matrix() {
+        // Happy paths: each evidence label passes, and each
+        // allocation class stock id (3 and above) passes.
+        let recipient = Pubkey::new_from_array([7u8; 32]);
+        can_allocate(
+            STATE_COMMITTED, TREASURY_ALLOC_TYPE, true, true, 3, 10_000, 3,
+            EVIDENCE_ATTESTED, recipient,
+        )
+        .expect("an attested class-3 allocation passes");
+        can_allocate(
+            STATE_COMMITTED, TREASURY_ALLOC_TYPE, true, true, 5, 10_000, 1,
+            EVIDENCE_SELF_DECLARED, recipient,
+        )
+        .expect("a self-declared allocation passes where class rules allow");
+        can_allocate(
+            STATE_COMMITTED, TREASURY_ALLOC_TYPE, true, true, 4, 10_000, 2,
+            EVIDENCE_AUDITED, recipient,
+        )
+        .expect("an audited allocation passes");
+        // Gate failures: non-committed state, wrong type.
+        assert!(can_allocate(
+            STATE_PLANNING, TREASURY_ALLOC_TYPE, true, true, 3, 10_000, 3,
+            EVIDENCE_ATTESTED, recipient
+        )
+        .is_err());
+        assert!(can_allocate(
+            STATE_COMMITTED, TREASURY_WINDOW_TYPE, true, true, 3, 10_000, 3,
+            EVIDENCE_ATTESTED, recipient
+        )
+        .is_err());
+        // Authorization failures: inactive operator, operator
+        // without the settle capability.
+        assert!(can_allocate(
+            STATE_COMMITTED, TREASURY_ALLOC_TYPE, false, true, 3, 10_000, 3,
+            EVIDENCE_ATTESTED, recipient
+        )
+        .is_err());
+        assert!(can_allocate(
+            STATE_COMMITTED, TREASURY_ALLOC_TYPE, true, false, 3, 10_000, 3,
+            EVIDENCE_ATTESTED, recipient
+        )
+        .is_err());
+        // Shape failures: every launch stock id (0, 1, 2) is a
+        // category error, not a class; zero amount; unpinned
+        // (zero) rule version; an out-of-range label; the
+        // default key as recipient.
+        for class_stock_id in [0u16, 1, 2] {
+            assert!(can_allocate(
+                STATE_COMMITTED, TREASURY_ALLOC_TYPE, true, true, class_stock_id,
+                10_000, 3, EVIDENCE_ATTESTED, recipient
+            )
+            .is_err());
+        }
+        assert!(can_allocate(
+            STATE_COMMITTED, TREASURY_ALLOC_TYPE, true, true, 3, 0, 3,
+            EVIDENCE_ATTESTED, recipient
+        )
+        .is_err());
+        assert!(can_allocate(
+            STATE_COMMITTED, TREASURY_ALLOC_TYPE, true, true, 3, 10_000, 0,
+            EVIDENCE_ATTESTED, recipient
+        )
+        .is_err());
+        assert!(can_allocate(
+            STATE_COMMITTED, TREASURY_ALLOC_TYPE, true, true, 3, 10_000, 3, 3,
+            recipient
+        )
+        .is_err());
+        assert!(can_allocate(
+            STATE_COMMITTED, TREASURY_ALLOC_TYPE, true, true, 3, 10_000, 3,
+            EVIDENCE_ATTESTED, Pubkey::default()
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn allocation_record_space_matches_fields() {
+        assert_eq!(AllocationRecord::SPACE, 68);
     }
 }

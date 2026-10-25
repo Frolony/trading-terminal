@@ -708,3 +708,35 @@ inclusive loan floor, the re-judged L bound, and the shared stock
 bound). Next, in design order: §4.3 distribution, then the W3.2
 re-expression against the program's interface with measured CU per
 instruction.
+
+Slice 30 — `allocate` (design §4.3, W5.1 spec §1): operator-settled
+execution of one allocation under a Committed `treasury.alloc.v1`
+transition (canonical type id = SHA-256 of `treasury.alloc.v1`);
+the recipient signs nothing and no holder standing authorization is
+involved — the committed transition is the authority. Class stocks
+are ids 3 and above (0–2 are the launch stocks); the four mandatory
+constraints and the class proposal capability are commit-time gates
+already judged by `commit`'s mask, not re-judged here; the stock
+debit happened at commit through Plan.claims, not re-debited here.
+One allocation per committed transition, enforced by the
+AllocationRecord PDA seeded by the transition id (a second allocate
+fails at account creation). Two gaps stated plainly: the executed
+amount is not verified against the committed claim (execution takes
+no plan accounts — a future slice binds it), and rule-version
+existence awaits a rule registry account (nonzero pin checked now).
+Evidence labels 0 = SELF-DECLARED, 1 = ATTESTED, 2 = AUDITED.
+Honest scope, as in the sibling slices: bookkeeping only, no token
+movement yet. IDL: instructions 35 → 36 (incl. `allocate`), accounts
+16 → 17 (new `AllocationRecord`), errors 71 → 76
+(`AllocationMismatch`, `InvalidClassStock`, `InvalidRuleVersion`,
+`InvalidEvidenceLabel`, `InvalidRecipient`), new event
+`AllocationMade`. Program host tests 75 → 77 (the allocate gate
+matrix + the allocation record space test). Queue change
+2026-10-24 ~18:49 CST (Carlos, whale revision): the whale FLAG
+threshold drops to 1/5 of movable liquidity = 3.3333% of T, with
+entry-time per-position contracts (12-month lock, then weekly
+20%-of-position blocks capped at 3.3333% of T) — slices 28/29 as
+built used the old >L flag and L-sized tranches and need rework
+under this revision, which is the next queue head, ahead of the
+W3.2 re-expression against the program's interface with measured
+CU per instruction.
