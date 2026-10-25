@@ -765,3 +765,27 @@ numbers, incl. the $100M FLAG figure, the at-FLAG fifth-sized
 schedule, and the scale-invariance case at a 9,000,000
 snapshot). Bookkeeping only, as in the sibling slices — no
 token movement yet.
+
+Slice 32 — whale entry-time contract, part 1 (design §4.2,
+D-10 revised): ExitSchedule gains entry_window (the holder
+record's window at creation), lock_until_window (entry + 12
+windows — April entry unlocks the following April), and
+last_block_time (Clock timestamp of the last executed block,
+zero at creation); SPACE 81 → 105. The weekly cadence IS
+enforced at execution: a block less than 7 days after the
+previous one refuses with the new error TrancheTooSoon
+(IDL errors 76 → 77; instructions/accounts unchanged at
+36/17), the boundary is inclusive, and a successful block
+stamps last_block_time. The 12-month lock gate is STORED
+but NOT yet wired: execution is still window-bound, and a
+gate on lock_until_window would make every schedule
+unexecutable (its lock window is always 12 ahead of its
+only executable window) — the gate lands WITH cross-window
+execution, the next slice, and until then the stored lock
+window is a recorded contract term, not an enforced one.
+Program host tests 77 → 78 (new cadence/lock-window matrix:
+inclusive 7-day boundary, 1-second-early refusal, 6-day
+refusal, future-last-block refusal, i64/u64 overflow guards;
+the execute matrix's 20 calls carry now/last-block args).
+Bookkeeping only, as in the sibling slices — no token
+movement yet.
