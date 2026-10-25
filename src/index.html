@@ -111,6 +111,12 @@ a.wrow{text-decoration:none}
 .ractions{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px}
 .ractions .ghost{padding:12px;border:1px solid var(--line);border-radius:8px;background:transparent;color:var(--muted);font-weight:650}
 .ractions .primary:disabled{opacity:.45;cursor:not-allowed}
+.review .rrows{max-height:36vh;overflow-y:auto;overscroll-behavior:contain;padding-right:2px}
+.review .walletrow{padding:5px 0;font-size:11px;line-height:1.35}
+.review .walletrow strong{overflow-wrap:anywhere;text-align:right}
+.review .rdetails{margin-top:2px}
+.review .rdetails summary{cursor:pointer;color:var(--muted);font-size:11px;padding:6px 0}
+[data-panel="ticket"].review-open .panelbody{max-height:calc(100vh - 140px);overflow-y:auto;overscroll-behavior:contain}
 /* N4.6 persistent trade history (2026-10-22): filter chips reuse .amounts/.on; rows expand inline. */
 .histrow{border-bottom:1px solid var(--rowline);padding:11px 2px;cursor:pointer}
 .histrow:last-child{border-bottom:0}
@@ -2303,19 +2309,29 @@ function paintSlipPresets(){const cur=slipLoad();document.querySelectorAll('#sli
 function onSlipPreset(bps){const p=slipValidate(String(bps));if(!p.ok){toast(p.error);return;}slipSave(p.bps);$('slippageInput').value=String(p.bps);paintSlipPresets();hideReview();}
 function onSlipCustom(){const el=$('slippageInput'),p=slipValidate(el.value);if(!p.ok){el.value=String(slipLoad());paintSlipPresets();toast(p.error);return;}slipSave(p.bps);paintSlipPresets();hideReview();toast('Slippage set to '+(p.bps/100).toFixed(2)+'% — shared with the /raydium/ page.');}
 function renderReview(m,onConfirm){ // N4.5: onConfirm lets the limit branch use its own confirm handler
+  // N5.11: condensed quote block — headline rows render compact, the last two lines
+  // (route/freshness on paper; keeper fee/freshness on limit) fold behind a Details
+  // expander, rows scroll inside .rrows so the actions stay pinned below, and the
+  // ticket panel caps its body while a review is open. All model lines stay in the
+  // DOM; stale warnings/blockers stay outside the expander. No data or flow change.
   const box=$('reviewSheet');
-  const rows=m.lines.map(l=>'<div class="walletrow"><span>'+esc(l.label)+'</span><strong class="'+(l.cls||'')+'">'+esc(l.value)+'</strong></div>').join('');
+  const rowHtml=l=>'<div class="walletrow"><span>'+esc(l.label)+'</span><strong class="'+(l.cls||'')+'">'+esc(l.value)+'</strong></div>';
+  const foldAt=m.lines.length>=4?m.lines.length-2:m.lines.length;
+  const headRows=m.lines.slice(0,foldAt).map(rowHtml).join('');
+  const tailLines=m.lines.slice(foldAt);
+  const details=tailLines.length?'<details class="rdetails"><summary>Details · '+tailLines.length+' more lines</summary>'+tailLines.map(rowHtml).join('')+'</details>':'';
   const warn=m.warn?'<div class="rwarn">'+esc(m.warn)+'</div>':'';
   const notice=m.notice?'<div class="rwarn">'+esc(m.notice)+'</div>':'';
   const blockers=m.blockers.map(b=>'<div class="rblock">'+esc(b)+'</div>').join('');
-  box.innerHTML='<div class="rhead"><span class="eyebrow">Order review</span><span class="paperchip">'+esc(m.chip)+'</span></div>'+rows+warn+notice+blockers+
+  box.innerHTML='<div class="rhead"><span class="eyebrow">Order review</span><span class="paperchip">'+esc(m.chip)+'</span></div><div class="rrows">'+headRows+details+'</div>'+warn+notice+blockers+
     '<div class="ractions"><button type="button" class="ghost" id="reviewCancel">Back to edit</button><button type="button" class="primary" id="reviewConfirm"'+(m.blockers.length?' disabled':'')+'>'+esc(m.confirmLabel)+'</button></div>'+
     (m.blockers.length?'<div class="note">Confirm is disabled — resolve the issue above.</div>':'<div class="note">Review the lines above — nothing moves until you confirm.</div>');
   box.hidden=false;
+  const tp=document.querySelector('[data-panel="ticket"]');if(tp&&tp.classList)tp.classList.add('review-open');
   $('reviewCancel').onclick=hideReview;
   $('reviewConfirm').onclick=onConfirm||confirmReview;
 }
-function hideReview(){reviewState=null;limitReviewState=null;const box=$('reviewSheet');if(box){box.hidden=true;box.innerHTML='';}const sb=$('submitTrade');if(sb)sb.disabled=false;refreshTicket();}
+function hideReview(){reviewState=null;limitReviewState=null;const box=$('reviewSheet');if(box){box.hidden=true;box.innerHTML='';}const tp=document.querySelector('[data-panel="ticket"]');if(tp&&tp.classList)tp.classList.remove('review-open');const sb=$('submitTrade');if(sb)sb.disabled=false;refreshTicket();}
 function reviewInputs(){const tp=ticketPair;return{side,baseMint:tp.baseMint,baseSymbol:tp.baseSymbol,quoteSymbol:tp.quoteSymbol,quoteUsd:quoteUsd(tp.quoteSymbol),amountQuote:ticketSizeUsd()/quoteUsd(tp.quoteSymbol),slippageBps:slipLoad()};} // N5.1: amountQuote is unit-aware
 function openReview(){
   const tp=ticketPair;if(!tp)return toast('Waiting for market data.');
