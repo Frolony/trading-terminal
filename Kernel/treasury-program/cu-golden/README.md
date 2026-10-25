@@ -1,11 +1,13 @@
 # CU golden-test harness (W4.3)
 
-**STATUS (2026-10-25): scaffold proven to submission only -- NO measured
-CU yet.** The validator path below boots, funds, encodes, and submits,
-but no transaction confirms on a local validator in this sandbox (see
-"Sandbox findings"). The measured-CU step is open; the next attempt is
-an in-process mollusk-svm harness (no validator, no network), not
-another validator variation.
+**STATUS (2026-10-25): slice-1 CU MEASURED via the mollusk path below
+-- the validator path remains submission-only (see "Sandbox
+findings").** The validator path boots, funds, encodes, and submits,
+but no transaction confirms on a local validator in this sandbox. The
+mollusk path executes the same slice-1 chain in-process and records
+real CU; it is now the harness of record for measured CU, and the
+validator path is retained only as a fallback shape, not a measurement
+source.
 
 ## Sandbox findings (2026-10-25, proven, not guessed)
 
@@ -87,3 +89,45 @@ commit): `commit` against the §2.2 25-40K EST is the first gated
 measurement, then `settle` (8-12K EST) and the value-moving family
 (~7K EST each). The W3.2 adversarial suite is re-expressed against
 the program's interface on top of this harness.
+
+## Mollusk path (measured CU -- harness of record since 2026-10-25)
+
+`mollusk/` is a standalone Rust crate (its own `[workspace]` root, so
+the parent treasury-program workspace does not claim it). It loads
+`target/deploy/treasury_program.so` (built by `anchor build` on the
+adopted Solana 2.2.20 toolchain) into mollusk-svm 0.16.2's in-process
+SVM and executes the slice-1 chain, threading resulting accounts
+between instructions. The system program account is passed explicitly
+(mollusk does not supply it as a fallback for instruction accounts).
+Every instruction must succeed or the run aborts without writing a
+golden file. Run it with:
+
+```sh
+anchor build   # from Kernel/treasury-program/
+./mollusk/run-mollusk.sh   # writes cu-golden-mollusk.json
+```
+
+Measured slice 1 (2026-10-25, program .so sha256 recorded in
+`cu-golden-mollusk.json`; repeat runs byte-identical, i.e. the
+numbers are deterministic, not sampled):
+
+| instruction | measured CU | result |
+|---|---|---|
+| `initialize_config` | 19,109 | Success |
+| `register_agent` | 9,927 | Success |
+| `grant_role` | 5,984 | Success |
+| `set_capacity` | 9,486 | Success |
+| `grant_capability` | 6,172 | Success |
+
+Slice-1 instructions have no §2.2 estimate, so these are baseline,
+NOT gated. Compatibility note (this run's verification item): the
+program .so is built against Solana 2.1 program crates (Anchor 0.31
+pins) while mollusk-svm 0.16.2 runs the Agave 4.x SVM line -- the
+combination executes cleanly, including the Anchor `init` CPI to the
+system program, and the Config account lands at exactly 74 bytes with
+the authority stored correctly. Caveat, stated plainly: in-process
+mollusk CU and validator-landed CU may differ slightly (feature set,
+sysvar defaults); the golden file records the measurement environment
+(mollusk version + .so hash) so any such difference is visible rather
+than hidden. Devnet measurement is NOT a fallback: W4.3 forbids devnet
+deployment (W4.4 owns it).

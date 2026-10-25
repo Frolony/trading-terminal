@@ -1,0 +1,35 @@
+{
+  "harness": "cu-golden-mollusk",
+  "instructions": [
+    {
+      "cu": 19109,
+      "instruction": "initialize_config",
+      "result": "Success"
+    },
+    {
+      "cu": 9927,
+      "instruction": "register_agent",
+      "result": "Success"
+    },
+    {
+      "cu": 5984,
+      "instruction": "grant_role",
+      "result": "Success"
+    },
+    {
+      "cu": 9486,
+      "instruction": "set_capacity",
+      "result": "Success"
+    },
+    {
+      "cu": 6172,
+      "instruction": "grant_capability",
+      "result": "Success"
+    }
+  ],
+  "mollusk_svm": "0.16.2",
+  "program_id": "FPGSeLBWEiFKdTuqDbJeKhjXeah5H4c3rqsW4Tzn3RAS",
+  "program_so_sha256": "a447e9074a049e18a96f05a97f7ae72ef7ceb15ea3882989d92ac181cfd8c4fc",
+  "slice": 1,
+  "slice_note": "genesis/admin chain only; no design §2.2 estimate, values are baseline, NOT gated"
+}
