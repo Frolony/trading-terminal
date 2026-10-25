@@ -2683,6 +2683,7 @@ async function btRun(){
   if(!j||j.ok!==true)throw Error((j&&j.error)?j.error+(j.message?': '+j.message:''):'backtest failed');
   btLastCfg={scheme:c.scheme.id,params:Object.fromEntries(Object.keys(c.params).map(k=>[k,String(c.params[k])])),pair:c.pair,from:c.from,to:c.to,fee_bps:String(c.fee_bps),deploy_pct:String(c.deploy_pct),range:btRange};
   btLastCfg.runId=j.run_id||null;btLastCfg.runAt=j.run_at||null; /* N7.5 */
+  btSaveReenable(); /* N7.10: a completed run re-enables Save */
   await btRenderResults(j);
   $('btStatus').textContent='Done · '+(j.cached?'cached result':'fresh result');
  }catch(e){console.error('backtest failed',e);$('btResults').innerHTML='<div class="empty">Backtest failed: '+esc(e.message||e)+'</div>';$('btStatus').textContent='Failed';}
@@ -2812,10 +2813,30 @@ function btSaveConfig(){
  const store=btLoadCfgStore(),id=btIdentity();
  const list=store.configs[id]||(store.configs[id]=[]);
  const cfg=Object.assign({name,savedAt:new Date().toISOString()},btLastCfg);
+ const dup=list.find(c=>btCfgSame(c,cfg));
+ if(dup){toast('Already saved as "'+dup.name+'". No second copy was created.');btSaveDisabled=true;btSavedName=name;btPaintSaveBtn();return;}
  const ix=list.findIndex(c=>c.name===name);
- if(ix>=0)list[ix]=cfg;else list.push(cfg);
- while(list.length>25)list.shift();
- btSaveCfgStore(store);$('btCfgName').value='';btRenderConfigs();toast('Configuration saved.');
+ let evicted=null;
+ if(ix>=0){
+  if(btOverwriteArmKey!==name){
+   btOverwriteArmKey=name;
+   const old=list[ix];
+   const sb=$('btSaveCfg');if(sb)sb.textContent='Confirm overwrite?';
+   toast('Save again to replace "'+name+'" ('+old.scheme+(old.runId?' · run '+old.runId:'')+'). Nothing was replaced yet.');
+   setTimeout(function(){if(btOverwriteArmKey===name){btOverwriteArmKey=null;const b2=$('btSaveCfg');if(b2)b2.textContent='Save';}},8000);
+   return;
+  }
+  btOverwriteArmKey=null;
+  const sb=$('btSaveCfg');if(sb)sb.textContent='Save';
+  list[ix]=cfg;
+ }else{
+  if(list.length>=25)evicted=list[0].name;
+  list.push(cfg);
+  while(list.length>25)list.shift();
+ }
+ btSaveCfgStore(store);$('btCfgName').value='';btRenderConfigs();
+ btSaveDisabled=true;btSavedName=name;btPaintSaveBtn();
+ toast('Configuration saved.'+(evicted?' The oldest saved configuration ("'+evicted+'") was removed (25-entry limit).':''));
 }
 /*__N79_SAVED_DEPLOYED_START__*/
 /* === N7.9 (A63, 2026-10-25): saved configurations vs paper-tracked deployments ===
@@ -2850,9 +2871,11 @@ function btEnsureSavedCfg(cfg,name){
  const entry=Object.assign({name:String(name).slice(0,60),savedAt:new Date().toISOString()},cfg);
  const ix=list.findIndex(c=>c.name===entry.name);
  if(ix>=0&&String(list[ix].runId||'')===String(entry.runId||''))return 'kept';
- if(ix>=0)list[ix]=entry;else list.push(entry);
+ let evicted=null;
+ if(ix>=0)list[ix]=entry;else{if(list.length>=25)evicted=list[0].name;list.push(entry);}
  while(list.length>25)list.shift();
  btSaveCfgStore(store);btRenderConfigs();
+ if(evicted)toast('Saved configurations are capped at 25 — the oldest ("'+evicted+'") was removed.');
  return ix>=0?'replaced':'added';
 }
 let btDeleteArmKey=null;
@@ -2869,10 +2892,17 @@ function btRenderConfigs(){
   const linked=btDeploymentsForCfg(c.name,c.runId).length;
   const armed=btDeleteArmKey===btCfgKey(c);
   const delLabel=armed?(linked?'Confirm delete — deployments stay':'Confirm delete'):'Delete';
-  return '<div class="btcfg"><div><strong>'+esc(c.name)+'</strong><div class="sub">'+esc(c.scheme)+' · '+esc(c.pair)+' · fee '+esc(c.fee_bps)+'bps · deploy '+esc(c.deploy_pct)+'%'+(c.runId?' · run <span style="user-select:all">'+esc(String(c.runId))+'</span>':'')+'</div></div><div style="display:flex;gap:6px"><button type="button" class="action" data-btdeploy="'+i+'">Deploy</button><button type="button" class="action" data-btload="'+i+'">Load</button><button type="button" class="action sell" data-btdel="'+i+'">'+delLabel+'</button></div></div>';
+  const sub='<div class="sub">'+esc(c.scheme)+' · '+esc(c.pair)+' · fee '+esc(c.fee_bps)+'bps · deploy '+esc(c.deploy_pct)+'%'+(c.runId?' · run <span style="user-select:all">'+esc(String(c.runId))+'</span>':'')+'</div>';
+  if(btRenameIdx===i)return '<div class="btcfg"><div><input class="wrename-input" data-btrename-input="'+i+'" value="'+esc(c.name)+'" maxlength="60" aria-label="New name for this configuration">'+sub+'</div><div style="display:flex;gap:6px"><button type="button" class="action" data-btrename-save="'+i+'">Save</button><button type="button" class="action" data-btrename-cancel="'+i+'">Cancel</button></div></div>';
+  return '<div class="btcfg"><div><strong>'+esc(c.name)+'</strong>'+sub+'</div><div style="display:flex;gap:6px"><button type="button" class="action" data-btdeploy="'+i+'">Deploy</button><button type="button" class="action" data-btload="'+i+'">Load</button><button type="button" class="action" data-btrename="'+i+'">Rename</button><button type="button" class="action sell" data-btdel="'+i+'">'+delLabel+'</button></div></div>';
  }).join('');
  box.querySelectorAll('[data-btdeploy]').forEach(b=>b.onclick=()=>plDeploySaved(Number(b.dataset.btdeploy)));
  box.querySelectorAll('[data-btload]').forEach(b=>b.onclick=()=>btLoadConfig(Number(b.dataset.btload)));
+ box.querySelectorAll('[data-btrename]').forEach(b=>b.onclick=()=>{btRenameIdx=Number(b.dataset.btrename);btRenderConfigs();});
+ box.querySelectorAll('[data-btrename-save]').forEach(b=>b.onclick=()=>{const inp=box.querySelector('[data-btrename-input]');btCommitRename(Number(b.dataset.btrenameSave),inp?inp.value:'');});
+ box.querySelectorAll('[data-btrename-cancel]').forEach(b=>b.onclick=()=>{btRenameIdx=null;btRenderConfigs();});
+ const rnInp=box.querySelector('[data-btrename-input]');
+ if(rnInp){try{rnInp.focus();if(rnInp.select)rnInp.select();}catch(_){}rnInp.onkeydown=e=>{if(e.key==='Enter'){const sv=box.querySelector('[data-btrename-save]');if(sv&&sv.onclick)sv.onclick();}else if(e.key==='Escape'){btRenameIdx=null;btRenderConfigs();}};}
  box.querySelectorAll('[data-btdel]').forEach(b=>b.onclick=()=>{
   const s2=btLoadCfgStore(),l=s2.configs[btIdentity()]||[];
   const idx=Number(b.dataset.btdel),target=l[idx];
@@ -2884,6 +2914,74 @@ function btRenderConfigs(){
  });
 }
 /*__N79_SAVED_DEPLOYED_END__*/
+/*__N710_LIFECYCLE_START__*/
+/* === N7.10 (A64, 2026-10-25): saved-configuration lifecycle honesty ===
+   Carlos's N7.9 retest: the Lab still lost and multiplied configurations in
+   three ways — (1) undeploy after deleting the saved entry silently dropped
+   the last copy, (2) one run saved under unlimited names (name-only dedupe),
+   (3) saving under an existing name silently overwrote a different run.
+   (1) No silent overwrite: a save under an existing name arms a two-step
+   confirm (mirroring the delete arm) naming the scheme + run it would
+   replace; an unconfirmed save replaces nothing, and the Save button shows
+   the armed label until the arm lapses or the name changes.
+   (2) No duplicates: a save whose scheme/params/pair/fee/deploy/run match an
+   existing saved entry creates no row and names the entry it already exists
+   as; after any save (or such a refused duplicate) the Save button disables
+   until the name field changes, a new run completes, or another config is
+   loaded (Carlos's prescription).
+   (3) Rename: each saved row has Rename beside Delete — inline edit in the
+   wallet-roster rename family (input + save/cancel, Enter commits, Escape
+   cancels); renaming onto an existing name is refused with a toast, never
+   an overwrite. The rename re-renders the list, so any in-flight delete arm
+   or overwrite arm on another row lapses with it.
+   (4) Undeploy loss warning (in plWireCard): arming Undeploy on a deployment
+   with no matching saved entry warns that undeploying discards the last
+   copy and points at the card's Load & save button; the confirm label names
+   the loss. Matching here is by runId when both sides carry one — a renamed
+   saved entry still counts as the deployment's saved copy — falling back to
+   name alone for pre-N7.5 deployments with no runId.
+   (5) The 25-entry cap eviction is named in the toast on both the user Save
+   path and the deploy-ensure path. Deploy-ensure semantics are unchanged:
+   a deployed config still always lands in Saved Configurations. */
+function btCfgSame(a,b){
+ if(!a||!b)return false;
+ if(a.scheme!==b.scheme||a.pair!==b.pair)return false;
+ if(String(a.fee_bps)!==String(b.fee_bps)||String(a.deploy_pct)!==String(b.deploy_pct))return false;
+ if(String(a.runId||'')!==String(b.runId||''))return false;
+ const pa=a.params||{},pb=b.params||{};
+ const ka=Object.keys(pa),kb=Object.keys(pb);
+ if(ka.length!==kb.length)return false;
+ return ka.every(k=>Object.prototype.hasOwnProperty.call(pb,k)&&String(pa[k])===String(pb[k]));
+}
+function btSavedForDeploy(d){
+ const list=(btLoadCfgStore().configs[btIdentity()]||[]);
+ return list.some(c=>((c.runId&&d.runId)?c.runId===d.runId:c.name===d.name));
+}
+let btSaveDisabled=false,btSavedName='',btOverwriteArmKey=null,btRenameIdx=null;
+function btPaintSaveBtn(){
+ const b=$('btSaveCfg');if(b)b.disabled=btSaveDisabled;
+}
+function btSaveReenable(){
+ btSaveDisabled=false;btOverwriteArmKey=null;
+ const sb=$('btSaveCfg');if(sb)sb.textContent='Save';
+ btPaintSaveBtn();
+}
+function btSaveNameChanged(){
+ btSaveDisabled=false;
+ if(btOverwriteArmKey){btOverwriteArmKey=null;const sb=$('btSaveCfg');if(sb)sb.textContent='Save';}
+ btPaintSaveBtn();
+}
+function btCommitRename(i,name){
+ const store=btLoadCfgStore(),list=store.configs[btIdentity()]||[];
+ const c=list[i];if(!c)return;
+ const nm=String(name||'').trim().slice(0,60);
+ btRenameIdx=null;
+ if(!nm){toast('A configuration needs a name.');btRenderConfigs();return;}
+ if(nm!==c.name&&list.some((x,j)=>j!==i&&x.name===nm)){toast('A saved configuration is already called "'+nm+'". Rename refused — nothing was overwritten.');btRenderConfigs();return;}
+ if(nm===c.name){btRenderConfigs();return;}
+ c.name=nm;btSaveCfgStore(store);btRenderConfigs();toast('Renamed to "'+nm+'".');
+}
+/*__N710_LIFECYCLE_END__*/
 function btLoadConfig(i){
  const list=(btLoadCfgStore().configs[btIdentity()]||[]),c=list[i];
  if(!c)return;
@@ -2897,6 +2995,7 @@ function btLoadConfig(i){
  $('btCustomRange').style.display=btRange==='custom'?'grid':'none';
  if(c.from)$('btFrom').value=new Date(c.from*1000).toISOString().slice(0,10);
  if(c.to)$('btTo').value=new Date(c.to*1000).toISOString().slice(0,10);
+ btSaveReenable(); /* N7.10: a loaded configuration re-enables Save */
  toast('Loaded "'+c.name+'". Press Run backtest.');
 }
 function btInit(){
@@ -2907,6 +3006,7 @@ function btInit(){
  document.querySelectorAll('[data-btrange]').forEach(b=>b.onclick=()=>{document.querySelectorAll('[data-btrange]').forEach(x=>{x.classList.remove('on');x.setAttribute('aria-pressed','false');});b.classList.add('on');b.setAttribute('aria-pressed','true');btRange=b.dataset.btrange;$('btCustomRange').style.display=btRange==='custom'?'grid':'none';});
  $('btRun').onclick=btRun;
  $('btSaveCfg').onclick=btSaveConfig;
+ if($('btCfgName'))$('btCfgName').addEventListener('input',btSaveNameChanged); /* N7.10: a name change re-enables Save and lapses the overwrite arm */
  $('btDeploy').onclick=plDeployCurrent; /* N7.4 */
  btRenderConfigs();
  plRenderDeploys(); /* N7.4 */
@@ -3018,6 +3118,7 @@ function plLoadDeploy(d){
  const name=d.name||(s.label+' · '+new Date().toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'}));
  btLastCfg={scheme:d.scheme,params:Object.fromEntries(Object.keys(d.params||{}).map(k=>[k,String(d.params[k])])),pair:d.pair,from:null,to:null,fee_bps:String(d.fee_bps),deploy_pct:String(d.deploy_pct),range:'full',runId:d.runId||null,runAt:d.runAt||null};
  btEnsureSavedCfg(btLastCfg,name);
+ btSaveReenable(); /* N7.10: a loaded deployment re-enables Save */
  toast('Loaded "'+name+'" into the form and saved it. Press Run backtest.');
 }
 function plPairLabel(id){const p=BT_PAIRS.find(x=>x.id===id);return p?p.label:String(id);}
@@ -3089,7 +3190,11 @@ function plWireCard(i,d){
    plSaveStore(store);plUndeployArm=null;plRenderDeploys();
    toast('Undeployed. The simulation record is discarded — nothing was ever on-chain.');
   }else{
-   plUndeployArm=d.id;ub.textContent='Confirm undeploy?';
+   plUndeployArm=d.id;
+   if(!btSavedForDeploy(d)){
+    ub.textContent='Confirm undeploy — last copy!';
+    toast('This deployment has no saved configuration — undeploying discards its last copy. Use "Load & save" first to keep it.');
+   }else ub.textContent='Confirm undeploy?';
    setTimeout(function(){if(plUndeployArm===d.id){plUndeployArm=null;try{if(document.body.contains(ub))ub.textContent='Undeploy';}catch(_){}}},8000);
   }
  };
