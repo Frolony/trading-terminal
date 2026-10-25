@@ -405,15 +405,30 @@ funding-path decision.
 
 ## Next slices
 
-Optimization pass step 2 (queued, NOT blocked by the funding
-decision): explicit-bump `init` on the creating instructions,
-re-measured against the attempts=1 baselines above
-(`submit_signal` 17,144, `submit_plan` 17,715,
+Optimization pass step 2 (ATTEMPTED 2026-10-25, BLOCKED, REVERTED —
+NOT blocked by the funding decision, blocked by the toolchain):
+explicit-bump `init` was implemented across all 14 creating
+instructions / 19 init accounts (bump args appended last in each
+signature, handlers storing the arg instead of `ctx.bumps`, both
+harnesses passing the off-chain-computed bump) — and pinned Anchor
+0.31 rejects it at parse time: anchor-syn `constraints.rs`
+unconditionally errors `bump targets should not be provided with
+init` for any bump target on an `init` account (99 build errors, no
+IDL produced). The anchor-derive-accounts doc example showing
+`bump = bump` with `init` is stale for this version; the parser is
+authoritative. The change was fully reverted: all three touched
+files byte-identical to the delivered slice-6 zip, workspace
+125/125, host tests 79/79, `anchor build` exit 0, IDL 36/17/78,
+mollusk run reproduces all 70 golden values identically. The
+per-PDA search cost (1,500 CU/attempt; attempts=1 baselines
+`submit_signal` 17,144, `submit_plan` 17,715,
 `register_agent` 9,927, `register_transition` 14,150,
 `policy_transition` 10,698, `post_observation` 10,791,
-`record_evidence` 12,413) — the search loop is the only part
-removed; signal/plan/record semantics are unchanged. Then, once
-Carlos rules the funding path: `borrow` / `exit` /
-`settle_default` / `schedule_whale_exit` / whale-tranche SUCCESS
-CU, then the W3.2 adversarial suite re-expressed against the
-program's interface with measured CU.
+`record_evidence` 12,413) therefore stands. What unblocks step 2 is
+Carlos's call, not builder improvisation: (a) accept the search
+cost, (b) an Anchor upgrade, or (c) hand-rolled account creation
+via system-program CPI (drops Anchor's `init` checks — needs its
+own design review). Then, once Carlos rules the funding path:
+`borrow` / `exit` / `settle_default` / `schedule_whale_exit` /
+whale-tranche SUCCESS CU, then the W3.2 adversarial suite
+re-expressed against the program's interface with measured CU.
