@@ -122,11 +122,26 @@
       "instruction": "commit",
       "note": "slice-2 GATED measurement: minimal chain (1 plan, 1 signal, 1 constraint, 1 stock)",
       "result": "Success"
+    },
+    {
+      "cu": 12413,
+      "instruction": "record_evidence",
+      "note": "slice-3 baseline (no §2.2 estimate)",
+      "result": "Success"
+    },
+    {
+      "cu": 12860,
+      "design_estimate_cu": "8000-12000",
+      "gate": "pass",
+      "gate_2x_band_cu": "4000-24000",
+      "instruction": "settle",
+      "note": "slice-3 GATED measurement: exact settle (realized == declared), 1 attribution (+5 units to the plan author)",
+      "result": "Success"
     }
   ],
   "mollusk_svm": "0.16.2",
   "program_id": "FPGSeLBWEiFKdTuqDbJeKhjXeah5H4c3rqsW4Tzn3RAS",
   "program_so_sha256": "a447e9074a049e18a96f05a97f7ae72ef7ceb15ea3882989d92ac181cfd8c4fc",
-  "slice": 2,
-  "slice_note": "slice-1 genesis/admin chain + slice-2 full governance lifecycle to a committed transition; commit is the first GATED measurement (design §2.2 25-40K EST, 2x band 12.5-80K)"
+  "slice": 3,
+  "slice_note": "slice-1 genesis/admin chain + slice-2 full governance lifecycle to a committed transition + slice-3 evidence and exact settle; commit is the first GATED measurement (design §2.2 25-40K EST, 2x band 12.5-80K), settle the second (design §2.2 8-12K EST, 2x band 4-24K)"
 }

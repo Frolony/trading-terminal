@@ -1,17 +1,22 @@
 # CU golden-test harness (W4.3)
 
-**STATUS (2026-10-25): slice-2 CU MEASURED via the mollusk path below
--- the first GATED measurement has landed: `commit` = 17,633 CU
+**STATUS (2026-10-25): slice-3 CU MEASURED via the mollusk path below
+-- the second GATED measurement has landed: `settle` = 12,860 CU
+against the design §2.2 8-12K EST, gate PASS (2x band 4,000-24,000;
+measured sits 860 CU ABOVE the EST band's top -- a 1.07x overage, not
+a design finding under the >2x rule, and the direction is the
+unfavorable one by a whisker, so it is stated plainly rather than
+rounded away). `record_evidence` = 12,413 CU baseline (no §2.2
+estimate). The first GATED measurement stands: `commit` = 17,633 CU
 against the design §2.2 25-40K EST, gate PASS (2x band 12,500-80,000;
 measured sits BELOW the EST band -- the estimate was conservative,
-which is the safe direction, and the EST is revisited when larger
-transitions are measured). The validator path remains submission-only
-(see "Sandbox findings").** The validator path boots, funds, encodes,
-and submits, but no transaction confirms on a local validator in this
-sandbox. The mollusk path executes the chains in-process and records
-real CU; it is the harness of record for measured CU, and the
-validator path is retained only as a fallback shape, not a measurement
-source.
+which is the safe direction). The validator path remains
+submission-only (see "Sandbox findings").** The validator path boots,
+funds, encodes, and submits, but no transaction confirms on a local
+validator in this sandbox. The mollusk path executes the chains
+in-process and records real CU; it is the harness of record for
+measured CU, and the validator path is retained only as a fallback
+shape, not a measurement source.
 
 ## Sandbox findings (2026-10-25, proven, not guessed)
 
@@ -180,9 +185,35 @@ observation (setup only, ungated, no gate impact): the 3rd/4th
 runs, cause not isolated, noted for a future run rather than
 investigated here.
 
+## Slice 3 (landed 2026-10-25)
+
+Slice 2's chain, then `record_evidence` over the committed transition
+(realized hash = declared hash [7;32], by the oracle) and `settle`
+(exact: realized == declared, one attribution of +5 units to the plan
+author, the proposer). Post-settle assertions pass: transition state
+SETTLED, realized hash recorded on the record, proposer reputation
+credited exactly +5,000,000 raw (SCALE 1e6). All slice-1/2 values
+reproduced identically (commit 17,633 again).
+
+| instruction | measured CU | result |
+|---|---|---|
+| `record_evidence` | 12,413 | Success, baseline (no §2.2 estimate) |
+| **`settle`** | **12,860** | **Success, gate PASS** |
+
+Gate reading, stated plainly: 12,860 CU is inside the 2x band
+(4,000-24,000) but 860 CU above the §2.2 EST band's top (8,000-12,000)
+-- a 1.07x overage, so this is NOT a design finding under the >2x
+rule, and the EST is not revised on this one minimal-chain point
+(1 plan, 1 attribution; the remaining-account classification and
+reputation write-back are the plausible delta over the estimate, and
+larger attributions are measured before any EST revision). The
+direction is the unfavorable one by a whisker, and it is recorded as
+such: the §2.2 batching headroom does not depend on settle (one
+settle per transition, not per payout), so no batching claim moves.
+
 ## Next slices
 
-`settle` (8-12K EST) and the value-moving family (~7K EST each) join
-once their setup chains are scripted on top of slice 2, then the W3.2
-adversarial suite is re-expressed against the program's interface with
-measured CU.
+The value-moving family (~7K EST each) joins once its setup chains
+are scripted on top of slice 3 (treasury instructions ride committed
+window transitions), then the W3.2 adversarial suite is re-expressed
+against the program's interface with measured CU.

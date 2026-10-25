@@ -1,19 +1,22 @@
-//! W4.3 CU golden-test harness (mollusk-svm path), slice 2.
+//! W4.3 CU golden-test harness (mollusk-svm path), slice 3.
 //!
-//! Extends the slice-1 genesis/admin chain with the first GATED
-//! measurement: a full governance lifecycle (policy install,
-//! observation, transition, planning, plan, signal, constraint
-//! report, reconcile, commit) executed in-process (no validator, no
-//! network, no devnet, no mainnet). Every instruction must succeed;
+//! Extends slice 2's chain past commit with the second GATED
+//! measurement: `record_evidence` over the committed transition, then
+//! `settle` (exact: realized hash == declared hash, one attribution
+//! of +5 units to the plan's author) executed in-process (no validator,
+//! no network, no devnet, no mainnet). Every instruction must succeed;
 //! any failure aborts with a non-zero exit, so a golden file is never
 //! written from a failed chain.
 //!
-//! Slice 2's `commit` is gated against design §2.2 (25,000-40,000 CU
-//! EST): a measurement missing that band by more than 2x
-//! (outside 12,500-80,000 CU) is recorded as a DESIGN-FINDING, never
-//! tuned away. The chain here is minimal (1 plan, 1 signal, 1
-//! constraint, 1 stock), so the gated value is the minimal-chain
-//! commit cost; larger transitions cost more and are measured next.
+//! Slice 2's `commit` stays gated against design §2.2 (25,000-40,000 CU
+//! EST, 2x band 12,500-80,000 CU); slice 3's `settle` is gated against
+//! design §2.2 (8,000-12,000 CU EST, 2x band 4,000-24,000 CU). A
+//! measurement missing its band by more than 2x is recorded as a
+//! DESIGN-FINDING, never tuned away. The chain here is minimal (1 plan,
+//! 1 signal, 1 constraint, 1 stock, 1 attribution), so the gated
+//! values are minimal-chain costs; larger transitions cost more and
+//! are measured next. `record_evidence` has no §2.2 estimate, so it is
+//! recorded as baseline, not gated.
 //!
 //! Clock discipline: mollusk's clock starts at unix_timestamp 0 and
 //! warp resets it, so this harness sets `mollusk.sysvars.clock`
@@ -160,6 +163,7 @@ fn main() {
     let (policy, _) = pda(&[b"policy", type_window().as_ref()], &program_id);
     let (observation, _) = pda(&[b"observation", &1u64.to_le_bytes()], &program_id);
     let (transition, _) = pda(&[b"transition", &1u64.to_le_bytes()], &program_id);
+    let (evidence, _) = pda(&[b"evidence", &1u64.to_le_bytes()], &program_id);
     let (plan, _) = pda(&[b"plan", &1u64.to_le_bytes(), proposer.as_ref()], &program_id);
     let (signal, _) = pda(
         &[b"signal", &1u64.to_le_bytes(), &0u32.to_le_bytes(), proposer.as_ref()],
@@ -186,6 +190,7 @@ fn main() {
         (policy, empty.clone()),
         (observation, empty.clone()),
         (transition, empty.clone()),
+        (evidence, empty.clone()),
         (plan, empty.clone()),
         (signal, empty.clone()),
         (authority, funded()),
@@ -606,13 +611,101 @@ fn main() {
         "stock not debited 100 from 1_000_000"
     );
 
+    // ---- Slice 3: evidence + settle (the second GATED measurement) ----
+    // 20. record_evidence(1, realized = declared [7;32]) by the oracle.
+    //     Context order: agent_record, transition_record (read),
+    //     evidence_record (init, payer = oracle), oracle, system_program.
+    let mut data = disc("record_evidence");
+    data.extend_from_slice(&1u64.to_le_bytes());
+    data.extend_from_slice(&[7u8; 32]);
+    let ix = Instruction::new_with_bytes(
+        program_id,
+        &data,
+        vec![
+            AccountMeta::new_readonly(oracle_record, false),
+            AccountMeta::new_readonly(transition, false),
+            AccountMeta::new(evidence, false),
+            AccountMeta::new(oracle, true),
+            AccountMeta::new_readonly(system_id, false),
+        ],
+    );
+    let (next, cu) = run(&mollusk, "record_evidence", &ix, &accounts);
+    accounts = next;
+    // Direct push, not the `push` closure: the closure's borrow of
+    // `measured` is still live at this point in the source order
+    // (its last use precedes `commit`'s direct push), so reusing it
+    // here would conflict with the direct pushes below.
+    measured.push(serde_json::json!({
+        "instruction": "record_evidence",
+        "cu": cu,
+        "result": "Success",
+        "note": "slice-3 baseline (no §2.2 estimate)",
+    }));
+
+    // 21. settle(1, realized [7;32] == declared, exact) by the oracle,
+    //     one attribution: proposer +5 units (5_000_000 raw, SCALE 1e6).
+    //     Remaining accounts: proposer_record (writable, takes the
+    //     reputation write) + plan (the membership proof set, complete:
+    //     exactly plan_count = 1). AgentRecord reputation_raw sits at
+    //     byte offset 52 (8 disc + 32 agent + 4 role flags + 8
+    //     influence); proposer starts at 0, exact settle credits full.
+    let mut data = disc("settle");
+    data.extend_from_slice(&1u64.to_le_bytes());
+    data.extend_from_slice(&[7u8; 32]);
+    data.extend_from_slice(&1u32.to_le_bytes());
+    data.extend_from_slice(proposer.as_ref());
+    data.extend_from_slice(&5_000_000i64.to_le_bytes());
+    let mut metas = vec![
+        AccountMeta::new_readonly(oracle_record, false),
+        AccountMeta::new(transition, false),
+        AccountMeta::new_readonly(evidence, false),
+        AccountMeta::new_readonly(oracle, true),
+    ];
+    metas.push(AccountMeta::new(proposer_record, false));
+    metas.push(AccountMeta::new(plan, false));
+    let ix = Instruction::new_with_bytes(program_id, &data, metas);
+    let (next, cu) = run(&mollusk, "settle", &ix, &accounts);
+    accounts = next;
+    let gate = if (4_000..=24_000).contains(&cu) {
+        "pass"
+    } else {
+        "DESIGN-FINDING"
+    };
+    measured.push(serde_json::json!({
+        "instruction": "settle",
+        "cu": cu,
+        "result": "Success",
+        "note": "slice-3 GATED measurement: exact settle (realized == declared), 1 attribution (+5 units to the plan author)",
+        "design_estimate_cu": "8000-12000",
+        "gate_2x_band_cu": "4000-24000",
+        "gate": gate,
+    }));
+
+    // Post-settle assertions: state SETTLED (4), realized hash
+    // recorded, proposer reputation credited exactly +5,000,000 raw.
+    // TransitionRecord realized_hash offset: 8 disc + 8 id + 32 type
+    // + 1 state + 32 proposer + 8 obs + 8 expires + 8 deadline
+    // + 4 plan_count + 4 round_count + 8 total + 8 weighted
+    // + 8 prev_mean + (4 + 1 x 33) constraints + 1 objectives
+    // + 1 reconciled + 32 declared + 8 parent_index + 32 parent_hash
+    // + 8 commit_index = 256.
+    let tr = accounts.iter().find(|(k, _)| *k == transition).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(tr.data[48], 4u8, "TransitionRecord state is not SETTLED");
+    assert_eq!(&tr.data[256..288], &[7u8; 32], "realized hash not recorded on settle");
+    let pr = accounts.iter().find(|(k, _)| *k == proposer_record).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(
+        u64::from_le_bytes(pr.data[52..60].try_into().unwrap()),
+        5_000_000u64,
+        "proposer reputation not credited +5 units on exact settle"
+    );
+
     let golden = serde_json::json!({
         "harness": "cu-golden-mollusk",
         "mollusk_svm": MOLLUSK_SVM_VERSION,
         "program_id": PROGRAM_ID,
         "program_so_sha256": so_sha256,
-        "slice": 2,
-        "slice_note": "slice-1 genesis/admin chain + slice-2 full governance lifecycle to a committed transition; commit is the first GATED measurement (design §2.2 25-40K EST, 2x band 12.5-80K)",
+        "slice": 3,
+        "slice_note": "slice-1 genesis/admin chain + slice-2 full governance lifecycle to a committed transition + slice-3 evidence and exact settle; commit is the first GATED measurement (design §2.2 25-40K EST, 2x band 12.5-80K), settle the second (design §2.2 8-12K EST, 2x band 4-24K)",
         "clock": {"phase_a_unix_timestamp": NOW0, "planning_window_s": PLANNING_WINDOW, "phase_b_unix_timestamp": NOW1},
         "instructions": measured,
     });
