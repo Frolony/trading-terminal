@@ -453,16 +453,16 @@
 ///! tranche becomes the weekly block — 20% of the locked
 ///! position capped at FLAG — instead of one L-sized tranche.
 ///! Movable liquidity (T/6) and entry-never-refused are
-///! unchanged. This slice (entry-time contract, part 1)
-///! adds the entry-time fields to the schedule and enforces
-///! the weekly cadence at execution; the 12-month lock gate
-///! itself is STORED but NOT YET WIRED — wiring it now
-///! would deadlock every schedule, because execution is
-///! still window-bound (schedule window == execution
-///! window, and lock_until is always 12 windows ahead).
-///! The lock gate activates with the cross-window
-///! execution slice, which is the next slice after this
-///! one, not silently inside a fields change.
+///! unchanged. The entry-time contract landed in two
+///! parts: part 1 added the entry-time fields to the
+///! schedule and enforced the weekly cadence at
+///! execution; part 2 (this state) adds cross-window
+///! execution — the schedule PDA and the holder position
+///! stay on the creation window while the debited stock
+///! and the FLAG snapshot come from the execution
+///! window — and enforces the 12-month lock gate there
+///! (`ScheduleLocked` before entry + 12, inclusive
+///! boundary at the lock window).
 use anchor_lang::prelude::*;
 
 declare_id!("FPGSeLBWEiFKdTuqDbJeKhjXeah5H4c3rqsW4Tzn3RAS");
@@ -552,9 +552,9 @@ pub const WEEK_SECS: i64 = 604_800;
 /// so entry in window w unlocks in window w + 12 — April
 /// entry, block/tranche 4, unlocks the following April.
 /// Stored on the schedule at creation; the execution gate
-/// on it activates with cross-window execution (see the
-/// ExitSchedule docs), because window-bound execution
-/// cannot reach a window 12 ahead.
+/// on it is enforced by `can_execute_whale_tranche`
+/// (cross-window execution, D-10 revision part 2), which
+/// refuses any execution window before entry + 12.
 pub const WHALE_LOCK_WINDOWS: u64 = 12;
 
 /// First window in which a flagged position's tranches may
@@ -3071,7 +3071,7 @@ pub mod treasury_program {
     /// its own type, not the window flow transition that gates
     /// `exit` itself. The schedule is created here; tranches are
     /// executed by `execute_whale_tranche` (the operator-settled
-    /// counterpart, next slice), one per period at or below L.
+    /// counterpart), one per period at or below L.
     ///
     /// The classification reading, stated plainly because the
     /// design row names it in one line ("a flagged purse exits
@@ -3095,9 +3095,10 @@ pub mod treasury_program {
     /// Entry-time fields (this slice): the schedule records
     /// its entry window, its lock-until window (entry + 12),
     /// and a zero last-block time — see the ExitSchedule
-    /// docs. The weekly cadence is enforced at execution;
-    /// the lock gate itself waits for cross-window execution
-    /// and is NOT claimed by this slice.
+    /// docs. The weekly cadence and the 12-month lock gate
+    /// are both enforced at execution (cross-window
+    /// execution, D-10 revision part 2); this instruction
+    /// only records the contract terms.
     ///
     /// Honest scope, as in the sibling slices: this slice
     /// records the schedule as bookkeeping — total, standard
@@ -3195,29 +3196,30 @@ pub mod treasury_program {
     /// tranches should pay the 12% door on any part of
     /// the tranche is a design question for the §4.2 row,
     /// not a pricing decision this slice invents. Second,
-    /// window scope: this slice executes tranches against
-    /// the schedule's own window — the schedule PDA, the
-    /// holder record, and the debited WindowState all
-    /// share that window id, exactly as every sibling
-    /// slice binds its accounts to one window. That window's
-    /// exit stock is L = 5 x FLAG, so stock-wise up to five
-    /// FLAG blocks fit one window — and the weekly cadence
-    /// (one block per week, judged on the Clock against the
-    /// schedule's `last_block_time`) IS enforced here: a
-    /// second block within 7 days of the previous one
-    /// refuses with `TrancheTooSoon`, and a successful
-    /// block stamps `last_block_time` with `now`. The
-    /// 12-month entry lock is NOT enforced yet: the
-    /// schedule now carries `lock_until_window` (entry + 12),
-    /// but the gate waits for cross-window execution — the
-    /// schedule's later tranches are tracked
-    /// (`tranches_executed`) but their execution in later
-    /// windows needs a cross-window execution path the
-    /// design does not specify (a later window's stock is
-    /// a different WindowState, and the schedule's PDA
-    /// stays bound to its creation window). That path, with
-    /// the lock gate riding it, is the next slice, carried
-    /// as an open item, not silently assumed here.
+    /// window scope: CROSS-WINDOW execution (this slice,
+    /// D-10 revision part 2). The schedule PDA and the
+    /// holder record stay bound to the creation window —
+    /// that is where the position lives — while the
+    /// debited WindowState is the EXECUTION window's, named
+    /// by the new `execution_window_id` argument: its
+    /// period-start snapshot re-judges FLAG at execution,
+    /// and its exit stock (sized L = 5 x FLAG, so
+    /// stock-wise up to five FLAG blocks fit one window)
+    /// is the period budget the tranche debits. The
+    /// 12-month entry lock IS enforced here: an execution
+    /// window before `lock_until_window` (entry + 12)
+    /// refuses with the new error `ScheduleLocked`, and
+    /// the lock window itself is the first executable
+    /// window — April entry, block/tranche 4, unlocks the
+    /// following April, and weekly blocks run from there.
+    /// The weekly cadence (one block per week, judged on
+    /// the Clock against the schedule's `last_block_time`)
+    /// is enforced alongside it: a second block within 7
+    /// days of the previous one refuses with
+    /// `TrancheTooSoon`, and a successful block stamps
+    /// `last_block_time` with `now`. The emitted event
+    /// names the EXECUTION window (the window whose stock
+    /// was debited), not the creation window.
     ///
     /// Honest scope, as in the sibling slices: this slice
     /// records the tranche as bookkeeping — position
@@ -3230,6 +3232,7 @@ pub mod treasury_program {
         ctx: Context<ExecuteWhaleTranche>,
         transition_id: u64,
         window_id: u64,
+        execution_window_id: u64,
         holder: Pubkey,
     ) -> Result<()> {
         let schedule = &ctx.accounts.exit_schedule;
@@ -3240,6 +3243,8 @@ pub mod treasury_program {
             schedule.window_id,
             ctx.accounts.holder_record.window_id,
             window_id,
+            execution_window_id,
+            schedule.lock_until_window,
             ctx.accounts.holder_record.standing_authorization,
             ctx.accounts.operator_record.active,
             ctx.accounts
@@ -3275,7 +3280,7 @@ pub mod treasury_program {
             .ok_or(TreasuryError::Overflow)?;
         schedule.last_block_time = now;
         emit!(WhaleTrancheExecuted {
-            window_id,
+            window_id: execution_window_id,
             holder,
             tranche_index,
             amount_raw,
@@ -4750,28 +4755,46 @@ pub fn can_schedule_whale_exit(
 /// §4.2, §5, D-10 REVISED): the authorizing transition must be
 /// Committed and of the canonical `treasury.exit.v1` type,
 /// and both the schedule and the holder's record must
-/// belong to the executed window — a tranche names its
+/// belong to the creation window — a tranche names its
 /// authority by type, never by claim, exactly as the
-/// schedule does. Returns the tranche amount: the standard
+/// schedule does. Execution itself happens in a SEPARATE
+/// window (cross-window execution, D-10 revision part 2):
+/// the schedule PDA and the holder's position stay on the
+/// creation window, while the debited exit stock and the
+/// FLAG snapshot come from the execution window's
+/// WindowState. Returns the tranche amount: the standard
 /// block for every tranche but the last, and the remainder
 /// of total over the standard block for the last one. The
-/// checks, in order: committed state, type + window bindings,
-/// the standing authorization still holding (design §5 covers
-/// this instruction), the operator active and holding
-/// `OPERATOR_SETTLE`, the schedule not already complete,
-/// the weekly cadence (a later block requires `now` at
-/// least 7 days after `last_block_time` — the first block
-/// has no predecessor and is cadence-free; a `now` before
-/// the previous block also refuses, since it cannot be a
-/// week after it), a positive derived amount, the block
-/// within the whale FLAG
-/// (re-judged here on the window's period-start snapshot, not
-/// merely inherited from creation — a schedule whose stored
-/// block somehow exceeded FLAG could not execute, even if it
-/// still fit L), the tranche within the holder's locked
-/// position, the loan floor (the position after the tranche
-/// must still cover an outstanding loan, as in `exit`), and
-/// the window's remaining exit stock (scheduled tranches and
+/// checks, in order: committed state, type + creation-window
+/// bindings (the execution window must also be at or after
+/// the creation window — a tranche cannot execute before
+/// its schedule exists; for a program-created schedule
+/// this is implied by the lock gate, and it closes the
+/// synthetic case of an artificially early lock),
+/// the 12-month lock gate (the execution window
+/// must be at or past `lock_until_window` — entry + 12 —
+/// refusing with `ScheduleLocked`; the boundary is
+/// inclusive, and for a program-created schedule this gate
+/// is also what forbids execution in a window before
+/// creation, since the lock window is always 12 ahead of
+/// it), the standing authorization still holding (design
+/// §5 covers this instruction), the operator active and
+/// holding `OPERATOR_SETTLE`, the schedule not already
+/// complete, the weekly cadence (a later block requires
+/// `now` at least 7 days after `last_block_time` — the
+/// first block has no predecessor and is cadence-free; a
+/// `now` before the previous block also refuses, since it
+/// cannot be a week after it), a positive derived amount,
+/// the block within the whale FLAG
+/// (re-judged here on the EXECUTION window's period-start
+/// snapshot, not the creation window's and not merely
+/// inherited from creation — a schedule whose stored
+/// block somehow exceeded the execution window's FLAG
+/// could not execute, even if it still fit L), the tranche
+/// within the holder's locked position, the loan floor (the
+/// position after the tranche must still cover an
+/// outstanding loan, as in `exit`), and the EXECUTION
+/// window's remaining exit stock (scheduled tranches and
 /// open-trader exits draw on the same period budget, sized
 /// L — the FLAG cap is per block, the stock cap is per
 /// period, and both bind). The remainder arithmetic is
@@ -4785,6 +4808,8 @@ pub fn can_execute_whale_tranche(
     schedule_window_id: u64,
     record_window_id: u64,
     window_id: u64,
+    execution_window_id: u64,
+    lock_until_window: u64,
     standing_authorization: bool,
     operator_active: bool,
     operator_has_settle: bool,
@@ -4803,8 +4828,13 @@ pub fn can_execute_whale_tranche(
     require!(
         transition_type == TREASURY_EXIT_TYPE
             && schedule_window_id == window_id
-            && record_window_id == window_id,
+            && record_window_id == window_id
+            && execution_window_id >= window_id,
         TreasuryError::ScheduleMismatch
+    );
+    require!(
+        execution_window_id >= lock_until_window,
+        TreasuryError::ScheduleLocked
     );
     require!(
         standing_authorization,
@@ -5271,6 +5301,9 @@ pub struct WhaleScheduleCreated {
 /// position moves except the holder record's.
 #[event]
 pub struct WhaleTrancheExecuted {
+    /// The EXECUTION window (cross-window execution, D-10
+    /// revision part 2): the window whose exit stock this
+    /// tranche debited — not the schedule's creation window.
     pub window_id: u64,
     pub holder: Pubkey,
     pub tranche_index: u64,
@@ -6288,20 +6321,17 @@ impl HolderRecord {
 /// [`whale_lock_until_window`]); `last_block_time` is the
 /// Clock timestamp of the most recent executed block, zero
 /// until the first block, and is what the weekly cadence
-/// judges. ENFORCEMENT SPLIT, STATED PLAINLY: the weekly
-/// cadence IS enforced at execution in this slice (a block
+/// judges. ENFORCEMENT, STATED PLAINLY: BOTH halves are
+/// enforced at execution now (cross-window execution,
+/// D-10 revision part 2) — the weekly cadence (a block
 /// less than 7 days after the previous one refuses with
-/// `TrancheTooSoon`); the 12-month lock gate is NOT yet
-/// enforced — `lock_until_window` is computed and stored,
-/// but `execute_whale_tranche` does not yet refuse a
-/// window before it, because execution is still
-/// window-bound and every schedule's lock window lies 12
-/// windows ahead of its only executable window. Wiring
-/// the gate now would make every schedule unexecutable.
-/// The gate lands WITH cross-window execution, which is
-/// the next slice; until then the stored lock window is a
-/// recorded contract term, not an enforced one, and must
-/// not be read as a lock.
+/// `TrancheTooSoon`) AND the 12-month lock gate (an
+/// execution window before `lock_until_window` refuses
+/// with `ScheduleLocked`; the lock window itself is the
+/// first executable window). The schedule PDA and the
+/// holder's position stay on the creation window; only
+/// the debited stock and the FLAG snapshot come from the
+/// execution window.
 #[account]
 pub struct ExitSchedule {
     /// The scheduling holder's key (PDA seed component).
@@ -6328,8 +6358,8 @@ pub struct ExitSchedule {
     /// holder record's window at creation (D-10 revision).
     pub entry_window: u64,
     /// First window in which tranches may execute: entry
-    /// window + 12 (D-10 revision, option A). Stored, not
-    /// yet gated — see the struct docs.
+    /// window + 12 (D-10 revision, option A). Enforced by
+    /// the execution gate — see the struct docs.
     pub lock_until_window: u64,
     /// Clock timestamp of the most recent executed block;
     /// zero at creation. The weekly cadence judges against
@@ -7060,8 +7090,17 @@ pub struct ScheduleWhaleExit<'info> {
 }
 
 /// Accounts for [`treasury_program::execute_whale_tranche`].
+/// Cross-window (D-10 revision part 2): `window_id` is the
+/// CREATION window — the schedule PDA and the holder
+/// record are seeds-bound to it — while
+/// `execution_window_id` is the window being executed in,
+/// and the WindowState below is seeds-bound to THAT id.
+/// The two windows coincide only for a schedule whose lock
+/// has already passed in its own window, which a
+/// program-created schedule never satisfies (its lock is
+/// creation + 12).
 #[derive(Accounts)]
-#[instruction(transition_id: u64, window_id: u64, holder: Pubkey)]
+#[instruction(transition_id: u64, window_id: u64, execution_window_id: u64, holder: Pubkey)]
 pub struct ExecuteWhaleTranche<'info> {
     /// The executing operator (signer). Not a named key:
     /// execution is capability-gated, and the record below
@@ -7079,25 +7118,31 @@ pub struct ExecuteWhaleTranche<'info> {
     /// tranche, not the window flow transition.
     #[account(seeds = [b"transition", transition_id.to_le_bytes().as_ref()], bump = transition_record.bump)]
     pub transition_record: Account<'info, TransitionRecord>,
-    /// The window being executed in, seeds-bound to its id.
-    /// Mutated: its remaining exit stock is debited by
-    /// the tranche amount, so scheduled tranches and
-    /// open-trader exits sum against one period budget.
-    /// Its period-start snapshot total is the D-10 bound's
-    /// basis, re-judged at execution.
-    #[account(mut, seeds = [b"window", window_id.to_le_bytes().as_ref()], bump = window_state.bump)]
+    /// The EXECUTION window, seeds-bound to
+    /// `execution_window_id` — a different WindowState
+    /// from the creation window's whenever the lock has
+    /// carried execution forward, as it always does for a
+    /// program-created schedule. Mutated: its remaining
+    /// exit stock is debited by the tranche amount, so
+    /// scheduled tranches and open-trader exits sum
+    /// against one period budget. Its period-start
+    /// snapshot total is the D-10 bound's basis, re-judged
+    /// at execution on THIS window's snapshot, not the
+    /// creation window's.
+    #[account(mut, seeds = [b"window", execution_window_id.to_le_bytes().as_ref()], bump = window_state.bump)]
     pub window_state: Account<'info, WindowState>,
-    /// The holder's record for this window, seeds-bound to
-    /// the window and the holder. Mutated: the position is
-    /// reduced by the tranche amount, never below an
-    /// outstanding loan.
+    /// The holder's record for the CREATION window,
+    /// seeds-bound to it and the holder. Mutated: the
+    /// position is reduced by the tranche amount, never
+    /// below an outstanding loan.
     #[account(mut, seeds = [b"holder", window_id.to_le_bytes().as_ref(), holder.as_ref()], bump = holder_record.bump)]
     pub holder_record: Account<'info, HolderRecord>,
-    /// The schedule PDA, seeds-bound to the window and the
-    /// holder. Mutated: only `tranches_executed` and
-    /// `last_block_time` move here — the total, standard
-    /// tranche, count, entry window, and lock window are
-    /// creation fields and are never rewritten.
+    /// The schedule PDA, seeds-bound to the CREATION
+    /// window and the holder. Mutated: only
+    /// `tranches_executed` and `last_block_time` move here
+    /// — the total, standard tranche, count, entry window,
+    /// and lock window are creation fields and are never
+    /// rewritten.
     #[account(mut, seeds = [b"schedule", window_id.to_le_bytes().as_ref(), holder.as_ref()], bump = exit_schedule.bump)]
     pub exit_schedule: Account<'info, ExitSchedule>,
 }
@@ -7566,6 +7611,14 @@ pub enum TreasuryError {
     /// refused by this error.
     #[msg("Tranche too soon: at least seven days must pass since the previous whale block.")]
     TrancheTooSoon,
+    /// The whale schedule is still inside its 12-month
+    /// entry lock (D-10 revision, option A): tranches may
+    /// execute only in a window at or past
+    /// `lock_until_window` (entry + 12 windows). The
+    /// boundary is inclusive — the lock window itself is
+    /// the first executable window.
+    #[msg("Schedule locked: whale tranches may execute only in a window at or past the schedule's lock window (entry + 12).")]
+    ScheduleLocked,
     /// The whale tranche exceeds the holder's locked
     /// position: a tranche cannot exit principal the
     /// holder no longer holds (for example, after an
@@ -9860,19 +9913,19 @@ mod tests {
         // full 100,000 exit stock: the first blocks are the
         // standard 20,000 and the last is the 10,000 remainder.
         let amount = can_execute_whale_tranche(
-            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 13, true, true, true, 0, 13,
+            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 13, 13, 13, true, true, true, 0, 13,
             20_000, 250_000, 300_000, 0, 600_000, 100_000,
          1_700_000_000, 0)
         .expect("the first block is the standard block");
         assert_eq!(amount, 20_000);
         let amount = can_execute_whale_tranche(
-            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 13, true, true, true, 1, 13,
+            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 13, 13, 13, true, true, true, 1, 13,
             20_000, 250_000, 300_000, 0, 600_000, 100_000,
          1_700_000_000, 0)
         .expect("the second block is still the standard block");
         assert_eq!(amount, 20_000);
         let amount = can_execute_whale_tranche(
-            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 13, true, true, true, 12, 13,
+            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 13, 13, 13, true, true, true, 12, 13,
             20_000, 250_000, 300_000, 0, 600_000, 100_000,
          1_700_000_000, 0)
         .expect("the last block is the remainder");
@@ -9880,7 +9933,7 @@ mod tests {
         // An exact multiple takes no short last block:
         // 100,000 over five 20,000 blocks ends at 20,000.
         let amount = can_execute_whale_tranche(
-            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 13, true, true, true, 4, 5,
+            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 13, 13, 13, true, true, true, 4, 5,
             20_000, 100_000, 300_000, 0, 600_000, 100_000,
          1_700_000_000, 0)
         .expect("an exact multiple ends on a full block");
@@ -9889,34 +9942,34 @@ mod tests {
         // block landing the position exactly on the loan
         // passes, one unit below it refuses.
         can_execute_whale_tranche(
-            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 13, true, true, true, 0, 13,
+            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 13, 13, 13, true, true, true, 0, 13,
             20_000, 250_000, 300_000, 280_000, 600_000, 100_000,
          1_700_000_000, 0)
         .expect("a block down to exactly the loan passes");
         assert!(can_execute_whale_tranche(
-            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 13, true, true, true, 0, 13,
+            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 13, 13, 13, true, true, true, 0, 13,
             20_000, 250_000, 300_000, 280_001, 600_000, 100_000
         , 1_700_000_000, 0)
         .is_err());
         // Gate failures: non-committed state, wrong type,
         // schedule-window mismatch, record-window mismatch.
         assert!(can_execute_whale_tranche(
-            STATE_PLANNING, TREASURY_EXIT_TYPE, 13, 13, 13, true, true, true, 0, 13,
+            STATE_PLANNING, TREASURY_EXIT_TYPE, 13, 13, 13, 13, 13, true, true, true, 0, 13,
             20_000, 250_000, 300_000, 0, 600_000, 100_000
         , 1_700_000_000, 0)
         .is_err());
         assert!(can_execute_whale_tranche(
-            STATE_COMMITTED, TREASURY_WINDOW_TYPE, 13, 13, 13, true, true, true, 0, 13,
+            STATE_COMMITTED, TREASURY_WINDOW_TYPE, 13, 13, 13, 13, 13, true, true, true, 0, 13,
             20_000, 250_000, 300_000, 0, 600_000, 100_000
         , 1_700_000_000, 0)
         .is_err());
         assert!(can_execute_whale_tranche(
-            STATE_COMMITTED, TREASURY_EXIT_TYPE, 12, 13, 13, true, true, true, 0, 13,
+            STATE_COMMITTED, TREASURY_EXIT_TYPE, 12, 13, 13, 13, 13, true, true, true, 0, 13,
             20_000, 250_000, 300_000, 0, 600_000, 100_000
         , 1_700_000_000, 0)
         .is_err());
         assert!(can_execute_whale_tranche(
-            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 12, 13, true, true, true, 0, 13,
+            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 12, 13, 13, 13, true, true, true, 0, 13,
             20_000, 250_000, 300_000, 0, 600_000, 100_000
         , 1_700_000_000, 0)
         .is_err());
@@ -9924,28 +9977,28 @@ mod tests {
         // authorization, inactive operator, operator without
         // the settle capability.
         assert!(can_execute_whale_tranche(
-            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 13, false, true, true, 0, 13,
+            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 13, 13, 13, false, true, true, 0, 13,
             20_000, 250_000, 300_000, 0, 600_000, 100_000
         , 1_700_000_000, 0)
         .is_err());
         assert!(can_execute_whale_tranche(
-            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 13, true, false, true, 0, 13,
+            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 13, 13, 13, true, false, true, 0, 13,
             20_000, 250_000, 300_000, 0, 600_000, 100_000
         , 1_700_000_000, 0)
         .is_err());
         assert!(can_execute_whale_tranche(
-            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 13, true, true, false, 0, 13,
+            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 13, 13, 13, true, true, false, 0, 13,
             20_000, 250_000, 300_000, 0, 600_000, 100_000
         , 1_700_000_000, 0)
         .is_err());
         // Completion: executed at, or past, the count refuses.
         assert!(can_execute_whale_tranche(
-            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 13, true, true, true, 13, 13,
+            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 13, 13, 13, true, true, true, 13, 13,
             20_000, 250_000, 300_000, 0, 600_000, 100_000
         , 1_700_000_000, 0)
         .is_err());
         assert!(can_execute_whale_tranche(
-            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 13, true, true, true, 14, 13,
+            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 13, 13, 13, true, true, true, 14, 13,
             20_000, 250_000, 300_000, 0, 600_000, 100_000
         , 1_700_000_000, 0)
         .is_err());
@@ -9954,12 +10007,12 @@ mod tests {
         // though the schedule was created, and a block one
         // unit above FLAG refuses too.
         assert!(can_execute_whale_tranche(
-            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 13, true, true, true, 0, 3,
+            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 13, 13, 13, true, true, true, 0, 3,
             100_000, 250_000, 300_000, 0, 600_000, 100_000
         , 1_700_000_000, 0)
         .is_err());
         assert!(can_execute_whale_tranche(
-            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 13, true, true, true, 0, 13,
+            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 13, 13, 13, true, true, true, 0, 13,
             20_001, 250_000, 300_000, 0, 600_000, 100_000
         , 1_700_000_000, 0)
         .is_err());
@@ -9967,12 +10020,12 @@ mod tests {
         // position refuses; an inconsistent schedule whose
         // last block computes to zero refuses too.
         assert!(can_execute_whale_tranche(
-            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 13, true, true, true, 0, 13,
+            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 13, 13, 13, true, true, true, 0, 13,
             20_000, 250_000, 19_999, 0, 600_000, 100_000
         , 1_700_000_000, 0)
         .is_err());
         assert!(can_execute_whale_tranche(
-            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 13, true, true, true, 4, 5,
+            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 13, 13, 13, true, true, true, 4, 5,
             20_000, 80_000, 300_000, 0, 600_000, 100_000
         , 1_700_000_000, 0)
         .is_err());
@@ -9980,7 +10033,7 @@ mod tests {
         // remaining stock refuses — scheduled blocks and
         // open-trader exits share one period budget.
         assert!(can_execute_whale_tranche(
-            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 13, true, true, true, 0, 13,
+            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 13, 13, 13, true, true, true, 0, 13,
             20_000, 250_000, 300_000, 0, 600_000, 19_999
         , 1_700_000_000, 0)
         .is_err());
@@ -10003,33 +10056,33 @@ mod tests {
         // First block: no predecessor, cadence-free even
         // with last_block_time zero.
         can_execute_whale_tranche(
-            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 13, true, true, true, 0, 13,
+            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 13, 13, 13, true, true, true, 0, 13,
             20_000, 250_000, 300_000, 0, 600_000, 100_000, now, 0,
         )
         .expect("the first block is cadence-free");
         // Second block exactly seven days after the first
         // passes — the boundary is inclusive.
         can_execute_whale_tranche(
-            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 13, true, true, true, 1, 13,
+            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 13, 13, 13, true, true, true, 1, 13,
             20_000, 250_000, 300_000, 0, 600_000, 100_000, now, now - WEEK_SECS,
         )
         .expect("a block exactly seven days later passes");
         // Second block one second early refuses.
         assert!(can_execute_whale_tranche(
-            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 13, true, true, true, 1, 13,
+            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 13, 13, 13, true, true, true, 1, 13,
             20_000, 250_000, 300_000, 0, 600_000, 100_000, now, now - WEEK_SECS + 1
         )
         .is_err());
         // Second block six days after the first refuses.
         assert!(can_execute_whale_tranche(
-            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 13, true, true, true, 1, 13,
+            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 13, 13, 13, true, true, true, 1, 13,
             20_000, 250_000, 300_000, 0, 600_000, 100_000, now, now - 6 * 86_400
         )
         .is_err());
         // A `now` before the previous block refuses too: it
         // cannot be a week after a block from the future.
         assert!(can_execute_whale_tranche(
-            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 13, true, true, true, 1, 13,
+            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 13, 13, 13, true, true, true, 1, 13,
             20_000, 250_000, 300_000, 0, 600_000, 100_000, now, now + 1
         )
         .is_err());
@@ -10037,13 +10090,97 @@ mod tests {
         // refuses with Overflow instead of wrapping to an
         // early cadence pass.
         assert!(can_execute_whale_tranche(
-            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 13, true, true, true, 1, 13,
+            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 13, 13, 13, true, true, true, 1, 13,
             20_000, 250_000, 300_000, 0, 600_000, 100_000, now, i64::MAX
         )
         .is_err());
         // Lock-window overflow guard: an entry window at
         // u64::MAX cannot compute a lock window.
         assert!(whale_lock_until_window(u64::MAX).is_err());
+    }
+
+    #[test]
+    fn whale_cross_window_lock_gate() {
+        // Cross-window execution + the 12-month lock gate
+        // (D-10 revision, part 2): a schedule created in
+        // window 4 (entry window 4, lock window 16 — the
+        // following April) against the usual numbers
+        // (snapshot 600,000 so FLAG = 20,000, schedule
+        // 250,000 in 13 blocks, position 300,000, full
+        // 100,000 execution-window stock). Each refusal
+        // below fails on exactly one gate — every other
+        // gate passes — so `is_err` proves that gate.
+        let now = 1_700_000_000i64;
+        // One window early refuses: the lock gate, not
+        // the cadence or the stock, is what stops it.
+        assert!(can_execute_whale_tranche(
+            STATE_COMMITTED, TREASURY_EXIT_TYPE, 4, 4, 4, 15, 16, true, true, true, 0, 13,
+            20_000, 250_000, 300_000, 0, 600_000, 100_000, now, 0
+        )
+        .is_err());
+        // The lock window itself is the first executable
+        // window — the boundary is inclusive.
+        let amount = can_execute_whale_tranche(
+            STATE_COMMITTED, TREASURY_EXIT_TYPE, 4, 4, 4, 16, 16, true, true, true, 0, 13,
+            20_000, 250_000, 300_000, 0, 600_000, 100_000, now, 0,
+        )
+        .expect("the first block executes in the lock window");
+        assert_eq!(amount, 20_000);
+        // Well past the lock, execution still works: the
+        // gate is a floor, not a window.
+        can_execute_whale_tranche(
+            STATE_COMMITTED, TREASURY_EXIT_TYPE, 4, 4, 4, 25, 16, true, true, true, 0, 13,
+            20_000, 250_000, 300_000, 0, 600_000, 100_000, now, 0,
+        )
+        .expect("execution well past the lock passes");
+        // Creation bindings still bind across windows: a
+        // schedule (or holder record) from another window
+        // cannot execute here even past the lock.
+        assert!(can_execute_whale_tranche(
+            STATE_COMMITTED, TREASURY_EXIT_TYPE, 5, 4, 4, 16, 16, true, true, true, 0, 13,
+            20_000, 250_000, 300_000, 0, 600_000, 100_000, now, 0
+        )
+        .is_err());
+        assert!(can_execute_whale_tranche(
+            STATE_COMMITTED, TREASURY_EXIT_TYPE, 4, 5, 4, 16, 16, true, true, true, 0, 13,
+            20_000, 250_000, 300_000, 0, 600_000, 100_000, now, 0
+        )
+        .is_err());
+        // Execution before creation refuses even with an
+        // artificially early lock: a tranche cannot
+        // execute before its schedule exists.
+        assert!(can_execute_whale_tranche(
+            STATE_COMMITTED, TREASURY_EXIT_TYPE, 4, 4, 4, 3, 3, true, true, true, 0, 13,
+            20_000, 250_000, 300_000, 0, 600_000, 100_000, now, 0
+        )
+        .is_err());
+        // FLAG is re-judged on the EXECUTION window's
+        // snapshot, not the creation window's: a 300,000
+        // execution snapshot gives FLAG 10,000, so the
+        // stored 20,000 block refuses there, while the
+        // same block passes on a 600,000 snapshot.
+        assert!(can_execute_whale_tranche(
+            STATE_COMMITTED, TREASURY_EXIT_TYPE, 4, 4, 4, 16, 16, true, true, true, 0, 13,
+            20_000, 250_000, 300_000, 0, 300_000, 100_000, now, 0
+        )
+        .is_err());
+        // The period budget is the execution window's
+        // stock: 19,999 remaining there refuses a 20,000
+        // block even though the creation window is full.
+        assert!(can_execute_whale_tranche(
+            STATE_COMMITTED, TREASURY_EXIT_TYPE, 4, 4, 4, 16, 16, true, true, true, 0, 13,
+            20_000, 250_000, 300_000, 0, 600_000, 19_999, now, 0
+        )
+        .is_err());
+        // A second block a week later in a LATER window
+        // passes: weekly blocks are not confined to one
+        // window, and the cadence rides across windows.
+        let amount = can_execute_whale_tranche(
+            STATE_COMMITTED, TREASURY_EXIT_TYPE, 4, 4, 4, 17, 16, true, true, true, 1, 13,
+            20_000, 250_000, 300_000, 0, 600_000, 100_000, now, now - WEEK_SECS,
+        )
+        .expect("a second block a week later, in a later window, passes");
+        assert_eq!(amount, 20_000);
     }
 
     #[test]

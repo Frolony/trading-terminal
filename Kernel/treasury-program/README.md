@@ -789,3 +789,33 @@ refusal, future-last-block refusal, i64/u64 overflow guards;
 the execute matrix's 20 calls carry now/last-block args).
 Bookkeeping only, as in the sibling slices — no token
 movement yet.
+
+Slice 33 — whale entry-time contract, part 2: cross-window
+execution + the 12-month lock gate (design §4.2, D-10
+revised). `execute_whale_tranche` takes a new
+`execution_window_id` argument: the schedule PDA and the
+holder record stay seeds-bound to the creation window
+(where the position lives), while the debited WindowState
+is seeds-bound to the execution window — its period-start
+snapshot re-judges FLAG at execution and its exit stock
+(sized L) is the period budget debited. The gate refuses
+any execution window before `lock_until_window` (entry +
+12) with the new error `ScheduleLocked` (IDL errors
+77 → 78; instructions/accounts unchanged at 36/17), the
+lock window itself is the first executable window
+(inclusive boundary — April entry unlocks the following
+April, weekly blocks from there), and an execution window
+before the creation window refuses as a binding mismatch
+(a tranche cannot execute before its schedule exists).
+The emitted `WhaleTrancheExecuted` event now names the
+execution window (the window whose stock was debited),
+not the creation window. Program host tests 78 → 79
+(new cross-window lock-gate matrix: one-window-early
+refusal, inclusive lock boundary, well-past-lock pass,
+creation-binding refusals across windows,
+execution-before-creation refusal, FLAG re-judged on the
+execution snapshot, execution-window stock bound, and a
+second block a week later in a later window; the 26
+existing execute-matrix/cadence calls carry
+execution/lock args). Bookkeeping only, as in the
+sibling slices — no token movement yet.
