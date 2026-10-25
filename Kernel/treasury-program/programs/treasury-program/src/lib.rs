@@ -447,6 +447,17 @@
 //! rules. The Token-2022 transfer-hook extension is a designed future phase
 //! needing its own Carlos decision + legal review — NOT W4.3 scope.
 
+//! This rework (D-10 FLAG revision, 2026-10-24 ~18:49 CST,
+///! Carlos) changes slices 28/29: the whale flag drops from
+///! >L to >= FLAG = 1/5 of movable liquidity (T/30), and the
+///! tranche becomes the weekly block — 20% of the locked
+///! position capped at FLAG — instead of one L-sized tranche.
+///! Movable liquidity (T/6) and entry-never-refused are
+///! unchanged. NOT in this rework: the entry-time contract
+///! itself (12-month lock from the entry window, weekly
+///! cadence enforcement) — that needs entry-time fields on
+///! the schedule and lands as the next slice, not silently
+///! inside a numbers change.
 use anchor_lang::prelude::*;
 
 declare_id!("FPGSeLBWEiFKdTuqDbJeKhjXeah5H4c3rqsW4Tzn3RAS");
@@ -496,6 +507,31 @@ pub const STAGE_2: u8 = 2;
 /// (1/3 of the sleeve at 60-day terms): 2/3 × 25% × T = T/6.
 pub fn movable_liquidity(treasury: u128) -> u128 {
     treasury * (CASH_SLEEVE_PPM as u128) * 2 / PPM / 3
+}
+
+/// Whale FLAG threshold (D-10 REVISED 2026-10-24 ~18:49 CST,
+/// Carlos): 1/5 of movable liquidity = T/30 (3.3333% of T at
+/// reference scale: 3,333,333 at T = 100,000,000). Five
+/// unflagged positions at this size sum to the entire movable
+/// liquidity, which is why the flag dropped from L to L/5.
+/// Movable liquidity itself (T/6) is unchanged, and entry is
+/// still never refused by size — the flag sets the exit
+/// contract, not admission.
+pub fn whale_flag_threshold(treasury: u128) -> u128 {
+    movable_liquidity(treasury) / 5
+}
+
+/// Weekly block size for a flagged position (D-10 revision,
+/// option A): 20% of the locked position, capped at the FLAG.
+/// The floor guard keeps a tiny schedule progressing: a
+/// fifth that floors to zero becomes a 1-unit block, which
+/// cannot exceed a nonzero FLAG (a FLAG of 1 with a total
+/// below 5 is the only case the floor can bite, and 1 <= 1).
+pub fn whale_tranche_size(total_raw: u64, snapshot_total_raw: u64) -> u64 {
+    let flag = whale_flag_threshold(snapshot_total_raw as u128) as u64;
+    let fifth = total_raw / 5;
+    let tranche = fifth.min(flag);
+    if tranche == 0 { 1 } else { tranche }
 }
 
 /// Maximum lending-book outstanding at 100% uptake: T/12.
@@ -2994,8 +3030,8 @@ pub mod treasury_program {
     }
 
     /// Schedule a whale exit (design §4.2): the window protocol's
-    /// timed/tranched exit contract, for purses above movable
-    /// liquidity. Holder-signed intent — the holder schedules
+    /// timed/tranched exit contract, for purses at or above the
+    /// whale FLAG (1/5 of movable liquidity, D-10 revised). Holder-signed intent — the holder schedules
     /// their own exit, the HolderRecord PDA seeds bind the record
     /// to the signer — but the authority is a Committed
     /// `treasury.exit.v1` transition, a governed exit contract of
@@ -3005,33 +3041,37 @@ pub mod treasury_program {
     /// counterpart, next slice), one per period at or below L.
     ///
     /// The classification reading, stated plainly because the
-    /// design row names it in one line ("purse above movable
-    /// liquidity exits only on a timed/tranched schedule; below
-    /// L: open-trader path"): a schedule exists only for a whale
-    /// purse, so a total at or below L refuses here with
+    /// design row names it in one line ("a flagged purse exits
+    /// only on a timed/tranched schedule; below FLAG:
+    /// open-trader path"): a schedule exists only for a flagged
+    /// purse, so a total below FLAG refuses here with
     /// `BelowWhaleThreshold` — that holder uses the open-trader
     /// `exit` path, not a schedule. A total above the holder's
     /// locked position refuses with `ScheduleExceedsPosition`:
     /// a schedule cannot promise an exit of principal the holder
-    /// does not hold. The tranche size is L itself (judged on
-    /// the window's period-start snapshot total, never a live
-    /// total, exactly as `exit` judges its per-order bound), and
-    /// the tranche count is the ceiling of total over L — the
-    /// last tranche is the remainder, computed at execution
-    /// time, so the schedule stores the standard tranche size
-    /// and the count, not a per-tranche list. A snapshot total
-    /// whose movable liquidity is zero sizes no schedule at
-    /// all (`InvalidScheduleAmount`): a window with no exit
-    /// budget cannot host a timed exit.
+    /// does not hold. The block size is 20% of the total capped
+    /// at FLAG (judged on the window's period-start snapshot
+    /// total, never a live total, exactly as `exit` judges its
+    /// per-order bound), and the tranche count is the ceiling
+    /// of total over the block — the last tranche is the
+    /// remainder, computed at execution time, so the schedule
+    /// stores the standard block size and the count, not a
+    /// per-tranche list. A snapshot total whose FLAG is zero
+    /// sizes no schedule at all (`InvalidScheduleAmount`): a
+    /// window with no flag budget cannot host a timed exit.
+    /// NOT in this slice: the entry-time contract (12-month
+    /// lock from the entry window, weekly cadence) — see the
+    /// ExitSchedule docs; it lands with entry-time fields.
     ///
     /// Honest scope, as in the sibling slices: this slice
     /// records the schedule as bookkeeping — total, standard
-    /// tranche, count, zero executed — and does NOT move tokens,
+    /// block, count, zero executed — and does NOT move tokens,
     /// debit the window's exit stock, or reduce the position.
     /// The stock debit and the position reduction happen per
-    /// tranche at execution, each tranche bounded by L again,
+    /// tranche at execution, each tranche bounded by FLAG again,
     /// so the schedule as a whole can never drain more than
-    /// its tranches sum to, and no single tranche exceeds L.
+    /// its tranches sum to, and no single tranche exceeds FLAG
+    /// (and therefore never exceeds L either).
     pub fn schedule_whale_exit(
         ctx: Context<ScheduleWhaleExit>,
         transition_id: u64,
@@ -3074,10 +3114,11 @@ pub mod treasury_program {
     /// operator executes; the schedule decides the amount —
     /// there is no amount argument, so the operator cannot
     /// invent, enlarge, or re-size a tranche. The amount is
-    /// the standard tranche (L) for every tranche but the
-    /// last, and the remainder of total over L for the last
-    /// one, computed from the schedule's own stored fields
-    /// (see [`can_execute_whale_tranche`]).
+    /// the standard block (20% of the total, capped at FLAG)
+    /// for every tranche but the last, and the remainder of
+    /// total over the block for the last one, computed from the
+    /// schedule's own stored fields (see
+    /// [`can_execute_whale_tranche`]).
     ///
     /// The gate rides a Committed `treasury.exit.v1`
     /// transition, as in `schedule_whale_exit` — the
@@ -3088,11 +3129,11 @@ pub mod treasury_program {
     /// names `execute_whale_tranche` among the claim
     /// executions the standing authorization covers, unlike
     /// `settle_default`, which is deliberately not gated on
-    /// it). The tranche is bounded by L twice, on purpose:
-    /// against the schedule's standard tranche size, and
-    /// against the window's remaining exit stock, which
-    /// this instruction debits by the tranche amount — so
-    /// scheduled tranches and open-trader `exit` orders
+    /// The tranche is bounded twice, on purpose: by FLAG per
+    /// block (re-judged on the window's period-start snapshot),
+    /// and against the window's remaining exit stock (sized
+    /// L), which this instruction debits by the tranche amount
+    /// — so scheduled tranches and open-trader `exit` orders
     /// draw on the same period budget, and execution-time
     /// stock contention between the two paths is decided
     /// here, not at schedule creation (the schedule
@@ -3117,16 +3158,18 @@ pub mod treasury_program {
     /// the schedule's own window — the schedule PDA, the
     /// holder record, and the debited WindowState all
     /// share that window id, exactly as every sibling
-    /// slice binds its accounts to one window. Because
-    /// that window's exit stock is exactly L, at most one
-    /// standard tranche can execute in it; the schedule's
-    /// later tranches are tracked (`tranches_executed`)
-    /// but their execution in later windows needs a
-    /// cross-window execution path the design does not
-    /// specify (a later window's stock is a different
-    /// WindowState, and the schedule's PDA stays bound to
-    /// its creation window). That path is carried as an
-    /// open item, not silently assumed here.
+    /// slice binds its accounts to one window. That window's
+    /// exit stock is L = 5 x FLAG, so stock-wise up to five
+    /// FLAG blocks fit one window — but the weekly cadence
+    /// (one block per week) and the 12-month entry lock are
+    /// NOT enforced yet (no entry-time fields exist on the
+    /// schedule; next slice). The schedule's later tranches
+    /// are tracked (`tranches_executed`) but their execution
+    /// in later windows needs a cross-window execution path
+    /// the design does not specify (a later window's stock
+    /// is a different WindowState, and the schedule's PDA
+    /// stays bound to its creation window). That path is
+    /// carried as an open item, not silently assumed here.
     ///
     /// Honest scope, as in the sibling slices: this slice
     /// records the tranche as bookkeeping — position
@@ -4600,22 +4643,26 @@ pub fn can_exit(
 }
 
 /// Who may schedule a whale exit, as a pure check (design §4.2,
-/// D-10): the authorizing transition must be Committed and of
-/// the canonical `treasury.exit.v1` type, and the holder's record
-/// must belong to the scheduled window — a schedule names its
+/// D-10 REVISED 2026-10-24 ~18:49 CST): the authorizing
+/// transition must be Committed and of the canonical
+/// `treasury.exit.v1` type, and the holder's record must
+/// belong to the scheduled window — a schedule names its
 /// authority by type, never by claim, exactly as `exit` does for
-/// the window flow type. Returns the standard tranche size (L)
-/// and the tranche count (ceiling of total over L). The checks,
-/// in order: committed state, type + window binding, positive
-/// total, a nonzero movable liquidity (a zero-L snapshot sizes
-/// no schedule), the whale threshold itself (total strictly
-/// above L — at or below L the holder is an open trader and
-/// uses `exit`, not a schedule), and the position bound (the
-/// schedule cannot exceed what the holder holds). The ceiling
-/// division is checked: L is proven nonzero above, so the
-/// division cannot fault, and the count is at least 2 whenever
-/// the threshold passes (total > L), never a degenerate
-/// one-tranche "schedule" for a whale purse.
+/// the window flow type. Returns the standard tranche size
+/// (the weekly block: 20% of the total, capped at the FLAG)
+/// and the tranche count (ceiling of total over that block).
+/// The checks, in order: committed state, type + window
+/// binding, positive total, a nonzero FLAG (a zero-FLAG
+/// snapshot sizes no schedule), the flag threshold itself
+/// (total at or above FLAG — below FLAG the holder is an
+/// open trader and uses `exit`, not a schedule), and the
+/// position bound (the schedule cannot exceed what the
+/// holder holds). The ceiling division is checked: the
+/// block is proven nonzero above, so the division cannot
+/// fault, and the count is at least 5 whenever the threshold
+/// passes (a total at FLAG takes 5 fifth-sized blocks; a
+/// larger total takes 5 or more capped blocks), never a
+/// degenerate one-tranche "schedule" for a flagged purse.
 pub fn can_schedule_whale_exit(
     state: u8,
     transition_type: [u8; 32],
@@ -4631,50 +4678,49 @@ pub fn can_schedule_whale_exit(
         TreasuryError::ScheduleMismatch
     );
     require!(total_raw != 0, TreasuryError::InvalidScheduleAmount);
-    let liquidity = movable_liquidity(snapshot_total_raw as u128);
-    require!(liquidity != 0, TreasuryError::InvalidScheduleAmount);
+    let flag = whale_flag_threshold(snapshot_total_raw as u128);
+    require!(flag != 0, TreasuryError::InvalidScheduleAmount);
     require!(
-        total_raw as u128 > liquidity,
+        total_raw as u128 >= flag,
         TreasuryError::BelowWhaleThreshold
     );
     require!(
         total_raw <= position_raw,
         TreasuryError::ScheduleExceedsPosition
     );
-    let tranche_raw = liquidity as u64;
+    let tranche_raw = whale_tranche_size(total_raw, snapshot_total_raw);
     let tranches_total =
-        (total_raw as u128).div_ceil(liquidity) as u64;
+        (total_raw as u128).div_ceil(tranche_raw as u128) as u64;
     Ok((tranche_raw, tranches_total))
 }
 
 /// Who may execute a whale tranche, as a pure check (design
-/// §4.2, §5, D-10): the authorizing transition must be
+/// §4.2, §5, D-10 REVISED): the authorizing transition must be
 /// Committed and of the canonical `treasury.exit.v1` type,
 /// and both the schedule and the holder's record must
 /// belong to the executed window — a tranche names its
 /// authority by type, never by claim, exactly as the
-/// schedule does. Returns the tranche amount: the
-/// standard tranche for every tranche but the last, and
-/// the remainder of total over the standard tranche for
-/// the last one. The checks, in order: committed state,
-/// type + window bindings, the standing authorization
-/// still holding (design §5 covers this instruction),
-/// the operator active and holding `OPERATOR_SETTLE`,
-/// the schedule not already complete, a positive
-/// derived amount, the tranche within one period's
-/// movable liquidity (re-judged here on the window's
-/// period-start snapshot, not merely inherited from
-/// creation — a schedule whose standard tranche somehow
-/// exceeded L could not execute), the tranche within
-/// the holder's locked position, the loan floor (the
-/// position after the tranche must still cover an
-/// outstanding loan, as in `exit`), and the window's
-/// remaining exit stock (scheduled tranches and
-/// open-trader exits draw on the same period budget).
-/// The remainder arithmetic is checked: the standard
-/// tranche times (count − 1) can never exceed the
-/// total for a schedule the program created, and any
-/// violation refuses with `Overflow` instead of
+/// schedule does. Returns the tranche amount: the standard
+/// block for every tranche but the last, and the remainder
+/// of total over the standard block for the last one. The
+/// checks, in order: committed state, type + window bindings,
+/// the standing authorization still holding (design §5 covers
+/// this instruction), the operator active and holding
+/// `OPERATOR_SETTLE`, the schedule not already complete, a
+/// positive derived amount, the block within the whale FLAG
+/// (re-judged here on the window's period-start snapshot, not
+/// merely inherited from creation — a schedule whose stored
+/// block somehow exceeded FLAG could not execute, even if it
+/// still fit L), the tranche within the holder's locked
+/// position, the loan floor (the position after the tranche
+/// must still cover an outstanding loan, as in `exit`), and
+/// the window's remaining exit stock (scheduled tranches and
+/// open-trader exits draw on the same period budget, sized
+/// L — the FLAG cap is per block, the stock cap is per
+/// period, and both bind). The remainder arithmetic is
+/// checked: the standard block times (count − 1) can never
+/// exceed the total for a schedule the program created, and
+/// any violation refuses with `Overflow` instead of
 /// wrapping — fail-closed, never silently re-sized.
 pub fn can_execute_whale_tranche(
     state: u8,
@@ -4726,7 +4772,7 @@ pub fn can_execute_whale_tranche(
     };
     require!(amount_raw != 0, TreasuryError::InvalidScheduleAmount);
     require!(
-        amount_raw as u128 <= movable_liquidity(snapshot_total_raw as u128),
+        amount_raw as u128 <= whale_flag_threshold(snapshot_total_raw as u128),
         TreasuryError::ExitExceedsLiquidity
     );
     require!(
@@ -6152,19 +6198,27 @@ impl HolderRecord {
 }
 
 /// Whale exit schedule (design §3, §4.2) — one per holder per
-/// window, the timed/tranched exit contract for a purse above
-/// movable liquidity. Created only by `schedule_whale_exit`,
+/// window, the timed/tranched exit contract for a purse at or
+/// above the whale FLAG (D-10 REVISED: FLAG = 1/5 of movable
+/// liquidity = T/30). Created only by `schedule_whale_exit`,
 /// which is the only writer of the creation fields; the
 /// execution family writes `tranches_executed`, and no
 /// instruction withdraws an active schedule (design §7,
 /// committed-inventory exits: no withdrawal instruction exists
 /// for an active schedule). The schedule stores the standard
-/// tranche size (L, judged on the window's period-start
-/// snapshot) and the tranche count — the last tranche is the
-/// remainder of total over L, computed at execution time, so
-/// no per-tranche list is stored and no tranche can be
-/// re-sized after creation. The position is not reduced here:
-/// each executed tranche reduces it then, bounded by L again.
+/// block size (20% of the total, capped at FLAG, judged on the
+/// window's period-start snapshot) and the tranche count — the
+/// last tranche is the remainder of total over the block,
+/// computed at execution time, so no per-tranche list is
+/// stored and no tranche can be re-sized after creation. The
+/// position is not reduced here: each executed tranche reduces
+/// it then, bounded by FLAG again. NOT YET ENFORCED HERE
+/// (next slice): the entry-time contract — the 12-month lock
+/// from the entry window and the weekly cadence of blocks.
+/// This rework changes the flag and the block size; the lock
+/// and cadence need entry-time fields (entry window,
+/// lock-until, last-block time) that this account does not
+/// yet carry, and they are not claimed by this slice.
 #[account]
 pub struct ExitSchedule {
     /// The scheduling holder's key (PDA seed component).
@@ -6172,15 +6226,16 @@ pub struct ExitSchedule {
     /// The window (lock cycle) this schedule exits from (PDA
     /// seed component).
     pub window_id: u64,
-    /// Total scheduled exit, kernel fixed-point raw. Strictly
-    /// above L at creation (the whale threshold, D-10) and at
-    /// most the holder's locked position.
+    /// Total scheduled exit, kernel fixed-point raw. At or
+    /// above FLAG at creation (the whale flag, D-10 revised)
+    /// and at most the holder's locked position.
     pub total_raw: u64,
-    /// Standard tranche size: L = T/6 of the window's
-    /// period-start snapshot total. Every tranche is at most
-    /// this; the last is the remainder.
+    /// Standard block size: 20% of the total capped at FLAG,
+    /// judged on the window's period-start snapshot total.
+    /// Every tranche is at most this; the last is the remainder.
     pub tranche_raw: u64,
-    /// Tranche count: ceiling of total over L, at least 2.
+    /// Tranche count: ceiling of total over the block, at
+    /// least 5 (a total at FLAG takes 5 fifth-sized blocks).
     pub tranches_total: u64,
     /// Tranches already executed by `execute_whale_tranche`.
     /// Zero at creation; the schedule is complete at equality
@@ -7393,11 +7448,11 @@ pub enum TreasuryError {
     /// no schedule at all.
     #[msg("Schedule amount must be positive, and the window's movable liquidity must be nonzero.")]
     InvalidScheduleAmount,
-    /// The scheduled total is at or below one period's movable
-    /// liquidity: a purse at or below L is an open-trader
-    /// position, not a whale purse, and exits through `exit`
-    /// instead of a schedule.
-    #[msg("Below whale threshold: a schedule exists only for a purse above one period's movable liquidity.")]
+    /// The scheduled total is below the whale FLAG (1/5 of one
+    /// period's movable liquidity, D-10 revised): a purse below
+    /// FLAG is an open-trader position, not a flagged purse,
+    /// and exits through `exit` instead of a schedule.
+    #[msg("Below whale threshold: a schedule exists only for a purse at or above one fifth of movable liquidity.")]
     BelowWhaleThreshold,
     /// The scheduled total exceeds the holder's locked
     /// position: a schedule cannot promise an exit of
@@ -9595,27 +9650,40 @@ mod tests {
 
     #[test]
     fn schedule_whale_exit_gate_matrix() {
-        // Happy paths, snapshot 600,000 so L = 100,000:
-        // 250,000 over a 300,000 position schedules in 3
-        // tranches of 100,000 (last tranche the 50,000
-        // remainder, computed at execution time); 200,001
-        // also takes 3 tranches; exactly 200,000 takes 2.
+        // Revised flag (D-10, 2026-10-24 ~18:49 CST): snapshot
+        // 600,000 gives movable L = 100,000 and FLAG = 20,000
+        // (1/5 of L, 3.3333% of T). A flagged purse schedules
+        // in weekly blocks of 20% of the position capped at
+        // FLAG: 250,000 over a 300,000 position -> 20,000
+        // blocks, count ceil(250,000 / 20,000) = 13 (last the
+        // 10,000 remainder, computed at execution time).
         let (tranche, count) = can_schedule_whale_exit(
             STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 250_000, 300_000, 600_000,
         )
-        .expect("a whale purse above L schedules");
-        assert_eq!(tranche, 100_000);
-        assert_eq!(count, 3);
-        let (_, count) = can_schedule_whale_exit(
-            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 200_001, 300_000, 600_000,
+        .expect("a flagged purse schedules");
+        assert_eq!(tranche, 20_000);
+        assert_eq!(count, 13);
+        // A 100,000 purse is capped, not fifth-sized: 20% would
+        // be 20,000 already, so 5 blocks of 20,000.
+        let (tranche, count) = can_schedule_whale_exit(
+            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 100_000, 300_000, 600_000,
         )
-        .expect("a remainder past a whole tranche adds one");
-        assert_eq!(count, 3);
-        let (_, count) = can_schedule_whale_exit(
-            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 200_000, 300_000, 600_000,
+        .expect("a purse at 5x FLAG takes the capped block");
+        assert_eq!(tranche, 20_000);
+        assert_eq!(count, 5);
+        // At the flag exactly: 20,000 schedules in 5 blocks of
+        // 4,000 (20% of the position, below the cap).
+        let (tranche, count) = can_schedule_whale_exit(
+            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 20_000, 300_000, 600_000,
         )
-        .expect("an exact multiple takes no extra tranche");
-        assert_eq!(count, 2);
+        .expect("a purse exactly at FLAG schedules");
+        assert_eq!(tranche, 4_000);
+        assert_eq!(count, 5);
+        // Reference scale: FLAG at T = 100,000,000 is 3,333,333
+        // (movable 16,666,666 floored, / 5).
+        assert_eq!(whale_flag_threshold(100_000_000), 3_333_333);
+        assert_eq!(whale_tranche_size(250_000, 600_000), 20_000);
+        assert_eq!(whale_tranche_size(20_000, 600_000), 4_000);
         // Gate failures: non-committed state, wrong type,
         // record-window mismatch.
         assert!(can_schedule_whale_exit(
@@ -9630,9 +9698,9 @@ mod tests {
             STATE_COMMITTED, TREASURY_EXIT_TYPE, 12, 13, 250_000, 300_000, 600_000
         )
         .is_err());
-        // Amount failures: zero total, zero-L snapshot,
-        // and the whale threshold itself — at L exactly and
-        // below L the holder is an open trader, not a whale.
+        // Amount failures: zero total, zero-FLAG snapshot,
+        // and the flag threshold itself — below FLAG the
+        // holder is an open trader, not a flagged purse.
         assert!(can_schedule_whale_exit(
             STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 0, 300_000, 600_000
         )
@@ -9642,11 +9710,7 @@ mod tests {
         )
         .is_err());
         assert!(can_schedule_whale_exit(
-            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 100_000, 300_000, 600_000
-        )
-        .is_err());
-        assert!(can_schedule_whale_exit(
-            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 99_999, 300_000, 600_000
+            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 19_999, 300_000, 600_000
         )
         .is_err());
         // Position bound: 250,000 scheduled against a
@@ -9661,12 +9725,12 @@ mod tests {
             STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 250_000, 250_000, 600_000,
         )
         .expect("a schedule exactly at the position passes");
-        // Scale invariance of the threshold: the same
-        // 250,000 purse is a whale at a 600,000 snapshot
-        // (L = 100,000) and an open trader at a 6,000,000
-        // snapshot (L = 1,000,000).
+        // Scale invariance of the flag: the same 250,000
+        // purse is flagged at a 600,000 snapshot (FLAG =
+        // 20,000) and an open trader at a 9,000,000 snapshot
+        // (movable 1,500,000, FLAG 300,000 > 250,000).
         assert!(can_schedule_whale_exit(
-            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 250_000, 300_000, 6_000_000
+            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 250_000, 300_000, 9_000_000
         )
         .is_err());
         // The exit type id is its own domain tag, distinct
@@ -9682,128 +9746,134 @@ mod tests {
 
     #[test]
     fn execute_whale_tranche_gate_matrix() {
-        // Happy paths, snapshot 600,000 so L = 100,000, on a
-        // 250,000 schedule of 100,000 tranches (count 3) against
-        // a 300,000 position and a full 100,000 exit stock:
-        // the first two tranches are the standard 100,000
-        // and the last is the 50,000 remainder.
+        // Happy paths, snapshot 600,000 so L = 100,000 and
+        // FLAG = 20,000, on a 250,000 schedule of 20,000
+        // blocks (count 13) against a 300,000 position and a
+        // full 100,000 exit stock: the first blocks are the
+        // standard 20,000 and the last is the 10,000 remainder.
         let amount = can_execute_whale_tranche(
-            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 13, true, true, true, 0, 3,
-            100_000, 250_000, 300_000, 0, 600_000, 100_000,
+            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 13, true, true, true, 0, 13,
+            20_000, 250_000, 300_000, 0, 600_000, 100_000,
         )
-        .expect("the first tranche is the standard tranche");
-        assert_eq!(amount, 100_000);
+        .expect("the first block is the standard block");
+        assert_eq!(amount, 20_000);
         let amount = can_execute_whale_tranche(
-            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 13, true, true, true, 1, 3,
-            100_000, 250_000, 300_000, 0, 600_000, 100_000,
+            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 13, true, true, true, 1, 13,
+            20_000, 250_000, 300_000, 0, 600_000, 100_000,
         )
-        .expect("the second tranche is still the standard tranche");
-        assert_eq!(amount, 100_000);
+        .expect("the second block is still the standard block");
+        assert_eq!(amount, 20_000);
         let amount = can_execute_whale_tranche(
-            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 13, true, true, true, 2, 3,
-            100_000, 250_000, 300_000, 0, 600_000, 100_000,
+            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 13, true, true, true, 12, 13,
+            20_000, 250_000, 300_000, 0, 600_000, 100_000,
         )
-        .expect("the last tranche is the remainder");
-        assert_eq!(amount, 50_000);
-        // An exact multiple takes no short last tranche:
-        // 200,000 over two 100,000 tranches ends at 100,000.
+        .expect("the last block is the remainder");
+        assert_eq!(amount, 10_000);
+        // An exact multiple takes no short last block:
+        // 100,000 over five 20,000 blocks ends at 20,000.
         let amount = can_execute_whale_tranche(
-            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 13, true, true, true, 1, 2,
-            100_000, 200_000, 300_000, 0, 600_000, 100_000,
+            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 13, true, true, true, 4, 5,
+            20_000, 100_000, 300_000, 0, 600_000, 100_000,
         )
-        .expect("an exact multiple ends on a full tranche");
-        assert_eq!(amount, 100_000);
+        .expect("an exact multiple ends on a full block");
+        assert_eq!(amount, 20_000);
         // The loan floor is inclusive, as in `exit`: a
-        // tranche landing the position exactly on the loan
+        // block landing the position exactly on the loan
         // passes, one unit below it refuses.
         can_execute_whale_tranche(
-            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 13, true, true, true, 0, 3,
-            100_000, 250_000, 300_000, 200_000, 600_000, 100_000,
+            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 13, true, true, true, 0, 13,
+            20_000, 250_000, 300_000, 280_000, 600_000, 100_000,
         )
-        .expect("a tranche down to exactly the loan passes");
+        .expect("a block down to exactly the loan passes");
         assert!(can_execute_whale_tranche(
-            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 13, true, true, true, 0, 3,
-            100_000, 250_000, 300_000, 200_001, 600_000, 100_000
+            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 13, true, true, true, 0, 13,
+            20_000, 250_000, 300_000, 280_001, 600_000, 100_000
         )
         .is_err());
         // Gate failures: non-committed state, wrong type,
         // schedule-window mismatch, record-window mismatch.
         assert!(can_execute_whale_tranche(
-            STATE_PLANNING, TREASURY_EXIT_TYPE, 13, 13, 13, true, true, true, 0, 3,
-            100_000, 250_000, 300_000, 0, 600_000, 100_000
+            STATE_PLANNING, TREASURY_EXIT_TYPE, 13, 13, 13, true, true, true, 0, 13,
+            20_000, 250_000, 300_000, 0, 600_000, 100_000
         )
         .is_err());
         assert!(can_execute_whale_tranche(
-            STATE_COMMITTED, TREASURY_WINDOW_TYPE, 13, 13, 13, true, true, true, 0, 3,
-            100_000, 250_000, 300_000, 0, 600_000, 100_000
+            STATE_COMMITTED, TREASURY_WINDOW_TYPE, 13, 13, 13, true, true, true, 0, 13,
+            20_000, 250_000, 300_000, 0, 600_000, 100_000
         )
         .is_err());
         assert!(can_execute_whale_tranche(
-            STATE_COMMITTED, TREASURY_EXIT_TYPE, 12, 13, 13, true, true, true, 0, 3,
-            100_000, 250_000, 300_000, 0, 600_000, 100_000
+            STATE_COMMITTED, TREASURY_EXIT_TYPE, 12, 13, 13, true, true, true, 0, 13,
+            20_000, 250_000, 300_000, 0, 600_000, 100_000
         )
         .is_err());
         assert!(can_execute_whale_tranche(
-            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 12, 13, true, true, true, 0, 3,
-            100_000, 250_000, 300_000, 0, 600_000, 100_000
+            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 12, 13, true, true, true, 0, 13,
+            20_000, 250_000, 300_000, 0, 600_000, 100_000
         )
         .is_err());
         // Authorization failures: revoked standing
         // authorization, inactive operator, operator without
         // the settle capability.
         assert!(can_execute_whale_tranche(
-            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 13, false, true, true, 0, 3,
-            100_000, 250_000, 300_000, 0, 600_000, 100_000
+            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 13, false, true, true, 0, 13,
+            20_000, 250_000, 300_000, 0, 600_000, 100_000
         )
         .is_err());
         assert!(can_execute_whale_tranche(
-            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 13, true, false, true, 0, 3,
-            100_000, 250_000, 300_000, 0, 600_000, 100_000
+            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 13, true, false, true, 0, 13,
+            20_000, 250_000, 300_000, 0, 600_000, 100_000
         )
         .is_err());
         assert!(can_execute_whale_tranche(
-            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 13, true, true, false, 0, 3,
-            100_000, 250_000, 300_000, 0, 600_000, 100_000
+            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 13, true, true, false, 0, 13,
+            20_000, 250_000, 300_000, 0, 600_000, 100_000
         )
         .is_err());
         // Completion: executed at, or past, the count refuses.
         assert!(can_execute_whale_tranche(
-            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 13, true, true, true, 3, 3,
+            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 13, true, true, true, 13, 13,
+            20_000, 250_000, 300_000, 0, 600_000, 100_000
+        )
+        .is_err());
+        assert!(can_execute_whale_tranche(
+            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 13, true, true, true, 14, 13,
+            20_000, 250_000, 300_000, 0, 600_000, 100_000
+        )
+        .is_err());
+        // The FLAG bound is re-judged at execution: a stored
+        // block of 100,000 (= L, but 5x FLAG) refuses even
+        // though the schedule was created, and a block one
+        // unit above FLAG refuses too.
+        assert!(can_execute_whale_tranche(
+            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 13, true, true, true, 0, 3,
             100_000, 250_000, 300_000, 0, 600_000, 100_000
         )
         .is_err());
         assert!(can_execute_whale_tranche(
-            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 13, true, true, true, 4, 3,
-            100_000, 250_000, 300_000, 0, 600_000, 100_000
+            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 13, true, true, true, 0, 13,
+            20_001, 250_000, 300_000, 0, 600_000, 100_000
         )
         .is_err());
-        // The L bound is re-judged at execution: a stored
-        // standard tranche of 150,000 against a 100,000 L
-        // refuses even though the schedule was created.
+        // Position bound: a 20,000 block against a 19,999
+        // position refuses; an inconsistent schedule whose
+        // last block computes to zero refuses too.
         assert!(can_execute_whale_tranche(
-            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 13, true, true, true, 0, 3,
-            150_000, 400_000, 400_000, 0, 600_000, 200_000
-        )
-        .is_err());
-        // Position bound: a 100,000 tranche against a
-        // 99,999 position refuses; an inconsistent schedule
-        // whose last tranche computes to zero refuses too.
-        assert!(can_execute_whale_tranche(
-            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 13, true, true, true, 0, 3,
-            100_000, 250_000, 99_999, 0, 600_000, 100_000
+            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 13, true, true, true, 0, 13,
+            20_000, 250_000, 19_999, 0, 600_000, 100_000
         )
         .is_err());
         assert!(can_execute_whale_tranche(
-            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 13, true, true, true, 2, 3,
-            100_000, 200_000, 300_000, 0, 600_000, 100_000
+            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 13, true, true, true, 4, 5,
+            20_000, 80_000, 300_000, 0, 600_000, 100_000
         )
         .is_err());
-        // Stock bound: a 100,000 tranche against a 99,999
-        // remaining stock refuses — scheduled tranches and
+        // Stock bound: a 20,000 block against a 19,999
+        // remaining stock refuses — scheduled blocks and
         // open-trader exits share one period budget.
         assert!(can_execute_whale_tranche(
-            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 13, true, true, true, 0, 3,
-            100_000, 250_000, 300_000, 0, 600_000, 99_999
+            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 13, true, true, true, 0, 13,
+            20_000, 250_000, 300_000, 0, 600_000, 19_999
         )
         .is_err());
     }

@@ -740,3 +740,28 @@ built used the old >L flag and L-sized tranches and need rework
 under this revision, which is the next queue head, ahead of the
 W3.2 re-expression against the program's interface with measured
 CU per instruction.
+
+Slice 31 — whale FLAG rework, part 1 (design §4.2, D-10 revised
+2026-10-24 ~18:49 CST, Carlos): slices 28/29 reworked from the
+old >L flag / L-sized tranches to the revised rule — flag =
+1/5 of movable liquidity = T/30 (3,333,333 at the $100M
+reference), schedule exists only for a purse at or above
+FLAG, and each tranche is the weekly block: 20% of the locked
+position capped at FLAG (count = ceiling of total over the
+block, at least 5). Execution re-judges the block against
+FLAG on the window's period-start snapshot (a stored block at
+L now refuses, even though it fits L), while the window's
+exit stock (sized L) still bounds the period aggregate —
+per-block FLAG and per-period L both bind. Movable liquidity
+(T/6) and entry-never-refused are unchanged; IDL shape
+unchanged (36 instructions / 17 accounts / 76 errors — only
+the BelowWhaleThreshold text changed). NOT in this slice,
+stated in code: the entry-time contract itself (12-month lock
+from the entry window, weekly cadence enforcement) — it needs
+entry-time fields on ExitSchedule and lands next, along with
+cross-window execution of later tranches. Program host tests
+stay 77/77 (the two whale gate matrices rewritten to the new
+numbers, incl. the $100M FLAG figure, the at-FLAG fifth-sized
+schedule, and the scale-invariance case at a 9,000,000
+snapshot). Bookkeeping only, as in the sibling slices — no
+token movement yet.
