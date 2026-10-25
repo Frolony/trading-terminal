@@ -666,3 +666,45 @@ gate matrix, incl. the threshold, the position bound, and the
 scale-invariance pair). Next, in design order:
 `execute_whale_tranche` (the operator-settled counterpart), then §4.3
 distribution.
+**This increment adds `execute_whale_tranche` (design §4.2, D-10)** — the
+tenth §4.2 instruction and the second half of the whale schedule pair.
+Operator-settled, deliberately not holder-signed: the operator executes
+and the schedule decides the amount — there is no amount argument, so
+the operator cannot invent, enlarge, or re-size a tranche. The amount
+is the standard tranche (L) for every tranche but the last, and the
+remainder of total over L for the last one, computed from the
+schedule's stored fields. The gate rides a Committed `treasury.exit.v1`
+transition (the schedule's governed exit contract, not the window flow
+transition), the operator must be an active agent holding
+`OPERATOR_SETTLE`, and the holder's standing authorization must still
+hold (design §5 names this instruction among the claim executions it
+covers, unlike `settle_default`). The tranche is bounded by L twice:
+against the schedule's standard tranche size (re-judged here on the
+window's period-start snapshot, not merely inherited from creation)
+and against the window's remaining exit stock, debited by the tranche
+amount — scheduled tranches and open-trader `exit` orders draw on the
+same period budget, and their contention is decided at execution, not
+at schedule creation. The position reduction mirrors `exit`'s loan
+floor: a tranche must not drop the position below an outstanding loan.
+Two readings stated plainly: (a) penalty — the design row names only
+the L bound and the schedule total is a position amount, so this slice
+prices no penalty and the event carries no penalty field; whether
+scheduled tranches should pay the 12% door on any part is a design
+question for the §4.2 row, not invented here; (b) window scope — this
+slice executes tranches against the schedule's own window (schedule
+PDA, holder record, and debited WindowState share that window id), so
+with that window's stock exactly L, at most one standard tranche can
+execute in it, and the later tranches' execution in later windows
+needs a cross-window execution path the design does not specify — that
+path is carried as an open item, not silently assumed. Honest scope,
+as in the sibling slices: bookkeeping only (position reduced, exit
+stock debited, executed count incremented), no token movement yet.
+IDL: instructions 34 → 35 (incl. `execute_whale_tranche`), accounts
+16 (no new account type), errors 68 → 71 (`ScheduleComplete`,
+`TrancheExceedsPosition`, `TrancheBelowLoan`), new event
+`WhaleTrancheExecuted`. Program host tests 74 → 75 (the execute gate
+matrix, incl. the remainder last tranche, the exact-multiple end, the
+inclusive loan floor, the re-judged L bound, and the shared stock
+bound). Next, in design order: §4.3 distribution, then the W3.2
+re-expression against the program's interface with measured CU per
+instruction.

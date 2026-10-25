@@ -3045,6 +3045,131 @@ pub mod treasury_program {
         });
         Ok(())
     }
+
+    /// Execute one whale tranche (design §4.2): the
+    /// operator-settled counterpart of `schedule_whale_exit`,
+    /// and the second half of the whale schedule pair. The
+    /// operator executes; the schedule decides the amount —
+    /// there is no amount argument, so the operator cannot
+    /// invent, enlarge, or re-size a tranche. The amount is
+    /// the standard tranche (L) for every tranche but the
+    /// last, and the remainder of total over L for the last
+    /// one, computed from the schedule's own stored fields
+    /// (see [`can_execute_whale_tranche`]).
+    ///
+    /// The gate rides a Committed `treasury.exit.v1`
+    /// transition, as in `schedule_whale_exit` — the
+    /// schedule's governed exit contract, not the window
+    /// flow transition — and the operator must be an active
+    /// agent holding `OPERATOR_SETTLE`, and the holder's
+    /// standing authorization must still hold (design §5
+    /// names `execute_whale_tranche` among the claim
+    /// executions the standing authorization covers, unlike
+    /// `settle_default`, which is deliberately not gated on
+    /// it). The tranche is bounded by L twice, on purpose:
+    /// against the schedule's standard tranche size, and
+    /// against the window's remaining exit stock, which
+    /// this instruction debits by the tranche amount — so
+    /// scheduled tranches and open-trader `exit` orders
+    /// draw on the same period budget, and execution-time
+    /// stock contention between the two paths is decided
+    /// here, not at schedule creation (the schedule
+    /// reserves no stock). The position reduction mirrors
+    /// `exit`'s loan floor: a tranche must not drop the
+    /// position below an outstanding loan, or a legitimate
+    /// `settle_default` would meet
+    /// `DefaultExceedsPosition` instead of settling.
+    ///
+    /// Two readings are stated, not buried. First,
+    /// penalty: the design row for this instruction names
+    /// only the L bound, and the schedule's total is a
+    /// position amount (bounded at creation by the locked
+    /// position, not by accrued dividend), so this slice
+    /// prices no penalty — the tranche reduces the
+    /// position by the gross tranche amount, and the
+    /// event carries no penalty field. Whether scheduled
+    /// tranches should pay the 12% door on any part of
+    /// the tranche is a design question for the §4.2 row,
+    /// not a pricing decision this slice invents. Second,
+    /// window scope: this slice executes tranches against
+    /// the schedule's own window — the schedule PDA, the
+    /// holder record, and the debited WindowState all
+    /// share that window id, exactly as every sibling
+    /// slice binds its accounts to one window. Because
+    /// that window's exit stock is exactly L, at most one
+    /// standard tranche can execute in it; the schedule's
+    /// later tranches are tracked (`tranches_executed`)
+    /// but their execution in later windows needs a
+    /// cross-window execution path the design does not
+    /// specify (a later window's stock is a different
+    /// WindowState, and the schedule's PDA stays bound to
+    /// its creation window). That path is carried as an
+    /// open item, not silently assumed here.
+    ///
+    /// Honest scope, as in the sibling slices: this slice
+    /// records the tranche as bookkeeping — position
+    /// reduced, exit stock debited, executed count
+    /// incremented — and does NOT move tokens (the
+    /// program holds no token accounts yet). The token
+    /// disbursement step lands separately, and this
+    /// instruction must not be read as a payout.
+    pub fn execute_whale_tranche(
+        ctx: Context<ExecuteWhaleTranche>,
+        transition_id: u64,
+        window_id: u64,
+        holder: Pubkey,
+    ) -> Result<()> {
+        let schedule = &ctx.accounts.exit_schedule;
+        let amount_raw = can_execute_whale_tranche(
+            ctx.accounts.transition_record.state,
+            ctx.accounts.transition_record.transition_type,
+            schedule.window_id,
+            ctx.accounts.holder_record.window_id,
+            window_id,
+            ctx.accounts.holder_record.standing_authorization,
+            ctx.accounts.operator_record.active,
+            ctx.accounts
+                .operator_record
+                .capabilities
+                .contains(&OPERATOR_SETTLE),
+            schedule.tranches_executed,
+            schedule.tranches_total,
+            schedule.tranche_raw,
+            schedule.total_raw,
+            ctx.accounts.holder_record.position_raw,
+            ctx.accounts.holder_record.loan_principal_raw,
+            ctx.accounts.window_state.snapshot_total_raw,
+            ctx.accounts.window_state.exit_stock_raw,
+        )?;
+        let tranche_index = ctx.accounts.exit_schedule.tranches_executed;
+        let record = &mut ctx.accounts.holder_record;
+        record.position_raw = record
+            .position_raw
+            .checked_sub(amount_raw)
+            .ok_or(TreasuryError::Overflow)?;
+        let window = &mut ctx.accounts.window_state;
+        window.exit_stock_raw = window
+            .exit_stock_raw
+            .checked_sub(amount_raw)
+            .ok_or(TreasuryError::Overflow)?;
+        let schedule = &mut ctx.accounts.exit_schedule;
+        schedule.tranches_executed = schedule
+            .tranches_executed
+            .checked_add(1)
+            .ok_or(TreasuryError::Overflow)?;
+        emit!(WhaleTrancheExecuted {
+            window_id,
+            holder,
+            tranche_index,
+            amount_raw,
+            tranches_executed: schedule.tranches_executed,
+            tranches_total: schedule.tranches_total,
+            transition_id,
+            commit_index: ctx.accounts.transition_record.commit_index,
+            declared_hash: ctx.accounts.transition_record.declared_hash,
+        });
+        Ok(())
+    }
 }
 
 /// Who may open planning, as a pure check (design §4.1, kernel
@@ -4401,6 +4526,103 @@ pub fn can_schedule_whale_exit(
     Ok((tranche_raw, tranches_total))
 }
 
+/// Who may execute a whale tranche, as a pure check (design
+/// §4.2, §5, D-10): the authorizing transition must be
+/// Committed and of the canonical `treasury.exit.v1` type,
+/// and both the schedule and the holder's record must
+/// belong to the executed window — a tranche names its
+/// authority by type, never by claim, exactly as the
+/// schedule does. Returns the tranche amount: the
+/// standard tranche for every tranche but the last, and
+/// the remainder of total over the standard tranche for
+/// the last one. The checks, in order: committed state,
+/// type + window bindings, the standing authorization
+/// still holding (design §5 covers this instruction),
+/// the operator active and holding `OPERATOR_SETTLE`,
+/// the schedule not already complete, a positive
+/// derived amount, the tranche within one period's
+/// movable liquidity (re-judged here on the window's
+/// period-start snapshot, not merely inherited from
+/// creation — a schedule whose standard tranche somehow
+/// exceeded L could not execute), the tranche within
+/// the holder's locked position, the loan floor (the
+/// position after the tranche must still cover an
+/// outstanding loan, as in `exit`), and the window's
+/// remaining exit stock (scheduled tranches and
+/// open-trader exits draw on the same period budget).
+/// The remainder arithmetic is checked: the standard
+/// tranche times (count − 1) can never exceed the
+/// total for a schedule the program created, and any
+/// violation refuses with `Overflow` instead of
+/// wrapping — fail-closed, never silently re-sized.
+pub fn can_execute_whale_tranche(
+    state: u8,
+    transition_type: [u8; 32],
+    schedule_window_id: u64,
+    record_window_id: u64,
+    window_id: u64,
+    standing_authorization: bool,
+    operator_active: bool,
+    operator_has_settle: bool,
+    tranches_executed: u64,
+    tranches_total: u64,
+    tranche_raw: u64,
+    total_raw: u64,
+    position_raw: u64,
+    loan_principal_raw: u64,
+    snapshot_total_raw: u64,
+    exit_stock_raw: u64,
+) -> Result<u64> {
+    require!(state == STATE_COMMITTED, TreasuryError::BadState);
+    require!(
+        transition_type == TREASURY_EXIT_TYPE
+            && schedule_window_id == window_id
+            && record_window_id == window_id,
+        TreasuryError::ScheduleMismatch
+    );
+    require!(
+        standing_authorization,
+        TreasuryError::AuthorizationRevoked
+    );
+    require!(
+        operator_active && operator_has_settle,
+        TreasuryError::Unauthorized
+    );
+    require!(
+        tranches_executed < tranches_total,
+        TreasuryError::ScheduleComplete
+    );
+    let amount_raw = if tranches_executed + 1 == tranches_total {
+        total_raw
+            .checked_sub(
+                tranche_raw
+                    .checked_mul(tranches_total - 1)
+                    .ok_or(TreasuryError::Overflow)?,
+            )
+            .ok_or(TreasuryError::Overflow)?
+    } else {
+        tranche_raw
+    };
+    require!(amount_raw != 0, TreasuryError::InvalidScheduleAmount);
+    require!(
+        amount_raw as u128 <= movable_liquidity(snapshot_total_raw as u128),
+        TreasuryError::ExitExceedsLiquidity
+    );
+    require!(
+        amount_raw <= position_raw,
+        TreasuryError::TrancheExceedsPosition
+    );
+    require!(
+        position_raw as u128 - amount_raw as u128 >= loan_principal_raw as u128,
+        TreasuryError::TrancheBelowLoan
+    );
+    require!(
+        amount_raw <= exit_stock_raw,
+        TreasuryError::ExitStockExhausted
+    );
+    Ok(amount_raw)
+}
+
 /// A window's rotation slot (design §4.2, D-1): the 12-slot
 /// rotation, so the slot is the window id mod 12. The window id
 /// itself is the unique lock-cycle identifier and is never reduced
@@ -4738,6 +4960,28 @@ pub struct WhaleScheduleCreated {
     pub holder: Pubkey,
     pub total_raw: u64,
     pub tranche_raw: u64,
+    pub tranches_total: u64,
+    pub transition_id: u64,
+    pub commit_index: u64,
+    pub declared_hash: [u8; 32],
+}
+
+/// Whale tranche executed (design §4.2, §6): the tranche's
+/// zero-based index, its derived amount (standard tranche,
+/// or the remainder on the last tranche), and the executed
+/// count after this tranche — plus the authorization
+/// context, the Committed `treasury.exit.v1` transition's
+/// id, commit index, and declared hash. The tranche here
+/// is bookkeeping, not a token movement: no stock other
+/// than the window's exit-stock ledger is debited, and no
+/// position moves except the holder record's.
+#[event]
+pub struct WhaleTrancheExecuted {
+    pub window_id: u64,
+    pub holder: Pubkey,
+    pub tranche_index: u64,
+    pub amount_raw: u64,
+    pub tranches_executed: u64,
     pub tranches_total: u64,
     pub transition_id: u64,
     pub commit_index: u64,
@@ -6426,6 +6670,48 @@ pub struct ScheduleWhaleExit<'info> {
     pub system_program: Program<'info, System>,
 }
 
+/// Accounts for [`treasury_program::execute_whale_tranche`].
+#[derive(Accounts)]
+#[instruction(transition_id: u64, window_id: u64, holder: Pubkey)]
+pub struct ExecuteWhaleTranche<'info> {
+    /// The executing operator (signer). Not a named key:
+    /// execution is capability-gated, and the record below
+    /// is what the gate reads. The amount is derived from
+    /// the schedule, never supplied by this signer.
+    pub operator: Signer<'info>,
+    /// The operator's agent record, seeds-bound to the
+    /// signer. Must be active and hold `OPERATOR_SETTLE`
+    /// (design §5).
+    #[account(seeds = [b"agent", operator.key().as_ref()], bump = operator_record.bump)]
+    pub operator_record: Account<'info, AgentRecord>,
+    /// The exit-contract transition, seeds-bound to its id.
+    /// Must be Committed and of the canonical
+    /// `treasury.exit.v1` type — the authority for this
+    /// tranche, not the window flow transition.
+    #[account(seeds = [b"transition", transition_id.to_le_bytes().as_ref()], bump = transition_record.bump)]
+    pub transition_record: Account<'info, TransitionRecord>,
+    /// The window being executed in, seeds-bound to its id.
+    /// Mutated: its remaining exit stock is debited by
+    /// the tranche amount, so scheduled tranches and
+    /// open-trader exits sum against one period budget.
+    /// Its period-start snapshot total is the D-10 bound's
+    /// basis, re-judged at execution.
+    #[account(mut, seeds = [b"window", window_id.to_le_bytes().as_ref()], bump = window_state.bump)]
+    pub window_state: Account<'info, WindowState>,
+    /// The holder's record for this window, seeds-bound to
+    /// the window and the holder. Mutated: the position is
+    /// reduced by the tranche amount, never below an
+    /// outstanding loan.
+    #[account(mut, seeds = [b"holder", window_id.to_le_bytes().as_ref(), holder.as_ref()], bump = holder_record.bump)]
+    pub holder_record: Account<'info, HolderRecord>,
+    /// The schedule PDA, seeds-bound to the window and the
+    /// holder. Mutated: only `tranches_executed` moves
+    /// here — the total, standard tranche, and count are
+    /// creation fields and are never rewritten.
+    #[account(mut, seeds = [b"schedule", window_id.to_le_bytes().as_ref(), holder.as_ref()], bump = exit_schedule.bump)]
+    pub exit_schedule: Account<'info, ExitSchedule>,
+}
+
 /// Accounts for [`treasury_program::set_capacity`].
 #[derive(Accounts)]
 #[instruction(resource_id: u16)]
@@ -6842,6 +7128,22 @@ pub enum TreasuryError {
     /// principal the holder does not hold.
     #[msg("Schedule exceeds position: the scheduled total must fit inside the holder's locked position.")]
     ScheduleExceedsPosition,
+    /// The whale schedule is already complete: every
+    /// tranche has executed, and a further execution
+    /// would exit more than the schedule promised.
+    #[msg("Schedule complete: all tranches of this whale schedule have already executed.")]
+    ScheduleComplete,
+    /// The whale tranche exceeds the holder's locked
+    /// position: a tranche cannot exit principal the
+    /// holder no longer holds (for example, after an
+    /// intervening exit or default settlement).
+    #[msg("Tranche exceeds position: the tranche amount must fit inside the holder's locked position.")]
+    TrancheExceedsPosition,
+    /// The whale tranche would drop the position below
+    /// an outstanding loan: the loan's settlement must
+    /// still fit inside the position after the tranche.
+    #[msg("Tranche would drop the position below an outstanding loan.")]
+    TrancheBelowLoan,
 }
 
 #[cfg(test)]
@@ -9078,5 +9380,133 @@ mod tests {
         // The schedule account's space arithmetic matches its
         // fields: discriminator + holder + five u64s + bump.
         assert_eq!(ExitSchedule::SPACE, 8 + 32 + 8 + 8 + 8 + 8 + 8 + 1);
+    }
+
+    #[test]
+    fn execute_whale_tranche_gate_matrix() {
+        // Happy paths, snapshot 600,000 so L = 100,000, on a
+        // 250,000 schedule of 100,000 tranches (count 3) against
+        // a 300,000 position and a full 100,000 exit stock:
+        // the first two tranches are the standard 100,000
+        // and the last is the 50,000 remainder.
+        let amount = can_execute_whale_tranche(
+            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 13, true, true, true, 0, 3,
+            100_000, 250_000, 300_000, 0, 600_000, 100_000,
+        )
+        .expect("the first tranche is the standard tranche");
+        assert_eq!(amount, 100_000);
+        let amount = can_execute_whale_tranche(
+            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 13, true, true, true, 1, 3,
+            100_000, 250_000, 300_000, 0, 600_000, 100_000,
+        )
+        .expect("the second tranche is still the standard tranche");
+        assert_eq!(amount, 100_000);
+        let amount = can_execute_whale_tranche(
+            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 13, true, true, true, 2, 3,
+            100_000, 250_000, 300_000, 0, 600_000, 100_000,
+        )
+        .expect("the last tranche is the remainder");
+        assert_eq!(amount, 50_000);
+        // An exact multiple takes no short last tranche:
+        // 200,000 over two 100,000 tranches ends at 100,000.
+        let amount = can_execute_whale_tranche(
+            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 13, true, true, true, 1, 2,
+            100_000, 200_000, 300_000, 0, 600_000, 100_000,
+        )
+        .expect("an exact multiple ends on a full tranche");
+        assert_eq!(amount, 100_000);
+        // The loan floor is inclusive, as in `exit`: a
+        // tranche landing the position exactly on the loan
+        // passes, one unit below it refuses.
+        can_execute_whale_tranche(
+            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 13, true, true, true, 0, 3,
+            100_000, 250_000, 300_000, 200_000, 600_000, 100_000,
+        )
+        .expect("a tranche down to exactly the loan passes");
+        assert!(can_execute_whale_tranche(
+            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 13, true, true, true, 0, 3,
+            100_000, 250_000, 300_000, 200_001, 600_000, 100_000
+        )
+        .is_err());
+        // Gate failures: non-committed state, wrong type,
+        // schedule-window mismatch, record-window mismatch.
+        assert!(can_execute_whale_tranche(
+            STATE_PLANNING, TREASURY_EXIT_TYPE, 13, 13, 13, true, true, true, 0, 3,
+            100_000, 250_000, 300_000, 0, 600_000, 100_000
+        )
+        .is_err());
+        assert!(can_execute_whale_tranche(
+            STATE_COMMITTED, TREASURY_WINDOW_TYPE, 13, 13, 13, true, true, true, 0, 3,
+            100_000, 250_000, 300_000, 0, 600_000, 100_000
+        )
+        .is_err());
+        assert!(can_execute_whale_tranche(
+            STATE_COMMITTED, TREASURY_EXIT_TYPE, 12, 13, 13, true, true, true, 0, 3,
+            100_000, 250_000, 300_000, 0, 600_000, 100_000
+        )
+        .is_err());
+        assert!(can_execute_whale_tranche(
+            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 12, 13, true, true, true, 0, 3,
+            100_000, 250_000, 300_000, 0, 600_000, 100_000
+        )
+        .is_err());
+        // Authorization failures: revoked standing
+        // authorization, inactive operator, operator without
+        // the settle capability.
+        assert!(can_execute_whale_tranche(
+            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 13, false, true, true, 0, 3,
+            100_000, 250_000, 300_000, 0, 600_000, 100_000
+        )
+        .is_err());
+        assert!(can_execute_whale_tranche(
+            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 13, true, false, true, 0, 3,
+            100_000, 250_000, 300_000, 0, 600_000, 100_000
+        )
+        .is_err());
+        assert!(can_execute_whale_tranche(
+            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 13, true, true, false, 0, 3,
+            100_000, 250_000, 300_000, 0, 600_000, 100_000
+        )
+        .is_err());
+        // Completion: executed at, or past, the count refuses.
+        assert!(can_execute_whale_tranche(
+            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 13, true, true, true, 3, 3,
+            100_000, 250_000, 300_000, 0, 600_000, 100_000
+        )
+        .is_err());
+        assert!(can_execute_whale_tranche(
+            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 13, true, true, true, 4, 3,
+            100_000, 250_000, 300_000, 0, 600_000, 100_000
+        )
+        .is_err());
+        // The L bound is re-judged at execution: a stored
+        // standard tranche of 150,000 against a 100,000 L
+        // refuses even though the schedule was created.
+        assert!(can_execute_whale_tranche(
+            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 13, true, true, true, 0, 3,
+            150_000, 400_000, 400_000, 0, 600_000, 200_000
+        )
+        .is_err());
+        // Position bound: a 100,000 tranche against a
+        // 99,999 position refuses; an inconsistent schedule
+        // whose last tranche computes to zero refuses too.
+        assert!(can_execute_whale_tranche(
+            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 13, true, true, true, 0, 3,
+            100_000, 250_000, 99_999, 0, 600_000, 100_000
+        )
+        .is_err());
+        assert!(can_execute_whale_tranche(
+            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 13, true, true, true, 2, 3,
+            100_000, 200_000, 300_000, 0, 600_000, 100_000
+        )
+        .is_err());
+        // Stock bound: a 100,000 tranche against a 99,999
+        // remaining stock refuses — scheduled tranches and
+        // open-trader exits share one period budget.
+        assert!(can_execute_whale_tranche(
+            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 13, true, true, true, 0, 3,
+            100_000, 250_000, 300_000, 0, 600_000, 99_999
+        )
+        .is_err());
     }
 }
