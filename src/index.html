@@ -16,7 +16,7 @@
 .btcfg{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 0;border-bottom:1px solid var(--rowline);font-size:12px}
 .btcfg:last-child{border-bottom:0}
 .btlegend{font-size:10px;color:var(--muted);margin-top:8px}.btresult-head{background:linear-gradient(145deg,var(--panelA),var(--panelB));border:1px solid var(--line);border-left:3px solid var(--green);border-radius:10px;padding:12px 14px;margin:4px 0 2px}.btresult-head small{display:block;font-size:11px;color:var(--muted);margin-bottom:2px}.btresult-head strong{display:block;font-size:28px;letter-spacing:-.8px}.btresult-head span{font-size:11px;color:var(--muted)}.btscheme-no{display:inline-block;background:linear-gradient(135deg,#b9f56d,#44d6a2);color:#102017;font-weight:800;font-size:11px;border-radius:6px;padding:2px 7px;margin-right:6px}
-/* N7.4 paper-live deployments (2026-10-23): per-deployment tracking cards in the Strategy Lab. */
+/* N7.4 paper-tracked deployments (2026-10-23; A41 2026-10-25: user-facing label now reads tracked, not live, so a simulated flow never reads as live; identifiers, route /api/paperlive and storage keys unchanged): per-deployment tracking cards in the Strategy Lab. */
 .plcard{border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin-top:10px;background:var(--input)}
 .plhead{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:4px}
 .pltitle{font-weight:700;font-size:13px}
@@ -309,13 +309,13 @@ the brief outline flash marks the landing panel without touching its copy.*/
 <div class="amounts" id="btRangeBtns"><button type="button" data-btrange="full" class="on" aria-pressed="true">Full history</button><button type="button" data-btrange="1y" aria-pressed="false">1 year</button><button type="button" data-btrange="6m" aria-pressed="false">6 months</button><button type="button" data-btrange="custom" aria-pressed="false">Custom</button></div>
 <div id="btCustomRange" class="labgrid" style="display:none;margin-top:10px"><div class="field"><label>From</label><input id="btFrom" type="date"></div><div class="field"><label>To</label><input id="btTo" type="date"></div></div>
 <button class="primary" id="btRun" type="button" style="margin-top:14px">Run backtest</button>
-<button class="ghostbtn" id="btDeploy" type="button" style="margin-top:8px" title="Track this configuration against new daily bars. Simulated — no real funds.">Deploy to paper-live</button>
+<button class="ghostbtn" id="btDeploy" type="button" style="margin-top:8px" title="Track this configuration against new daily bars. Simulated — no real funds.">Deploy to paper-tracked</button>
 <div class="sub" id="btStatus" style="margin-top:8px;text-align:center">Idle — no backtest run yet.</div>
 <div id="btResults" style="margin-top:10px"></div>
 <div class="bthead">Saved configurations <span class="sub" style="text-transform:none;letter-spacing:0">· on this device</span></div>
 <div class="searchrow"><input id="btCfgName" placeholder="Name this configuration" maxlength="60"><button id="btSaveCfg" type="button">Save</button></div>
 <div id="btCfgList" style="margin-top:10px"></div>
-<div class="bthead">Paper-live deployments <span class="sub" style="text-transform:none;letter-spacing:0">· on this device</span></div>
+<div class="bthead">Paper-tracked deployments <span class="sub" style="text-transform:none;letter-spacing:0">· on this device</span></div>
 <div class="sub" style="margin-bottom:4px">Deploy pins a configuration and tracks it against new daily bars. Simulated — no real funds, nothing on-chain.</div>
 <div id="btDeployList" style="margin-top:10px"></div>
 </div></section>
@@ -2578,7 +2578,7 @@ function btLoadCfgStore(){try{const s=JSON.parse(localStorage.getItem(BT_CFG_KEY
 function btSaveCfgStore(s){try{localStorage.setItem(BT_CFG_KEY,JSON.stringify(s));}catch(_){}syncMarkDirty();try{acctMarkDirty();}catch(_){}}
 /*__BT_COLLECT_PARAMS_START__*/
 /* N7.4 (2026-10-23): the form→params collection btRun used inline, extracted
-   so Deploy-to-paper-live uses the identical strict validation. Behavior is
+   so Deploy-to-paper-tracked uses the identical strict validation. Behavior is
    unchanged — same defaults, same clamps, same toasts; returns null on the
    custom-range validation failures that used to return early from btRun. */
 function btCollectParams(){
@@ -2694,7 +2694,7 @@ async function btRenderResults(j){
    the UTC run timestamp. btRenderResults renders btRunIdHtml in the provenance
    block and btWireRunIdCopy wires the Copy button. Identical params + data →
    identical ID, so a result can be re-audited against a saved config or a
-   paper-live deployment. Saved configs and paper-live deployments carry the ID
+   paper-tracked deployment. Saved configs and paper-tracked deployments carry the ID
    of the backtest run they came from (btLastCfg.runId → cfg.runId → dep.runId). */
 function btRunIdHtml(runId,runAt){
  const id=String(runId||''),at=String(runAt||'');
@@ -2788,7 +2788,7 @@ function btInit(){
  plRenderDeploys(); /* N7.4 */
 }
 /*__N74_PAPERLIVE_START__*/
-/* === N7.4 paper-live deployments (DOM + store) ===
+/* === N7.4 paper-tracked deployments (DOM + store) ===
    - Deploy pins a validated backtest config (the last run, or a saved one)
      and tracks it against new daily bars via GET /api/paperlive (the N7.4
      server half). Stateless: the deployment record lives in localStorage
@@ -2842,7 +2842,7 @@ function plDeployCfg(cfg,name){
  const list=store.deployments[id]||(store.deployments[id]=[]);
  const nowS=Math.floor(Date.now()/1000);
  const dep={id:'pl'+nowS.toString(36)+Math.floor(Math.random()*46656).toString(36),
-  name:String(name||'Paper-live deployment').slice(0,80),
+  name:String(name||'Paper-tracked deployment').slice(0,80),
   scheme:cfg.scheme,params:cfg.params,pair:cfg.pair,
   fee_bps:cfg.fee_bps,deploy_pct:cfg.deploy_pct,
   runId:cfg.runId||null,runAt:cfg.runAt||null, /* N7.5: the backtest run this deployment was deployed from */
@@ -2850,7 +2850,7 @@ function plDeployCfg(cfg,name){
  list.unshift(dep);
  while(list.length>25)list.pop();
  plSaveStore(store);plRenderDeploys();
- toast('Deployed to paper-live. Simulated — no real funds.');
+ toast('Deployed to paper-tracked. Simulated — no real funds.');
 }
 /* Main panel button: deploys the last RUN config (same semantics as Save —
    the panel's own "run it, name it, save it" flow; unsaved form edits are
@@ -2881,7 +2881,7 @@ function plSpark(curve){
  const X=t=>((t-t0)/span*280+10),Y=v=>36-(v-mn)/(mx-mn)*28;
  const d=curve.map((p,i)=>(i?'L':'M')+X(p[0]).toFixed(1)+' '+Y(p[1]).toFixed(1)).join(' ');
  const col=curve[curve.length-1][1]>=1?'#42d6a0':'#ff6e7c';
- return '<svg class="plspark" viewBox="0 0 300 44" preserveAspectRatio="none" aria-label="Paper-live equity curve"><path d="'+d+'" fill="none" stroke="'+col+'" stroke-width="1.5" vector-effect="non-scaling-stroke"/></svg>';
+ return '<svg class="plspark" viewBox="0 0 300 44" preserveAspectRatio="none" aria-label="Paper-tracked equity curve"><path d="'+d+'" fill="none" stroke="'+col+'" stroke-width="1.5" vector-effect="non-scaling-stroke"/></svg>';
 }
 function plCardShell(d,i){
  const s=BT_SCHEMES.find(x=>x.id===d.scheme);
@@ -2890,7 +2890,7 @@ function plCardShell(d,i){
  return '<div class="plcard" id="plcard_'+i+'" data-plid="'+esc(d.id)+'">'
   +'<div class="plhead"><span class="pltitle">'+esc(d.name||label)+'</span></div>'
   +'<div class="sub">'+esc(label)+(paramTxt?' · '+esc(paramTxt):'')+' · '+esc(plPairLabel(d.pair))+' · fee '+esc(String(d.fee_bps))+'bps · deploy '+esc(String(d.deploy_pct))+'% · deployed '+btDate(d.deployed_at)+(d.runId?' · run <span style="user-select:all">'+esc(d.runId)+'</span>':'')+'</div>'
-  +'<div id="plbody_'+i+'"><div class="empty">Loading paper-live track record…</div></div>'
+  +'<div id="plbody_'+i+'"><div class="empty">Loading paper-tracked track record…</div></div>'
   +'<div class="plactions"><button type="button" class="action" data-plrefresh="'+i+'">Refresh</button><button type="button" class="action sell" data-plundeploy="'+i+'">Undeploy</button></div>'
   +'<div class="sub" style="margin-top:6px">Simulated fills at daily closes — not trading. The record lives on this device only.</div>'
   +'</div>';
@@ -2902,8 +2902,8 @@ function plCardHtml(d,j){
   return '<div class="sub">Track record unavailable ('+esc(code)+').'+(j&&j.message?' '+esc(j.message):'')+'</div>';
  }
  const chip=j.status==='pending'
-  ?'<div class="plhead" style="margin:8px 0 4px"><span class="plchip pend">PAPER-LIVE · PENDING</span></div>'
-  :'<div class="plhead" style="margin:8px 0 4px"><span class="plchip">PAPER-LIVE · TRACKING</span></div>';
+  ?'<div class="plhead" style="margin:8px 0 4px"><span class="plchip pend">PAPER-TRACKED · PENDING</span></div>'
+  :'<div class="plhead" style="margin:8px 0 4px"><span class="plchip">PAPER-TRACKED · TRACKING</span></div>';
  if(j.status==='pending'){
   const dep=j.deployment||{};
   return chip+'<div class="sub">Awaiting first completed bar — closes '+btDate(dep.first_tradable_bar_t)+'. No trades simulated yet.</div>';
@@ -2967,7 +2967,7 @@ function plRenderDeploys(){
  if(!box)return;
  const store=plLoadStore();
  const list=(store.deployments&&store.deployments[btIdentity()])||[];
- if(!list.length){box.innerHTML='<div class="empty">No paper-live deployments yet. Run a backtest, then deploy it — the scheme is tracked against new daily bars. Simulated, no real funds.</div>';return;}
+ if(!list.length){box.innerHTML='<div class="empty">No paper-tracked deployments yet. Run a backtest, then deploy it — the scheme is tracked against new daily bars. Simulated, no real funds.</div>';return;}
  box.innerHTML=list.map(function(d,i){return plCardShell(d,i);}).join('');
  list.forEach(function(d,i){plWireCard(i,d);plFetchDeploy(d,i);});
 }
