@@ -15,7 +15,7 @@
 .bttable{overflow:auto;margin-top:10px}
 .btcfg{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 0;border-bottom:1px solid var(--rowline);font-size:12px}
 .btcfg:last-child{border-bottom:0}
-.btlegend{font-size:10px;color:var(--muted);margin-top:8px}
+.btlegend{font-size:10px;color:var(--muted);margin-top:8px}.btresult-head{background:linear-gradient(145deg,var(--panelA),var(--panelB));border:1px solid var(--line);border-left:3px solid var(--green);border-radius:10px;padding:12px 14px;margin:4px 0 2px}.btresult-head small{display:block;font-size:11px;color:var(--muted);margin-bottom:2px}.btresult-head strong{display:block;font-size:28px;letter-spacing:-.8px}.btresult-head span{font-size:11px;color:var(--muted)}.btscheme-no{display:inline-block;background:linear-gradient(135deg,#b9f56d,#44d6a2);color:#102017;font-weight:800;font-size:11px;border-radius:6px;padding:2px 7px;margin-right:6px}
 /* N7.4 paper-live deployments (2026-10-23): per-deployment tracking cards in the Strategy Lab. */
 .plcard{border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin-top:10px;background:var(--input)}
 .plhead{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:4px}
@@ -306,7 +306,7 @@ the brief outline flash marks the landing panel without touching its copy.*/
 <div class="btparams" id="btParams"></div>
 <div class="bthead">Data</div>
 <div class="labgrid"><div class="field"><label>Pair</label><select id="btPair" aria-label="Backtest pair"></select></div></div>
-<div class="amounts" id="btRangeBtns"><button type="button" data-btrange="full" class="active">Full history</button><button type="button" data-btrange="1y">1 year</button><button type="button" data-btrange="6m">6 months</button><button type="button" data-btrange="custom">Custom</button></div>
+<div class="amounts" id="btRangeBtns"><button type="button" data-btrange="full" class="on" aria-pressed="true">Full history</button><button type="button" data-btrange="1y" aria-pressed="false">1 year</button><button type="button" data-btrange="6m" aria-pressed="false">6 months</button><button type="button" data-btrange="custom" aria-pressed="false">Custom</button></div>
 <div id="btCustomRange" class="labgrid" style="display:none;margin-top:10px"><div class="field"><label>From</label><input id="btFrom" type="date"></div><div class="field"><label>To</label><input id="btTo" type="date"></div></div>
 <button class="primary" id="btRun" type="button" style="margin-top:14px">Run backtest</button>
 <button class="ghostbtn" id="btDeploy" type="button" style="margin-top:8px" title="Track this configuration against new daily bars. Simulated — no real funds.">Deploy to paper-live</button>
@@ -2570,7 +2570,7 @@ const BT_CFG_KEY='gecko-backtest-configs-v1';
 function btIdentity(){return window.__walletAddress||'paper';}
 let btRange='full',btRunning=false,btLastCfg=null;
 function btSchemeContext(s){let t='Playbook #'+s.no+' · measured on '+s.asset;t+=s.edge!=null?(' · Playbook measured edge +'+s.edge+'pp (historical — not a promise)'):(' · Playbook top-10 scheme (historical — not a promise)');if(s.fixed)t+=' · '+s.fixed;return t;}
-function btRenderParams(){const s=BT_SCHEMES.find(x=>x.id===$('btScheme').value)||BT_SCHEMES[0];$('btSchemeCtx').textContent=btSchemeContext(s);const box=$('btParams');let h='';(s.params||[]).forEach(p=>{h+='<div class="field"><label>'+esc(p.label)+' <span class="sub">('+p.min+'–'+p.max+')</span></label><input id="btp_'+p.k+'" type="number" min="'+p.min+'" max="'+p.max+'" step="'+p.step+'" value="'+p.def+'"></div>';});h+='<div class="field"><label>Fee per side <span class="sub">(bps, 0–1000)</span></label><input id="btp_fee_bps" type="number" min="0" max="1000" step="1" value="26"></div>';h+='<div class="field"><label>Deploy <span class="sub">(% of equity, 1–100)</span></label><input id="btp_deploy_pct" type="number" min="1" max="100" step="1" value="95"></div>';box.innerHTML=h;}
+function btRenderParams(){const s=BT_SCHEMES.find(x=>x.id===$('btScheme').value)||BT_SCHEMES[0];$('btSchemeCtx').innerHTML='<span class="btscheme-no">#'+s.no+'</span> '+esc(btSchemeContext(s)); /* N7.8 leg 2: scheme visual identity; text unchanged, only badged */const box=$('btParams');let h='';(s.params||[]).forEach(p=>{h+='<div class="field"><label>'+esc(p.label)+' <span class="sub">('+p.min+'–'+p.max+')</span></label><input id="btp_'+p.k+'" type="number" min="'+p.min+'" max="'+p.max+'" step="'+p.step+'" value="'+p.def+'"></div>';});h+='<div class="field"><label>Fee per side <span class="sub">(bps, 0–1000)</span></label><input id="btp_fee_bps" type="number" min="0" max="1000" step="1" value="26"></div>';h+='<div class="field"><label>Deploy <span class="sub">(% of equity, 1–100)</span></label><input id="btp_deploy_pct" type="number" min="1" max="100" step="1" value="95"></div>';box.innerHTML=h;}
 function btDate(t){return new Date(t*1000).toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'});}
 function btExitLabel(r){return r==='time_stop'?'Time-stop':r==='end_of_data'?'End of data':r==='signal'?'Signal':String(r||'—');}
 function btSgn(v){return (v>=0?'+':'')+fmt(v,2);}
@@ -2658,7 +2658,7 @@ function btFormDirty(){return !!btLastCfg&&!btFormParamsMatch();}
 async function btRenderResults(j){
  const r=j.result,s=j.scheme,d=j.data,f=j.fee;
  const cls=v=>v>=0?'positive':'negative';
- let h='<div class="btstats">';
+ let h='<div class="btresult-head"><small>'+esc(s.name)+' · '+esc(j.pair)+' · '+btDate(d.from)+' → '+btDate(d.to)+'</small><strong class="'+cls(r.total_return_pct)+'">'+btSgn(r.total_return_pct)+'%</strong><span>Total return · buy-and-hold '+btSgn(r.buy_hold_return_pct)+'%</span></div><div class="btstats">';
  h+='<div class="btstat"><small>Total return</small><strong class="'+cls(r.total_return_pct)+'">'+btSgn(r.total_return_pct)+'%</strong></div>';
  h+='<div class="btstat"><small>Buy-and-hold</small><strong class="'+cls(r.buy_hold_return_pct)+'">'+btSgn(r.buy_hold_return_pct)+'%</strong></div>';
  h+='<div class="btstat"><small>Edge (pp)</small><strong class="'+cls(r.edge_pp)+'">'+btSgn(r.edge_pp)+'pp</strong></div>';
@@ -2768,8 +2768,8 @@ function btLoadConfig(i){
  if($('btp_fee_bps'))$('btp_fee_bps').value=c.fee_bps;
  if($('btp_deploy_pct'))$('btp_deploy_pct').value=c.deploy_pct;
  if(c.pair)$('btPair').value=c.pair;
- if(c.from||c.to){btRange='custom';}else{btRange='full';}
- document.querySelectorAll('[data-btrange]').forEach(x=>x.classList.toggle('active',x.dataset.btrange===btRange));
+ if(c.from||c.to){btRange='custom';}else{btRange=c.range||'full';} /* N7.8 leg 1: a restored config paints its saved range, not always Full history */
+ document.querySelectorAll('[data-btrange]').forEach(x=>{x.classList.toggle('on',x.dataset.btrange===btRange);x.setAttribute('aria-pressed',x.dataset.btrange===btRange?'true':'false');});
  $('btCustomRange').style.display=btRange==='custom'?'grid':'none';
  if(c.from)$('btFrom').value=new Date(c.from*1000).toISOString().slice(0,10);
  if(c.to)$('btTo').value=new Date(c.to*1000).toISOString().slice(0,10);
@@ -2780,7 +2780,7 @@ function btInit(){
  $('btScheme').innerHTML=BT_SCHEMES.map(s=>'<option value="'+s.id+'">'+esc(s.label)+' · #'+s.no+' '+esc(s.asset)+'</option>').join('');
  $('btPair').innerHTML=BT_PAIRS.map(p=>'<option value="'+p.id+'">'+esc(p.label)+'</option>').join('');
  $('btScheme').onchange=btRenderParams;btRenderParams();
- document.querySelectorAll('[data-btrange]').forEach(b=>b.onclick=()=>{document.querySelectorAll('[data-btrange]').forEach(x=>x.classList.remove('active'));b.classList.add('active');btRange=b.dataset.btrange;$('btCustomRange').style.display=btRange==='custom'?'grid':'none';});
+ document.querySelectorAll('[data-btrange]').forEach(b=>b.onclick=()=>{document.querySelectorAll('[data-btrange]').forEach(x=>{x.classList.remove('on');x.setAttribute('aria-pressed','false');});b.classList.add('on');b.setAttribute('aria-pressed','true');btRange=b.dataset.btrange;$('btCustomRange').style.display=btRange==='custom'?'grid':'none';});
  $('btRun').onclick=btRun;
  $('btSaveCfg').onclick=btSaveConfig;
  $('btDeploy').onclick=plDeployCurrent; /* N7.4 */
