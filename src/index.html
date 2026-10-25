@@ -442,7 +442,15 @@ function syncChallengeMessage(nonce,issuedAt){return 'Sign in to '+SYNC_BRAND+' 
    declined'. A rejection-shaped abort is indistinguishable from a real
    decline and is honestly reported as one. */
 function syncIsUserRejection(e){const m=String((e&&e.message)||e||'').toLowerCase();return m.indexOf('reject')>=0||m.indexOf('denied')>=0||m.indexOf('declined')>=0||m.indexOf('4001')>=0||m.indexOf('user cancelled')>=0||m.indexOf('user canceled')>=0;}
-async function syncAuthAndPull(pk,opts){const fromSwitch=!!(opts&&opts.fromSwitch);const wname=(wallet&&wallet.name)||'Wallet';if(syncState.authing)return;if(syncState.token&&syncState.pubkey===pk)return;syncState.authing=true;syncSetStatus('syncing');let stage='challenge';try{const ch=await syncPost({action:'challenge',pubkey:pk});if(!ch||!ch.ok||!ch.nonce) {syncSetStatus('offline','challenge');toast(wname+' sync sign-in failed at the challenge step — the app could not start the sign-in. Your settings stay on this device only. Disconnect and reconnect to retry.');return;}const message=syncChallengeMessage(ch.nonce,ch.issuedAt);const adapter=wallet.adapter;if(!adapter||typeof adapter.signMessage!=='function'){syncSetStatus('offline','signature');toast(wname+' sync unavailable at the signature step — this wallet cannot sign the login challenge. Your settings stay on this device only.');return;}stage='signature';let sig;try{sig=await adapter.signMessage(new TextEncoder().encode(message));}catch(e){if(syncIsUserRejection(e)){syncSetStatus('off');toast("Wallet connected — sync is OFF because the sign-in wasn't approved. Your settings stay on this device only.");return;}if(fromSwitch){syncSetStatus('tap','signature');toast(wname+' sync sign-in needs a tap — the background sign-in did not return a signature. Tap "Sign in to sync" in the wallet menu to sign in from your tap. Your settings stay on this device until then.');return;}syncSetStatus('offline','signature');toast(wname+' sync sign-in failed at the signature step — the signature did not come back. If MetaMask showed a flagged-site warning on the signature request, approve the override and retry; otherwise disconnect and reconnect to retry. Your settings stay on this device only.');return;}/* N2.3+N4.10: a declined sign-in is reported, never silent — wallet connected, sync off; a non-rejection signature error is a stage failure, not a decline */stage='verification';const au=await syncPost({action:'auth',pubkey:pk,nonce:ch.nonce,signature:syncB64(sig)});if(!au||!au.ok||!au.token){syncSetStatus('offline','verification');toast(wname+' sync sign-in failed at the verification step — the signature did not verify. Your settings stay on this device only. Disconnect and reconnect to retry.');return;}syncState.token=au.token;syncState.pubkey=pk;syncPushedJson={};const pull=await syncGetPull();if(pull&&pull.ok)syncApplyNamespaces(pull.namespaces,pk);syncSetStatus('synced');syncPushNow();/* seeds the server with any local-newer namespaces */}catch(_){syncSetStatus('offline',stage);}finally{syncState.authing=false;}}
+/* N4.12 leg 2 (A54): the flagged-site override advice is MetaMask-only
+   copy — it must render ONLY when a MetaMask wallet is actually present
+   in the discovery set (standard list, adapters, or roster). Carlos's
+   2026-10-24 session ran with MetaMask long uninstalled, yet the toast
+   still told him to approve a MetaMask warning: stale copy. When no
+   MetaMask wallet is present the toast goes straight to the
+   disconnect/reconnect advice. */
+function walletHasMetaMask(){try{const names=[];(wallet._stdList||[]).forEach(w=>{if(w&&w.name)names.push(w.name);});(wallet._adapters||[]).forEach(a=>{if(a&&a.name)names.push(a.name);});(wallet.roster||[]).forEach(e=>{if(e&&e.name)names.push(e.name);});return names.some(n=>String(n).toLowerCase().indexOf('metamask')>=0);}catch(_){return false;}}
+async function syncAuthAndPull(pk,opts){const fromSwitch=!!(opts&&opts.fromSwitch);const wname=(wallet&&wallet.name)||'Wallet';if(syncState.authing)return;if(syncState.token&&syncState.pubkey===pk)return;syncState.authing=true;syncSetStatus('syncing');let stage='challenge';try{const ch=await syncPost({action:'challenge',pubkey:pk});if(!ch||!ch.ok||!ch.nonce) {syncSetStatus('offline','challenge');toast(wname+' sync sign-in failed at the challenge step — the app could not start the sign-in. Your settings stay on this device only. Disconnect and reconnect to retry.');return;}const message=syncChallengeMessage(ch.nonce,ch.issuedAt);const adapter=wallet.adapter;if(!adapter||typeof adapter.signMessage!=='function'){syncSetStatus('offline','signature');toast(wname+' sync unavailable at the signature step — this wallet cannot sign the login challenge. Your settings stay on this device only.');return;}stage='signature';let sig;try{sig=await adapter.signMessage(new TextEncoder().encode(message));}catch(e){if(syncIsUserRejection(e)){syncSetStatus('off');toast("Wallet connected — sync is OFF because the sign-in wasn't approved. Your settings stay on this device only.");return;}if(fromSwitch){syncSetStatus('tap','signature');toast(wname+' sync sign-in needs a tap — the background sign-in did not return a signature. Tap "Sign in to sync" in the wallet menu to sign in from your tap. Your settings stay on this device until then.');return;}syncSetStatus('offline','signature');toast(wname+' sync sign-in failed at the signature step — the signature did not come back.'+(walletHasMetaMask()?" If MetaMask showed a flagged-site warning on the signature request, approve the override and retry; otherwise disconnect and reconnect to retry.":" Disconnect and reconnect to retry.")+' Your settings stay on this device only.');return;}/* N2.3+N4.10: a declined sign-in is reported, never silent — wallet connected, sync off; a non-rejection signature error is a stage failure, not a decline */stage='verification';const au=await syncPost({action:'auth',pubkey:pk,nonce:ch.nonce,signature:syncB64(sig)});if(!au||!au.ok||!au.token){syncSetStatus('offline','verification');toast(wname+' sync sign-in failed at the verification step — the signature did not verify. Your settings stay on this device only. Disconnect and reconnect to retry.');return;}syncState.token=au.token;syncState.pubkey=pk;syncPushedJson={};const pull=await syncGetPull();if(pull&&pull.ok)syncApplyNamespaces(pull.namespaces,pk);syncSetStatus('synced');syncPushNow();/* seeds the server with any local-newer namespaces */}catch(_){syncSetStatus('offline',stage);}finally{syncState.authing=false;}}
 function syncClear(){try{clearTimeout(syncState.timer);}catch(_){}syncState.token=null;syncState.pubkey=null;syncState.authing=false;syncState.pushing=false;syncPushedJson={};syncLocalTs={};syncSetStatus('off');}
 document.addEventListener('walletchange',e=>{try{const d=(e&&e.detail)||{};if(d.connected&&d.publicKey)syncAuthAndPull(d.publicKey,{fromSwitch:!!d.fromSwitch});else if(!d.connected)syncClear();}catch(_){}});
 /*__N22_SYNC_END__*/
@@ -3182,12 +3190,30 @@ function stdWalletAdapter(w){
       try{const f=w.features&&w.features['standard:disconnect'];if(f&&typeof f.disconnect==='function')await f.disconnect();}catch(e){}
       shim._account=null;shim.publicKey=null;
     },
+    /* N4.12 leg 2 (A54): spec-faithful signMessage parsing. The Wallet
+       Standard type in the tree's own dependency (@solana/
+       wallet-standard-features 1.5.0, SolanaSignMessageMethod) is
+       (...inputs) => Promise<readonly SolanaSignMessageOutput[]> — the
+       feature returns an OUTPUTS ARRAY, not a bare object. The old shim
+       read r.signature off that array, got undefined, and threw
+       'no signature' — which is exactly the toast Carlos kept seeing
+       ('the signature did not come back') on spec-faithful wallets
+       such as Jupiter. Parse both shapes so the working legacy path
+       (a bare {signature} object) keeps working: array → first
+       output; object → itself. The signature must be 64 bytes of
+       Ed25519 output as a Uint8Array (plain number arrays are
+       converted); anything else still throws 'no signature', so
+       syncB64 (which needs .subarray) can never see a wrong shape. */
     async signMessage(message){
       const f=w.features&&w.features['solana:signMessage'];
       if(!f||typeof f.signMessage!=='function')throw new Error('solana:signMessage unavailable');
-      const r=await f.signMessage({message:message,account:shim._account});
-      if(!r||!r.signature)throw new Error('no signature');
-      return r.signature;
+      const msg=(message instanceof Uint8Array)?message:new TextEncoder().encode(String(message));
+      const r=await f.signMessage({message:msg,account:shim._account});
+      const out=Array.isArray(r)?r[0]:r;
+      let sig=out&&out.signature;
+      if(Array.isArray(sig)&&sig.length===64)sig=new Uint8Array(sig);
+      if(!(sig instanceof Uint8Array)||sig.length!==64)throw new Error('no signature');
+      return sig;
     }};
   return shim;
 }
