@@ -1234,6 +1234,7 @@ function applySettingsVisual(){ // re-render every price surface; never touches 
 }
 function commitSetting(key,val,opts){
   opts=opts||{};
+  if(!opts.quiet)commitSettingsInputsQuiet(); // A42: a segment click must not discard typed-but-unblurred text in another field
   if(key==='theme'){if(val!=='dark'&&val!=='light')return;settings.theme=val;}
   else if(key==='density'){if(val!=='comfortable'&&val!=='compact')return;settings.density=val;}
   else if(key==='quoteCurrency'){
@@ -1248,26 +1249,45 @@ function commitSetting(key,val,opts){
        through the same live-rate path, so the round-trip is exact. */
     fillSizeInput(usdBefore); // keep the same notional across the unit switch
   }
-  else if(key==='defaultOrderSize'){const n=Number(val);if(!Number.isFinite(n)||n<=0){toast('Default order size must be a number above zero.');paintSettingsDrawer();return;}settings.defaultOrderSize=n;settings.defaultOrderSizeCurrency=settings.quoteCurrency;} // N7.6: the typed value is in the drawer's displayed unit
+  else if(key==='defaultOrderSize'){const n=Number(val);if(!Number.isFinite(n)||n<=0){if(!opts.quiet){toast('Default order size must be a number above zero.');paintSettingsDrawer();}return;}settings.defaultOrderSize=n;settings.defaultOrderSizeCurrency=settings.quoteCurrency;} // N7.6: the typed value is in the drawer's displayed unit
   else if(key==='defaultSlippageBps'){
     const p=slipValidate(val);
-    if(!p.ok){toast(p.error);paintSettingsDrawer();return;}
+    if(!p.ok){if(!opts.quiet){toast(p.error);paintSettingsDrawer();}return;}
     settings.defaultSlippageBps=p.bps;
     slipSave(p.bps); // the working value follows the new default on both pages
     const si=$('slippageInput');if(si)si.value=String(p.bps);
     paintSlipPresets();hideReview();
-    toast('Slippage set to '+(p.bps/100).toFixed(2)+'% — shared with the /raydium/ page.');
+    if(!opts.quiet)toast('Slippage set to '+(p.bps/100).toFixed(2)+'% — shared with the /raydium/ page.');
   }
   else if(key==='defaultPair'){
     const t=String(val||'').trim().toUpperCase();
-    if(!/^[A-Z0-9]{1,20}$/.test(t)){toast('Default pair must be a token symbol (letters/numbers).');paintSettingsDrawer();return;}
+    if(!/^[A-Z0-9]{1,20}$/.test(t)){if(!opts.quiet){toast('Default pair must be a token symbol (letters/numbers).');paintSettingsDrawer();}return;}
     settings.defaultPair=t;
   }
   else return;
   saveSettings();
+  if(opts.quiet)return; // A42: quiet commits persist only — no repaint (a repaint rebuilds the drawer inputs and would steal focus mid-typing), no visual re-render, no toast
   applySettingsVisual();
   if(key==='theme'&&!opts.silent)toast('Theme: '+(settings.theme==='light'?'Light':'Dark'));
   paintSettingsDrawer();
+}
+/* A42 (2026-10-25): settings text fields used to commit only on 'change' (blur),
+   so a value typed and left without blur was silently discarded on reload.
+   The quiet path saves valid typed values without repainting: debounced 'input'
+   commits, drawer-close commits, pagehide (reload/tab-close) commits, and the
+   quiet-first pass at the top of commitSetting() so a segment click cannot
+   discard typed text in another field either. Invalid intermediate values are
+   ignored quietly — the full commit on blur/Enter still toasts and reverts. */
+let settingsQuietTimers={};
+function commitSettingsInputsQuiet(){
+  const sp=$('setPair'),ss=$('setSize'),sl=$('setSlip');
+  if(sp)commitSetting('defaultPair',sp.value,{quiet:true});
+  if(ss)commitSetting('defaultOrderSize',ss.value,{quiet:true});
+  if(sl)commitSetting('defaultSlippageBps',sl.value,{quiet:true});
+}
+function settingsDebounceQuiet(key,el){
+  if(settingsQuietTimers[key])clearTimeout(settingsQuietTimers[key]);
+  settingsQuietTimers[key]=setTimeout(()=>{if(el.isConnected)commitSettingsInputsQuiet();},750);
 }
 function settingsResetDefaults(){
   settings=Object.assign({},DEFAULT_SETTINGS);
@@ -1296,13 +1316,13 @@ function paintSettingsDrawer(){
     '<button class="ghostbtn" id="setReset" type="button">Reset to defaults</button>'+
     '<div class="sethint">Settings are stored on this device only. Resetting settings never touches your paper account.</div></div>';
   body.querySelectorAll('[data-setkey]').forEach(b=>{b.onclick=()=>commitSetting(b.dataset.setkey,b.dataset.setval);});
-  const sp=$('setPair');if(sp)sp.addEventListener('change',()=>commitSetting('defaultPair',sp.value));
-  const ss=$('setSize');if(ss)ss.addEventListener('change',()=>commitSetting('defaultOrderSize',ss.value));
-  const sl=$('setSlip');if(sl)sl.addEventListener('change',()=>commitSetting('defaultSlippageBps',sl.value));
+  const sp=$('setPair');if(sp){sp.addEventListener('change',()=>commitSetting('defaultPair',sp.value));sp.addEventListener('input',()=>settingsDebounceQuiet('defaultPair',sp));sp.addEventListener('keydown',e=>{if(e.key==='Enter')commitSetting('defaultPair',sp.value);});}
+  const ss=$('setSize');if(ss){ss.addEventListener('change',()=>commitSetting('defaultOrderSize',ss.value));ss.addEventListener('input',()=>settingsDebounceQuiet('defaultOrderSize',ss));ss.addEventListener('keydown',e=>{if(e.key==='Enter')commitSetting('defaultOrderSize',ss.value);});}
+  const sl=$('setSlip');if(sl){sl.addEventListener('change',()=>commitSetting('defaultSlippageBps',sl.value));sl.addEventListener('input',()=>settingsDebounceQuiet('defaultSlippageBps',sl));sl.addEventListener('keydown',e=>{if(e.key==='Enter')commitSetting('defaultSlippageBps',sl.value);});}
   const rs=$('setReset');if(rs)rs.onclick=settingsResetDefaults;
 }
 function openSettings(){const d=$('settingsDrawer');if(!d)return;d.hidden=false;paintSettingsDrawer();const c=$('settingsClose');if(c)c.focus();}
-function closeSettings(){const d=$('settingsDrawer');if(!d)return;d.hidden=true;const b=$('settingsBtn');if(b)b.focus();}
+function closeSettings(){commitSettingsInputsQuiet();const d=$('settingsDrawer');if(!d)return;d.hidden=true;const b=$('settingsBtn');if(b)b.focus();}
 function wireSettingsDrawer(){
   const b=$('settingsBtn');if(b)b.onclick=openSettings;
   const c=$('settingsClose');if(c)c.onclick=closeSettings;
@@ -1316,6 +1336,7 @@ function wireSettingsDrawer(){
     if(e.shiftKey&&document.activeElement===first){e.preventDefault();last.focus();}
     else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first.focus();}
   });
+  window.addEventListener('pagehide',()=>{if(!d.hidden)commitSettingsInputsQuiet();}); // A42: reload/tab-close with the drawer open still saves typed values
 }
 function maybeApplyDefaultPair(){ // N5.1 §2.1: lastPair (a real saved selection) wins; defaultPair is the starting default
   if(defaultPairApplied||!marketPairs.length)return;
