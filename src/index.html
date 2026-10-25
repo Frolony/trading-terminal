@@ -2324,7 +2324,7 @@ async function searchTokens(){const q=$('tokenSearch').value.trim();saveState();
 box.querySelectorAll('[data-wlsave]').forEach(b=>b.onclick=e=>{e.stopPropagation();const address=b.dataset.wlsave,p=ps.find(row=>row.baseToken.address===address);if(!p)return;openWlMenu(b,address,wlPairToken(address,p));})}catch(e){box.innerHTML='<div class="empty">Search timed out or failed. Check your connection and <button type="button" class="action" id="searchRetry" data-testid="search-retry">Retry search</button>.</div>';const sr=$('searchRetry');if(sr)sr.onclick=searchTokens}}
 $('searchBtn').onclick=searchTokens;$('tokenSearch').onkeydown=e=>{if(e.key==='Enter')searchTokens()};document.querySelectorAll('[data-range]').forEach(b=>{b.classList.toggle('active',b.dataset.range===chartRange);b.onclick=()=>{document.querySelectorAll('[data-range]').forEach(x=>x.classList.remove('active'));b.classList.add('active');chartRange=b.dataset.range||'1H';tickFails=0;tickSkipUntil=0;saveState();toast('Chart range saved. Loading real candles…');loadCandles('range')}});
 wireChartHover();renderOrders();renderWatchlist();document.querySelectorAll('[data-range]').forEach(b=>b.classList.toggle('active',b.dataset.range===chartRange));document.querySelectorAll('#slipPresets button').forEach(b=>b.onclick=()=>onSlipPreset(Number(b.dataset.slip)));$('slippageInput').value=String(slipLoad());$('slippageInput').addEventListener('change',onSlipCustom);paintSlipPresets();applySettingsBoot();applyLayoutBoot();wireWatchlistDrawer();wireDashboard();wireExecPathLink();paintDashboard(true); // N5.1: theme/density attrs, default size, drawer wiring; N5.2: layout panels + workspaces; N5.3: watchlist drawer + header card trigger; N5.4: dashboard tabs + first paint; N5.7: header "How this works" link
-$('retryFeed').onclick=fetchMarket;$('chartFeedStatus').onclick=()=>{if(candleStatus==='stale'||candleStatus==='error'){tickFails=0;tickSkipUntil=0;loadCandles('retry')}};document.addEventListener('visibilitychange',()=>{if(!document.hidden&&price>0)fetchMarket()});$('tokenSearch').oninput=saveState;setPrice(0,0);searchTokens();marketPoll();
+$('retryFeed').onclick=fetchMarket;$('chartFeedStatus').onclick=()=>{if(candleStatus==='stale'||candleStatus==='error'){tickFails=0;tickSkipUntil=0;loadCandles('retry')}};document.addEventListener('visibilitychange',()=>{if(document.hidden)return;if(price>0)fetchMarket();if(wallet.connected)refreshWalletBalances();});$('tokenSearch').oninput=saveState;setPrice(0,0);searchTokens();marketPoll();
 
 /* N4.4: ticket slippage UI + paper review sheet (DOM wiring). */
 let reviewState=null; // {inputs,model} while the sheet is open
@@ -3432,6 +3432,48 @@ async function connectWallet(a){
   }catch(e){const cls=classifyConnectError(e,a&&a.name);const msg=connectErrorCopy(a&&a.name,cls);wallet._lastConnectError={name:a&&a.name,cls:cls,msg:msg};try{paintWalletModal();}catch(_){}toast(msg);}
   finally{wallet._connecting=false;}
 }
+/* N4.13 (A60): wallet values pipeline — balances must actually arrive and
+   stay live. Three defects fixed: (1) no cadence existed, so a 45 s poll
+   re-fetches while a wallet is connected, paused while the tab is hidden,
+   plus an immediate refresh on visibility return and on wallet-menu open;
+   (2) a failed first load was permanent, so a pass that leaves any asset
+   busy or failed schedules backoff re-attempts at 5 s / 15 s / 45 s, then
+   every 45 s, until the values land or the wallet disconnects; (3) the
+   loader repainted menu and roster only, so completion now also repaints
+   the dashboard — its digest already includes wallet balances, so an
+   unchanged digest repaints nothing. The honest per-asset states from
+   N4.11 are kept during gaps; this fix makes gaps end, not hidden. */
+const WALLET_BALANCE_POLL_MS=45000;
+const WALLET_BALANCE_RETRY_DELAYS=[5000,15000,45000];
+let walletBalPollTimer=null;
+let walletBalRetryTimer=null;
+let walletBalRetryStep=0;
+function walletBalNeedsRetry(){
+  if(!wallet.connected)return false;
+  const keys=['sol','usdc','usdt'];
+  for(const k of keys){
+    if(wallet.balErr&&wallet.balErr[k])return true;
+    const v=wallet.balances&&wallet.balances[k];
+    if(v===null||v===undefined||!Number.isFinite(Number(v)))return true;
+  }
+  return false;
+}
+function walletBalNextRetryDelay(step){return WALLET_BALANCE_RETRY_DELAYS[Math.min(step,WALLET_BALANCE_RETRY_DELAYS.length-1)];}
+function walletBalStopTimers(){
+  if(walletBalPollTimer){clearInterval(walletBalPollTimer);walletBalPollTimer=null;}
+  if(walletBalRetryTimer){clearTimeout(walletBalRetryTimer);walletBalRetryTimer=null;}
+  walletBalRetryStep=0;
+}
+function walletBalStartPoll(){
+  if(walletBalPollTimer)clearInterval(walletBalPollTimer);
+  walletBalPollTimer=setInterval(()=>{if(!document.hidden&&wallet.connected)refreshWalletBalances();},WALLET_BALANCE_POLL_MS);
+}
+function walletBalScheduleRetry(){
+  if(!wallet.connected||walletBalRetryTimer)return;
+  const d=walletBalNextRetryDelay(walletBalRetryStep);
+  walletBalRetryTimer=setTimeout(()=>{walletBalRetryTimer=null;if(wallet.connected&&walletBalNeedsRetry())refreshWalletBalances();},d);
+  if(walletBalRetryStep<WALLET_BALANCE_RETRY_DELAYS.length-1)walletBalRetryStep++;
+}
 async function refreshWalletBalances(){
   if(!wallet.connected||!wallet.publicKey||wallet.balLoading)return;
   wallet.balLoading=true;renderWalletDd();
@@ -3443,10 +3485,21 @@ async function refreshWalletBalances(){
     load('usdc',()=>getSplBalance(pk,WALLET_USDC_MINT)),
     load('usdt',()=>getSplBalance(pk,WALLET_USDT_MINT))
   ]);
-  if(!wallet.connected||wallet.publicKey!==pk){wallet.balLoading=false;return;} // disconnected mid-flight
+  if(!wallet.connected||wallet.publicKey!==pk){wallet.balLoading=false;if(!wallet.connected){try{if(typeof walletBalStopTimers==='function')walletBalStopTimers();}catch(_){}}return;} // disconnected mid-flight
   wallet.balances={sol:results[0],usdc:results[1],usdt:results[2]};wallet.balLoading=false;const entry=walletRosterFind(pk);if(entry){entry.balances=wallet.balances;entry.balErr=wallet.balErr;}
   window.__walletState.balances={sol:results[0],usdc:results[1],usdt:results[2]};
   renderWalletDd();
+  /* N4.13: the dashboard reads these balances only through its digest, so
+     it moves only when this repaint runs — menu and roster alone left it
+     frozen even on a successful load. */
+  try{if(typeof paintDashboard==='function')paintDashboard();}catch(_){}
+  /* N4.13 calls are typeof-guarded so extraction harnesses that ship only
+     the pre-N4.13 function set still run this loader unchanged. */
+  let _needsRetry=false;
+  try{_needsRetry=(typeof walletBalNeedsRetry==='function')&&walletBalNeedsRetry();}catch(_){}
+  if(_needsRetry){try{if(typeof walletBalScheduleRetry==='function')walletBalScheduleRetry();}catch(_){}}
+  else{try{if(typeof walletBalRetryTimer!=='undefined'&&walletBalRetryTimer){clearTimeout(walletBalRetryTimer);walletBalRetryTimer=null;}walletBalRetryStep=0;}catch(_){}}
+  try{if(typeof walletBalStartPoll==='function')walletBalStartPoll();}catch(_){}
 }
 async function disconnectWallet(pk){
   const targetPk=pk||wallet.publicKey;
@@ -3476,6 +3529,8 @@ async function disconnectWallet(pk){
   wallet.balances={sol:null,usdc:null,usdt:null};wallet.balErr={};wallet.balLoading=false;
   try{delete window.__walletAddress;}catch(e){window.__walletAddress=null;}
   window.__walletState={connected:false,publicKey:null,balances:null};
+  /* N4.13: no wallet left, so no cadence and no backoff may survive. */
+  try{if(typeof walletBalStopTimers==='function')walletBalStopTimers();}catch(_){}
   /* N2.4: the adapter was already disconnected above (all three paths
      disconnect before reaching this tail) — no second disconnect here. */
   const b=$('walletBtn');b.textContent='Connect Wallet';b.classList.remove('connected');
@@ -3500,7 +3555,7 @@ function setTicketMode(m){
 }
 function bindWalletUi(){
   const modal=$('walletModal'),body=$('walletModalBody');
-  $('walletBtn').onclick=()=>{if(wallet.connected){const dd=$('walletDd');const opening=dd.hidden;dd.hidden=!dd.hidden;if(opening)paintWalletSync();}else openWalletModal();};
+  $('walletBtn').onclick=()=>{if(wallet.connected){const dd=$('walletDd');const opening=dd.hidden;dd.hidden=!dd.hidden;if(opening){paintWalletSync();refreshWalletBalances();}}else openWalletModal();};
   $('walletModalClose').onclick=closeWalletModal;
   modal.addEventListener('click',e=>{if(e.target===modal)closeWalletModal();});
   document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!modal.hidden)closeWalletModal();});
