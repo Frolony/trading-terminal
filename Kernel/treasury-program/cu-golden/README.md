@@ -1,20 +1,23 @@
 # CU golden-test harness (W4.3)
 
-**STATUS (2026-10-25): slice-5 REFUSAL PROBES MEASURED via the
-mollusk path below -- the blocked value-moving family is now
-proven, not assumed: `borrow` refuses `BookCapExceeded` (6053) at
-11,948 CU, `exit` refuses `ExitExceedsLiquidity` (6060) at 9,893 CU,
-`settle_default` refuses `NoActiveLoan` (6055) at 14,575 CU, each on
-the slice-4 chain (window 0, zero snapshot) with state asserted
-unchanged afterwards. These are refusal CU, NOT success CU: no
-success chain exists for these instructions until a funding path
-puts a nonzero total into TreasuryState, and no instruction
-on-chain provides one yet -- that funding question is now the
+**STATUS (2026-10-25): slice-6 EXIT-TRANSITION REFUSAL PROBE
+MEASURED via the mollusk path below -- the queued whale-schedule
+refusal is now proven, not assumed: on a Committed
+`treasury.exit.v1` transition (transition 5, exit policy, parent =
+chain head (4, [37;32])), `schedule_whale_exit` refuses
+`InvalidScheduleAmount` (6065) at 16,017 CU, because FLAG = T/30
+over the zero snapshot is zero and no schedule can be sized, with
+state asserted unchanged afterwards (no schedule account created).
+This is a refusal CU, NOT a success CU: schedule success still
+needs a funded snapshot, and that funding question is still the
 queue blocker, filed for Carlos (see Slice 5). Earlier measurements
-stand: `pay_tranche` = 11,703 CU (gate PASS), `settle` = 12,860 CU
-(gate PASS), `commit` = 17,633 CU (gate PASS), `initialize_treasury`
-= 27,485 CU, `open_window` = 15,445 CU, `enroll` = 14,050 CU, all
-baseline where noted. The validator path remains submission-only
+stand: slice-5 refusals `borrow` = 11,948 CU (`BookCapExceeded`
+6053), `exit` = 9,893 CU (`ExitExceedsLiquidity` 6060),
+`settle_default` = 14,575 CU (`NoActiveLoan` 6055); `pay_tranche` =
+11,703 CU (gate PASS), `settle` = 12,860 CU (gate PASS), `commit` =
+17,633 CU (gate PASS), `initialize_treasury` = 27,485 CU,
+`open_window` = 15,445 CU, `enroll` = 14,050 CU, all baseline
+where noted. The validator path remains submission-only
 (see "Sandbox findings").** The validator path boots,
 funds, encodes, and submits, but no transaction confirms on a local
 validator in this sandbox. The mollusk path executes the chains
@@ -281,23 +284,59 @@ snapshot, and `initialize_treasury` funds the treasury at zero with
 no deposit instruction yet on-chain — any positive borrow refuses
 the cap. Both are next-slice work.
 
-**Deterministic per-call-site variation (open question, not a
-finding).** Every value in this file is deterministic across repeat
-runs (the slice-4 run was executed twice with zero diffs), but
-account-creating instructions vary by call site: e.g.
-`submit_signal` measures 20,144 / 17,144 / 17,144 / 30,644 across
-transitions 1-4, and `submit_plan` 17,715 / 22,215 / 17,715 /
-20,715. Non-creating instructions are invariant across all four
-lifecycles (`commit` 17,633, `settle` 12,860, `reconcile` 8,652,
-`open_planning` 10,393, `submit_constraint_report` 7,706 every
-time). The pattern points at the account-creation path (the only
-thing that differs per created account is its PDA), but the
-mechanism is unisolated and the magnitude (up to ~13.5K) is too
-large for a bump search alone — a future run should isolate it
-(same instruction, same args, different PDAs) before any
-creating-instruction value is treated as a single stable number.
-No gate depends on a creating instruction's value: the gated
+**Deterministic per-call-site variation — ISOLATED 2026-10-25
+(submit_signal optimization pass, step 1).** Every value in this
+file is deterministic across repeat runs, but account-creating
+instructions vary by call site — and the mechanism is now proven,
+not guessed: it is Anchor's on-chain PDA bump search. For an
+`init` account Anchor calls `find_program_address` on-chain
+(anchor-derive-accounts: "`init` uses `find_program_address` to
+calculate the pda"), which hashes seed-by-seed from bump 255 down
+until the hash falls off the ed25519 curve. Each attempt costs
+**1,500 CU** (one SHA-256 + off-curve check via syscall), and the
+golden file fits `CU = C0 + 1,500 x attempts` with ZERO residual
+across 7 instruction families and 25 call sites. The bump for each
+created PDA was recomputed independently of the harness with
+`solana-pubkey` 2.1.21 `find_program_address` (scratch tool at
+`hidden_files/pda-check/`, program id
+`FPGSeLBWEiFKdTuqDbJeKhjXeah5H4c3rqsW4Tzn3RAS`):
+
+| instruction | call sites (CU) | attempts | fit |
+|---|---|---|---|
+| `submit_signal` | 20,144 / 17,144 / 17,144 / 30,644 / 18,644 (transitions 1-5) | 3 / 1 / 1 / 10 / 2 | C0 15,644 + 1,500 x attempts, exact |
+| `submit_plan` | 17,715 / 22,215 / 17,715 / 20,715 / 22,215 | 1 / 4 / 1 / 3 / 4 | C0 16,215 + 1,500 x attempts, exact |
+| `register_agent` | 9,927 / 9,927 / 12,927 / 12,927 / 9,927 (agent / proposer / evaluator / oracle / operator) | 1 / 1 / 3 / 3 / 1 | C0 8,427 + 1,500 x attempts, exact |
+| `register_transition` | 14,150 / 14,150 / 20,150 / 15,650 / 14,150 | 1 / 1 / 5 / 2 / 1 | C0 12,650 + 1,500 x attempts, exact |
+| `policy_transition` | 10,698 / 12,198 / 12,198 / 10,698 (window-lit / init / window-sha / exit) | 1 / 2 / 2 / 1 | C0 9,198 + 1,500 x attempts, exact |
+| `post_observation` | 10,791 / 18,291 / 10,791 / 12,291 / 12,291 | 1 / 6 / 1 / 2 / 2 | C0 9,291 + 1,500 x attempts, exact |
+| `record_evidence` | 12,413 / 16,913 / 19,913 (transitions 1-3) | 1 / 4 / 6 | C0 10,913 + 1,500 x attempts, exact |
+
+Two consequences, stated plainly. First, a creating instruction
+has no single stable CU — only a per-PDA value, and the golden
+file's values are correct as the PDAs they were measured on; any
+future citation must name the PDA (or the attempts count) with
+the figure. Second, the other cost drivers named for this pass
+(SignalRecord creation per call, TransitionRecord
+deserialize/re-serialize, PolicyRecord/AgentRecord traffic) are
+NOT the variance mechanism — they live inside the constant C0,
+which is identical across call sites. What step 2 of the pass can
+remove is only the search: an explicit-bump `init` (bump supplied
+as an instruction argument, verified by a single
+`create_program_address` instead of the search loop) would
+collapse every creating instruction to at most its attempts=1
+value — e.g. `submit_signal` at 17,144 CU on every call site —
+without changing signal semantics (the SignalRecord, its seeds,
+and the one-signal-per-agent-per-round rule are untouched). That
+is the queued step-2 change, and its floor is measured, not
+assumed, after it lands. Non-creating instructions stay invariant
+(`commit` 17,633, `settle` 12,860, `reconcile` 8,652,
+`open_planning` 10,393, `submit_constraint_report` 7,706), and no
+gate depends on a creating instruction's value: the gated
 `pay_tranche` is non-creating and stable at 11,703 across runs.
+An early offline bump computation that disagreed with Rust was
+discarded — the Rust `find_program_address` values above are the
+ones that fit, and the Python attempt is recorded here only so it
+is not re-derived.
 
 ## Slice 5: blocked-family refusal probes (2026-10-25)
 
@@ -333,12 +372,48 @@ can reach. What the funding path IS — a deposit instruction with a
 token vault, a governed bookkeeping set via policy transition, or
 enrollment aggregation into TreasuryState — is a design decision
 for Carlos, not builder improvisation, and it is now the W4.3
-queue blocker. `schedule_whale_exit`'s zero-FLAG refusal is queued
-behind it (it needs a Committed `treasury.exit.v1` transition, which
-this chain does not build).
+queue blocker.
+
+## Slice 6: exit lifecycle + schedule_whale_exit zero-FLAG refusal (2026-10-25)
+
+The queued refusal did not need the funding decision after all: it
+needs a Committed `treasury.exit.v1` transition, not a funded
+snapshot, so this slice builds one (transition 5: exit policy
+installed, observation 5, plan/signal/constraint, reconcile, commit
+— parent = chain head (4, [37;32]); chain index 5, hash [47;32],
+stock 999,500 after the fifth 100 debit) and probes the schedule
+on it. The probe passes every gate before the FLAG check — state
+COMMITTED, exit type, window binding (holder record window 0),
+positive total 1,000,000 raw within the 10,000,000 position — and
+then meets exactly the gate a zero snapshot forces: FLAG = T/30
+over snapshot 0 is zero (lib.rs:4739, the `flag != 0` require).
+
+| instruction | CU | result |
+|---|---|---|
+| `schedule_whale_exit` (1,000,000 raw, transition 5, window 0, zero snapshot) | 16,017 | Refused: `InvalidScheduleAmount` (6065) |
+| `commit:5` (exit lifecycle, repeat of the gated instruction) | 17,633 | Success (identical to the gated `commit` — same minimal chain) |
+
+Post-refusal assertions prove nothing moved: position 10,000,000,
+accrued dividend 6,260,000, loan 0, transition 5 still COMMITTED,
+chain index still 5, and the pre-seeded schedule slot is still
+empty — the refused instruction created no schedule account. All 60
+slice-1..5 values reproduced identically in the slice-6 run. This
+is a refusal CU, NOT a success CU, and it changes nothing about
+the funding blocker: schedule success, borrow/exit/settle_default
+success, and the W3.2 re-expression still wait on Carlos's
+funding-path decision.
 
 ## Next slices
 
-`borrow` / `exit` / `settle_default` / whale-tranche SUCCESS CU
-(once Carlos rules the funding path), then the W3.2 adversarial
-suite re-expressed against the program's interface with measured CU.
+Optimization pass step 2 (queued, NOT blocked by the funding
+decision): explicit-bump `init` on the creating instructions,
+re-measured against the attempts=1 baselines above
+(`submit_signal` 17,144, `submit_plan` 17,715,
+`register_agent` 9,927, `register_transition` 14,150,
+`policy_transition` 10,698, `post_observation` 10,791,
+`record_evidence` 12,413) — the search loop is the only part
+removed; signal/plan/record semantics are unchanged. Then, once
+Carlos rules the funding path: `borrow` / `exit` /
+`settle_default` / `schedule_whale_exit` / whale-tranche SUCCESS
+CU, then the W3.2 adversarial suite re-expressed against the
+program's interface with measured CU.

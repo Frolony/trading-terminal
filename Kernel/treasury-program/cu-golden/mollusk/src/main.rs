@@ -1,4 +1,4 @@
-//! W4.3 CU golden-test harness (mollusk-svm path), slice 4.
+//! W4.3 CU golden-test harness (mollusk-svm path), slice 6.
 //!
 //! Extends slice 3's chain with the value-moving family, first member:
 //! a full `treasury.init.v1` lifecycle (transition 2) through settle,
@@ -61,6 +61,19 @@
 //! transition, which this chain does not build; its refusal is
 //! queued behind the funding decision, not skipped silently.
 //!
+//! Slice 6 (this file): the queued refusal is measured WITHOUT the
+//! funding decision, because it does not need a funded snapshot: a
+//! Committed `treasury.exit.v1` lifecycle (transition 5, exit policy,
+//! parent = chain head (4, [37;32])) is built on the slice-4/5 chain,
+//! stopped at commit, and `schedule_whale_exit` is probed on it with a
+//! 1,000,000-raw total. The gate order reaches the zero-FLAG check
+//! (state Committed, exit type, window binding, positive total all
+//! pass) and MUST refuse with `InvalidScheduleAmount` (6065) —
+//! FLAG = T/30 over snapshot 0 is zero, so no schedule can be sized.
+//! This is a refusal measurement, NOT a success CU: schedule success
+//! still needs a funded snapshot, which is still Carlos's funding-path
+//! decision. The funding blocker itself is unchanged by this slice.
+
 //! Clock discipline: mollusk's clock starts at unix_timestamp 0 and
 //! warp resets it, so this harness sets `mollusk.sysvars.clock`
 //! directly. Phase A runs at NOW0 = 1,000,000 with a 3,600s planning
@@ -97,6 +110,7 @@ const NOW1: i64 = NOW0 + PLANNING_WINDOW as i64; // 1,003,600 = deadline
 const NOW2: i64 = 2_000_000; // slice-4 phase C (init lifecycle planning)
 const NOW3: i64 = 3_000_000; // slice-4 phase E (settled window lifecycle planning)
 const NOW4: i64 = 4_000_000; // slice-4 phase G (flow lifecycle planning)
+const NOW5: i64 = 5_000_000; // slice-6 phase H (exit lifecycle planning)
 
 fn disc(name: &str) -> Vec<u8> {
     Sha256::digest(format!("global:{name}").as_bytes())[..8].to_vec()
@@ -156,6 +170,15 @@ fn type_init() -> [u8; 32] {
     [
         116, 167, 130, 118, 19, 78, 9, 62, 70, 91, 124, 207, 146, 13, 252, 203,
         41, 105, 101, 71, 5, 249, 233, 78, 114, 250, 85, 94, 229, 225, 62, 47,
+    ]
+}
+/// SHA-256("treasury.exit.v1"), the program's canonical exit type
+/// (TREASURY_EXIT_TYPE in lib.rs). Only a Committed transition of
+/// this type authorizes `schedule_whale_exit`.
+fn type_exit() -> [u8; 32] {
+    [
+        9, 240, 135, 210, 223, 48, 195, 245, 154, 6, 13, 81, 88, 230, 196, 158,
+        209, 166, 62, 101, 10, 160, 167, 184, 155, 53, 66, 198, 210, 241, 254, 109,
     ]
 }
 
@@ -304,6 +327,18 @@ fn main() {
         &[b"signal", &4u64.to_le_bytes(), &0u32.to_le_bytes(), proposer.as_ref()],
         &program_id,
     );
+    let (policy_exit, _) = pda(&[b"policy", type_exit().as_ref()], &program_id);
+    let (observation5, _) = pda(&[b"observation", &5u64.to_le_bytes()], &program_id);
+    let (transition5, _) = pda(&[b"transition", &5u64.to_le_bytes()], &program_id);
+    let (plan5, _) = pda(&[b"plan", &5u64.to_le_bytes(), proposer.as_ref()], &program_id);
+    let (signal5, _) = pda(
+        &[b"signal", &5u64.to_le_bytes(), &0u32.to_le_bytes(), proposer.as_ref()],
+        &program_id,
+    );
+    let (exit_schedule, _) = pda(
+        &[b"schedule", &0u64.to_le_bytes(), holder.as_ref()],
+        &program_id,
+    );
 
     let empty = Account {
         lamports: 0,
@@ -356,6 +391,12 @@ fn main() {
         (transition4, empty.clone()),
         (plan4, empty.clone()),
         (signal4, empty.clone()),
+        (policy_exit, empty.clone()),
+        (observation5, empty.clone()),
+        (transition5, empty.clone()),
+        (plan5, empty.clone()),
+        (signal5, empty.clone()),
+        (exit_schedule, empty.clone()),
     ];
     let mut measured: Vec<serde_json::Value> = Vec::new();
     let mut push = |label: &str, cu: u64, note: &str| {
@@ -1729,13 +1770,251 @@ fn main() {
     let tr4 = accounts.iter().find(|(k, _)| *k == transition4).map(|(_, a)| a.clone()).unwrap();
     assert_eq!(tr4.data[48], 3u8, "transition 4 moved from COMMITTED during refusal probes");
 
+
+    // ---- Slice 6: exit lifecycle + schedule_whale_exit zero-FLAG refusal ----
+    // (k) Exit lifecycle, transition 5 (treasury.exit.v1). Parent is the
+    // slice-4/5 chain head (index 4, hash [37;32]) — LINEAGE judged
+    // against a real parent. Stopped at commit: schedules ride commit,
+    // exactly as payouts ride the flow transition's commit.
+    mollusk.sysvars.clock.unix_timestamp = NOW5;
+    upsert(&mut accounts, mollusk.sysvars.keyed_account_for_clock_sysvar());
+    let constraint_c_exit = [13u8; 32];
+    let mut data = disc("policy_transition");
+    data.extend_from_slice(&type_exit());
+    data.extend_from_slice(&1_000_000u64.to_le_bytes());
+    data.extend_from_slice(&500_000u64.to_le_bytes());
+    data.extend_from_slice(&500_000u64.to_le_bytes());
+    data.push(0u8);
+    data.extend_from_slice(&PLANNING_WINDOW.to_le_bytes());
+    data.extend_from_slice(&3u32.to_le_bytes());
+    data.extend_from_slice(&4u32.to_le_bytes());
+    data.extend_from_slice(&vec32(&[constraint_c_exit]));
+    data.extend_from_slice(&vec32(&[]));
+    let ix = Instruction::new_with_bytes(
+        program_id,
+        &data,
+        vec![
+            AccountMeta::new_readonly(config, false),
+            AccountMeta::new(policy_exit, false),
+            AccountMeta::new(authority, true),
+            AccountMeta::new_readonly(system_id, false),
+        ],
+    );
+    let (next, cu) = run(&mollusk, "policy_transition:exit", &ix, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({"instruction": "policy_transition:exit", "cu": cu, "result": "Success", "note": "slice-6 setup"}));
+    let mut data = disc("post_observation");
+    data.extend_from_slice(&5u64.to_le_bytes());
+    data.extend_from_slice(&NOW5.to_le_bytes());
+    data.extend_from_slice(&6_000_000i64.to_le_bytes());
+    data.extend_from_slice(&1_000_000u64.to_le_bytes());
+    data.extend_from_slice(&[8u8; 32]);
+    let ix = Instruction::new_with_bytes(
+        program_id,
+        &data,
+        vec![
+            AccountMeta::new(oracle_record, false),
+            AccountMeta::new(oracle, true),
+            AccountMeta::new(observation5, false),
+            AccountMeta::new_readonly(system_id, false),
+            AccountMeta::new_readonly(clock_id, false),
+        ],
+    );
+    let (next, cu) = run(&mollusk, "post_observation:5", &ix, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({"instruction": "post_observation:5", "cu": cu, "result": "Success", "note": "slice-6 setup"}));
+    let mut data = disc("register_transition");
+    data.extend_from_slice(&5u64.to_le_bytes());
+    data.extend_from_slice(&5u64.to_le_bytes());
+    data.extend_from_slice(&type_exit());
+    data.extend_from_slice(&8_000_000i64.to_le_bytes());
+    data.extend_from_slice(&[47u8; 32]);
+    data.extend_from_slice(&4u64.to_le_bytes());
+    data.extend_from_slice(&[37u8; 32]);
+    data.extend_from_slice(&vec32(&[]));
+    let ix = Instruction::new_with_bytes(
+        program_id,
+        &data,
+        vec![
+            AccountMeta::new_readonly(observation5, false),
+            AccountMeta::new_readonly(policy_exit, false),
+            AccountMeta::new(transition5, false),
+            AccountMeta::new(proposer, true),
+            AccountMeta::new_readonly(system_id, false),
+            AccountMeta::new_readonly(clock_id, false),
+        ],
+    );
+    let (next, cu) = run(&mollusk, "register_transition:5", &ix, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({"instruction": "register_transition:5", "cu": cu, "result": "Success", "note": "slice-6 setup"}));
+    let mut data = disc("open_planning");
+    data.extend_from_slice(&5u64.to_le_bytes());
+    let ix = Instruction::new_with_bytes(
+        program_id,
+        &data,
+        vec![
+            AccountMeta::new_readonly(proposer_record, false),
+            AccountMeta::new(transition5, false),
+            AccountMeta::new_readonly(policy_exit, false),
+            AccountMeta::new(proposer, true),
+            AccountMeta::new_readonly(clock_id, false),
+        ],
+    );
+    let (next, cu) = run(&mollusk, "open_planning:5", &ix, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({"instruction": "open_planning:5", "cu": cu, "result": "Success", "note": "slice-6 setup"}));
+    let mut data = disc("submit_plan");
+    data.extend_from_slice(&5u64.to_le_bytes());
+    data.extend_from_slice(&vec_claims(&[(7u16, 100u64)]));
+    data.extend_from_slice(&8_000_000i64.to_le_bytes());
+    let ix = Instruction::new_with_bytes(
+        program_id,
+        &data,
+        vec![
+            AccountMeta::new_readonly(proposer_record, false),
+            AccountMeta::new(transition5, false),
+            AccountMeta::new_readonly(policy_exit, false),
+            AccountMeta::new(plan5, false),
+            AccountMeta::new(proposer, true),
+            AccountMeta::new_readonly(system_id, false),
+            AccountMeta::new_readonly(clock_id, false),
+        ],
+    );
+    let (next, cu) = run(&mollusk, "submit_plan:5", &ix, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({"instruction": "submit_plan:5", "cu": cu, "result": "Success", "note": "slice-6 setup"}));
+    let mut data = disc("submit_signal");
+    data.extend_from_slice(&5u64.to_le_bytes());
+    data.extend_from_slice(&0u32.to_le_bytes());
+    data.extend_from_slice(&1_000_000u64.to_le_bytes());
+    data.extend_from_slice(&1_000_000u64.to_le_bytes());
+    let ix = Instruction::new_with_bytes(
+        program_id,
+        &data,
+        vec![
+            AccountMeta::new_readonly(proposer_record, false),
+            AccountMeta::new(transition5, false),
+            AccountMeta::new_readonly(policy_exit, false),
+            AccountMeta::new(signal5, false),
+            AccountMeta::new(proposer, true),
+            AccountMeta::new_readonly(system_id, false),
+        ],
+    );
+    let (next, cu) = run(&mollusk, "submit_signal:5", &ix, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({"instruction": "submit_signal:5", "cu": cu, "result": "Success", "note": "slice-6 setup"}));
+    let mut data = disc("submit_constraint_report");
+    data.extend_from_slice(&5u64.to_le_bytes());
+    data.extend_from_slice(&constraint_c_exit);
+    data.push(0u8);
+    let ix = Instruction::new_with_bytes(
+        program_id,
+        &data,
+        vec![
+            AccountMeta::new_readonly(evaluator_record, false),
+            AccountMeta::new(transition5, false),
+            AccountMeta::new(evaluator, true),
+        ],
+    );
+    let (next, cu) = run(&mollusk, "submit_constraint_report:5", &ix, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({"instruction": "submit_constraint_report:5", "cu": cu, "result": "Success", "note": "slice-6 setup"}));
+    mollusk.sysvars.clock.unix_timestamp = NOW5 + PLANNING_WINDOW as i64;
+    upsert(&mut accounts, mollusk.sysvars.keyed_account_for_clock_sysvar());
+    let mut data = disc("reconcile");
+    data.extend_from_slice(&5u64.to_le_bytes());
+    let mut metas = vec![
+        AccountMeta::new(transition5, false),
+        AccountMeta::new(proposer, true),
+        AccountMeta::new_readonly(clock_id, false),
+    ];
+    metas.push(AccountMeta::new(plan5, false));
+    metas.push(AccountMeta::new(stock, false));
+    let ix = Instruction::new_with_bytes(program_id, &data, metas);
+    let (next, cu) = run(&mollusk, "reconcile:5", &ix, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({"instruction": "reconcile:5", "cu": cu, "result": "Success", "note": "slice-6 setup"}));
+    let mut data = disc("commit");
+    data.extend_from_slice(&5u64.to_le_bytes());
+    data.extend_from_slice(&5u64.to_le_bytes());
+    let mut metas = vec![
+        AccountMeta::new(transition5, false),
+        AccountMeta::new_readonly(policy_exit, false),
+        AccountMeta::new_readonly(observation5, false),
+        AccountMeta::new(chain, false),
+        AccountMeta::new(proposer, true),
+        AccountMeta::new_readonly(clock_id, false),
+    ];
+    metas.push(AccountMeta::new(plan5, false));
+    metas.push(AccountMeta::new_readonly(proposer_record, false));
+    metas.push(AccountMeta::new(stock, false));
+    let ix = Instruction::new_with_bytes(program_id, &data, metas);
+    let (next, cu) = run(&mollusk, "commit:5", &ix, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({"instruction": "commit:5", "cu": cu, "result": "Success", "note": "slice-6 setup (repeat of the gated instruction)"}));
+    let tr5 = accounts.iter().find(|(k, _)| *k == transition5).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(tr5.data[48], 3u8, "transition 5 is not COMMITTED");
+    let ch = accounts.iter().find(|(k, _)| *k == chain).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(ch.data[8..16].try_into().unwrap()), 5u64, "chain index not 5 after commit:5");
+    assert_eq!(&ch.data[16..48], &[47u8; 32], "chain hash is not transition 5's declared hash");
+    let st = accounts.iter().find(|(k, _)| *k == stock).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(st.data[10..18].try_into().unwrap()), 999_500u64, "stock not 999,500 after five 100 debits");
+
+    // (l) schedule_whale_exit — holder-signed, 1,000,000 raw, on the
+    // Committed exit transition 5, window 0, holder position
+    // 10,000,000. The gate order passes state, exit type, window
+    // binding, and positive total, then reaches the FLAG check:
+    // FLAG = T/30 over snapshot 0 is zero, so this MUST refuse
+    // with InvalidScheduleAmount — a zero-FLAG window sizes no
+    // schedule at all. NOT a success CU: schedule success still
+    // needs a funded snapshot (Carlos's funding-path decision).
+    let mut data = disc("schedule_whale_exit");
+    data.extend_from_slice(&5u64.to_le_bytes());
+    data.extend_from_slice(&0u64.to_le_bytes());
+    data.extend_from_slice(&1_000_000u64.to_le_bytes());
+    let ix = Instruction::new_with_bytes(
+        program_id,
+        &data,
+        vec![
+            AccountMeta::new(holder, true),
+            AccountMeta::new_readonly(transition5, false),
+            AccountMeta::new_readonly(window_state, false),
+            AccountMeta::new_readonly(holder_record, false),
+            AccountMeta::new(exit_schedule, false),
+            AccountMeta::new_readonly(system_id, false),
+        ],
+    );
+    let cu = run_expect_err(&mollusk, "schedule_whale_exit_refused", &ix, &accounts, 6065);
+    measured.push(serde_json::json!({
+        "instruction": "schedule_whale_exit",
+        "cu": cu,
+        "result": "Refused",
+        "error": "InvalidScheduleAmount",
+        "error_code": 6065,
+        "note": "slice-6 refusal probe: holder-signed 1,000,000 raw on Committed treasury.exit.v1 transition 5 (window 0, zero snapshot) — FLAG = T/30 over snapshot 0 is zero, so no schedule can be sized; NOT a success CU, schedule success still blocked on a funding path",
+    }));
+    // Post-refusal assertions: NOTHING moved. Holder state and the
+    // exit transition are exactly as the slice-5 probes left them,
+    // and no schedule account was created (its pre-seeded empty
+    // slot is still empty).
+    let hr = accounts.iter().find(|(k, _)| *k == holder_record).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(hr.data[56..64].try_into().unwrap()), 10_000_000u64, "holder position moved during schedule_whale_exit probe");
+    assert_eq!(u64::from_le_bytes(hr.data[64..72].try_into().unwrap()), 6_260_000u64, "accrued dividend moved during schedule_whale_exit probe");
+    assert_eq!(u64::from_le_bytes(hr.data[72..80].try_into().unwrap()), 0u64, "holder loan appeared during schedule_whale_exit probe");
+    let tr5 = accounts.iter().find(|(k, _)| *k == transition5).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(tr5.data[48], 3u8, "transition 5 moved from COMMITTED during schedule_whale_exit probe");
+    let es = accounts.iter().find(|(k, _)| *k == exit_schedule).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(es.data.len(), 0, "exit schedule account was created by a refused schedule_whale_exit");
+    let ch = accounts.iter().find(|(k, _)| *k == chain).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(ch.data[8..16].try_into().unwrap()), 5u64, "chain index moved during schedule_whale_exit probe");
+
     let golden = serde_json::json!({
         "harness": "cu-golden-mollusk",
         "mollusk_svm": MOLLUSK_SVM_VERSION,
         "program_id": PROGRAM_ID,
         "program_so_sha256": so_sha256,
-        "slice": 5,
-        "slice_note": "slice-1 genesis/admin chain + slice-2 full governance lifecycle + slice-3 evidence and exact settle + slice-4 init lifecycle to a settled transition, initialize_treasury, open_window (window 0), enroll, flow lifecycle stopped at commit, and the first GATED value-moving measurement pay_tranche (design §2.2 ~7K EST, 2x band 3.5-14K) + slice-5 blocked-family refusal probes (borrow BookCapExceeded 6053, exit ExitExceedsLiquidity 6060, settle_default NoActiveLoan 6055 — refusal CU, NOT success CU); launch_stage2 unmeasured by design (ThresholdUnset, D-2); borrow/exit/settle_default success CU remain blocked on a funding path that puts a nonzero total into TreasuryState, which no instruction on-chain provides yet",
+        "slice": 6,
+        "slice_note": "slice-1 genesis/admin chain + slice-2 full governance lifecycle + slice-3 evidence and exact settle + slice-4 init lifecycle to a settled transition, initialize_treasury, open_window (window 0), enroll, flow lifecycle stopped at commit, and the first GATED value-moving measurement pay_tranche (design §2.2 ~7K EST, 2x band 3.5-14K) + slice-5 blocked-family refusal probes (borrow BookCapExceeded 6053, exit ExitExceedsLiquidity 6060, settle_default NoActiveLoan 6055 — refusal CU, NOT success CU) + slice-6 exit lifecycle stopped at commit and schedule_whale_exit zero-FLAG refusal probe (InvalidScheduleAmount 6065 — refusal CU, NOT success CU); launch_stage2 unmeasured by design (ThresholdUnset, D-2); borrow/exit/settle_default/schedule_whale_exit success CU remain blocked on a funding path that puts a nonzero total into TreasuryState, which no instruction on-chain provides yet",
         "clock": {"phase_a_unix_timestamp": NOW0, "planning_window_s": PLANNING_WINDOW, "phase_b_unix_timestamp": NOW1},
         "instructions": measured,
     });
