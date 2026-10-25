@@ -3119,8 +3119,8 @@ function histExportCsv(){
 // autoConnect stays OFF (N2.2 identity decision later); the wallet address
 // lives in memory only (window.__walletAddress) and is NOT persisted — the
 // N2.1 paper state is untouched. Balances use raw JSON-RPC (getBalance +
-// getTokenAccountsByOwner/jsonParsed) against WALLET_RPC_ENDPOINT, a config
-// constant the N5.1 settings panel will surface.
+// getTokenAccountsByOwner/jsonParsed) against WALLET_RPC_ENDPOINTS, rotated
+// in order (N4.14); the N5.1 settings panel will surface the list.
 // N4.9 (2026-10-24, A43/A44): Wallet Standard discovery joins the adapters —
 // any wallet registered via the wallet-standard event protocol renders as a
 // connectable row (adapters keep their names: a standard wallet sharing an
@@ -3130,7 +3130,22 @@ function histExportCsv(){
 // without a reload. A standard wallet that cannot sign the sync challenge
 // (no solana:signMessage feature) still connects for balances; sync then
 // reports unavailable instead of failing the connect.
-const WALLET_RPC_ENDPOINT='https://api.mainnet-beta.solana.com'; // = the project's configured ConnectionProvider endpoint (frontend/src/solana/SolanaWalletProvider.tsx); N5.1 will make it a setting
+/* N4.14 (A60 escalation, 2026-10-25): the public endpoint refuses this
+   app's Origin — HTTP 403, proven by paired curl probes (headerless identical
+   payload = 200 with real data; Origin: gecko-solana-terminal.vercel.app =
+   403) — so balances can never load from mainnet-beta alone, and N4.11/N4.13
+   resilience could never fix a deterministic refusal. solana-rpc.publicnode.com
+   is FIRST (proven 200 WITH the app Origin, no key); mainnet-beta stays as a
+   fallback. WALLET_RPC_ENDPOINT is kept as the legacy single-endpoint alias
+   (= the first endpoint); balance calls use the WALLET_RPC_ENDPOINTS rotation
+   in rpcCall below. A refused/busy endpoint is skipped for WALLET_RPC_BURN_MS,
+   then re-probed (see walletRpcCandidates); a dedicated keyed RPC endpoint
+   remains the durable upgrade — a Carlos credential decision, not this fix. */
+const WALLET_RPC_ENDPOINTS=['https://solana-rpc.publicnode.com','https://api.mainnet-beta.solana.com'];
+const WALLET_RPC_ENDPOINT=WALLET_RPC_ENDPOINTS[0];
+const WALLET_RPC_BURN_MS=60000;
+let walletRpcBurned={};
+let walletRpcActive=null;
 const WADAPTER_CDN='https://esm.sh/@solana/wallet-adapter-wallets@0.19';
 const WSTANDARD_CDN='https://esm.sh/@wallet-standard/app@1.1.1'; // N4.9: same version already in the frontend tree (transitive dep of wallet-adapter); lazy-loaded with the adapters, failure falls back to adapters-only
 const WALLET_USDC_MINT='EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'; // frontend/src/solana/tokens.ts
@@ -3283,15 +3298,57 @@ async function openWalletModal(){
   paintWalletModal();
 }
 function closeWalletModal(){$('walletModal').hidden=true;}
-async function rpcCall(method,params){
+async function rpcCallAtEndpoint(endpoint,method,params){
   const c=new AbortController(),t=setTimeout(()=>c.abort(),10000);
   try{
-    const r=await fetch(WALLET_RPC_ENDPOINT,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({jsonrpc:'2.0',id:1,method,params}),signal:c.signal});
+    const r=await fetch(endpoint,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({jsonrpc:'2.0',id:1,method,params}),signal:c.signal});
     if(!r.ok)throw new Error('RPC HTTP '+r.status);
     const j=await r.json();
     if(j.error)throw new Error(j.error.message||'RPC error');
     return j.result;
   }finally{clearTimeout(t);}
+}
+/* N4.14: an endpoint-class failure is one rotating to another endpoint can
+   fix — HTTP 403 (the proven Origin refusal) plus every transient class.
+   A JSON-RPC error (bad params, unknown method) is NOT endpoint-class: it
+   throws straight through rpcCall without burning or rotating, because no
+   other endpoint would answer it either. isTransientRpcError is deliberately
+   NOT extended to 403: at the rpcCallWithRetry / balance-class layer a 403
+   must still fail fast and surface as 'refused', not retry as 'busy'. */
+function isEndpointRpcError(e){const m=String((e&&e.message)||e||'').toLowerCase();if(m.indexOf('rpc http 403')>=0)return true;return isTransientRpcError(e);}
+/* N4.14 candidate order: unburned endpoints in list order, except the last
+   endpoint that answered goes first (it is the proven-live one). While every
+   endpoint is burned, only the longest-burned one is re-probed — the pass
+   does not hammer the whole list again, and the N4.13 poll/ladder keeps
+   re-probing on its own cadence. Once a burn expires the full list order
+   resumes. */
+function walletRpcCandidates(nowMs){
+  const now=(typeof nowMs==='number'?nowMs:Date.now());
+  const unburned=[];let reprobe=null,reprobeAt=Infinity;
+  WALLET_RPC_ENDPOINTS.forEach(u=>{const until=walletRpcBurned[u]||0;if(until<=now)unburned.push(u);else if(until<reprobeAt){reprobeAt=until;reprobe=u;}});
+  if(unburned.length){
+    if(walletRpcActive&&unburned.indexOf(walletRpcActive)>=0)return [walletRpcActive].concat(unburned.filter(u=>u!==walletRpcActive));
+    return unburned;
+  }
+  return reprobe?[reprobe]:WALLET_RPC_ENDPOINTS.slice();
+}
+async function rpcCall(method,params){
+  const candidates=walletRpcCandidates();
+  if(!candidates.length)throw new Error('no RPC endpoint configured');
+  let lastErr=null;
+  for(let i=0;i<candidates.length;i++){
+    const ep=candidates[i];
+    try{
+      const res=await rpcCallAtEndpoint(ep,method,params);
+      walletRpcActive=ep;if(walletRpcBurned[ep])delete walletRpcBurned[ep];
+      return res;
+    }catch(e){
+      lastErr=e;
+      if(isEndpointRpcError(e))walletRpcBurned[ep]=Date.now()+WALLET_RPC_BURN_MS;
+      else throw e;
+    }
+  }
+  throw lastErr;
 }
 /* N4.11 (A49): wallet-balance resilience. The public mainnet RPC is
    rate-limit-prone in bursts, so a single failed call must not blank a
@@ -3299,7 +3356,12 @@ async function rpcCall(method,params){
    5xx, aborts/timeouts, rate-limit text, -32005): at most 3 attempts with
    400 ms / 1200 ms backoff. A non-transient error fails fast. The caller
    records the class per asset (see refreshWalletBalances), never a
-   shared boolean, so one token failing cannot blank the others. */
+   shared boolean, so one token failing cannot blank the others. N4.14: HTTP
+   403 is NOT transient here (it still fails fast at this layer) but it IS an
+   endpoint-class failure — rpcCall rotates past it and burns the refused
+   endpoint, so a 403 never reaches this classifier as a per-asset dead end
+   while another endpoint answers; only a 403 that survives rotation surfaces,
+   as the 'refused' class in refreshWalletBalances/renderWalletDd. */
 function isTransientRpcError(e){const m=String((e&&e.message)||e||'').toLowerCase();if(m.indexOf('rpc http 429')>=0)return true;if(/rpc http 5\d\d/.test(m))return true;if(m.indexOf('abort')>=0||m.indexOf('timed out')>=0||m.indexOf('timeout')>=0)return true;if(m.indexOf('rate limit')>=0||m.indexOf('too many requests')>=0||m.indexOf('-32005')>=0)return true;if(m.indexOf('failed to fetch')>=0||m.indexOf('network')>=0)return true;return false;}
 function rpcSleep(ms){return new Promise(r=>setTimeout(r,ms));}
 async function rpcCallWithRetry(method,params){let lastErr=null;const delays=[0,400,1200];for(let i=0;i<3;i++){if(i)await rpcSleep(delays[i]);try{return await rpcCall(method,params);}catch(e){lastErr=e;if(!isTransientRpcError(e)||i===2)throw e;}}throw lastErr;}
@@ -3311,7 +3373,7 @@ async function getSplBalance(pk,mint){
 }
 function balText(v,sym){if(v===null||v===undefined||!Number.isFinite(Number(v)))return'—';return fmt(Number(v),sym==='SOL'?4:2)+' '+sym;}
 function renderWalletDd(){
-  const set=(id,v,sym,err)=>{const el=$(id);if(wallet.balLoading){el.textContent='…';el.title='';}else if(err==='busy'&&v!==null&&v!==undefined){el.textContent=balText(v,sym)+' (stale)';el.title='RPC busy — showing last good value · use Retry balances';}else if(err==='busy'){el.textContent='RPC busy — retry';el.title='Public RPC is busy or rate-limited — use Retry balances';}else if(err){el.textContent='Could not load — retry';el.title='Balance could not load — use Retry balances';}else{el.textContent=balText(v,sym);el.title='';}}; /* N4.12 (A54): every failure class renders the honest copy + Retry — the bare word 'unavailable' never renders as a balance state again, including the retries-exhausted / non-transient / no-last-good case. */
+  const set=(id,v,sym,err)=>{const el=$(id);if(wallet.balLoading){el.textContent='…';el.title='';}else if(err==='busy'&&v!==null&&v!==undefined){el.textContent=balText(v,sym)+' (stale)';el.title='RPC busy — showing last good value · use Retry balances';}else if(err==='busy'){el.textContent='RPC busy — retry';el.title='Public RPC is busy or rate-limited — use Retry balances';}else if(err==='refused'&&v!==null&&v!==undefined){el.textContent=balText(v,sym)+' (stale)';el.title='RPC refused (403) — showing last good value · use Retry balances';}else if(err==='refused'){el.textContent='RPC refused (403) — retry';el.title='RPC refused (403) — use Retry balances';}else if(err){el.textContent='Could not load — retry';el.title='Balance could not load — use Retry balances';}else{el.textContent=balText(v,sym);el.title='';}}; /* N4.12 (A54): every failure class renders the honest copy + Retry — the bare word 'unavailable' never renders as a balance state again, including the retries-exhausted / non-transient / no-last-good case. */
   set('walletSol',wallet.balances.sol,'SOL',wallet.balErr.sol);
   set('walletUsdc',wallet.balances.usdc,'USDC',wallet.balErr.usdc);
   set('walletUsdt',wallet.balances.usdt,'USDT',wallet.balErr.usdt);
@@ -3505,7 +3567,11 @@ async function refreshWalletBalances(){
   wallet.balLoading=true;renderWalletDd();
   const pk=wallet.publicKey;
   const prev={sol:wallet.balances.sol,usdc:wallet.balances.usdc,usdt:wallet.balances.usdt};
-  const load=async(key,fn)=>{try{const v=await fn();if(!wallet.connected||wallet.publicKey!==pk)return prev[key];wallet.balErr[key]=null;return v;}catch(e){if(!wallet.connected||wallet.publicKey!==pk)return prev[key];wallet.balErr[key]=isTransientRpcError(e)?'busy':'failed';return prev[key];}};
+  /* N4.14: a 403 that survived rotation is its own class ('refused'), not
+     'failed' — the row then names the refusal instead of hiding it behind
+     the generic copy, and walletBalNeedsRetry keeps the N4.13 ladder running
+     because 'refused' is truthy like 'busy'/'failed'. */
+  const load=async(key,fn)=>{try{const v=await fn();if(!wallet.connected||wallet.publicKey!==pk)return prev[key];wallet.balErr[key]=null;return v;}catch(e){if(!wallet.connected||wallet.publicKey!==pk)return prev[key];wallet.balErr[key]=(String((e&&e.message)||e||'').indexOf('RPC HTTP 403')>=0)?'refused':(isTransientRpcError(e)?'busy':'failed');return prev[key];}};
   const results=await Promise.all([
     load('sol',()=>getSolBalance(pk)),
     load('usdc',()=>getSplBalance(pk,WALLET_USDC_MINT)),
