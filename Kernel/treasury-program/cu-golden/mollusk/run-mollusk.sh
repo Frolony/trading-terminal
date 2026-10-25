@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# W4.3 CU golden-test harness (mollusk path). Executes the slice-4
-# chain (slices 1-3 + init lifecycle + initialize_treasury +
-# settled window lifecycle + open_window + enroll + flow lifecycle to
-# commit + pay_tranche) against the
+# W4.3 CU golden-test harness (mollusk path). Executes the slice-5
+# chain (slices 1-4 + blocked-family refusal probes: borrow, exit,
+# settle_default — each MUST refuse with its exact fail-closed error)
+# against the
 # already-built program .so (build it first: `anchor build` from
 # Kernel/treasury-program/) and writes ../cu-golden-mollusk.json. No validator, no network, no real funds.
 # The keys below are throwaway local-test keys, never real secrets.

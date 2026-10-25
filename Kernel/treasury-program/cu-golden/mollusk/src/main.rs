@@ -40,6 +40,27 @@
 //! no deposit instruction yet on-chain — any positive borrow refuses
 //! the cap. Both are next-slice work, not hidden gaps.
 //!
+//! Slice 5 (this file): the blocked-family refusal probes. Slice 4 left
+//! `borrow` unmeasured because no funding path exists; this slice
+//! proves the block is total and measured rather than assuming it:
+//! on the slice-4 chain (window 0, zero snapshot, holder position
+//! 10,000,000, accrued dividend 6,260,000, no loan), `borrow`,
+//! `exit`, and `settle_default` are each executed and each MUST
+//! refuse with its exact fail-closed error — `BookCapExceeded`
+//! (6053), `ExitExceedsLiquidity` (6060), `NoActiveLoan` (6055) —
+//! with the CU each refusal costs, and with state asserted unchanged
+//! afterwards. These are refusal measurements, NOT success CU: no
+//! success chain exists for these instructions until a funding path
+//! puts a nonzero total into TreasuryState, and this slice does not
+//! fabricate one (a harness-seeded funded snapshot would measure a
+//! chain no real execution can reach, so it is refused here on
+//! principle). The funding path itself is a design question for
+//! Carlos — see the roadmap slice-5 entry — not builder
+//! improvisation. `schedule_whale_exit` is NOT probed here: its
+//! zero-FLAG refusal needs a Committed `treasury.exit.v1`
+//! transition, which this chain does not build; its refusal is
+//! queued behind the funding decision, not skipped silently.
+//!
 //! Clock discipline: mollusk's clock starts at unix_timestamp 0 and
 //! warp resets it, so this harness sets `mollusk.sysvars.clock`
 //! directly. Phase A runs at NOW0 = 1,000,000 with a 3,600s planning
@@ -162,6 +183,35 @@ fn run(
         result.program_result
     );
     (result.resulting_accounts, result.compute_units_consumed)
+}
+
+/// Runs one instruction, asserts it REFUSES with the exact Anchor
+/// custom error code, prints its measured CU, and returns the CU.
+/// The threaded accounts are deliberately NOT replaced: a refused
+/// instruction changes no state, so the caller keeps the pre-state
+/// and asserts that separately. Slice 5 only.
+fn run_expect_err(
+    mollusk: &Mollusk,
+    label: &str,
+    ix: &Instruction,
+    accounts: &[(Pubkey, Account)],
+    expected_code: u32,
+) -> u64 {
+    let result = mollusk.process_instruction(ix, accounts);
+    println!(
+        "{label}: program_result={:?} cu={}",
+        result.program_result, result.compute_units_consumed
+    );
+    assert!(
+        result.program_result.is_err(),
+        "{label} unexpectedly succeeded"
+    );
+    let rendered = format!("{:?}", result.program_result);
+    assert!(
+        rendered.contains(&format!("Custom({expected_code})")),
+        "{label} refused with the wrong error: {rendered} (expected Custom({expected_code}))"
+    );
+    result.compute_units_consumed
 }
 
 fn upsert(accounts: &mut Vec<(Pubkey, Account)>, entry: (Pubkey, Account)) {
@@ -1586,13 +1636,106 @@ fn main() {
     let tr3 = accounts.iter().find(|(k, _)| *k == transition4).map(|(_, a)| a.clone()).unwrap();
     assert_eq!(tr3.data[48], 3u8, "transition 4 moved from COMMITTED by pay_tranche");
 
+    // ---- Slice 5: blocked-family refusal probes (no state moves) ----
+    // (h) borrow — holder-signed, 1,000,000 raw: within the per-holder
+    // cap (50% of the 10,000,000 position) but the book cap is
+    // max_outstanding(snapshot 0) = 0, so this MUST refuse.
+    let mut data = disc("borrow");
+    data.extend_from_slice(&4u64.to_le_bytes());
+    data.extend_from_slice(&0u64.to_le_bytes());
+    data.extend_from_slice(&1_000_000u64.to_le_bytes());
+    let ix = Instruction::new_with_bytes(
+        program_id,
+        &data,
+        vec![
+            AccountMeta::new(holder, true),
+            AccountMeta::new_readonly(transition4, false),
+            AccountMeta::new_readonly(window_state, false),
+            AccountMeta::new(holder_record, false),
+            AccountMeta::new(lending_book, false),
+        ],
+    );
+    let cu = run_expect_err(&mollusk, "borrow_refused", &ix, &accounts, 6053);
+    measured.push(serde_json::json!({
+        "instruction": "borrow",
+        "cu": cu,
+        "result": "Refused",
+        "error": "BookCapExceeded",
+        "error_code": 6053,
+        "note": "slice-5 refusal probe: holder-signed 1,000,000 raw on Committed window flow transition 4 (window 0, zero snapshot) — book cap max_outstanding(0) = 0; NOT a success CU, no funding path exists on-chain",
+    }));
+    // (i) exit — holder-signed, 1,000,000 raw: within accrued dividend
+    // and position, but the D-10 per-order bound is movable_liquidity
+    // (snapshot 0) = 0, so this MUST refuse before the stock check.
+    let mut data = disc("exit");
+    data.extend_from_slice(&4u64.to_le_bytes());
+    data.extend_from_slice(&0u64.to_le_bytes());
+    data.extend_from_slice(&1_000_000u64.to_le_bytes());
+    let ix = Instruction::new_with_bytes(
+        program_id,
+        &data,
+        vec![
+            AccountMeta::new(holder, true),
+            AccountMeta::new_readonly(transition4, false),
+            AccountMeta::new(window_state, false),
+            AccountMeta::new(holder_record, false),
+        ],
+    );
+    let cu = run_expect_err(&mollusk, "exit_refused", &ix, &accounts, 6060);
+    measured.push(serde_json::json!({
+        "instruction": "exit",
+        "cu": cu,
+        "result": "Refused",
+        "error": "ExitExceedsLiquidity",
+        "error_code": 6060,
+        "note": "slice-5 refusal probe: holder-signed 1,000,000 raw on Committed window flow transition 4 (window 0, zero snapshot) — per-order bound movable_liquidity(0) = 0; NOT a success CU",
+    }));
+    // (j) settle_default — operator-settled, holder with no loan:
+    // the no-active-loan gate MUST refuse before any maturity check.
+    let mut data = disc("settle_default");
+    data.extend_from_slice(&4u64.to_le_bytes());
+    data.extend_from_slice(&0u64.to_le_bytes());
+    data.extend_from_slice(holder.as_ref());
+    let ix = Instruction::new_with_bytes(
+        program_id,
+        &data,
+        vec![
+            AccountMeta::new(operator, true),
+            AccountMeta::new_readonly(operator_record, false),
+            AccountMeta::new_readonly(transition4, false),
+            AccountMeta::new_readonly(window_state, false),
+            AccountMeta::new(holder_record, false),
+            AccountMeta::new(lending_book, false),
+        ],
+    );
+    let cu = run_expect_err(&mollusk, "settle_default_refused", &ix, &accounts, 6055);
+    measured.push(serde_json::json!({
+        "instruction": "settle_default",
+        "cu": cu,
+        "result": "Refused",
+        "error": "NoActiveLoan",
+        "error_code": 6055,
+        "note": "slice-5 refusal probe: operator-settled default on a holder with no loan (transition 4, window 0) — no loan exists because borrow cannot succeed on a zero snapshot; NOT a success CU",
+    }));
+    // Post-refusal assertions: NOTHING moved. Holder loan still 0,
+    // position and accrued dividend unchanged, book outstanding
+    // still 0, transition 4 still COMMITTED.
+    let hr = accounts.iter().find(|(k, _)| *k == holder_record).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(hr.data[56..64].try_into().unwrap()), 10_000_000u64, "holder position moved during refusal probes");
+    assert_eq!(u64::from_le_bytes(hr.data[64..72].try_into().unwrap()), 6_260_000u64, "accrued dividend moved during refusal probes");
+    assert_eq!(u64::from_le_bytes(hr.data[72..80].try_into().unwrap()), 0u64, "holder loan appeared during refusal probes");
+    let lb = accounts.iter().find(|(k, _)| *k == lending_book).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(lb.data[8..16].try_into().unwrap()), 0u64, "lending book outstanding moved during refusal probes");
+    let tr4 = accounts.iter().find(|(k, _)| *k == transition4).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(tr4.data[48], 3u8, "transition 4 moved from COMMITTED during refusal probes");
+
     let golden = serde_json::json!({
         "harness": "cu-golden-mollusk",
         "mollusk_svm": MOLLUSK_SVM_VERSION,
         "program_id": PROGRAM_ID,
         "program_so_sha256": so_sha256,
-        "slice": 4,
-        "slice_note": "slice-1 genesis/admin chain + slice-2 full governance lifecycle + slice-3 evidence and exact settle + slice-4 init lifecycle to a settled transition, initialize_treasury, open_window (window 0), enroll, flow lifecycle stopped at commit, and the first GATED value-moving measurement pay_tranche (design §2.2 ~7K EST, 2x band 3.5-14K); launch_stage2 unmeasured by design (ThresholdUnset, D-2) and borrow unmeasured (book cap over a zero snapshot — no deposit instruction yet)",
+        "slice": 5,
+        "slice_note": "slice-1 genesis/admin chain + slice-2 full governance lifecycle + slice-3 evidence and exact settle + slice-4 init lifecycle to a settled transition, initialize_treasury, open_window (window 0), enroll, flow lifecycle stopped at commit, and the first GATED value-moving measurement pay_tranche (design §2.2 ~7K EST, 2x band 3.5-14K) + slice-5 blocked-family refusal probes (borrow BookCapExceeded 6053, exit ExitExceedsLiquidity 6060, settle_default NoActiveLoan 6055 — refusal CU, NOT success CU); launch_stage2 unmeasured by design (ThresholdUnset, D-2); borrow/exit/settle_default success CU remain blocked on a funding path that puts a nonzero total into TreasuryState, which no instruction on-chain provides yet",
         "clock": {"phase_a_unix_timestamp": NOW0, "planning_window_s": PLANNING_WINDOW, "phase_b_unix_timestamp": NOW1},
         "instructions": measured,
     });

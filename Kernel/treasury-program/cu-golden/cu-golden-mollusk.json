@@ -356,11 +356,35 @@
       "instruction": "pay_tranche",
       "note": "slice-4 GATED measurement: operator-settled tranche payout on a Committed window flow transition (window 0, cohort 0, $6.26 raw)",
       "result": "Success"
+    },
+    {
+      "cu": 11948,
+      "error": "BookCapExceeded",
+      "error_code": 6053,
+      "instruction": "borrow",
+      "note": "slice-5 refusal probe: holder-signed 1,000,000 raw on Committed window flow transition 4 (window 0, zero snapshot) — book cap max_outstanding(0) = 0; NOT a success CU, no funding path exists on-chain",
+      "result": "Refused"
+    },
+    {
+      "cu": 9893,
+      "error": "ExitExceedsLiquidity",
+      "error_code": 6060,
+      "instruction": "exit",
+      "note": "slice-5 refusal probe: holder-signed 1,000,000 raw on Committed window flow transition 4 (window 0, zero snapshot) — per-order bound movable_liquidity(0) = 0; NOT a success CU",
+      "result": "Refused"
+    },
+    {
+      "cu": 14575,
+      "error": "NoActiveLoan",
+      "error_code": 6055,
+      "instruction": "settle_default",
+      "note": "slice-5 refusal probe: operator-settled default on a holder with no loan (transition 4, window 0) — no loan exists because borrow cannot succeed on a zero snapshot; NOT a success CU",
+      "result": "Refused"
     }
   ],
   "mollusk_svm": "0.16.2",
   "program_id": "FPGSeLBWEiFKdTuqDbJeKhjXeah5H4c3rqsW4Tzn3RAS",
   "program_so_sha256": "a447e9074a049e18a96f05a97f7ae72ef7ceb15ea3882989d92ac181cfd8c4fc",
-  "slice": 4,
-  "slice_note": "slice-1 genesis/admin chain + slice-2 full governance lifecycle + slice-3 evidence and exact settle + slice-4 init lifecycle to a settled transition, initialize_treasury, open_window (window 0), enroll, flow lifecycle stopped at commit, and the first GATED value-moving measurement pay_tranche (design §2.2 ~7K EST, 2x band 3.5-14K); launch_stage2 unmeasured by design (ThresholdUnset, D-2) and borrow unmeasured (book cap over a zero snapshot — no deposit instruction yet)"
+  "slice": 5,
+  "slice_note": "slice-1 genesis/admin chain + slice-2 full governance lifecycle + slice-3 evidence and exact settle + slice-4 init lifecycle to a settled transition, initialize_treasury, open_window (window 0), enroll, flow lifecycle stopped at commit, and the first GATED value-moving measurement pay_tranche (design §2.2 ~7K EST, 2x band 3.5-14K) + slice-5 blocked-family refusal probes (borrow BookCapExceeded 6053, exit ExitExceedsLiquidity 6060, settle_default NoActiveLoan 6055 — refusal CU, NOT success CU); launch_stage2 unmeasured by design (ThresholdUnset, D-2); borrow/exit/settle_default success CU remain blocked on a funding path that puts a nonzero total into TreasuryState, which no instruction on-chain provides yet"
 }

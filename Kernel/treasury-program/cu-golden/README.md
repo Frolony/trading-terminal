@@ -1,15 +1,20 @@
 # CU golden-test harness (W4.3)
 
-**STATUS (2026-10-25): slice-4 CU MEASURED via the mollusk path below
--- the third GATED measurement has landed: `pay_tranche` = 11,703 CU
-against the design §2.2 ~7K EST, gate PASS (2x band 3,500-14,000;
-measured sits 1.67x the EST point -- inside the band, so NOT a design
-finding under the >2x rule, but the direction is unfavorable and the
-§2.2 batching headroom recomputes to ~119 payouts/tx, see Slice 4).
-`initialize_treasury` = 27,485 CU, `open_window` = 15,445 CU,
-`enroll` = 14,050 CU, all baseline (no §2.2 estimate). Earlier gated
-measurements stand: `settle` = 12,860 CU (gate PASS) and `commit` =
-17,633 CU (gate PASS). The validator path remains submission-only
+**STATUS (2026-10-25): slice-5 REFUSAL PROBES MEASURED via the
+mollusk path below -- the blocked value-moving family is now
+proven, not assumed: `borrow` refuses `BookCapExceeded` (6053) at
+11,948 CU, `exit` refuses `ExitExceedsLiquidity` (6060) at 9,893 CU,
+`settle_default` refuses `NoActiveLoan` (6055) at 14,575 CU, each on
+the slice-4 chain (window 0, zero snapshot) with state asserted
+unchanged afterwards. These are refusal CU, NOT success CU: no
+success chain exists for these instructions until a funding path
+puts a nonzero total into TreasuryState, and no instruction
+on-chain provides one yet -- that funding question is now the
+queue blocker, filed for Carlos (see Slice 5). Earlier measurements
+stand: `pay_tranche` = 11,703 CU (gate PASS), `settle` = 12,860 CU
+(gate PASS), `commit` = 17,633 CU (gate PASS), `initialize_treasury`
+= 27,485 CU, `open_window` = 15,445 CU, `enroll` = 14,050 CU, all
+baseline where noted. The validator path remains submission-only
 (see "Sandbox findings").** The validator path boots,
 funds, encodes, and submits, but no transaction confirms on a local
 validator in this sandbox. The mollusk path executes the chains
@@ -294,8 +299,46 @@ creating-instruction value is treated as a single stable number.
 No gate depends on a creating instruction's value: the gated
 `pay_tranche` is non-creating and stable at 11,703 across runs.
 
+## Slice 5: blocked-family refusal probes (2026-10-25)
+
+| instruction | CU | result |
+|---|---|---|
+| `borrow` (1,000,000 raw, window 0, zero snapshot) | 11,948 | Refused: `BookCapExceeded` (6053) |
+| `exit` (1,000,000 raw, window 0, zero snapshot) | 9,893 | Refused: `ExitExceedsLiquidity` (6060) |
+| `settle_default` (holder with no loan) | 14,575 | Refused: `NoActiveLoan` (6055) |
+
+Why these are refusals, not failures of the harness: each probe
+rides a Committed window flow transition (transition 4) and passes
+every gate before the funding-dependent one — the borrow is within
+the per-holder cap (50% of the 10,000,000 position), the exit is
+within accrued dividend and position, the settlement caller holds
+`OPERATOR_SETTLE` — and each then meets exactly the gate that a
+zero snapshot forces. Post-refusal assertions prove nothing moved:
+position 10,000,000, accrued dividend 6,260,000, loan 0, book
+outstanding 0, transition 4 still COMMITTED. All 57 slice-1..4
+values reproduced identically in the slice-5 run.
+
+**The funding gap, stated as a finding, not a footnote.**
+`initialize_treasury` zeroes every total, `enroll` writes only the
+HolderRecord and the window roster hash, `open_window` snapshots
+whatever totals exist — and no instruction anywhere in the program
+or the design writes a nonzero total into TreasuryState. The
+treasury's T is bookkeeping that nothing funds. Until a funding
+path exists, `borrow`, `exit`, `schedule_whale_exit` (zero FLAG
+sizes no schedule), and everything downstream of a loan
+(`settle_default`) have no success chain at all — only the
+refusals measured here. A harness-seeded funded snapshot was
+considered and refused: it would measure a chain no real execution
+can reach. What the funding path IS — a deposit instruction with a
+token vault, a governed bookkeeping set via policy transition, or
+enrollment aggregation into TreasuryState — is a design decision
+for Carlos, not builder improvisation, and it is now the W4.3
+queue blocker. `schedule_whale_exit`'s zero-FLAG refusal is queued
+behind it (it needs a Committed `treasury.exit.v1` transition, which
+this chain does not build).
+
 ## Next slices
 
-`borrow` (once a treasury-funding path exists), `settle_default` /
-`exit` / whale tranches, then the W3.2 adversarial suite
-re-expressed against the program's interface with measured CU.
+`borrow` / `exit` / `settle_default` / whale-tranche SUCCESS CU
+(once Carlos rules the funding path), then the W3.2 adversarial
+suite re-expressed against the program's interface with measured CU.
