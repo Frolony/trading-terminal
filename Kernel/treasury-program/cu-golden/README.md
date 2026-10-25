@@ -1,11 +1,15 @@
 # CU golden-test harness (W4.3)
 
-**STATUS (2026-10-25): slice-1 CU MEASURED via the mollusk path below
--- the validator path remains submission-only (see "Sandbox
-findings").** The validator path boots, funds, encodes, and submits,
-but no transaction confirms on a local validator in this sandbox. The
-mollusk path executes the same slice-1 chain in-process and records
-real CU; it is now the harness of record for measured CU, and the
+**STATUS (2026-10-25): slice-2 CU MEASURED via the mollusk path below
+-- the first GATED measurement has landed: `commit` = 17,633 CU
+against the design §2.2 25-40K EST, gate PASS (2x band 12,500-80,000;
+measured sits BELOW the EST band -- the estimate was conservative,
+which is the safe direction, and the EST is revisited when larger
+transitions are measured). The validator path remains submission-only
+(see "Sandbox findings").** The validator path boots, funds, encodes,
+and submits, but no transaction confirms on a local validator in this
+sandbox. The mollusk path executes the chains in-process and records
+real CU; it is the harness of record for measured CU, and the
 validator path is retained only as a fallback shape, not a measurement
 source.
 
@@ -30,15 +34,12 @@ source.
   code path is submission-correct.
 - `anchor build` + generated IDL are unaffected; host tests 79/79.
 
-## Next step (queue)
+## Next step (queue) — DONE, see Slice 2 below
 
-Mollusk-svm in-process execution (`mollusk-svm`, crates.io reachable,
-0.16.2 at last check): load `target/deploy/treasury_program.so`,
-execute the slice-1 instructions, read CU from the result -- no
-validator, no faucet, no UDP. Compatibility of the harness crate's
-dependency versions with the program's Anchor 0.31 / Solana 2.1 pins
-is that run's verification item. Devnet measurement is NOT the
-fallback: W4.3 forbids devnet deployment (W4.4 owns it).
+Mollusk-svm in-process execution landed as the harness of record
+(slice 1, then slice 2 with the first gated `commit` measurement).
+Devnet measurement is NOT the fallback: W4.3 forbids devnet deployment
+(W4.4 owns it).
 
 
 Measures real compute units per instruction for the treasury program by
@@ -81,7 +82,7 @@ transition: `initialize_config`, `register_agent`, `grant_role`,
 `set_capacity`, `grant_capability`. These have no §2.2 estimate, so
 their values are recorded as baseline, not gated.
 
-## Next slices
+## Next slices (pre-slice-2 note — superseded by Slice 2 below)
 
 Transition-bound instructions join in design order once their setup
 chains are scripted (policy install, observation, plan, reconcile,
@@ -131,3 +132,57 @@ sysvar defaults); the golden file records the measurement environment
 (mollusk version + .so hash) so any such difference is visible rather
 than hidden. Devnet measurement is NOT a fallback: W4.3 forbids devnet
 deployment (W4.4 owns it).
+
+## Slice 2 (landed 2026-10-25)
+
+The full governance lifecycle to a committed transition, in one
+mollusk run: slice-1 chain, then proposer/evaluator/oracle agents,
+`policy_transition` (design launch values for `treasury.window.v1`:
+quorum 1.0, confidence 0.5, min-observation-confidence 0.5, no
+objectives, max 3 rounds / 4 plans, one mandatory constraint),
+`post_observation`, `register_transition`, `open_planning`,
+`submit_plan` (claim 100 on stock 7), `submit_signal` (raw and support
+1.0), `submit_constraint_report` (PASS), `reconcile`, `commit`.
+Clock discipline: mollusk's clock starts at unix_timestamp 0 and warp
+resets it, so the harness sets `mollusk.sysvars.clock` directly --
+phase A at 1,000,000 with a 3,600s planning window (a harness
+parameter, not a design value), phase B at the 1,003,600 deadline so
+reconcile/commit judge planning closed. Post-commit assertions pass:
+transition state COMMITTED, chain index 1 with the declared hash,
+stock 7 debited 100 (1,000,000 -> 999,900).
+
+| instruction | measured CU | result |
+|---|---|---|
+| `register_agent:proposer` | 9,927 | Success |
+| `register_agent:evaluator` / `:oracle` | 12,927 each | Success |
+| `grant_role:evaluator` / `:oracle` | 5,986 / 5,985 | Success |
+| `policy_transition` | 10,698 | Success |
+| `post_observation` | 10,791 | Success |
+| `register_transition` | 14,150 | Success |
+| `open_planning` | 10,393 | Success |
+| `submit_plan` | 17,715 | Success |
+| `submit_signal` | 20,144 | Success |
+| `submit_constraint_report` | 7,706 | Success |
+| `reconcile` | 8,652 | Success |
+| **`commit`** | **17,633** | **Success, gate PASS** |
+
+Gate reading, stated plainly: 17,633 CU is inside the 2x band
+(12,500-80,000) but below the §2.2 EST band (25,000-40,000) -- the
+low-end miss is 1.42x, so this is NOT a design finding under the >2x
+rule, and the direction is favorable (the full predicate costs less
+than budgeted, so the §2.2 batching headroom improves). The EST is a
+range for a general transition; this measurement is the minimal chain
+(1 plan, 1 signal, 1 constraint, 1 stock), so larger transitions are
+measured next before any EST revision. Unexplained-but-deterministic
+observation (setup only, ungated, no gate impact): the 3rd/4th
+`register_agent` calls measure 12,927 CU vs 9,927 for the 1st/2nd, and
+`grant_role` varies by 1-2 CU across agents -- identical across repeat
+runs, cause not isolated, noted for a future run rather than
+investigated here.
+
+## Next slices
+
+`settle` (8-12K EST) and the value-moving family (~7K EST each) join
+once their setup chains are scripted on top of slice 2, then the W3.2
+adversarial suite is re-expressed against the program's interface with
+measured CU.

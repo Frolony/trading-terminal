@@ -1,35 +1,132 @@
 {
+  "clock": {
+    "phase_a_unix_timestamp": 1000000,
+    "phase_b_unix_timestamp": 1003600,
+    "planning_window_s": 3600
+  },
   "harness": "cu-golden-mollusk",
   "instructions": [
     {
       "cu": 19109,
       "instruction": "initialize_config",
+      "note": "slice-1 baseline",
       "result": "Success"
     },
     {
       "cu": 9927,
       "instruction": "register_agent",
+      "note": "slice-1 baseline",
       "result": "Success"
     },
     {
       "cu": 5984,
       "instruction": "grant_role",
+      "note": "slice-1 baseline",
       "result": "Success"
     },
     {
       "cu": 9486,
       "instruction": "set_capacity",
+      "note": "slice-1 baseline",
       "result": "Success"
     },
     {
       "cu": 6172,
       "instruction": "grant_capability",
+      "note": "slice-1 baseline",
+      "result": "Success"
+    },
+    {
+      "cu": 9927,
+      "instruction": "register_agent:proposer",
+      "note": "slice-2 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 12927,
+      "instruction": "register_agent:evaluator",
+      "note": "slice-2 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 5986,
+      "instruction": "grant_role:evaluator",
+      "note": "slice-2 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 12927,
+      "instruction": "register_agent:oracle",
+      "note": "slice-2 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 5985,
+      "instruction": "grant_role:oracle",
+      "note": "slice-2 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 10698,
+      "instruction": "policy_transition",
+      "note": "slice-2 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 10791,
+      "instruction": "post_observation",
+      "note": "slice-2 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 14150,
+      "instruction": "register_transition",
+      "note": "slice-2 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 10393,
+      "instruction": "open_planning",
+      "note": "slice-2 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 17715,
+      "instruction": "submit_plan",
+      "note": "slice-2 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 20144,
+      "instruction": "submit_signal",
+      "note": "slice-2 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 7706,
+      "instruction": "submit_constraint_report",
+      "note": "slice-2 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 8652,
+      "instruction": "reconcile",
+      "note": "slice-2 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 17633,
+      "design_estimate_cu": "25000-40000",
+      "gate": "pass",
+      "gate_2x_band_cu": "12500-80000",
+      "instruction": "commit",
+      "note": "slice-2 GATED measurement: minimal chain (1 plan, 1 signal, 1 constraint, 1 stock)",
       "result": "Success"
     }
   ],
   "mollusk_svm": "0.16.2",
   "program_id": "FPGSeLBWEiFKdTuqDbJeKhjXeah5H4c3rqsW4Tzn3RAS",
   "program_so_sha256": "a447e9074a049e18a96f05a97f7ae72ef7ceb15ea3882989d92ac181cfd8c4fc",
-  "slice": 1,
-  "slice_note": "genesis/admin chain only; no design §2.2 estimate, values are baseline, NOT gated"
+  "slice": 2,
+  "slice_note": "slice-1 genesis/admin chain + slice-2 full governance lifecycle to a committed transition; commit is the first GATED measurement (design §2.2 25-40K EST, 2x band 12.5-80K)"
 }
