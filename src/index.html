@@ -911,7 +911,7 @@ function dashDigestNow(){
   const ot=orders.length&&orders[0]?orders[0].time:null;
   parts.push('orders:'+orders.length+':'+(ot?(ot instanceof Date?ot.getTime():String(ot)):'-'));
   try{const l=wlActiveList();parts.push('wl:'+(l?l.id+':'+l.tokens.map(t=>{const e=wlEnrich(t);return t.mint+':'+e.priceUsd+':'+e.change24h+':'+(e.stale?1:0);}).join(','):'none'));}catch(_){parts.push('wl:?');} // N5.17: digest tracks the ACTIVE list — switching lists (or editing it) repaints the dashboard; other lists' edits correctly do not
-  const w=dashWallet();parts.push('w:'+(w.connected?1:0)+':'+(w.publicKey||'')+':'+JSON.stringify(w.balances||null));
+  const w=dashWallet();parts.push('w:'+(w.connected?1:0)+':'+(w.publicKey||'')+':'+JSON.stringify(w.balances||null)+':balErr:'+JSON.stringify(w.balErr||null)); // N4.15: a load-state change (null → failed) with unchanged balances must still repaint the dashboard
   try{parts.push('h:'+histLoad().paper.length);}catch(_){parts.push('h:?');}
   return parts.join('|');
 }
@@ -939,23 +939,46 @@ function dashPaperHtml(){
   }
   return h+'</div>';
 }
+/* N4.15 (A75, 2026-10-26): live balances must never render as false zeros.
+   The old renderer ran Number(null) into a finite check, so an unloaded or
+   failed token balance rendered as a genuine 0 and folded into a partial
+   sum dressed as the total — the exact trap walletCardTotalUsd's comment
+   guards against in the roster path. Now a null/non-finite quantity renders
+   as '—' plus its per-asset load state (the same classes the wallet menu
+   renders from balErr: busy / refused / failed, plus not-loaded / loading),
+   and the Total value renders only when every asset is a loaded number
+   priced (the walletCardTotalUsd rule, including the SOL spot > 0 gate);
+   otherwise it renders '—' with the explicit not-fully-loaded state.
+   A genuine zero token account (value: [] from the RPC, balErr null)
+   still renders 0 — only unknown balances are withheld, never zeroed. */
+function dashLiveBalState(err,loading){
+  if(loading)return 'Loading…';
+  if(err==='busy')return 'RPC busy — retry';
+  if(err==='refused')return 'RPC refused (403) — retry';
+  if(err)return 'Could not load — retry';
+  return 'Not loaded';
+}
 function dashLiveHtml(){
   const qc=dashQC(),sp=price>0?price:0,w=dashWallet(),pk=w.publicKey||window.__walletAddress||null;
   if(!w.connected||!pk){
     return'<div class="empty">No wallet connected — the live dashboard shows on-chain balances only.<br><br><button type="button" class="action" data-dash-connect>Connect wallet</button><div class="sub" style="margin-top:8px">Connecting is read-only for trading — the terminal signs only the sync login challenge (never a transaction) when you connect.</div></div>';
   }
   const bal=w.balances||{};
-  const rows=[{sym:'SOL',qty:bal.sol,px:sp},{sym:'USDC',qty:bal.usdc,px:1},{sym:'USDT',qty:bal.usdt,px:1}];
-  let total=0;
+  const errs=w.balErr||((typeof wallet!=='undefined'&&wallet)?wallet.balErr:{})||{};
+  const loading=(typeof wallet!=='undefined'&&wallet)?!!wallet.balLoading:!!w.balLoading;
+  const rows=[{sym:'SOL',key:'sol',qty:bal.sol,px:sp},{sym:'USDC',key:'usdc',qty:bal.usdc,px:1},{sym:'USDT',key:'usdt',qty:bal.usdt,px:1}];
+  let sum=0,allLoaded=true;
   const body=rows.map(r=>{
-    const q=Number(r.qty),has=Number.isFinite(q);
-    const v=has&&r.px>0?q*r.px:null;if(v!=null)total+=v;
-    return'<tr><td><strong>'+r.sym+'</strong></td><td>'+(has?fmtQty(q):'—')+'</td><td>'+(v!=null?dbMoney(v,qc,sp):'—')+'</td><td>—</td><td><span class="sub">suppressed — no local fill history</span></td></tr>';
+    const bad=(r.qty===null||r.qty===undefined||!Number.isFinite(Number(r.qty)));
+    const q=bad?null:Number(r.qty);
+    const v=(!bad&&r.px>0)?q*r.px:null;if(v==null)allLoaded=false;else sum+=v;
+    return'<tr><td><strong>'+r.sym+'</strong></td><td>'+(bad?'— <span class="sub">'+esc(dashLiveBalState(errs[r.key],loading))+'</span>':fmtQty(q))+'</td><td>'+(v!=null?dbMoney(v,qc,sp):'—')+'</td><td>—</td><td><span class="sub">suppressed — no local fill history</span></td></tr>';
   }).join('');
+  const total=allLoaded?sum:null;
   let acts=[];
   try{const h=histLoad();acts=((h.live||{})[pk]||[]).slice(0,20).map(e=>({ts:Number(e.ts)||0,label:dashHistLabel(e)}));}catch(_){}
   let h='<div class="dashsec"><div class="sectiontitle"><h3>Live balances</h3><span class="sub">LIVE · '+esc(String(pk).slice(0,4)+'…'+String(pk).slice(-4))+'</span></div>';
-  h+='<div class="dashgrid"><div class="dashstat"><div class="eyebrow">Total value</div><div class="v">'+dbMoney(total,qc,sp)+'</div><div class="sub">On-chain balances</div></div></div>';
+  h+='<div class="dashgrid"><div class="dashstat"><div class="eyebrow">Total value</div><div class="v">'+(total!=null?dbMoney(total,qc,sp):'—')+'</div><div class="sub">'+(total!=null?'On-chain balances':'Balances not fully loaded — a failed or unloaded balance is never counted as $0')+'</div></div></div>';
   h+='<div class="tablewrap"><table><thead><tr><th>Asset</th><th>Balance</th><th>Value</th><th>Cost basis</th><th>Unrealized</th></tr></thead><tbody>'+body+'</tbody></table></div>';
   h+='<div class="sub" style="margin-top:6px">Cost basis is never invented for live holdings — without local fill history it shows “—” and unrealized P&amp;L is suppressed.</div></div>';
   h+='<div class="dashsec"><div class="sectiontitle"><h3>Live activity</h3><span class="sub">on-chain confirmed only</span></div>';
@@ -3677,7 +3700,7 @@ const WALLET_USDC_MINT='EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'; // fronte
 const WALLET_USDT_MINT='Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB'; // frontend/src/solana/tokens.ts
 const wallet={connected:false,publicKey:null,name:null,icon:null,adapter:null,balances:{sol:null,usdc:null,usdt:null},balErr:{},balLoading:false,_adapters:null,_connecting:false,roster:[]};
 let ticketMode='paper'; // N4.3: 'live' unlocks only via LIVE_TRADING_ENABLED (human-flipped after N4.2 acceptance + §8.4)
-window.__walletState={connected:false,publicKey:null,balances:null}; // read-only exposure for the ticket
+window.__walletState={connected:false,publicKey:null,balances:null,balErr:{}}; // read-only exposure for the ticket
 function truncateAddr(a){if(!a||a.length<8)return a||'—';return a.slice(0,4)+'…'+a.slice(-4);}
 function classifyWallets(adapters){const installed=[],installable=[];(adapters||[]).forEach(a=>{if(!a||!a.name)return;((a.readyState==='Installed')?installed:installable).push(a);});return{installed,installable};}
 function walletIconHtml(a){return a&&a.icon?'<img src="'+a.icon+'" alt="">':'';}
@@ -3829,7 +3852,7 @@ async function rpcCallAtEndpoint(endpoint,method,params){
     const r=await fetch(endpoint,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({jsonrpc:'2.0',id:1,method,params}),signal:c.signal});
     if(!r.ok)throw new Error('RPC HTTP '+r.status);
     const j=await r.json();
-    if(j.error)throw new Error(j.error.message||'RPC error');
+    if(j.error){const e=new Error(j.error.message||'RPC error');e.rpcCode=j.error.code;throw e;} // N4.15: keep the JSON-RPC code so callers can tell a 403 refusal from a method refusal
     return j.result;
   }finally{clearTimeout(t);}
 }
@@ -3840,7 +3863,7 @@ async function rpcCallAtEndpoint(endpoint,method,params){
    other endpoint would answer it either. isTransientRpcError is deliberately
    NOT extended to 403: at the rpcCallWithRetry / balance-class layer a 403
    must still fail fast and surface as 'refused', not retry as 'busy'. */
-function isEndpointRpcError(e){const m=String((e&&e.message)||e||'').toLowerCase();if(m.indexOf('rpc http 403')>=0)return true;return isTransientRpcError(e);}
+function isEndpointRpcError(e){if(e&&e.rpcCode===403)return true;const m=String((e&&e.message)||e||'').toLowerCase();if(m.indexOf('rpc http 403')>=0)return true;return isTransientRpcError(e);} // N4.15: a JSON-RPC 403 (mainnet-beta's Origin refusal arrives in this form) is endpoint-class like the HTTP 403
 /* N4.14 candidate order: unburned endpoints in list order, except the last
    endpoint that answered goes first (it is the proven-live one). While every
    endpoint is burned, only the longest-burned one is re-probed — the pass
@@ -3870,6 +3893,14 @@ async function rpcCall(method,params){
     }catch(e){
       lastErr=e;
       if(isEndpointRpcError(e))walletRpcBurned[ep]=Date.now()+WALLET_RPC_BURN_MS;
+      /* N4.15: a JSON-RPC error from getTokenAccountsByOwner is endpoint-class
+         for rotation — proven 2026-10-26: publicnode answers getBalance but
+         refuses this method (-32602, indexed requests need a personal
+         token), so dead-ending here strands the SPL assets while SOL loads.
+         Rotating gives the next endpoint its chance; the candidate list
+         bounds the rotation (a bad-params error also rotates once per
+         endpoint, then throws the last error — no wrong data can result). */
+      else if(method==='getTokenAccountsByOwner'&&e&&typeof e.rpcCode==='number')walletRpcBurned[ep]=Date.now()+WALLET_RPC_BURN_MS;
       else throw e;
     }
   }
@@ -3893,7 +3924,11 @@ async function rpcCallWithRetry(method,params){let lastErr=null;const delays=[0,
 async function getSolBalance(pk){const res=await rpcCallWithRetry('getBalance',[pk]);return res.value/1e9;}
 async function getSplBalance(pk,mint){
   const res=await rpcCallWithRetry('getTokenAccountsByOwner',[pk,{mint},{encoding:'jsonParsed',commitment:'confirmed'}]);
-  let total=0;((res&&res.value)||[]).forEach(a=>{const info=a.account&&a.account.data&&a.account.data.parsed&&a.account.data.parsed.info;const amt=info&&info.tokenAmount;if(amt&&Number.isFinite(Number(amt.uiAmount)))total+=Number(amt.uiAmount);});
+  /* N4.15: a response without a value array is a failed read, not a zero —
+     the old ((res&&res.value)||[]) collapse turned a malformed/absent
+     response into a genuine 0. A genuine value: [] still returns 0. */
+  if(!res||!Array.isArray(res.value))throw new Error('SPL balance response missing value array');
+  let total=0;res.value.forEach(a=>{const info=a.account&&a.account.data&&a.account.data.parsed&&a.account.data.parsed.info;const amt=info&&info.tokenAmount;if(amt&&Number.isFinite(Number(amt.uiAmount)))total+=Number(amt.uiAmount);});
   return total;
 }
 function balText(v,sym){if(v===null||v===undefined||!Number.isFinite(Number(v)))return'—';return fmt(Number(v),sym==='SOL'?4:2)+' '+sym;}
@@ -4002,7 +4037,7 @@ function setWalletActive(pk,announce){
   wallet.connected=true;wallet.publicKey=pk;wallet.name=entry.name;wallet.icon=entry.icon;wallet.adapter=entry.adapter;
   wallet.balances=entry.balances||{sol:null,usdc:null,usdt:null};wallet.balErr=entry.balErr||{};wallet.balLoading=false;
   window.__walletAddress=pk;
-  window.__walletState={connected:true,publicKey:pk,name:entry.name,balances:null};
+  window.__walletState={connected:true,publicKey:pk,name:entry.name,balances:null,balErr:entry.balErr||{}}; // N4.15: dashboard reads balErr through dashWallet()
   const b=$('walletBtn');if(b){b.textContent=truncateAddr(pk);b.classList.add('connected');}
   $('walletDdName').textContent=entry.name||'Wallet';
   $('walletDdAddr').textContent=pk;
@@ -4020,7 +4055,7 @@ function setWalletConnected(a,pk){
   wallet.connected=true;wallet.publicKey=pk;wallet.name=a.name;wallet.icon=a.icon;wallet.adapter=a;
   wallet.balances={sol:null,usdc:null,usdt:null};wallet.balErr={};
   window.__walletAddress=pk; // N2.2/N7.3 identity hook — memory-only, never persisted
-  window.__walletState={connected:true,publicKey:pk,name:a.name,balances:null};
+  window.__walletState={connected:true,publicKey:pk,name:a.name,balances:null,balErr:{}}; // N4.15: dashboard reads balErr through dashWallet()
   const b=$('walletBtn');b.textContent=truncateAddr(pk);b.classList.add('connected');
   $('walletDdName').textContent=a.name||'Wallet';
   $('walletDdAddr').textContent=pk;
@@ -4096,7 +4131,7 @@ async function refreshWalletBalances(){
      'failed' — the row then names the refusal instead of hiding it behind
      the generic copy, and walletBalNeedsRetry keeps the N4.13 ladder running
      because 'refused' is truthy like 'busy'/'failed'. */
-  const load=async(key,fn)=>{try{const v=await fn();if(!wallet.connected||wallet.publicKey!==pk)return prev[key];wallet.balErr[key]=null;return v;}catch(e){if(!wallet.connected||wallet.publicKey!==pk)return prev[key];wallet.balErr[key]=(String((e&&e.message)||e||'').indexOf('RPC HTTP 403')>=0)?'refused':(isTransientRpcError(e)?'busy':'failed');return prev[key];}};
+  const load=async(key,fn)=>{try{const v=await fn();if(!wallet.connected||wallet.publicKey!==pk)return prev[key];wallet.balErr[key]=null;return v;}catch(e){if(!wallet.connected||wallet.publicKey!==pk)return prev[key];wallet.balErr[key]=((e&&e.rpcCode===403)||(String((e&&e.message)||e||'').indexOf('RPC HTTP 403')>=0))?'refused':(isTransientRpcError(e)?'busy':'failed');return prev[key];}}; // N4.15: JSON-RPC 403 classifies as refused, like HTTP 403
   const results=await Promise.all([
     load('sol',()=>getSolBalance(pk)),
     load('usdc',()=>getSplBalance(pk,WALLET_USDC_MINT)),
@@ -4104,7 +4139,7 @@ async function refreshWalletBalances(){
   ]);
   if(!wallet.connected||wallet.publicKey!==pk){wallet.balLoading=false;if(!wallet.connected){try{if(typeof walletBalStopTimers==='function')walletBalStopTimers();}catch(_){}}return;} // disconnected mid-flight
   wallet.balances={sol:results[0],usdc:results[1],usdt:results[2]};wallet.balLoading=false;const entry=walletRosterFind(pk);if(entry){entry.balances=wallet.balances;entry.balErr=wallet.balErr;}
-  window.__walletState.balances={sol:results[0],usdc:results[1],usdt:results[2]};
+  window.__walletState.balances={sol:results[0],usdc:results[1],usdt:results[2]};window.__walletState.balErr=wallet.balErr; // N4.15
   renderWalletDd();
   /* N4.13: the dashboard reads these balances only through its digest, so
      it moves only when this repaint runs — menu and roster alone left it
@@ -4145,7 +4180,7 @@ async function disconnectWallet(pk){
   wallet.connected=false;wallet.publicKey=null;wallet.name=null;wallet.icon=null;wallet.adapter=null;
   wallet.balances={sol:null,usdc:null,usdt:null};wallet.balErr={};wallet.balLoading=false;
   try{delete window.__walletAddress;}catch(e){window.__walletAddress=null;}
-  window.__walletState={connected:false,publicKey:null,balances:null};
+  window.__walletState={connected:false,publicKey:null,balances:null,balErr:{}};
   /* N4.13: no wallet left, so no cadence and no backoff may survive. */
   try{if(typeof walletBalStopTimers==='function')walletBalStopTimers();}catch(_){}
   /* N2.4: the adapter was already disconnected above (all three paths
