@@ -1,0 +1,155 @@
+
+genesis: bootstrap authority exists only until sealed
+  ok   a stranger cannot grant roles
+  ok   a stranger cannot set policy
+  ok   seal refused: no council, no governance policies yet
+  ok   policy needs at least one round
+  ok   council must fill exactly the seat count
+  ok   genesis council seated
+  ok   seal allowed once council + governance policies exist
+  ok   sealed: bootstrap authority erased
+  ok   admin can no longer set policy
+  ok   admin can no longer grant roles
+  ok   admin can no longer install a council
+  ok   seal cannot be repeated
+
+classifier: all 48 cells pinned to the uploaded tables
+  ok   every Stance x Contribution cell matches (sector and weight)
+  ok   stance bands: >0.6 aligned, <0.4 opposed, between neutral, sentinel uncertain
+  ok   band edges 0.4 and 0.6 are neutral
+
+registration: policy comes only from governance; strangers and unknown types refused
+  ok   a non-agent cannot propose
+  ok   unknown transition type rejected (no proposer-supplied policy)
+  ok   a governance type cannot enter as an ordinary transition
+  ok   only a council seat may propose a rule change
+constraint bypass: proposer omits the mandatory failing constraint
+  ok   mandatory failing constraint applied anyway -> REJECTED
+
+rounds: one signal per agent per round, revisions move toward the mean, latest signal counts
+  ok   raw weight above WAD rejected (cap restored)
+  ok   support above WAD rejected
+  ok   non-agent cannot signal
+  ok   second signal in the same round rejected
+  ok   two agents, 0.5 WAD each = 1 WAD (influence snapshot at eligibility)
+  ok   an UNCERTAIN signal is recorded but adds no weight
+  ok   round 0 initially
+  ok   round derived from time: round 1 after half the window
+  ok   revision away from the mean refused
+  ok   revision replaces the earlier signal in the tally (no double count)
+   (R1 finishes below quorum on purpose)
+  ok   quorum bit set while weight is below quorum
+
+niche: the weight table builds each agent's specialty
+  ok   a1 (aligned, substantive) is niched COLLABORATIVE
+  ok   its score is the table weight 1.0 added once per classified signal (two rounds)
+  ok   a3 signalled no-position and sits in UNCERTAIN
+  ok   an agent with no history has no niche
+
+ordinary commits: predicate, attribution, accepted proposals
+  ok   cannot commit before the lifecycle completes
+  ok   P1 COMMITTABLE
+  ok   predicate mask is zero
+  ok   P1 COMMITTED, declared state advanced
+  ok   a4 has one accepted proposal
+  ok   COMMITTED cannot be committed again
+  ok   stale parent rejected at registration
+settlement and outcome (attestor logic unchanged)
+  ok   one attestation is below the threshold of two
+  ok   one attestation per settler
+  ok   two agreeing attestations settle
+  ok   outcome recorded; hash mismatch derived, not asserted
+  ok   attribution moved reputation
+
+group policy: highest-matching group, never the sum
+  ok   a6 is in one group (x2): 0.5 * 2 = 1.0
+  ok   a5 is in two groups (x2 and x3): highest-matching x3 => 1.5, not x5 => 2.5
+  ok   a5 accepted
+  ok   a6 and a7 accepted
+
+selection: highest-confidence qualifying sibling wins; nobody wins by calling early
+  ok   a sibling whose window is still open blocks selection
+  ok   a lower-confidence qualifying sibling cannot be selected
+  ok   a sibling with no weight does not qualify
+  ok   highest confidence wins selection
+  ok   the losing sibling becomes CONFLICTED once the state advances
+
+dialect: a proposal takes effect only when a dependent transition commits
+  ok   nine changes of this merge are notated at genesis
+  ok   proposals against the same prior state coexist as declared divergence
+  ok   only agents propose
+  ok   a transition cannot depend on conflicting or foreign changes
+  ok   D1 passes the predicate with a live dependency
+  ok   the change took effect with the commit that relied on it
+  ok   the rival change went stale: D2 now fails the dialect term of the predicate
+
+exceptions: council majority resolves, raiser excluded, confirmed defection is recorded
+  ok   a blocking exception sets the exceptions bit
+  ok   a raiser cannot resolve its own exception
+  ok   only seats adjudicate
+  ok   one seat of three is not a majority
+  ok   a seat votes once
+  ok   two of three resolves it
+  ok   confirmed defection recorded against the offender
+
+governance: a rule changes only when a council-proposed transition passes the full predicate
+  ok   no seat can change a rule directly
+  ok   two of three seats approving is not unanimous: proposal refused
+  ok   an adjustable action cannot travel as a constitutional type
+  ok   group multipliers (a weight lever) are constitutional, never adjustable
+  ok   a policy for a governance type is constitutional
+  ok   an action outside the table is refused
+   select -> undefined
+  ok   with half the weight, quorum for a governance type is not met: it cannot even be selected
+  ok   a governance transition cannot commit through the ordinary door
+  ok   before the commit, the rule has not changed
+  ok   after the commit the rule is applied, in the same transaction
+  ok   it cannot be applied twice
+predicate failure: an exception raised after declareCommit blocks the governance commit
+  ok   blocking exception after declare -> BLOCKED
+  ok   a blocked governance transition cannot apply
+  ok   the rule did not change
+a failing action reverts the whole commit
+  ok   registering an agent above the influence-share bound fails
+  ok   a failed action leaves no committed transition behind (still COMMITTABLE)
+
+position: a gate on council candidacy, never a weight
+  ok   accepted proposal alone is not candidacy
+   epoch now 0
+  ok   a holder of 1 and a holder of 10^30 carry exactly the same weight
+  ok   one record per epoch
+  ok   three consecutive verified epochs
+  ok   holds a position 3 epochs + accepted proposal => candidate
+  ok   a6 has a confirmed defection inside the cooldown: not a candidate
+  ok   a1 has no position: not a candidate
+  ok   a3 has a verified streak
+  ok   a holding that is not locked through the epoch does not count
+
+council: succession is a transition; sits at least three epochs; nominees must qualify
+   epoch 3 council since 0
+  ok   three epochs have passed since the seated council was installed
+  ok   a nominee with no position (a1) fails the rotation
+  ok   council rotated to a4, a5, a7
+  ok   the new sitting starts this epoch
+  ok   three seats
+  ok   the new council must itself be unanimous (old approvals do not carry over)
+  ok   the retired seat can no longer propose rules
+
+emergency brake is bounded
+  ok   only a guardian pauses
+  ok   paused
+  ok   registration blocked while paused
+  ok   cannot immediately re-pause
+  ok   the pause expires on its own: it can never deadlock governance
+  ok   and a cooldown follows, so governance has a window
+
+frozen substrate: only a reboot transition may run
+  ok   health minimum of zero freezes the substrate
+  ok   ordinary registration refused while frozen
+  ok   a committed reboot transition restores operation, through the full predicate
+
+weight bound is enforced at seal (fresh deployment)
+  ok   seal refused while one agent holds more than 1/6 of base influence
+  ok   the cap cannot be tightened under an existing holder
+
+113 passed, 0 failed

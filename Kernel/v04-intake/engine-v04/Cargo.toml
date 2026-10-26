@@ -1,0 +1,16 @@
+[package]
+name = "engine-v04"
+version = "0.1.0"
+edition = "2021"
+description = "Migration step 4 (increment 2): the v0.2 engine-sim aggregate + per-holder treasury engine ported onto the v0.4 kernel lifecycle via engine-adapter-v04. Arithmetic and T1-T9 theorems unchanged; only the governance seam is new. Consumes the delivered v0.4 crate and the step-2 launch profile by path; modifies neither, and never touches Kernel/ in the repo."
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+coordination-kernel = { path = "../coordination-kernel-rs" }
+engine-adapter-v04 = { path = "../engine-adapter-v04" }
+kernel-launch-v04 = { path = "../kernel-launch-v04" }
+
+[dev-dependencies]
+coordination-kernel = { path = "../coordination-kernel-rs" }
+engine-adapter-v04 = { path = "../engine-adapter-v04" }
+kernel-launch-v04 = { path = "../kernel-launch-v04" }

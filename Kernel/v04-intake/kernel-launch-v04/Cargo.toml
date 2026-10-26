@@ -1,0 +1,12 @@
+[package]
+name = "kernel-launch-v04"
+version = "0.1.0"
+edition = "2021"
+description = "Migration step 2: the treasury launch profile as configuration over the v0.4 kernel crate — genesis seeding, three capacity stocks, the seal, and the evidence-bound settlement composition. Tests the delivered v0.4 crate without modifying it."
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+coordination-kernel = { path = "../coordination-kernel-rs" }
+
+[dev-dependencies]
+coordination-kernel = { path = "../coordination-kernel-rs" }

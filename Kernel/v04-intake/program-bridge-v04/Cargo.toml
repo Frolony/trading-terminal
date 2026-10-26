@@ -1,0 +1,14 @@
+[package]
+name = "program-bridge-v04"
+version = "0.1.0"
+edition = "2021"
+description = "Migration step 5 (slice 1): the program bridge rewritten over the v0.4 kernel lifecycle — replay a transition from its recorded inputs alone, through the added steps (evaluate, eligible, select, reconcile, validate, declare), with no live kernel state carried over. Consumes the delivered v0.4 crate and the step-2 launch profile by path; modifies neither, and never touches Kernel/ in the repo."
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+coordination-kernel = { path = "../coordination-kernel-rs" }
+kernel-launch-v04 = { path = "../kernel-launch-v04" }
+
+[dev-dependencies]
+coordination-kernel = { path = "../coordination-kernel-rs" }
+kernel-launch-v04 = { path = "../kernel-launch-v04" }

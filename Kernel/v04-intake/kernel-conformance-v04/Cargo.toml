@@ -1,0 +1,9 @@
+[package]
+name = "kernel-conformance-v04"
+version = "0.1.0"
+edition = "2021"
+description = "Port of the W2.3 conformance suite to the v0.4 kernel crate — OUR requirements, tested against Jeffrey Beitel's v0.4 crate without modifying it."
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+coordination-kernel = { path = "../coordination-kernel-rs" }
