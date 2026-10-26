@@ -2872,7 +2872,7 @@ function btSaveConfig(){
    btOverwriteArmKey=name;
    const old=list[ix];
    const sb=$('btSaveCfg');if(sb)sb.textContent='Confirm overwrite?';
-   toast('Save again to replace "'+name+'" ('+old.scheme+(old.runId?' · run '+old.runId:'')+'). Nothing was replaced yet.');
+   toast('Save again to replace "'+name+'" ('+old.scheme+(function(){const ps=btParamsSummary(old);return ps?' · '+ps:'';}())+(old.runId?' · run '+old.runId:'')+'). Nothing was replaced yet.');
    setTimeout(function(){if(btOverwriteArmKey===name){btOverwriteArmKey=null;const b2=$('btSaveCfg');if(b2)b2.textContent='Save';}},8000);
    return;
   }
@@ -2929,6 +2929,35 @@ function btEnsureSavedCfg(cfg,name){
  return ix>=0?'replaced':'added';
 }
 let btDeleteArmKey=null;
+/* === N7.12 (A68, 2026-10-25): saved rows show their parameters and name their blocker ===
+   Carlos's N7.11 retest: saved rows read identically after a params-only overwrite
+   (the sub-line carried scheme id + pair + fee + deploy + runId, never params),
+   and an N7.11-blocked row showed only a disabled 'Already deployed' button with
+   no blocker named — one deployment looked like it blocked every configuration.
+   No matching change: plDeploySame/plFindDeployDup are untouched, so runId-first
+   duplicate matching stays exactly as N7.11 shipped. This is legibility only:
+   (1) btParamsSummary renders an entry's OWN stored params in declared-param
+   order (deployment cards already print k=v; saved rows now match them), with
+   undeclared keys appended so nothing stored is hidden; (2) btDeployBlockerNote
+   names the blocking deployment, including the under-another-name case. */
+function btParamsSummary(c){
+ if(!c||typeof c!=='object')return '';
+ const params=c.params||{};
+ const sch=BT_SCHEMES.find(x=>x.id===c.scheme);
+ const seen=new Set(),parts=[];
+ if(sch&&(sch.params||[]).length){
+  sch.params.forEach(function(p){
+   if(Object.prototype.hasOwnProperty.call(params,p.k)){parts.push(p.k+'='+params[p.k]);seen.add(p.k);}
+  });
+ }
+ Object.keys(params).forEach(function(k){if(!seen.has(k))parts.push(k+'='+params[k]);});
+ return parts.join(' \u00b7 ');
+}
+function btDeployBlockerNote(rowName,dup){
+ if(!dup)return '';
+ if(String(dup.name)===String(rowName))return 'Deployed as "'+dup.name+'"';
+ return 'This run is deployed as "'+dup.name+'"';
+}
 function btRenderConfigs(){
  const store=btLoadCfgStore(),list=store.configs[btIdentity()]||[];
  const box=$('btCfgList');
@@ -2942,10 +2971,12 @@ function btRenderConfigs(){
   const linked=btDeploymentsForCfg(c.name,c.runId).length;
   const armed=btDeleteArmKey===btCfgKey(c);
   const delLabel=armed?(linked?'Confirm delete — deployments stay':'Confirm delete'):'Delete';
-  const sub='<div class="sub">'+esc(c.scheme)+' · '+esc(c.pair)+' · fee '+esc(c.fee_bps)+'bps · deploy '+esc(c.deploy_pct)+'%'+(c.runId?' · run <span style="user-select:all">'+esc(String(c.runId))+'</span>':'')+'</div>';
+  const ps712=btParamsSummary(c);
+  const sub='<div class="sub">'+esc(c.scheme)+(ps712?' · '+esc(ps712):'')+' · '+esc(c.pair)+' · fee '+esc(c.fee_bps)+'bps · deploy '+esc(c.deploy_pct)+'%'+(c.runId?' · run <span style="user-select:all">'+esc(String(c.runId))+'</span>':'')+'</div>';
   const nc711=plNormalizeCfg(c),depDup711=nc711?plFindDeployDup(nc711):null; /* N7.11: a saved row whose configuration is already deployed shows its state */
-  if(btRenameIdx===i)return '<div class="btcfg"><div><input class="wrename-input" data-btrename-input="'+i+'" value="'+esc(c.name)+'" maxlength="60" aria-label="New name for this configuration">'+sub+'</div><div style="display:flex;gap:6px"><button type="button" class="action" data-btrename-save="'+i+'">Save</button><button type="button" class="action" data-btrename-cancel="'+i+'">Cancel</button></div></div>';
-  return '<div class="btcfg"><div><strong>'+esc(c.name)+'</strong>'+sub+'</div><div style="display:flex;gap:6px"><button type="button" class="action" data-btdeploy="'+i+'"'+(depDup711?' disabled':'')+'>'+(depDup711?'Already deployed':'Deploy')+'</button><button type="button" class="action" data-btload="'+i+'">Load</button><button type="button" class="action" data-btrename="'+i+'">Rename</button><button type="button" class="action sell" data-btdel="'+i+'">'+delLabel+'</button></div></div>';
+  const blocker712=depDup711?btDeployBlockerNote(c.name,depDup711):'';
+  if(btRenameIdx===i)return '<div class="btcfg"><div><input class="wrename-input" data-btrename-input="'+i+'" value="'+esc(c.name)+'" maxlength="60" aria-label="New name for this configuration">'+sub+(blocker712?'<div class="sub">'+esc(blocker712)+'</div>':'')+'</div><div style="display:flex;gap:6px"><button type="button" class="action" data-btrename-save="'+i+'">Save</button><button type="button" class="action" data-btrename-cancel="'+i+'">Cancel</button></div></div>';
+  return '<div class="btcfg"><div><strong>'+esc(c.name)+'</strong>'+sub+(blocker712?'<div class="sub">'+esc(blocker712)+'</div>':'')+'</div><div style="display:flex;gap:6px"><button type="button" class="action" data-btdeploy="'+i+'"'+(depDup711?' disabled':'')+'>'+(depDup711?'Already deployed':'Deploy')+'</button><button type="button" class="action" data-btload="'+i+'">Load</button><button type="button" class="action" data-btrename="'+i+'">Rename</button><button type="button" class="action sell" data-btdel="'+i+'">'+delLabel+'</button></div></div>';
  }).join('');
  box.querySelectorAll('[data-btdeploy]').forEach(b=>b.onclick=()=>plDeploySaved(Number(b.dataset.btdeploy)));
  box.querySelectorAll('[data-btload]').forEach(b=>b.onclick=()=>btLoadConfig(Number(b.dataset.btload)));
@@ -3168,8 +3199,8 @@ function btPaintDeployBtn(){
   const cfg=plNormalizeCfg(btLastCfg);
   if(cfg)dup=plFindDeployDup(cfg);
  }
- if(dup){b.disabled=true;b.textContent='Already deployed';}
- else{b.disabled=false;b.textContent='Deploy to paper-tracked';}
+ if(dup){b.disabled=true;b.textContent='Already deployed';b.title='Blocking deployment: "'+dup.name+'"';}
+ else{b.disabled=false;b.textContent='Deploy to paper-tracked';b.title='';}
 }
 /*__N711_DUP_DEPLOY_END__*/
 function plDeployCfg(cfg,name){
