@@ -979,9 +979,16 @@ function paintDashboard(force){
    page persists in its own key (N2.1 local persistence) and is restored at boot
    before applyLayoutBoot paints visibility. Cross-links that used to scroll now
    switch page first: dashboard movers and dashboard empty states land on the
-   ticket's page (Strategy Lab, the N5.14 default — a Carlos ticket-home ruling (N5.15 duplicates it on Terminal as the Live instance)). */
+   ticket's page (Strategy Lab, the N5.14 default — a Carlos ticket-home ruling (N5.15 duplicates it on Terminal as the Live instance)).
+   N5.16 (2026-10-25, A70, Carlos's direction): watchlist moves terminal →
+   dashboard, beside the Token discovery that populates it. No stored-layout
+   migration: pages live in PANEL_PAGE (code), never in workspace state, so
+   every saved workspace recomputes visibility from the new map on boot,
+   workspace switch, page switch, and sync apply — the card can neither strand
+   nor duplicate (one DOM node, display toggled). A workspace that hid the
+   card keeps it hidden on its new page; hide composes with page. */
 const PAGE_KEY='gecko-terminal:page-v1';
-const PANEL_PAGE={pairs:'terminal',watchlist:'terminal',execpath:'terminal',solstat:'terminal',chgstat:'terminal',dashboard:'dashboard',discovery:'dashboard',chart:'dashboard',history:'dashboard',lab:'lab',portfolio:'lab',orders:'lab',limits:'lab',equitystat:'lab',ticket:'lab',ticketLive:'terminal'};
+const PANEL_PAGE={pairs:'terminal',watchlist:'dashboard',execpath:'terminal',solstat:'terminal',chgstat:'terminal',dashboard:'dashboard',discovery:'dashboard',chart:'dashboard',history:'dashboard',lab:'lab',portfolio:'lab',orders:'lab',limits:'lab',equitystat:'lab',ticket:'lab',ticketLive:'terminal'};
 const PAGE_LABEL={terminal:'Terminal',dashboard:'Dashboard',lab:'Strategy Lab'};
 const PAGE_IDS=['terminal','dashboard','lab'];
 function pageLoad(){try{const p=localStorage.getItem(PAGE_KEY);if(PAGE_IDS.includes(p))return p;}catch(_){}return 'terminal';}
@@ -4183,11 +4190,18 @@ bindWalletUi();
 function execPathHtml(mode){
   const quoteRow='<div class="walletrow"><span>Swap quotes</span><strong>live, indicative</strong></div><div class="sub" style="margin:2px 0 8px">Live quotes on the Raydium page — indicative until you sign. You sign every transaction in your wallet.</div>';
   const custodyRow='<div class="walletrow"><span>Custody</span><strong>you hold it</strong></div><div class="sub" style="margin:2px 0 8px">This app never holds your keys or funds.</div>';
+  /* N5.16 (2026-10-25, A70, Carlos's direction): why the pairs table has several
+     SOL/USDC rows. Mode-independent — the panel sits on Terminal in both modes —
+     and the original rows above are untouched. No venue recommendation, no
+     "best price" claim: the table's own liquidity and 24H volume columns are the
+     evidence, and each row's N3.3 pool address + explorer links let a reader
+     verify the pool behind it. */
+  const pairsExplainer='<div class="walletrow"><span>Why several SOL/USDC rows?</span><strong>separate pools</strong></div><div class="sub" style="margin:2px 0 8px">Each row of the market-pairs table is a SEPARATE liquidity pool on a separate exchange (DEX) — not the same listing repeated. Each pool prices from its own reserves, so the same pair shows different prices across rows. Each pool has its own depth, so the same order size moves the price by a different amount in each pool, and each pool charges its own fee. Every row trades the same wrapped SOL mint, so the token you receive is identical — but the deal is not: price, price impact, and fee are per-pool. The table\'s own liquidity and 24H volume columns are the evidence; each row\'s pool address and explorer links let you verify the pool behind it.</div>';
   const footer='<div class="sub" style="margin-top:10px">Prototype — execution architecture subject to change.</div>';
   if(mode==='live'){
-    return '<div class="walletrow"><span>Live mode</span><strong>wallet-signed</strong></div><div class="sub" style="margin:2px 0 8px">Every order shows the review sheet before anything is signed. You sign every transaction in your wallet; the app never holds your keys or funds.</div>'+quoteRow+footer;
+    return '<div class="walletrow"><span>Live mode</span><strong>wallet-signed</strong></div><div class="sub" style="margin:2px 0 8px">Every order shows the review sheet before anything is signed. You sign every transaction in your wallet; the app never holds your keys or funds.</div>'+quoteRow+pairsExplainer+footer;
   }
-  return '<div class="walletrow"><span>Paper mode</span><strong>simulated</strong></div><div class="sub" style="margin:2px 0 8px">Simulated in your browser — no blockchain transaction is sent. Reset anytime from the Paper portfolio panel.</div>'+quoteRow+custodyRow+footer;
+  return '<div class="walletrow"><span>Paper mode</span><strong>simulated</strong></div><div class="sub" style="margin:2px 0 8px">Simulated in your browser — no blockchain transaction is sent. Reset anytime from the Paper portfolio panel.</div>'+quoteRow+custodyRow+pairsExplainer+footer;
 }
 function renderExecPath(){const el=$('execPathBody');if(el)el.innerHTML=execPathHtml(ticketMode);}
 renderExecPath(); /*__N47_EXECPATH_END__*/
