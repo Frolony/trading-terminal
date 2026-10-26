@@ -4089,6 +4089,153 @@ fn main() {
     assert_eq!(i64::from_le_bytes(es12f.data[96..104].try_into().unwrap()), 31_608_400i64, "schedule last_block_time moved during slice 12");
     assert_eq!(mollusk.sysvars.clock.unix_timestamp, 37_003_600i64, "clock not 37,003,600 after slice 12 (transition 21 lifecycle close)");
 
+    // ---- Slice 13: W3.2 re-expression, part 5 — fee-flow edge cases under the single 73 bps stream (D-5) ----
+    // The design (§4.2) says the 73 bps fee rides the venue flows in the compose layer and
+    // `collect_fees` reconciles the window's collected total against the declared total; it does
+    // NOT say any current instruction skims a fee. The program today matches that negative half
+    // exactly: FEE_PPM = 7_300 is the only fee constant, no value-moving handler adds a fee term
+    // to any amount, and the only FeeVault write anywhere is initialize_treasury zeroing
+    // collected_raw. This slice proves the negative half on the chain instead of asserting it:
+    // (a) a second real deposit credits EXACTLY the transferred amount — had a 73 bps fee been
+    // skimmed at funding, a 10,000,000 deposit would credit 9,927,000, not 10,000,000 — and a
+    // mid-window deposit does not inflate the current window's snapshot or stock (the caps read
+    // the period-start snapshot, never the live total); (b) an all-accrued exit takes no penalty
+    // and no fee: accrued consumed, position untouched, stock debited by exactly the gross
+    // amount; (c) an all-excess exit's penalty is exactly the flat 13% (130,000 on 1,000,000),
+    // because can_exit computes (excess * PENALTY_PPM / PPM, amount - penalty) with no FEE_PPM
+    // term anywhere in it — the state proves the gross/position accounting, the formula proves
+    // the paid figure, and neither admits a second skim; (d) FeeVault collected_raw is still 0
+    // after every value move. That last read is stated, not passed off: the POSITIVE half of the
+    // fee flow — collection and reconciliation — is unbuilt until the remaining §4.2
+    // `collect_fees` row lands, so the 73 bps income identity has no on-chain realization yet
+    // and the fee-flow class is only half re-expressed after this slice. As in every slice,
+    // deposit moves real tokens (SPL CPI) while exit here is bookkeeping, not token movement.
+    // (a) second deposit, 10,000,000 raw, on the slice-12 chain (source holds 40,000,000 after
+    // slice 7; the vault already exists, so no vault-create CPI runs this time).
+    let mut data13a = disc("deposit");
+    data13a.extend_from_slice(&10_000_000u64.to_le_bytes());
+    let ix13a = Instruction::new_with_bytes(
+        program_id,
+        &data13a,
+        vec![
+            AccountMeta::new(treasury_state, false),
+            AccountMeta::new(depositor, true),
+            AccountMeta::new_readonly(mint, false),
+            AccountMeta::new(source_key, false),
+            AccountMeta::new(vault, false),
+            AccountMeta::new_readonly(token_program_id, false),
+            AccountMeta::new_readonly(rent_id, false),
+            AccountMeta::new_readonly(system_id, false),
+        ],
+    );
+    let (next, cu) = run(&mollusk, "deposit:13fee_exact", &ix13a, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({
+        "instruction": "deposit:13fee_exact",
+        "cu": cu,
+        "result": "Success",
+        "note": "slice-13 fee-flow probe (D-5): second real SPL deposit, 10,000,000 raw — credits TreasuryState by exactly 10,000,000 (a 73 bps skim at funding would credit 9,927,000), vault and source conserve exactly, FeeVault collected_raw stays 0; baseline (no §2.2 EST exists for deposit)",
+    }));
+    let ts13a = accounts.iter().find(|(k, _)| *k == treasury_state).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(ts13a.data[8..16].try_into().unwrap()), 70_000_000u64, "TreasuryState total not 70,000,000 after deposit:13fee_exact (60,000,000 + exactly 10,000,000, no fee skim)");
+    assert_eq!(u64::from_le_bytes(ts13a.data[16..24].try_into().unwrap()), 70_000_000u64, "TreasuryState cash not 70,000,000 after deposit:13fee_exact");
+    assert_eq!(u64::from_le_bytes(ts13a.data[56..64].try_into().unwrap()), 15u64, "window_count moved during deposit:13fee_exact");
+    let va13a = accounts.iter().find(|(k, _)| *k == vault).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(va13a.data[64..72].try_into().unwrap()), 70_000_000u64, "vault token amount not 70,000,000 after deposit:13fee_exact");
+    let sa13a = accounts.iter().find(|(k, _)| *k == source_key).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(sa13a.data[64..72].try_into().unwrap()), 30_000_000u64, "source token amount not 30,000,000 after deposit:13fee_exact (conservation: 40,000,000 - 10,000,000)");
+    let fv13a = accounts.iter().find(|(k, _)| *k == fee_vault).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(fv13a.data[8..16].try_into().unwrap()), 0u64, "FeeVault collected_raw moved during deposit:13fee_exact (no instruction collects fees yet)");
+    let ws14_13a = accounts.iter().find(|(k, _)| *k == window_state_14).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(ws14_13a.data[16..24].try_into().unwrap()), 60_000_000u64, "window 14 snapshot inflated by mid-window deposit:13fee_exact (caps read the period-start snapshot, never the live total)");
+    assert_eq!(u64::from_le_bytes(ws14_13a.data[64..72].try_into().unwrap()), 10_000_000u64, "window 14 exit stock moved during deposit:13fee_exact");
+    // (b) holder 27 exits the slice-12 tranche at par: accrued 1,000,000 consumed, penalty 0,
+    // position untouched, stock 10,000,000 -> 9,000,000, FeeVault still 0.
+    let mut data13b = disc("exit");
+    data13b.extend_from_slice(&7u64.to_le_bytes());
+    data13b.extend_from_slice(&14u64.to_le_bytes());
+    data13b.extend_from_slice(&1_000_000u64.to_le_bytes());
+    let ix13b = Instruction::new_with_bytes(
+        program_id,
+        &data13b,
+        vec![
+            AccountMeta::new(holder_27, true),
+            AccountMeta::new_readonly(transition7, false),
+            AccountMeta::new(window_state_14, false),
+            AccountMeta::new(holder_record_27_14, false),
+        ],
+    );
+    let (next, cu) = run(&mollusk, "exit:13accrued_par", &ix13b, &accounts);
+    accounts = next;
+    let gate13 = if (3_500..=14_000).contains(&cu) { "pass" } else { "DESIGN-FINDING" };
+    measured.push(serde_json::json!({
+        "instruction": "exit:13accrued_par",
+        "cu": cu,
+        "result": "Success",
+        "note": "slice-13 GATED fee-flow probe (D-5): holder 27 exits the slice-12 tranche 1,000,000 at par on Committed window flow transition 7, window 14 — all-accrued exit takes neither penalty nor fee: accrued consumed, position stays 5,000,000, stock debited by exactly the gross amount",
+        "design_estimate_cu": "7000",
+        "gate_2x_band_cu": "3500-14000",
+        "gate": gate13,
+    }));
+    let hr13b = accounts.iter().find(|(k, _)| *k == holder_record_27_14).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(hr13b.data[64..72].try_into().unwrap()), 0u64, "holder 27 accrued not consumed by exit:13accrued_par");
+    assert_eq!(u64::from_le_bytes(hr13b.data[56..64].try_into().unwrap()), 5_000_000u64, "holder 27 position moved during exit:13accrued_par (an all-accrued exit takes no penalty and no fee)");
+    let ws14_13b = accounts.iter().find(|(k, _)| *k == window_state_14).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(ws14_13b.data[64..72].try_into().unwrap()), 9_000_000u64, "window 14 exit stock not 9,000,000 after exit:13accrued_par");
+    let fv13b = accounts.iter().find(|(k, _)| *k == fee_vault).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(fv13b.data[8..16].try_into().unwrap()), 0u64, "FeeVault collected_raw moved during exit:13accrued_par");
+    // (c) holder 27 exits 1,000,000 of pure excess: penalty exactly 13% (130,000, paid 870,000
+    // by the can_exit formula, which carries no FEE_PPM term), position 5,000,000 -> 4,000,000,
+    // stock 9,000,000 -> 8,000,000, FeeVault still 0. A second skim would have to live in the
+    // gate math; it does not — the only fee constant is never read by can_exit.
+    let mut data13c = disc("exit");
+    data13c.extend_from_slice(&7u64.to_le_bytes());
+    data13c.extend_from_slice(&14u64.to_le_bytes());
+    data13c.extend_from_slice(&1_000_000u64.to_le_bytes());
+    let ix13c = Instruction::new_with_bytes(
+        program_id,
+        &data13c,
+        vec![
+            AccountMeta::new(holder_27, true),
+            AccountMeta::new_readonly(transition7, false),
+            AccountMeta::new(window_state_14, false),
+            AccountMeta::new(holder_record_27_14, false),
+        ],
+    );
+    let (next, cu) = run(&mollusk, "exit:13excess_penalty", &ix13c, &accounts);
+    accounts = next;
+    let gate13 = if (3_500..=14_000).contains(&cu) { "pass" } else { "DESIGN-FINDING" };
+    measured.push(serde_json::json!({
+        "instruction": "exit:13excess_penalty",
+        "cu": cu,
+        "result": "Success",
+        "note": "slice-13 GATED fee-flow probe (D-5): holder 27 exits 1,000,000 of pure excess on Committed window flow transition 7, window 14 — penalty exactly the flat 13% (130,000; paid 870,000 by can_exit, which has no FEE_PPM term, so no second skim exists to take), position 5,000,000 -> 4,000,000",
+        "design_estimate_cu": "7000",
+        "gate_2x_band_cu": "3500-14000",
+        "gate": gate13,
+    }));
+    let hr13c = accounts.iter().find(|(k, _)| *k == holder_record_27_14).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(hr13c.data[64..72].try_into().unwrap()), 0u64, "holder 27 accrued moved during exit:13excess_penalty");
+    assert_eq!(u64::from_le_bytes(hr13c.data[56..64].try_into().unwrap()), 4_000_000u64, "holder 27 position not 4,000,000 after exit:13excess_penalty");
+    let ws14_13c = accounts.iter().find(|(k, _)| *k == window_state_14).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(ws14_13c.data[64..72].try_into().unwrap()), 8_000_000u64, "window 14 exit stock not 8,000,000 after exit:13excess_penalty");
+    // Final slice-13 state: the fee flow's negative half is proven, its positive half is not —
+    // FeeVault collected_raw is still 0 because collect_fees is unbuilt, and that is recorded
+    // as the carried gap, not hidden behind the passing probes.
+    let ts13f = accounts.iter().find(|(k, _)| *k == treasury_state).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(ts13f.data[8..16].try_into().unwrap()), 70_000_000u64, "TreasuryState total moved during slice 13");
+    assert_eq!(u64::from_le_bytes(ts13f.data[16..24].try_into().unwrap()), 70_000_000u64, "TreasuryState cash moved during slice 13");
+    assert_eq!(u64::from_le_bytes(ts13f.data[56..64].try_into().unwrap()), 15u64, "window_count moved during slice 13");
+    let ws13_13f = accounts.iter().find(|(k, _)| *k == window_state_13).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(ws13_13f.data[64..72].try_into().unwrap()), 4_000_000u64, "window 13 exit stock moved during slice 13");
+    let ws1_13f = accounts.iter().find(|(k, _)| *k == window_state_1).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(ws1_13f.data[64..72].try_into().unwrap()), 0u64, "window 1 exit stock moved during slice 13");
+    let es13f = accounts.iter().find(|(k, _)| *k == exit_schedule_1).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(es13f.data[72..80].try_into().unwrap()), 2u64, "schedule tranches_executed moved during slice 13");
+    assert_eq!(i64::from_le_bytes(es13f.data[96..104].try_into().unwrap()), 31_608_400i64, "schedule last_block_time moved during slice 13");
+    let fv13f = accounts.iter().find(|(k, _)| *k == fee_vault).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(fv13f.data[8..16].try_into().unwrap()), 0u64, "FeeVault collected_raw not 0 after slice 13 (collect_fees is unbuilt; a nonzero value here would mean an undocumented collection path)");
+
     let golden = serde_json::json!({
         "harness": "cu-golden-mollusk",
         "mollusk_svm": MOLLUSK_SVM_VERSION,
@@ -4096,8 +4243,8 @@ fn main() {
         "program_so_sha256": so_sha256,
         "token_program_id": TOKEN_PROGRAM_ID_STR,
         "token_program_so_sha256": token_elf_sha256,
-        "slice": 12,
-        "slice_note": "slices 1-8 as before (slice-5/6 refusal probes stand as the unfunded-chain record; slice-7 FUNDED chain: real SPL Token deposit credits TreasuryState 60,000,000, window 1 opens on the funded snapshot, borrow / exit / settle_default / schedule_whale_exit FIRST successes; slice-8 12-window walk: windows 2..13 each open on their own Settled treasury.window.v1 transition (transitions 9..20, parented in sequence), each on the funded snapshot (total 60,000,000, exit stock 10,000,000, FLAG 2,000,000), and the FIRST success measurement execute_whale_tranche (tranche 1 of 5, 2,000,000 raw, on Committed treasury.exit.v1 transition 8, creation window 1, execution window 13 >= lock_until 13), gated §2.2 ~7K (2x band 3,500-14,000)) + slice-9 W3.2 re-expression part 1: tranche-2 weekly cadence on the slice-8 chain — TrancheTooSoon refusals at the tranche-1 clock and at last_block_time + WEEK_SECS - 1, then tranche 2 of 5 (2,000,000 raw) SUCCESS at exactly last_block_time + WEEK_SECS (31,608,400), gated §2.2 ~7K; launch_stage2 unmeasured by design (ThresholdUnset, D-2) + slice-10 W3.2 re-expression part 2: blind-ape bulk exit (T11) on the funded chain — the whole-position order (23,500,000 raw) refuses ExitExceedsLiquidity under the D-10 hard bound (L = 10,000,000), the largest executable bulk exit (8,500,000 raw, the remaining window-1 stock) succeeds with the flat 13% penalty on the full excess (1,105,000 penalty, 7,395,000 paid), and a further window-1 exit refuses ExitStockExhausted with aggregate window-1 exits exactly at L + slice-11 W3.2 re-expression part 3: default-as-exit (T10) on twin holders in window 13 (position 10,000,000 each) — borrow above the cap refuses LoanExceedsPosition, the max loan 5,000,000 succeeds at the inclusive boundary of the 50%-of-position and book caps, pre-maturity settle_default refuses LoanNotMatured, at-maturity settle_default succeeds (position 10,000,000 -> 5,000,000, skip flag set), and the PROBE: pay_tranche AFTER the default SUCCEEDS despite skip_next_dividend set, because can_pay_tranche takes no skip argument — the forfeiture half of T10 is unenforced on the program today, the one-cycle ledgers come out EQUAL (11,000,000 each), and T10 is NOT claimed re-expressed until the carried skip-enforcement item lands; window 13 exit stock ends 4,000,000, clock ends 36,792,400 + slice-12 W3.2 re-expression part 4: cohort-timing at window boundaries (D-11) — enroll into past window 12 refuses NotCurrentWindow, zero-position enroll into current window 13 refuses InvalidPosition, a double enroll in window 13 refuses at the account layer (one record per holder per window), a current-window-13 enroll succeeds (cohort 1); then the boundary is crossed for real (Settled transition 21 opens window 14, window_count 15): the just-closed window 13 now refuses NotCurrentWindow, a window-14 enroll succeeds (cohort 2), a future window-15 enroll refuses at the account layer (no window account exists yet), and the new cohort's pay_tranche 1,000,000 succeeds on its own slot (14 % 12 = 2), gated §2.2 ~7K; window 13 stock ends 4,000,000, window 14 stock 10,000,000, clock ends 37,003,600",
+        "slice": 13,
+        "slice_note": "slices 1-8 as before (slice-5/6 refusal probes stand as the unfunded-chain record; slice-7 FUNDED chain: real SPL Token deposit credits TreasuryState 60,000,000, window 1 opens on the funded snapshot, borrow / exit / settle_default / schedule_whale_exit FIRST successes; slice-8 12-window walk: windows 2..13 each open on their own Settled treasury.window.v1 transition (transitions 9..20, parented in sequence), each on the funded snapshot (total 60,000,000, exit stock 10,000,000, FLAG 2,000,000), and the FIRST success measurement execute_whale_tranche (tranche 1 of 5, 2,000,000 raw, on Committed treasury.exit.v1 transition 8, creation window 1, execution window 13 >= lock_until 13), gated §2.2 ~7K (2x band 3,500-14,000)) + slice-9 W3.2 re-expression part 1: tranche-2 weekly cadence on the slice-8 chain — TrancheTooSoon refusals at the tranche-1 clock and at last_block_time + WEEK_SECS - 1, then tranche 2 of 5 (2,000,000 raw) SUCCESS at exactly last_block_time + WEEK_SECS (31,608,400), gated §2.2 ~7K; launch_stage2 unmeasured by design (ThresholdUnset, D-2) + slice-10 W3.2 re-expression part 2: blind-ape bulk exit (T11) on the funded chain — the whole-position order (23,500,000 raw) refuses ExitExceedsLiquidity under the D-10 hard bound (L = 10,000,000), the largest executable bulk exit (8,500,000 raw, the remaining window-1 stock) succeeds with the flat 13% penalty on the full excess (1,105,000 penalty, 7,395,000 paid), and a further window-1 exit refuses ExitStockExhausted with aggregate window-1 exits exactly at L + slice-11 W3.2 re-expression part 3: default-as-exit (T10) on twin holders in window 13 (position 10,000,000 each) — borrow above the cap refuses LoanExceedsPosition, the max loan 5,000,000 succeeds at the inclusive boundary of the 50%-of-position and book caps, pre-maturity settle_default refuses LoanNotMatured, at-maturity settle_default succeeds (position 10,000,000 -> 5,000,000, skip flag set), and the PROBE: pay_tranche AFTER the default SUCCEEDS despite skip_next_dividend set, because can_pay_tranche takes no skip argument — the forfeiture half of T10 is unenforced on the program today, the one-cycle ledgers come out EQUAL (11,000,000 each), and T10 is NOT claimed re-expressed until the carried skip-enforcement item lands; window 13 exit stock ends 4,000,000, clock ends 36,792,400 + slice-12 W3.2 re-expression part 4: cohort-timing at window boundaries (D-11) — enroll into past window 12 refuses NotCurrentWindow, zero-position enroll into current window 13 refuses InvalidPosition, a double enroll in window 13 refuses at the account layer (one record per holder per window), a current-window-13 enroll succeeds (cohort 1); then the boundary is crossed for real (Settled transition 21 opens window 14, window_count 15): the just-closed window 13 now refuses NotCurrentWindow, a window-14 enroll succeeds (cohort 2), a future window-15 enroll refuses at the account layer (no window account exists yet), and the new cohort's pay_tranche 1,000,000 succeeds on its own slot (14 % 12 = 2), gated §2.2 ~7K; window 13 stock ends 4,000,000, window 14 stock 10,000,000, clock ends 37,003,600 + slice-13 W3.2 re-expression part 5: fee-flow edge cases under the single 73 bps stream (D-5) — a second real deposit 10,000,000 credits TreasuryState by exactly 10,000,000 (a funding-time skim would credit 9,927,000) with vault/source conserving exactly and FeeVault collected_raw still 0, and a mid-window deposit does not inflate window 14's snapshot or stock; holder 27's all-accrued exit 1,000,000 takes neither penalty nor fee (position stays 5,000,000, stock 10,000,000 -> 9,000,000) and a further 1,000,000 all-excess exit carries exactly the flat 13% penalty (position 5,000,000 -> 4,000,000, stock 9,000,000 -> 8,000,000, can_exit has no FEE_PPM term so no second skim exists); the negative half of the fee flow is proven, but the positive half — collection and reconciliation — is NOT: FeeVault collected_raw is still 0 because collect_fees is unbuilt, and the 73 bps income identity has no on-chain realization until that remaining §4.2 row lands",
         "clock": {"phase_a_unix_timestamp": NOW0, "planning_window_s": PLANNING_WINDOW, "phase_b_unix_timestamp": NOW1},
         "instructions": measured,
     });

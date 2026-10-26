@@ -1,18 +1,14 @@
 #!/usr/bin/env bash
-# W4.3 CU golden-test harness (mollusk path). Executes the slice-12
-# chain (slices 1-11 as before, plus the W3.2 re-expression part 4:
-# cohort-timing at window boundaries (D-11) — past-window enroll
-# refused (NotCurrentWindow), zero-position enroll refused
-# (InvalidPosition), double enroll refused at the account layer
-# (system create_account 0x0 on the existing record), current
-# window 13 enroll succeeds (cohort 1), then the boundary is
-# crossed for real (Settled transition 21 opens window 14): the
-# just-closed window 13 now refuses (NotCurrentWindow), window 14
-# enroll succeeds (cohort 2), future window 15 enroll refused at
-# the account layer (AccountNotInitialized 3012 — no window account
-# exists yet), and the new cohort's pay_tranche 1,000,000 succeeds
-# on its own slot, gated against design §2.2 ~7K CU, 2x band
-# 3,500-14,000) against the already-built program .so
+# W4.3 CU golden-test harness (mollusk path). Executes the slice-13
+# chain (slices 1-12 as before, plus the W3.2 re-expression part 5:
+# fee-flow edge cases under the single 73 bps stream (D-5) — a
+# second real deposit 10,000,000 credits TreasuryState by exactly
+# 10,000,000 (no funding-time skim; FeeVault collected_raw stays 0)
+# without inflating window 14's snapshot or stock, holder 27's
+# all-accrued exit 1,000,000 takes neither penalty nor fee, and a
+# further all-excess exit 1,000,000 carries exactly the flat 13%
+# penalty, gated against design §2.2 ~7K CU, 2x band 3,500-14,000)
+# against the already-built program .so
 # (build it first: `anchor build` from Kernel/treasury-program/) and
 # writes ../cu-golden-mollusk.json. No validator, no network, no real funds.
 # The keys below are throwaway local-test keys, never real secrets.

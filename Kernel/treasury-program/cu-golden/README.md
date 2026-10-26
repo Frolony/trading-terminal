@@ -699,15 +699,45 @@ cannot collect a window-14 slot by the same construction: its
 record is PDA-bound to window 13, so no cross-window payout
 address exists to attempt.
 
+## Slice 13: W3.2 re-expression, part 5 — fee-flow edge cases under the single 73 bps stream (D-5) (2026-10-26)
+
+The design (§4.2) says the 73 bps fee rides the venue flows in the compose layer and
+`collect_fees` reconciles the window's collected total against the declared total; it does
+NOT say any current instruction skims a fee. The program matches that negative half
+exactly: `FEE_PPM = 7_300` is the only fee constant, no value-moving handler adds a fee
+term to any amount, and the only FeeVault write anywhere is `initialize_treasury` zeroing
+`collected_raw`. This slice proves the negative half on the slice-12 chain (window_count
+15, current window 14, clock 37,003,600, window 14 snapshot 60,000,000 / stock 10,000,000,
+Committed window-flow transition 7 still authorizing executions) instead of asserting it:
+
+| instruction | CU | result |
+|---|---|---|
+| `deposit:13fee_exact` (second real deposit, 10,000,000 raw) | 9,649 | Success, baseline — TreasuryState total and cash 60,000,000 → 70,000,000 by exactly the transferred amount (a funding-time 73 bps skim would credit 9,927,000), vault token amount 60,000,000 → 70,000,000, source 40,000,000 → 30,000,000, FeeVault `collected_raw` still 0; window 14 snapshot and stock UNCHANGED by the mid-window deposit (caps read the period-start snapshot, never the live total); lower than slice-7 deposit 13,944 because the vault already exists, so no vault-create CPI runs |
+| `exit:13accrued_par` (holder 27, 1,000,000, all accrued) | 10,608 | Success, gate PASS — accrued consumed, position stays 5,000,000, stock 10,000,000 → 9,000,000, FeeVault still 0; an all-accrued exit takes neither penalty nor fee (1 CU above the exit family's 10,607 — the same 1-CU repeat class as slices 10–12) |
+| `exit:13excess_penalty` (holder 27, 1,000,000, all excess) | 10,607 | Success, gate PASS — penalty exactly the flat 13% (130,000; paid 870,000 by `can_exit`, which computes `(excess * PENALTY_PPM / PPM, amount - penalty)` with no `FEE_PPM` term, so no second skim exists to take), position 5,000,000 → 4,000,000, stock 9,000,000 → 8,000,000, FeeVault still 0 |
+
+Stated, not passed off: the POSITIVE half of the fee flow is unbuilt. FeeVault
+`collected_raw` is still 0 after every value move in this slice because `collect_fees`
+(the remaining §4.2 row) does not exist yet — so the 73 bps income identity has no
+on-chain realization, and the fee-flow class is only half re-expressed after this slice:
+no double skim is possible today, and no fee income is collected either. That gap rides
+with the `collect_fees` row, not hidden behind these passing probes. Final state: T and
+cash 70,000,000, window_count 15, window 14 snapshot 60,000,000 / stock 8,000,000, window
+13 stock 4,000,000, window 1 stock 0, whale schedule untouched (2 blocks,
+last_block_time 31,608,400), clock 37,003,600. Golden file 278 entries: all 275 slice-12
+entries reproduce exactly (program .so sha unchanged, `82759c51…`). No §2.2 revision:
+both gated exits confirm the exit family's figure within 1 CU; deposit has no §2.2 EST.
+As in every slice, `exit` here is bookkeeping, not token movement; `deposit` moves real
+tokens via the SPL CPI.
+
 ## Next slices
 
 Queue head, continued: the W3.2 adversarial suite re-expressed against
-the program's interface with measured CU per instruction — next parts
-are the engine-sim adversarial classes on the funded chain
-(cohort-timing at window boundaries, fee-flow edge cases under the
-single 73 bps stream), then the remaining §4.2 rows (reinvest,
-collect_fees) and the carried Part B4 items in roadmap order
-(including the skip-enforcement item this slice confirmed open).
+the program's interface with measured CU per instruction — next the
+remaining §4.2 rows (reinvest, collect_fees — the latter completes the
+fee-flow class this slice half-proved) and the carried Part B4 items in
+roadmap order (including the skip-enforcement item slice 11 confirmed
+open, and the open_window source-transition consumption fix).
 
 Optimization pass step 2 (ATTEMPTED 2026-10-25, BLOCKED, REVERTED —
 NOT blocked by the funding decision, blocked by the toolchain):
