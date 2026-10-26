@@ -1195,7 +1195,8 @@ function pairsPriceHeadText(){return settings&&settings.quoteCurrency==='SOL'?'P
 // existing marketPoll cadence for now).
 let gtPricesByPool={},gtReq=0; // poolAddress -> GT USD price, or null when GT does not know the pool / the cycle failed; absent = not yet fetched this cycle
 function gtMultiUrl(addresses){return 'https://api.geckoterminal.com/api/v2/networks/solana/pools/multi/'+addresses.map(a=>encodeURIComponent(a)).join(',');} // one call for all rendered rows, never per-row
-function gtParseMulti(j){const out={},arr=((j||{}).data||[]);if(!Array.isArray(arr))return out;arr.forEach(it=>{const at=(it||{}).attributes||{};let addr=typeof at.address==='string'&&at.address?at.address:'';if(!addr&&typeof it.id==='string'&&it.id.indexOf('solana_')===0)addr=it.id.slice(7);if(!isPlausiblePoolAddress(addr))return;const v=Number(at.base_token_price_usd);out[addr]=(Number.isFinite(v)&&v>0)?v:null;});return out;}
+// N3.9 (A84): orientation guard, GT side — base_token_price_usd prices GT's own base token, so a GT price counts only when relationships.base_token.data.id (solana_<mint>) equals the search card's base mint. A mismatched or absent base id is skipped (pools/multi carries the relationship — verified live 2026-10-26 on the orca SOL/USDC pool — so absence is anomalous, not a shape to fail open on). Without an expectation map (the N3.5 pairs-table caller) behaviour is unchanged.
+function gtParseMulti(j,expectedBaseByPool){const out={},arr=((j||{}).data||[]);if(!Array.isArray(arr))return out;arr.forEach(it=>{const at=(it||{}).attributes||{};let addr=typeof at.address==='string'&&at.address?at.address:'';if(!addr&&typeof it.id==='string'&&it.id.indexOf('solana_')===0)addr=it.id.slice(7);if(!isPlausiblePoolAddress(addr))return;if(expectedBaseByPool&&Object.prototype.hasOwnProperty.call(expectedBaseByPool,addr)){const exp=expectedBaseByPool[addr];const rel=it&&it.relationships&&it.relationships.base_token&&it.relationships.base_token.data&&it.relationships.base_token.data.id;const relMint=(typeof rel==='string'&&rel.indexOf('solana_')===0)?rel.slice(7):rel;if(typeof relMint!=='string'||relMint!==exp)return;}const v=Number(at.base_token_price_usd);out[addr]=(Number.isFinite(v)&&v>0)?v:null;});return out;}
 function gtDeltaPct(ds,gt){const a=Number(ds),b=Number(gt);if(!Number.isFinite(a)||!Number.isFinite(b)||a<=0||b<=0)return null;return (b-a)/a*100;}
 function pairDualPriceHtml(p){ // N3.5 price cell: DS price + GT comparison + signed delta, both QC-aware via formatPrice
   const ds=formatPrice(p.priceUsd);
@@ -2681,7 +2682,8 @@ const DISC_SPARK_TTL_MS=600000;
 let discDsPricesByPool={},discDsReq=0;
 let discGtPricesByPool={},discGtSearchReq=0;
 function discDsPairsUrl(addresses){return 'https://api.dexscreener.com/latest/dex/pairs/solana/'+addresses.map(a=>encodeURIComponent(a)).join(',');}
-function discDsParsePairs(j){const out={},arr=((j||{}).pairs||[]);if(!Array.isArray(arr))return out;arr.forEach(it=>{const addr=it&&it.pairAddress;if(!isPlausiblePoolAddress(addr))return;const v=Number(it.priceUsd);out[addr]=(Number.isFinite(v)&&v>0)?v:null;});return out;}
+// N3.9 (A84): orientation guard — a DS price counts only when the DS pair's baseToken address equals the trending row's base mint (the expected map). A mismatched base (e.g. DS prices LAUNCH while the GT row prices STONK) or a DS pair carrying no baseToken is skipped, so the cell renders DS — with no delta instead of a false cross-check. When no expectation is known for a pool (no map entry), the old accept behaviour stands — the product's trending rows always carry a mint, so the guard is live on the product path.
+function discDsParsePairs(j,expectedBaseByPair){const out={},arr=((j||{}).pairs||[]);if(!Array.isArray(arr))return out;arr.forEach(it=>{const addr=it&&it.pairAddress;if(!isPlausiblePoolAddress(addr))return;if(expectedBaseByPair&&Object.prototype.hasOwnProperty.call(expectedBaseByPair,addr)){const exp=expectedBaseByPair[addr];const base=it&&it.baseToken&&it.baseToken.address;if(typeof base!=='string'||base!==exp)return;}const v=Number(it.priceUsd);out[addr]=(Number.isFinite(v)&&v>0)?v:null;});return out;}
 function discDualPriceHtml(ds,gt){ // N3.8 cell: same shape as pairDualPriceHtml, both sides QC-aware; a missing side renders '—' and drops the delta
   const dsOk=Number.isFinite(Number(ds))&&Number(ds)>0,gtOk=Number.isFinite(Number(gt))&&Number(gt)>0;
   const d=(dsOk&&gtOk)?gtDeltaPct(ds,gt):null;
@@ -2695,7 +2697,8 @@ async function discFetchDsPrices(rows){ // N3.8 trending satellite: one DexScree
     const controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),10000);
     let j;try{const r=await fetch(discDsPairsUrl(addrs),{signal:controller.signal});if(!r.ok)throw Error('DexScreener pairs HTTP '+r.status);j=await r.json();}finally{clearTimeout(timeout);}
     if(my!==discDsReq)return;
-    const parsed=discDsParsePairs(j);
+    const expectedBaseByPair={};(rows||[]).forEach(r=>{if(r&&isPlausiblePoolAddress(r.pairAddress)&&typeof r.mint==='string'&&r.mint)expectedBaseByPair[r.pairAddress]=r.mint;});
+    const parsed=discDsParsePairs(j,expectedBaseByPair); // N3.9: trending rows state their GT base mint; the parse enforces it
     addrs.forEach(a=>{discDsPricesByPool[a]=Object.prototype.hasOwnProperty.call(parsed,a)?parsed[a]:null;});
   }catch(e){if(my!==discDsReq)return;console.error('Discovery DexScreener pairs fetch failed',e);} // DS failure is not a feed failure: GT prices and the table stand
   if(my!==discDsReq)return;
@@ -2709,7 +2712,8 @@ async function discFetchGtSearchPrices(rows){ // N3.8 search satellite: the N3.5
     const controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),10000);
     let j;try{const r=await fetch(gtMultiUrl(addrs),{signal:controller.signal});if(!r.ok)throw Error('GeckoTerminal pools HTTP '+r.status);j=await r.json();}finally{clearTimeout(timeout);}
     if(my!==discGtSearchReq)return;
-    const parsed=gtParseMulti(j);
+    const expectedBaseByPool={};(rows||[]).forEach(r=>{const b=r&&r.baseToken&&r.baseToken.address;if(r&&isPlausiblePoolAddress(r.pairAddress)&&typeof b==='string'&&b)expectedBaseByPool[r.pairAddress]=b;});
+    const parsed=gtParseMulti(j,expectedBaseByPool); // N3.9: search cards state their DS base mint; the parse enforces it against GT's base_token relationship
     addrs.forEach(a=>{discGtPricesByPool[a]=Object.prototype.hasOwnProperty.call(parsed,a)?parsed[a]:null;});
   }catch(e){if(my!==discGtSearchReq)return;console.error('Discovery GeckoTerminal pools fetch failed',e);} // GT failure is not a feed failure: DS prices and the table stand
   if(my!==discGtSearchReq)return;
