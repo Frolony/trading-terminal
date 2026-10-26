@@ -1518,12 +1518,30 @@ const LAYOUT_KEY='gecko-terminal:layout-v1';
    v1/v2 stores unhide all ten newly-enrolled ids (none could have been
    hidden deliberately before enrollment); v3 stores unhide ONLY the four
    part-2 ids (the six were enrollable in v3, so a v3 hide of one of them
-   is a deliberate user choice and must survive); v4 stores load natively. */
-const LAYOUT_VERSION=4;
+   is a deliberate user choice and must survive); v4 stores load natively.
+   N5.20 (2026-10-26, A79): LAYOUT_VERSION 5 — stored workspaces unhide
+   discoveryLab ONCE at migration. The N5.19 ship enrolled discoveryLab at v4
+   with the N5.4 hide-on-arrival default and no versioned unhide, so a saved
+   workspace opened the Strategy Lab without the panel its owner had asked
+   for — hidden read as missing. Unlike the N5.9 ids, discoveryLab was never
+   a visible section before enrollment: it arrived hidden, so no
+   pre-migration hidden entry can be a deliberate hide of visible content,
+   and every migrating store (v1–v4) unhides it once. A hide made AFTER this
+   migration is saved at v5 and loads natively, so it survives every later
+   load (same one-time discipline as N5.9). Standing rule, going forward:
+   a panel shipped at the user's explicit request enters stored workspaces
+   visible via its ship's migration; the N5.4 hide-on-arrival rule remains
+   the default only for unrequested panels. sanitizeWorkspace itself is
+   unchanged — it still appends discoveryLab to a stored order (place
+   falling back to PANEL_HOME maincol) and defaults it hidden; only the
+   loadLayout migration removes it from hidden, once. */
+const LAYOUT_VERSION=5;
 /* N5.9 ids unhidden by the v1/v2 migration (see above). */
 const N59_MIGRATED_IDS=['lab','discovery','portfolio','orders','limits','execpath'];
 /* N5.9 part-2 ids: unhidden by the v1/v2/v3 migrations (see above). */
 const N59B_MIGRATED_IDS=['history','solstat','chgstat','equitystat'];
+/* N5.20 id: unhidden by the v1/v2/v3/v4 → v5 migration (see above). */
+const N520_MIGRATED_IDS=['discoveryLab'];
 const ROOT_KEYS=['stats','maincol','sidecol'];
 /* N5.6: true home containers, grounded in the shipped DOM (the prep pack's
    "watchlist,dashboard → stats" line was a slip — dashboard ships in maincol).
@@ -1576,14 +1594,27 @@ function loadLayout(raw){
      LAYOUT_VERSION comment). A v3 store's hidden list is never rewritten.
      N5.9 part 2: v4 stores load natively; v1/v2 stores unhide all ten
      newly-enrolled ids; v3 stores unhide ONLY the four part-2 ids (a v3
-     hide of one of the six is a deliberate user choice and must survive). */
-  if(parsed&&(parsed.version===LAYOUT_VERSION||parsed.version===3||parsed.version===2||parsed.version===1)){
+     hide of one of the six is a deliberate user choice and must survive).
+     N5.20: v5 stores load natively; every migrating store (v1–v4) also
+     unhides discoveryLab once (see the LAYOUT_VERSION comment — it arrived
+     hidden, so no pre-migration hidden entry is a deliberate hide). The
+     version branches stay separate: a v4 store unhides ONLY discoveryLab,
+     so a v4 deliberate hide of an N5.9 id survives the v5 migration exactly
+     as a v3 hide of a part-1 id survived the v4 migration. */
+  /* N5.20: the v4 branch is explicit — bumping LAYOUT_VERSION to 5 must not
+     drop v4 stores from the gate (version===LAYOUT_VERSION alone would
+     cover only v5, and a v4 store falling through would lose its custom
+     workspaces to the built-ins fallback). */
+  if(parsed&&(parsed.version===LAYOUT_VERSION||parsed.version===4||parsed.version===3||parsed.version===2||parsed.version===1)){
     const migrate=parsed.version!==LAYOUT_VERSION;
     const migrateV1=parsed.version===1;
     custom=(Array.isArray(parsed.workspaces)?parsed.workspaces:[]).map(ws=>{
       const clean=sanitizeWorkspace(migrateV1?Object.assign({},ws,{place:migrateV1Place()}):ws);
       if(migrate){
-        const unhide=parsed.version===3?N59B_MIGRATED_IDS:N59_MIGRATED_IDS.concat(N59B_MIGRATED_IDS);
+        /* N5.20: version-aware unhide — v4 stores get ONLY discoveryLab (a v4
+           deliberate hide of an N5.9 id must survive); v3 stores get part-2
+           + discoveryLab; v1/v2 stores get all ten + discoveryLab. */
+        const unhide=parsed.version===4?N520_MIGRATED_IDS:parsed.version===3?N59B_MIGRATED_IDS.concat(N520_MIGRATED_IDS):N59_MIGRATED_IDS.concat(N59B_MIGRATED_IDS,N520_MIGRATED_IDS);
         clean.hidden=clean.hidden.filter(id=>!unhide.includes(id));
       }
       return clean;
