@@ -126,6 +126,7 @@ a.wrow{text-decoration:none}
 .review .rdetails{margin-top:2px}
 .review .rdetails summary{cursor:pointer;color:var(--muted);font-size:11px;padding:6px 0}
 [data-panel="ticket"].review-open .panelbody{max-height:calc(100vh - 140px);overflow-y:auto;overscroll-behavior:contain}
+[data-panel="ticketLive"].review-open .panelbody{max-height:calc(100vh - 140px);overflow-y:auto;overscroll-behavior:contain}
 /* N4.6 persistent trade history (2026-10-22): filter chips reuse .amounts/.on; rows expand inline. */
 .histrow{border-bottom:1px solid var(--rowline);padding:11px 2px;cursor:pointer}
 .histrow:last-child{border-bottom:0}
@@ -336,6 +337,7 @@ the brief outline flash marks the landing panel without touching its copy.*/
 <section class="panel" data-panel="discovery"><div class="panelhead" data-drag-handle><h2>Token discovery</h2><span class="eyebrow">DEXSCREENER SEARCH</span></div><div class="panelbody"><div class="searchrow"><input id="tokenSearch" placeholder="Search token, ticker or mint address" value="SOL"><button id="searchBtn">Search</button></div><div id="searchResults" class="results" data-testid="search-results"><div class="empty">Search live Solana pairs and add candidates to your watchlist.</div></div></div></section>
 </main><aside class="sidecol" data-layout-root data-root-key="sidecol">
 <section class="panel tradepanel" data-panel="ticket"><div class="panelhead" data-drag-handle><h2>Order ticket</h2><span class="pill">SIMULATED</span></div><div class="panelbody"><form class="tradeform" id="tradeForm"><div class="moderow"><div class="modelabel">Execution mode</div><div class="switchrow"><button type="button" id="paperModeBtn" class="active mode">Paper</button><button type="button" id="liveModeBtn">Live</button></div></div><div class="switchrow"><button type="button" id="buyBtn" class="active buy">Buy / Long</button><button type="button" id="sellBtn" class="sell">Sell</button></div><div class="field"><label>Trading pair</label><div class="pairbox"><strong id="ticketPairName">SOL / USDC</strong><small id="ticketPairMeta">Waiting for market data…</small></div></div><div class="field"><label>Order type</label><div class="switchrow"><button type="button" id="mktBtn" class="active buy">Market</button><button type="button" id="limBtn" class="sell">Limit</button></div></div><div id="limitFields" hidden><div class="field"><label>Limit price (per <span id="limitBaseSym">SOL</span>, in <span id="limitQuoteSym">USDC</span>)</label><div class="inputwrap"><input id="limitPrice" inputmode="decimal" aria-label="Limit price" placeholder="Waiting for live price…"><span id="limitSpotRef">spot</span></div><div class="amounts" id="limitPresets" style="margin-top:6px"><button type="button" data-lp="-10">−10%</button><button type="button" data-lp="-5">−5%</button><button type="button" data-lp="-1">−1%</button><button type="button" data-lp="1">+1%</button><button type="button" data-lp="5">+5%</button><button type="button" data-lp="10">+10%</button></div><div class="note" id="limitNote" style="text-align:left;margin-top:6px"></div></div><div class="field"><label>Expires</label><div class="amounts" id="expiryPresets"><button type="button" data-exp="1h">1 h</button><button type="button" data-exp="24h" class="on">24 h</button><button type="button" data-exp="7d">7 d</button><button type="button" data-exp="never">No expiry</button></div><label id="expiryAckWrap" hidden style="display:none;margin-top:8px;font-size:11px;color:var(--muted);align-items:center;gap:8px"><input type="checkbox" id="expiryAck" style="width:auto"> I understand this order stays open until filled or cancelled.</label></div><div class="note" style="text-align:left">Limit orders are simulated against the spot feed — fills are not instant and are not guaranteed. Paper only; nothing touches the chain.</div></div><div class="field"><label>Order size</label><div class="inputwrap"><input id="orderAmount" data-testid="order-size-input" type="number" min="0.0001" step="any" value="100" required><span id="amountUnit">USD</span></div></div><div class="amounts"><button type="button" data-amt="25">$25</button><button type="button" data-amt="100">$100</button><button type="button" data-amt="250">$250</button><button type="button" data-amt="max" data-testid="max-btn">MAX</button></div><div class="field"><label>Slippage tolerance</label><div class="amounts" id="slipPresets"><button type="button" data-slip="10">0.1%</button><button type="button" data-slip="50">0.5%</button><button type="button" data-slip="100">1.0%</button></div><div class="inputwrap" style="margin-top:6px"><input id="slippageInput" inputmode="numeric" aria-label="Custom slippage in basis points" placeholder="Custom (bps)"><span>bps</span></div><div class="note" style="text-align:left;margin-top:6px">Presets or custom, in basis points (50 bps = 0.50%). Allowed: 1&ndash;1000 bps (0.01%&ndash;10%). Shared with the /raydium/ page.</div></div><div class="walletrow"><span>Execution price</span><strong id="execPrice">$—</strong></div><div class="walletrow"><span>Estimated quantity</span><strong id="estQty">— SOL</strong></div><div class="walletrow"><span>Available USD</span><strong id="cashAvail">$10,000.00</strong></div><button class="primary" id="submitTrade" type="submit">Buy SOL · Paper</button><div class="note" id="ticketNote">No wallet connected · no real orders or funds</div><div id="reviewSheet" class="review" hidden></div></form></div></section>
+<section class="panel tradepanel" data-panel="ticketLive"><div class="panelhead" data-drag-handle><h2>Order ticket — Live</h2><span class="pill">LIVE · LOCKED</span></div><div class="panelbody"><form class="tradeform" id="tradeFormLive"><div class="moderow"><div class="modelabel">Execution mode</div><div class="switchrow"><span class="pill">LIVE</span></div></div><div class="note" style="text-align:left">Live instance — prices from real Raydium quotes, never the pairs-feed spot. Execution stays locked until the N4.4 pre-trade safety gate is cleared by a human; nothing here sends a transaction.</div><div class="switchrow"><button type="button" id="buyBtnLive" class="active buy">Buy / Long</button><button type="button" id="sellBtnLive" class="sell">Sell</button></div><div class="field"><label>Trading pair</label><div class="pairbox"><strong id="ticketPairNameLive">SOL / USDC</strong><small id="ticketPairMetaLive">Waiting for market data…</small></div></div><div class="field"><label>Order type</label><div class="switchrow"><button type="button" id="mktBtnLive" class="active buy">Market</button><button type="button" id="limBtnLive" class="sell">Limit</button></div></div><div id="limitFieldsLive" hidden><div class="field"><label>Limit price (per <span id="limitBaseSymLive">SOL</span>, in <span id="limitQuoteSymLive">USDC</span>)</label><div class="inputwrap"><input id="limitPriceLive" inputmode="decimal" aria-label="Limit price" placeholder="Waiting for live price…"><span id="limitSpotRefLive">spot</span></div><div class="amounts" id="limitPresetsLive" style="margin-top:6px"><button type="button" data-lp="-10">−10%</button><button type="button" data-lp="-5">−5%</button><button type="button" data-lp="-1">−1%</button><button type="button" data-lp="1">+1%</button><button type="button" data-lp="5">+5%</button><button type="button" data-lp="10">+10%</button></div><div class="note" id="limitNoteLive" style="text-align:left;margin-top:6px"></div></div><div class="field"><label>Expires</label><div class="amounts" id="expiryPresetsLive"><button type="button" data-exp="1h">1 h</button><button type="button" data-exp="24h" class="on">24 h</button><button type="button" data-exp="7d">7 d</button><button type="button" data-exp="never">No expiry</button></div><label id="expiryAckWrapLive" hidden style="display:none;margin-top:8px;font-size:11px;color:var(--muted);align-items:center;gap:8px"><input type="checkbox" id="expiryAckLive" style="width:auto"> I understand this order stays open until filled or cancelled.</label></div><div class="note" style="text-align:left">Live limit orders do not execute while live trading is locked (N4.4 gate).</div></div><div class="field"><label>Order size</label><div class="inputwrap"><input id="orderAmountLive" data-testid="order-size-input-live" type="number" min="0.0001" step="any" value="100" required><span id="amountUnitLive">USD</span></div></div><div class="amounts"><button type="button" data-amt="25">$25</button><button type="button" data-amt="100">$100</button><button type="button" data-amt="250">$250</button><button type="button" data-amt="max" data-testid="max-btn-live">MAX</button></div><div class="field"><label>Slippage tolerance</label><div class="amounts" id="slipPresetsLive"><button type="button" data-slip="10">0.1%</button><button type="button" data-slip="50">0.5%</button><button type="button" data-slip="100">1.0%</button></div><div class="inputwrap" style="margin-top:6px"><input id="slippageInputLive" inputmode="numeric" aria-label="Custom slippage in basis points" placeholder="Custom (bps)"><span>bps</span></div><div class="note" style="text-align:left;margin-top:6px">Presets or custom, in basis points (50 bps = 0.50%). Allowed: 1&ndash;1000 bps (0.01%&ndash;10%). Shared with the /raydium/ page.</div></div><div class="walletrow"><span>Execution price</span><strong id="execPriceLive">$—</strong></div><div class="walletrow"><span>Estimated quantity</span><strong id="estQtyLive">— SOL</strong></div><div class="walletrow"><span>Wallet balance</span><strong id="cashAvailLive">$10,000.00</strong></div><button class="primary" id="submitTradeLive" type="submit">Buy SOL · Live (locked)</button><div class="note" id="ticketNoteLive">Real Raydium quote · execution locked</div><button type="button" id="refreshLiveQuoteBtn" class="ghost" style="margin-top:6px">Refresh real quote</button><div id="reviewSheetLive" class="review" hidden></div></form></div></section>
 <section class="panel" data-panel="portfolio"><div class="panelhead" data-drag-handle><h2>Paper portfolio</h2><span class="eyebrow">LOCAL SESSION</span></div><div class="panelbody"><div class="walletrow"><span>Cash balance</span><strong id="cashBal" data-testid="paper-cash">$10,000.00</strong></div><div id="holdingsList" data-testid="holdings-list"><div class="empty">No paper positions yet.</div></div><div class="walletrow"><span>Position value</span><strong id="posValue">$0.00</strong></div><div class="walletrow"><span>Unrealized P/L</span><strong id="unrealized">$0.00</strong></div><button id="resetPaper" data-testid="reset-btn" style="margin-top:13px;width:100%;padding:8px;background:var(--panel);border:1px solid var(--line);color:var(--btntext);border-radius:7px;font-size:11px">Reset paper account</button></div></section>
 <section class="panel" data-panel="orders"><div class="panelhead" data-drag-handle><h2>Recent orders</h2><span class="eyebrow" id="orderCount">0 ORDERS</span></div><div id="orders" data-testid="orders-list"><div class="empty">Your simulated paper orders will appear here.</div></div></section>
 <section class="panel" data-panel="limits"><div class="panelhead" data-drag-handle><h2>Open limit orders</h2><span class="eyebrow" id="limitOpenCount">0 OPEN</span></div><div id="limitOpen"><div class="empty">No open limit orders. Create one from the Limit tab on the ticket.</div></div><div class="sub" style="padding:0 16px 12px">Simulated on the spot feed — fills are not instant and not guaranteed.</div></section>
@@ -975,10 +977,9 @@ function paintDashboard(force){
    page persists in its own key (N2.1 local persistence) and is restored at boot
    before applyLayoutBoot paints visibility. Cross-links that used to scroll now
    switch page first: dashboard movers and dashboard empty states land on the
-   ticket's page (Strategy Lab, the N5.14 default — a Carlos ticket-home ruling,
-   if it comes, amends PANEL_PAGE.ticket only). */
+   ticket's page (Strategy Lab, the N5.14 default — a Carlos ticket-home ruling (N5.15 duplicates it on Terminal as the Live instance)). */
 const PAGE_KEY='gecko-terminal:page-v1';
-const PANEL_PAGE={pairs:'terminal',watchlist:'terminal',execpath:'terminal',solstat:'terminal',chgstat:'terminal',dashboard:'dashboard',discovery:'dashboard',chart:'dashboard',history:'dashboard',lab:'lab',portfolio:'lab',orders:'lab',limits:'lab',equitystat:'lab',ticket:'lab'};
+const PANEL_PAGE={pairs:'terminal',watchlist:'terminal',execpath:'terminal',solstat:'terminal',chgstat:'terminal',dashboard:'dashboard',discovery:'dashboard',chart:'dashboard',history:'dashboard',lab:'lab',portfolio:'lab',orders:'lab',limits:'lab',equitystat:'lab',ticket:'lab',ticketLive:'terminal'};
 const PAGE_LABEL={terminal:'Terminal',dashboard:'Dashboard',lab:'Strategy Lab'};
 const PAGE_IDS=['terminal','dashboard','lab'];
 function pageLoad(){try{const p=localStorage.getItem(PAGE_KEY);if(PAGE_IDS.includes(p))return p;}catch(_){}return 'terminal';}
@@ -1016,7 +1017,7 @@ function dashMoverSelect(mint){
   const tok=(l.tokens||[]).find(x=>x.mint===mint);if(!tok)return;
   const e=wlEnrich(tok);
   selectTicketPair({baseToken:{address:tok.mint,symbol:tok.symbol,name:tok.name},quoteToken:{symbol:'USDC'},priceUsd:e.priceUsd,priceChange:{h24:e.change24h},dexId:'watchlist'});
-  setPage('lab'); /* N5.14: the ticket lives on the Strategy Lab page */
+  setPage('lab'); /* N5.14: the paper ticket lives on the Strategy Lab page (N5.15: the Live instance is on Terminal) */
   const p=panelEl('ticket');
   if(p)setTimeout(()=>{try{p.scrollIntoView({behavior:'smooth',block:'center'});}catch(_){}},80);
 }
@@ -1026,7 +1027,7 @@ function dashContentClick(ev){
   const mv=q('[data-mover]');
   if(mv){dashMoverSelect(mv.getAttribute('data-mover'));return;}
   if(q('[data-dash-empty-ticket]')){
-    setPage('lab'); /* N5.14: the ticket lives on the Strategy Lab page */
+    setPage('lab'); /* N5.14: the paper ticket lives on the Strategy Lab page (N5.15: the Live instance is on Terminal) */
     const p=panelEl('ticket');if(p)p.scrollIntoView({behavior:'smooth',block:'center'});
     const amt=$('orderAmount');if(amt)setTimeout(()=>{try{amt.focus();}catch(_){}},380);
     return;
@@ -1390,7 +1391,7 @@ function applySettingsBoot(){
 }
 /*__N52_LAYOUT_START__*/
 /* N5.2 customizable layout (2026-10-22): show/hide + reorder the desk panels
-   (N5.9: all 15 — chart, Strategy Lab, pairs, dashboard, discovery, ticket,
+   (N5.9: all 16 — chart, Strategy Lab, pairs, dashboard, discovery, ticket, ticketLive,
    portfolio, orders, limits, history, execpath, the three stat cards,
    watchlist card) and save named workspaces. Panels keep their
    home containers (main column / side column / header stats); N5.6 superseded
@@ -1431,21 +1432,21 @@ const ROOT_KEYS=['stats','maincol','sidecol'];
 /* N5.6: true home containers, grounded in the shipped DOM (the prep pack's
    "watchlist,dashboard → stats" line was a slip — dashboard ships in maincol).
    v1→v2 migration derives place from this map so existing arrangements survive. */
-/* N5.9: all 15 desk sections are panels (part 2 enrolls the last four).
+/* N5.9: all 16 desk sections are panels (part 2 enrolls the last four).
    PANEL_IDS order is the shipped order: it must stay consistent with the
    per-root shipped sequences (maincol: chart, lab, pairs, dashboard,
    discovery; sidecol: ticket, portfolio, orders, limits, history, execpath;
    stats: solstat, chgstat, equitystat, watchlist) or renderPanelPlacement's
    rank sort will reorder the page on boot. */
-const PANEL_HOME={chart:'maincol',lab:'maincol',pairs:'maincol',dashboard:'maincol',discovery:'maincol',ticket:'sidecol',portfolio:'sidecol',orders:'sidecol',limits:'sidecol',history:'sidecol',execpath:'sidecol',solstat:'stats',chgstat:'stats',equitystat:'stats',watchlist:'stats'};
-const PANEL_IDS=['chart','lab','pairs','dashboard','discovery','ticket','portfolio','orders','limits','history','execpath','solstat','chgstat','equitystat','watchlist'];
-const PANEL_LABELS={chart:'Chart',lab:'Strategy Lab',pairs:'Market pairs',dashboard:'Dashboard',discovery:'Token discovery',ticket:'Order ticket',portfolio:'Paper portfolio',orders:'Recent orders',limits:'Open limit orders',history:'Trade history',execpath:'Execution path',solstat:'SOL/USD stat',chgstat:'24H change stat',equitystat:'Paper equity stat',watchlist:'Watchlist card'};
+const PANEL_HOME={chart:'maincol',lab:'maincol',pairs:'maincol',dashboard:'maincol',discovery:'maincol',ticket:'sidecol',ticketLive:'maincol',portfolio:'sidecol',orders:'sidecol',limits:'sidecol',history:'sidecol',execpath:'sidecol',solstat:'stats',chgstat:'stats',equitystat:'stats',watchlist:'stats'};
+const PANEL_IDS=['chart','lab','pairs','dashboard','discovery','ticket','ticketLive','portfolio','orders','limits','history','execpath','solstat','chgstat','equitystat','watchlist'];
+const PANEL_LABELS={chart:'Chart',lab:'Strategy Lab',pairs:'Market pairs',dashboard:'Dashboard',discovery:'Token discovery',ticket:'Order ticket',ticketLive:'Order ticket — Live',portfolio:'Paper portfolio',orders:'Recent orders',limits:'Open limit orders',history:'Trade history',execpath:'Execution path',solstat:'SOL/USD stat',chgstat:'24H change stat',equitystat:'Paper equity stat',watchlist:'Watchlist card'};
 /* Pack §1.4: the Trader built-in matches the page's shipped order (chart first in the
    main column, ticket top of the side column); Watcher swaps pairs above chart and
    hides the ticket. */
 const BUILT_IN_WORKSPACES=Object.freeze([
-  {id:'builtin-trader',name:'Trader',builtIn:true,order:['dashboard','chart','lab','pairs','discovery','ticket','portfolio','orders','limits','history','execpath','solstat','chgstat','equitystat','watchlist'],hidden:['dashboard'],place:{chart:'maincol',lab:'maincol',pairs:'maincol',dashboard:'maincol',discovery:'maincol',ticket:'sidecol',portfolio:'sidecol',orders:'sidecol',limits:'sidecol',history:'sidecol',execpath:'sidecol',solstat:'stats',chgstat:'stats',equitystat:'stats',watchlist:'stats'}},
-  {id:'builtin-watcher',name:'Watcher',builtIn:true,order:['dashboard','pairs','lab','chart','discovery','ticket','portfolio','orders','limits','history','execpath','solstat','chgstat','equitystat','watchlist'],hidden:['ticket','dashboard'],place:{chart:'maincol',lab:'maincol',pairs:'maincol',dashboard:'maincol',discovery:'maincol',ticket:'sidecol',portfolio:'sidecol',orders:'sidecol',limits:'sidecol',history:'sidecol',execpath:'sidecol',solstat:'stats',chgstat:'stats',equitystat:'stats',watchlist:'stats'}},
+  {id:'builtin-trader',name:'Trader',builtIn:true,order:['dashboard','chart','lab','pairs','discovery','ticket','ticketLive','portfolio','orders','limits','history','execpath','solstat','chgstat','equitystat','watchlist'],hidden:['dashboard'],place:{chart:'maincol',lab:'maincol',pairs:'maincol',dashboard:'maincol',discovery:'maincol',ticket:'sidecol',ticketLive:'maincol',portfolio:'sidecol',orders:'sidecol',limits:'sidecol',history:'sidecol',execpath:'sidecol',solstat:'stats',chgstat:'stats',equitystat:'stats',watchlist:'stats'}},
+  {id:'builtin-watcher',name:'Watcher',builtIn:true,order:['dashboard','pairs','lab','chart','discovery','ticket','ticketLive','portfolio','orders','limits','history','execpath','solstat','chgstat','equitystat','watchlist'],hidden:['ticket','ticketLive','dashboard'],place:{chart:'maincol',lab:'maincol',pairs:'maincol',dashboard:'maincol',discovery:'maincol',ticket:'sidecol',ticketLive:'maincol',portfolio:'sidecol',orders:'sidecol',limits:'sidecol',history:'sidecol',execpath:'sidecol',solstat:'stats',chgstat:'stats',equitystat:'stats',watchlist:'stats'}},
 ]);
 function sanitizeWorkspace(ws){
   ws=ws||{};
@@ -1686,13 +1687,14 @@ function paintLayoutPop(){
   // remember it and restore focus afterward (keyboard flow keeps working).
   const ae=document.activeElement;
   const fk=ae&&ae.dataset?(ae.dataset.lvis?'v:'+ae.dataset.lvis:ae.dataset.lup?'u:'+ae.dataset.lup:ae.dataset.ldn?'d:'+ae.dataset.ldn:null):null;
-  pl.innerHTML=ws.order.map((id,i)=>{
+  const popOrder=[...ws.order];PANEL_IDS.forEach(id=>{if(!popOrder.includes(id))popOrder.push(id);});
+  pl.innerHTML=popOrder.map((id,i)=>{
     const hidden=ws.hidden.includes(id);
     return '<div class="lprow'+(hidden?' is-hidden':'')+'">'+
       '<button type="button" class="iconbtn leyebtn'+(hidden?' off':'')+'" data-lvis="'+id+'" aria-pressed="'+(!hidden)+'" aria-label="'+(hidden?'Show ':'Hide ')+esc(PANEL_LABELS[id])+' panel" title="'+(hidden?'Show':'Hide')+'">'+(hidden?'⊘':'👁')+'</button>'+
       '<span class="lpname">'+esc(PANEL_LABELS[id])+'</span><span class="lppage">'+esc(PAGE_LABEL[pageOf(id)])+'</span>'+
-      '<span class="lparrows"><button type="button" data-lup="'+id+'" aria-label="Move '+esc(PANEL_LABELS[id])+' up"'+(i===0?' disabled':'')+'>▲</button>'+
-      '<button type="button" data-ldn="'+id+'" aria-label="Move '+esc(PANEL_LABELS[id])+' down"'+(i===ws.order.length-1?' disabled':'')+'>▼</button></span></div>';
+      '<span class="lparrows"><button type="button" data-lup="'+id+'" aria-label="Move '+esc(PANEL_LABELS[id])+' up"'+(i===0||!ws.order.includes(id)?' disabled':'')+'>▲</button>'+
+      '<button type="button" data-ldn="'+id+'" aria-label="Move '+esc(PANEL_LABELS[id])+' down"'+(i===ws.order.length-1||!ws.order.includes(id)?' disabled':'')+'>▼</button></span></div>';
   }).join('');
   const hn=$('layoutHiddenNote'),hc=ws.hidden.length;
   if(hn){hn.hidden=hc===0;if(hc>0)hn.textContent=hc+(hc===1?' panel':' panels')+' hidden';}
@@ -1786,9 +1788,9 @@ function applyLayoutBoot(){
    built-in: on Trader/Watcher it forks first (same fork-on-edit rule as every
    other layout edit), then overwrites the fork. Two-click confirm mirrors the
    paper-account reset pattern so it cannot fire by accident. */
-/* N5.9: Reset UI restores all 15 panels, in shipped order, all visible. */
+/* N5.9: Reset UI restores all 16 panels, in shipped order, all visible. */
 /* N5.12: the shipped default order starts with the dashboard (the pin's home). */
-const SHIPPED_LAYOUT_ORDER=['dashboard','chart','lab','pairs','discovery','ticket','portfolio','orders','limits','history','execpath','solstat','chgstat','equitystat','watchlist'];
+const SHIPPED_LAYOUT_ORDER=['dashboard','chart','lab','pairs','discovery','ticket','ticketLive','portfolio','orders','limits','history','execpath','solstat','chgstat','equitystat','watchlist'];
 let resetUiArmUntil=0,resetUiLabel=null;
 /* N5.14: Reset restores place+order+visibility; the panel→page assignment lives
    in PANEL_PAGE (code, not workspace state), so a reset can never move a panel
@@ -2389,7 +2391,7 @@ function selectTicketPair(p){ // p: DexScreener-shaped pair row
   ticketPair={baseMint:p.baseToken.address,baseSymbol:String(p.baseToken.symbol||'TOKEN').slice(0,20),quoteSymbol:String((p.quoteToken&&p.quoteToken.symbol)||'USDC').slice(0,10),price:Number.isFinite(px)&&px>0?px:0,change24h:ch==null||!Number.isFinite(Number(ch))?null:Number(ch)};
   const lp=$('limitPrice');if(lp)lp.value=''; // N4.5: re-prefill the limit price for the new pair
   fillDefaultSizeInput(); // N7.6: unit-aware default size fills on pair change
-  refreshTicket();updatePortfolio();saveState(); // N4.5/A17: persist the selection
+  refreshTicket();updatePortfolio();scheduleLiveQuote();saveState(); // N4.5/A17: persist the selection
   toast(ticketPair.baseSymbol+'/'+ticketPair.quoteSymbol+' selected for paper trading.');
   const amt=$('orderAmount');if(amt)amt.focus();
 }
@@ -2427,12 +2429,13 @@ function refreshTicket(){
     if(sb){sb.textContent=(side==='buy'?'Buy ':'Sell ')+(tp?tp.baseSymbol:'')+' · Paper';}
   }
   $('amountUnit').textContent=settings&&settings.quoteCurrency==='SOL'?'SOL':(tp?tp.quoteSymbol:'USD'); // N5.1: size input unit follows the quote-currency setting
+  paintTicketLive();
 }
 function updatePortfolio(){const rows=Object.keys(holdings);let posValue=0,totalCost=0;rows.forEach(m=>{const h=holdings[m],px=h.lastPrice>0?h.lastPrice:0;posValue+=h.qty*px;totalCost+=h.qty*h.avgCost;});const equity=cash+posValue,unreal=posValue-totalCost;const qcu=dashQC(),spx=price>0?price:0; // A32: header equity follows the quote-currency setting
 $('equity').textContent=dbMoney(equity,qcu,spx);$('pnlSub').textContent=dbSignedMoney(equity-PAPER_START_CASH,qcu,spx)+' total return';$('pnlSub').className='sub '+(equity>=PAPER_START_CASH?'positive':'negative');$('cashBal').textContent=usd(cash);$('cashAvail').textContent=usd(cash);$('posValue').textContent=usd(posValue);$('unrealized').textContent=(unreal>=0?'+':'')+usd(unreal);$('unrealized').className=unreal>=0?'positive':'negative';$('holdingsList').innerHTML=rows.length?rows.map(m=>{const h=holdings[m],px=h.lastPrice>0?h.lastPrice:0,v=h.qty*px,u=v-h.qty*h.avgCost;return '<div class="walletrow"><span>'+esc(h.symbol)+' · '+fmtQty(h.qty)+'</span><strong>'+usd(v)+' <small class="'+(u>=0?'positive':'negative')+'">'+(u>=0?'+':'')+usd(u)+'</small></strong></div>';}).join(''):'<div class="empty">No paper positions yet.</div>';refreshTicket();paintDashboard();saveState()}
 /* N5.3: renderWatchlist lives in the __N53_WATCHLISTS_START__ block (multi-list header card). */
-function setSide(s){hideReview();side=s;$('buyBtn').classList.toggle('active',s==='buy');$('buyBtn').classList.toggle('buy',s==='buy');$('sellBtn').classList.toggle('active',s==='sell');$('sellBtn').classList.toggle('sell',s==='sell');updatePortfolio()}
-$('buyBtn').onclick=()=>setSide('buy');$('sellBtn').onclick=()=>setSide('sell');$('orderAmount').oninput=()=>{bootSizeTouched=true;hideReview();updatePortfolio();};document.querySelectorAll('[data-amt]').forEach(b=>b.onclick=()=>{hideReview();const v=b.dataset.amt;const tp=ticketPair,pr=ticketPrice(),q=quoteUsd(tp&&tp.quoteSymbol);if(v==='max'){if(side==='buy'){fillSizeInput(maxBuyInput(cash,q)*q);}else{const h=tp&&holdings[tp.baseMint];fillSizeInput(h&&pr>0?maxSellInput(h.qty,pr)*q:0);}}else{fillSizeInput(Number(v));}updatePortfolio()}); // N5.1: presets/MAX fill via fillSizeInput (unit-aware)
+function setSide(s){hideReview();hideLiveReview();side=s;$('buyBtn').classList.toggle('active',s==='buy');$('buyBtn').classList.toggle('buy',s==='buy');$('sellBtn').classList.toggle('active',s==='sell');$('sellBtn').classList.toggle('sell',s==='sell');updatePortfolio();scheduleLiveQuote();}
+$('buyBtn').onclick=()=>setSide('buy');$('sellBtn').onclick=()=>setSide('sell');$('orderAmount').oninput=()=>{bootSizeTouched=true;hideReview();updatePortfolio();scheduleLiveQuote();};document.querySelectorAll('[data-amt]').forEach(b=>b.onclick=()=>{hideReview();const v=b.dataset.amt;const tp=ticketPair,pr=ticketPrice(),q=quoteUsd(tp&&tp.quoteSymbol);if(v==='max'){if(side==='buy'){fillSizeInput(maxBuyInput(cash,q)*q);}else{const h=tp&&holdings[tp.baseMint];fillSizeInput(h&&pr>0?maxSellInput(h.qty,pr)*q:0);}}else{fillSizeInput(Number(v));}updatePortfolio()}); // N5.1: presets/MAX fill via fillSizeInput (unit-aware)
 $('tradeForm').onsubmit=e=>{e.preventDefault();if(orderType==='limit')openLimitReview();else openReview();}; // N4.4/N4.5: submit opens the review sheet; the fill/order commits only via confirm
 function renderOrders(){$('orderCount').textContent=orders.length+' ORDERS';$('orders').innerHTML=orders.length?orders.slice(0,6).map(o=>{const bs=o.baseSymbol||'SOL',qs=o.quoteSymbol||'USDC',mode=(o.mode||'paper').toUpperCase();return '<div style="padding:12px 16px;border-bottom:1px solid var(--rowline);display:flex;justify-content:space-between;gap:8px"><div><strong class="'+(o.side==='buy'?'positive':'negative')+'">'+o.side.toUpperCase()+' '+esc(bs)+'/'+esc(qs)+'</strong> <span class="pill" style="font-size:10px;padding:2px 7px">'+mode+'</span>'+(o.type==='limit'?' <span class="pill" style="font-size:10px;padding:2px 7px">LIMIT</span>':'')+(o.status&&o.status!=='filled'?' <span class="pill" style="font-size:10px;padding:2px 7px">'+esc(o.status.toUpperCase())+'</span>':'')+'<div class="sub">'+o.time.toLocaleTimeString()+' · '+fmtQty(o.qty)+' '+esc(bs)+'</div></div><div style="text-align:right"><strong>'+usd(o.amount)+'</strong><div class="sub">@ '+formatPriceUsd(o.price)+'</div></div></div>';}).join(''):'<div class="empty">Your simulated paper orders will appear here.</div>'}
 let resetArmUntil=0,resetLabel=null;$('resetPaper').onclick=()=>{const b=$('resetPaper');if(resetLabel===null)resetLabel=b.textContent;const dirty=orders.length||Object.keys(holdings).length>0||cash!==PAPER_START_CASH||limitOrders.some(o=>o.status==='open');if(dirty&&Date.now()>resetArmUntil){resetArmUntil=Date.now()+5000;b.textContent='Confirm reset?';toast('This also clears your paper order history. Click again within 5 s to confirm.');setTimeout(()=>{if(Date.now()>=resetArmUntil)b.textContent=resetLabel;},5100);return;}resetArmUntil=0;b.textContent=resetLabel;/* N5.3: watchlists are personal data, not paper state — the reset deliberately leaves them (and settings/layout) untouched. */cash=PAPER_START_CASH;holdings={};orders=[];limitOrders=[];histClearPaper();histExpanded.clear();renderOrders();renderLimitOrders();renderHistory();updatePortfolio();saveState();toast('Paper account reset — paper order history cleared.');};
@@ -2445,8 +2448,8 @@ $('retryFeed').onclick=fetchMarket;$('chartFeedStatus').onclick=()=>{if(candleSt
 /* N4.4: ticket slippage UI + paper review sheet (DOM wiring). */
 let reviewState=null; // {inputs,model} while the sheet is open
 function paintSlipPresets(){const cur=slipLoad();document.querySelectorAll('#slipPresets button').forEach(b=>b.classList.toggle('on',Number(b.dataset.slip)===cur));}
-function onSlipPreset(bps){const p=slipValidate(String(bps));if(!p.ok){toast(p.error);return;}slipSave(p.bps);$('slippageInput').value=String(p.bps);paintSlipPresets();hideReview();}
-function onSlipCustom(){const el=$('slippageInput'),p=slipValidate(el.value);if(!p.ok){el.value=String(slipLoad());paintSlipPresets();toast(p.error);return;}slipSave(p.bps);paintSlipPresets();hideReview();toast('Slippage set to '+(p.bps/100).toFixed(2)+'% — shared with the /raydium/ page.');}
+function onSlipPreset(bps){const p=slipValidate(String(bps));if(!p.ok){toast(p.error);return;}slipSave(p.bps);$('slippageInput').value=String(p.bps);paintSlipPresets();hideReview();hideLiveReview();scheduleLiveQuote();}
+function onSlipCustom(){const el=$('slippageInput'),p=slipValidate(el.value);if(!p.ok){el.value=String(slipLoad());paintSlipPresets();toast(p.error);return;}slipSave(p.bps);paintSlipPresets();hideReview();toast('Slippage set to '+(p.bps/100).toFixed(2)+'% — shared with the /raydium/ page.');hideLiveReview();scheduleLiveQuote();}
 function renderReview(m,onConfirm){ // N4.5: onConfirm lets the limit branch use its own confirm handler
   // N5.11: condensed quote block — headline rows render compact, the last two lines
   // (route/freshness on paper; keeper fee/freshness on limit) fold behind a Details
@@ -2473,6 +2476,7 @@ function renderReview(m,onConfirm){ // N4.5: onConfirm lets the limit branch use
 function hideReview(){reviewState=null;limitReviewState=null;const box=$('reviewSheet');if(box){box.hidden=true;box.innerHTML='';}const tp=document.querySelector('[data-panel="ticket"]');if(tp&&tp.classList)tp.classList.remove('review-open');const sb=$('submitTrade');if(sb)sb.disabled=false;refreshTicket();}
 function reviewInputs(){const tp=ticketPair;return{side,baseMint:tp.baseMint,baseSymbol:tp.baseSymbol,quoteSymbol:tp.quoteSymbol,quoteUsd:quoteUsd(tp.quoteSymbol),amountQuote:ticketSizeUsd()/quoteUsd(tp.quoteSymbol),slippageBps:slipLoad()};} // N5.1: amountQuote is unit-aware
 function openReview(){
+  hideLiveReview();
   const tp=ticketPair;if(!tp)return toast('Waiting for market data.');
   const inp=reviewInputs(),px=ticketPrice();
   const probe=inp.side==='buy'?paperBuyFill({cash,holdings},{baseMint:inp.baseMint,baseSymbol:inp.baseSymbol,quoteSymbol:inp.quoteSymbol,price:px,quoteUsd:inp.quoteUsd,amount:inp.amountQuote}):paperSellFill({cash,holdings},{baseMint:inp.baseMint,baseSymbol:inp.baseSymbol,quoteSymbol:inp.quoteSymbol,price:px,quoteUsd:inp.quoteUsd,amount:inp.amountQuote});
@@ -2563,9 +2567,9 @@ function paintOrderType(){
   const lf=$('limitFields');if(lf)lf.hidden=m;
 }
 function setOrderType(t){
-  hideReview();
+  hideReview();hideLiveReview();
   orderType=(t==='limit')?'limit':'market';
-  paintOrderType();refreshTicket();saveState();
+  paintOrderType();refreshTicket();scheduleLiveQuote();saveState();
 }
 function limitFeedLive(){return feedFailures===0&&ticketPrice()>0;}
 function limitPrefill(force){
@@ -2588,6 +2592,7 @@ function updateLimitNote(){
   else n.textContent='';
 }
 function openLimitReview(){
+  hideLiveReview();
   const tp=ticketPair;if(!tp)return toast('Waiting for market data.');
   if(limitExpirySel==='never'&&!($('expiryAck')&&$('expiryAck').checked))return toast('A no-expiry limit order stays open until filled or cancelled — tick the acknowledgment first.');
   const inp=limitTicketInputs();
@@ -4010,6 +4015,347 @@ function execPathHtml(mode){
 }
 function renderExecPath(){const el=$('execPathBody');if(el)el.innerHTML=execPathHtml(ticketMode);}
 renderExecPath(); /*__N47_EXECPATH_END__*/
+/* N5.15 duplicated Order Ticket — Live instance (2026-10-25, A66, Carlos's
+   19:10 duplication ruling + 19:11 real-quote requirement on N5.14).
+   The Strategy Lab ticket (data-panel="ticket") keeps presenting Paper mode
+   with its existing flow untouched. This block is the SECOND instance
+   (data-panel="ticketLive", Terminal page): it presents Live mode, shares
+   one state with the paper ticket (pair, side, order type, amount — an edit
+   in either updates both), renders its own review sheet, and prices ONLY
+   from real, executable Raydium quotes via POST /api/raydium/quote — the
+   same endpoint the /raydium/ page uses (raw Raydium quote JSON, route
+   legs, price impact, minimum after slippage). It NEVER falls back to the
+   pairs-feed indicative spot: with no fresh quote the Live rows show '—'
+   and an honest unavailable note, never a spot number. No pairs-feed spot
+   number renders anywhere in the Live instance (limit section included:
+   its spot reference reads 'your limit', not a price).
+   Execution stays LOCKED: LIVE_TRADING_ENABLED is false (human-only flag,
+   N4.3/N4.4), so the Live review sheet's confirm is disabled and its
+   handler refuses. The confirm path is written as the gate evidence for
+   enablement: when the flag ever flips, confirming requires the sheet's
+   exact quote fresh (under 25 s, the /raydium/ freshness window) and
+   unchanged — otherwise it re-quotes and rebuilds, and the order does
+   not proceed on a different quote. Duplication creates no new live
+   capability: the Live instance submits nothing today.
+   Safety: every function here is a declaration and all state is var, so
+   the boot-time refreshTicket() call (which runs before this block) sees
+   liveTicketWired false and returns before touching wallet state; the
+   block itself sits after the wallet section, so its first real paint
+   runs with wallet + LIVE_TRADING_ENABLED initialized. */
+var liveTicketWired=false;
+var liveQuote=null; /* {spec, outputAmount, minimumOut, routeLegs, priceImpactPct, fetchedAt} */
+var liveQuoteErr=null;
+var liveQuoteInFlight=false;
+var liveQuotePending=false;
+var liveQuoteTimer=0;
+var liveReviewOpen=false;
+var LIVE_QUOTE_FRESH_MS=25000; /* same freshness window as the /raydium/ page */
+var RAYDIUM_TOKENS={SOL:{mint:'So11111111111111111111111111111111111111112',decimals:9},USDC:{mint:'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',decimals:6},USDT:{mint:'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB',decimals:6},RAY:{mint:'4k3Dyjzvzp8eMZWUXbBCjEvwSkkk59S5iCNLY3QrkX6R',decimals:6},JUP:{mint:'JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN',decimals:6},BONK:{mint:'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263',decimals:5}}; /* frontend/src/solana/tokens.ts */
+function toBaseUnitsLive(n,decimals){
+  if(!Number.isFinite(n)||n<=0)return null;
+  var s=String(n);
+  if(s.indexOf('e')>=0||s.indexOf('E')>=0)s=n.toFixed(Math.min(decimals+5,20));
+  var parts=s.split('.');
+  var whole=(parts[0]||'0').replace(/^0+/,'')||'0';
+  var frac=((parts[1]||'').slice(0,decimals));
+  while(frac.length<decimals)frac+='0';
+  var out=(whole+frac).replace(/^0+/,'');
+  return out===''?'0':out;
+}
+function liveQuoteSpec(){
+  /* Null whenever a real swap quote cannot be sized honestly: limit orders
+     carry a user price, not a swap quote; unknown symbols have no known
+     mint/decimals here, so no mint is ever guessed. */
+  if(orderType!=='market')return null;
+  var tp=ticketPair;if(!tp)return null;
+  var amtQ=ticketSizeUsd()/quoteUsd(tp.quoteSymbol);
+  if(!(amtQ>0))return null;
+  var slip=slipLoad();
+  var base=RAYDIUM_TOKENS[tp.baseSymbol],quote=RAYDIUM_TOKENS[tp.quoteSymbol];
+  if(!base||!quote)return null;
+  if(side==='buy'){
+    var raw=toBaseUnitsLive(amtQ,quote.decimals);if(raw===null)return null;
+    return{side:'buy',inputMint:quote.mint,outputMint:base.mint,inputSymbol:tp.quoteSymbol,outputSymbol:tp.baseSymbol,inputDecimals:quote.decimals,outputDecimals:base.decimals,amountRaw:raw,amountQuote:amtQ,slippageBps:slip,baseMint:tp.baseMint,baseSymbol:tp.baseSymbol,quoteSymbol:tp.quoteSymbol};
+  }
+  var spot=ticketPrice();if(!(spot>0))return null;
+  var qty=amtQ/spot;
+  var rawSell=toBaseUnitsLive(qty,base.decimals);if(rawSell===null)return null;
+  return{side:'sell',inputMint:base.mint,outputMint:quote.mint,inputSymbol:tp.baseSymbol,outputSymbol:tp.quoteSymbol,inputDecimals:base.decimals,outputDecimals:quote.decimals,amountRaw:rawSell,amountQuote:amtQ,slippageBps:slip,baseMint:tp.baseMint,baseSymbol:tp.baseSymbol,quoteSymbol:tp.quoteSymbol};
+}
+function liveQuoteMatches(spec){
+  if(!spec||!liveQuote||!liveQuote.spec)return false;
+  var s=liveQuote.spec;
+  return s.side===spec.side&&s.inputMint===spec.inputMint&&s.outputMint===spec.outputMint&&s.amountRaw===spec.amountRaw&&s.slippageBps===spec.slippageBps;
+}
+function liveExecPriceFromQuote(q){
+  var inTok=Number(q.spec.amountRaw)/Math.pow(10,q.spec.inputDecimals);
+  var outTok=Number(q.outputAmount)/Math.pow(10,q.spec.outputDecimals);
+  if(!(inTok>0)||!(outTok>0))return 0;
+  return q.spec.side==='buy'?inTok/outTok:outTok/inTok;
+}
+function liveQuoteAgeMs(){return liveQuote?Date.now()-liveQuote.fetchedAt:Infinity;}
+function paintTicketLive(){
+  if(!liveTicketWired)return;
+  var root=panelEl('ticketLive');if(!root)return;
+  var g=function(id){return $(id);};
+  var pairName=g('ticketPairName'),pairMeta=g('ticketPairMeta');
+  var el;
+  el=g('ticketPairNameLive');if(el&&pairName)el.textContent=pairName.textContent;
+  el=g('ticketPairMetaLive');if(el&&pairMeta)el.textContent=pairMeta.textContent;
+  el=g('buyBtnLive');if(el){el.classList.toggle('active',side==='buy');el.classList.toggle('buy',side==='buy');}
+  el=g('sellBtnLive');if(el){el.classList.toggle('active',side==='sell');el.classList.toggle('sell',side==='sell');}
+  el=g('mktBtnLive');if(el){el.classList.toggle('active',orderType==='market');el.classList.toggle('buy',orderType==='market');}
+  el=g('limBtnLive');if(el){el.classList.toggle('active',orderType==='limit');el.classList.toggle('sell',orderType==='limit');}
+  el=g('limitFieldsLive');if(el)el.hidden=orderType!=='limit';
+  el=g('limitBaseSymLive');var lbs=g('limitBaseSym');if(el&&lbs)el.textContent=lbs.textContent;
+  el=g('limitQuoteSymLive');var lqs=g('limitQuoteSym');if(el&&lqs)el.textContent=lqs.textContent;
+  el=g('limitSpotRefLive');if(el)el.textContent='your limit';
+  el=g('limitPriceLive');var lp=g('limitPrice');
+  if(el&&lp&&document.activeElement!==el)el.value=lp.value;
+  el=g('limitNoteLive');var ln=g('limitNote');if(el&&ln)el.textContent=ln.textContent;
+  document.querySelectorAll('#expiryPresetsLive button').forEach(function(b){b.classList.toggle('on',b.dataset.exp===limitExpirySel);});
+  var wrap=g('expiryAckWrapLive'),wrap0=g('expiryAckWrap'),never=limitExpirySel==='never';
+  if(wrap){wrap.hidden=!never;wrap.style.display=never?'flex':'none';}
+  if(wrap0){/* original wrap stays authoritative; Live wrap mirrors it */}
+  var ack=g('expiryAckLive'),ack0=g('expiryAck');if(ack&&ack0)ack.checked=ack0.checked;
+  el=g('orderAmountLive');var amt=g('orderAmount');
+  if(el&&amt&&document.activeElement!==el)el.value=amt.value;
+  el=g('amountUnitLive');var au=g('amountUnit');if(el&&au)el.textContent=au.textContent;
+  var curSlip=slipLoad();
+  document.querySelectorAll('#slipPresetsLive button').forEach(function(b){b.classList.toggle('on',Number(b.dataset.slip)===curSlip);});
+  el=g('slippageInputLive');if(el&&document.activeElement!==el)el.value=String(curSlip);
+  var sb=g('submitTradeLive');var tp=ticketPair;
+  if(sb){sb.textContent=(side==='buy'?'Buy ':'Sell ')+(tp?tp.baseSymbol:'')+' · Live (locked)';sb.disabled=!!liveReviewOpen;}
+  el=g('cashAvailLive');
+  if(el){
+    try{
+      if(wallet&&wallet.connected){el.textContent=(wallet.balances&&wallet.balances.usdc!=null)?fmtQty(wallet.balances.usdc)+' USDC':'Loading…';}
+      else el.textContent='Connect a wallet';
+    }catch(_){el.textContent='—';}
+  }
+  var ep=g('execPriceLive'),eq=g('estQtyLive'),note=g('ticketNoteLive');
+  if(orderType==='limit'){
+    var lpv=lp?Number(lp.value):0;
+    if(ep)ep.textContent=lpv>0?formatPrice(lpv):'—';
+    var eq0=g('estQty');if(eq&&eq0)eq.textContent=eq0.textContent;
+    if(note)note.textContent='Limit terms — your limit price, not a market quote. Live limit execution is locked (N4.4 gate).';
+    return;
+  }
+  if(liveQuoteInFlight){
+    if(ep)ep.textContent='Fetching real quote…';
+    if(eq)eq.textContent='—';
+    if(note)note.textContent='Requesting a real Raydium quote…';
+    return;
+  }
+  var spec=liveQuoteSpec();
+  if(liveQuote&&liveQuoteMatches(spec)){
+    var px=liveExecPriceFromQuote(liveQuote);
+    var outTok=Number(liveQuote.outputAmount)/Math.pow(10,liveQuote.spec.outputDecimals);
+    var minTok=Number(liveQuote.minimumOut)/Math.pow(10,liveQuote.spec.outputDecimals);
+    if(ep)ep.textContent=px>0?formatPrice(px):'—';
+    if(eq)eq.textContent=outTok>0?fmtQty(outTok)+' '+liveQuote.spec.outputSymbol:'—';
+    var ageS=Math.floor(liveQuoteAgeMs()/1000);
+    var stale=liveQuoteAgeMs()>=LIVE_QUOTE_FRESH_MS;
+    if(note)note.textContent='Real Raydium quote · fetched '+new Date(liveQuote.fetchedAt).toLocaleTimeString()+' ('+ageS+'s ago)'+(stale?' · STALE — refresh before reviewing':'')+' · impact '+(liveQuote.priceImpactPct===null?'—':liveQuote.priceImpactPct+'%')+' · min out '+fmtQty(minTok)+' '+liveQuote.spec.outputSymbol+' · '+liveQuote.routeLegs+' route leg(s) · source /api/raydium/quote';
+    return;
+  }
+  if(ep)ep.textContent='—';
+  if(eq)eq.textContent='—';
+  if(!note)return;
+  if(liveQuoteErr)note.textContent='Real quote unavailable — '+liveQuoteErr+' · The Live instance never falls back to the pairs-feed spot price.';
+  else if(liveQuote)note.textContent='Quote outdated for the current size/pair — press Refresh real quote.';
+  else if(!spec)note.textContent='Real Raydium quote unavailable for this pair — press Refresh real quote to retry.';
+  else note.textContent='Real Raydium quote not fetched yet — press Refresh real quote.';
+}
+function scheduleLiveQuote(force){
+  if(!liveTicketWired)return;
+  try{clearTimeout(liveQuoteTimer);}catch(_){}
+  if(force){fetchLiveQuote();return;}
+  liveQuoteTimer=setTimeout(fetchLiveQuote,400);
+}
+async function fetchLiveQuote(){
+  if(liveQuoteInFlight){liveQuotePending=true;return;}
+  var spec=liveQuoteSpec();
+  if(!spec){liveQuote=null;liveQuoteErr=null;paintTicketLive();if(liveReviewOpen)renderLiveReview();return;}
+  liveQuoteInFlight=true;paintTicketLive();
+  var controller=null;
+  try{
+    controller=new AbortController();
+    var to=setTimeout(function(){try{controller.abort();}catch(_){}},15000);
+    var r;
+    try{
+      r=await fetch('/api/raydium/quote',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({input_mint:spec.inputMint,output_mint:spec.outputMint,amount:spec.amountRaw,slippage_bps:spec.slippageBps}),signal:controller.signal});
+    }finally{clearTimeout(to);}
+    var env=null;
+    try{env=await r.json();}catch(_){env=null;}
+    if(!r.ok||!env||env.ok!==true||env.data===undefined)throw new Error((env&&env.error&&env.error.message)?env.error.message:('Quote backend HTTP '+r.status));
+    var data=env.data;
+    var raw=(data&&typeof data==='object'&&data.quote&&typeof data.quote==='object')?data.quote:data;
+    var qd=(raw&&typeof raw==='object'&&raw.data&&typeof raw.data==='object')?raw.data:{};
+    var out=qd.outputAmount,min=qd.otherAmountThreshold;
+    if(typeof out!=='string'||!out||typeof min!=='string'||!min)throw new Error('Backend returned an incomplete quote. Request a fresh quote.');
+    var legs=Array.isArray(qd.routePlan)?qd.routePlan.length:0;
+    var impact=(typeof qd.priceImpactPct==='number')?qd.priceImpactPct:null;
+    liveQuote={spec:spec,outputAmount:out,minimumOut:min,routeLegs:legs,priceImpactPct:impact,fetchedAt:Date.now()};
+    liveQuoteErr=null;
+  }catch(e){
+    liveQuote=null;
+    liveQuoteErr=(e&&e.message)?e.message:String(e);
+  }
+  liveQuoteInFlight=false;paintTicketLive();
+  if(liveReviewOpen)renderLiveReview();
+  if(liveQuotePending){liveQuotePending=false;scheduleLiveQuote();}
+}
+function renderLiveReview(){
+  var box=$('reviewSheetLive');if(!box)return;
+  var tp=ticketPair;if(!tp){box.hidden=true;box.innerHTML='';return;}
+  var rowHtml=function(l){return '<div class="walletrow"><span>'+esc(l.label)+'</span><strong>'+esc(l.value)+'</strong></div>';};
+  var amountQuote=ticketSizeUsd()/quoteUsd(tp.quoteSymbol);
+  var rows=[
+    {label:'Pair',value:tp.baseSymbol+' / '+tp.quoteSymbol},
+    {label:'Side',value:side==='buy'?'Buy':'Sell'},
+    {label:'Order type',value:orderType==='limit'?'Limit':'Market'},
+    {label:'Size',value:fmtQty(amountQuote)+' '+tp.quoteSymbol},
+    {label:'Slippage',value:(slipLoad()/100).toFixed(2)+'%'}
+  ];
+  var warn='',details='';
+  if(orderType==='limit'){
+    var lpv=$('limitPrice')?Number($('limitPrice').value):0;
+    rows.push({label:'Limit price',value:lpv>0?formatPrice(lpv):'—'});
+    rows.push({label:'Expires',value:limitExpirySel});
+    warn='Live limit execution is locked (N4.4 gate) — this sheet cannot submit. Limit terms here are your price, never a market quote.';
+  }else{
+    var spec=liveQuoteSpec();
+    var fresh=liveQuote&&liveQuoteMatches(spec)&&liveQuoteAgeMs()<LIVE_QUOTE_FRESH_MS;
+    if(fresh){
+      var px=liveExecPriceFromQuote(liveQuote);
+      var outTok=Number(liveQuote.outputAmount)/Math.pow(10,liveQuote.spec.outputDecimals);
+      var minTok=Number(liveQuote.minimumOut)/Math.pow(10,liveQuote.spec.outputDecimals);
+      rows.push({label:'Execution price (real quote)',value:px>0?formatPrice(px):'—'});
+      rows.push({label:'Estimated output',value:fmtQty(outTok)+' '+liveQuote.spec.outputSymbol});
+      rows.push({label:'Minimum after slippage',value:fmtQty(minTok)+' '+liveQuote.spec.outputSymbol});
+      rows.push({label:'Price impact',value:liveQuote.priceImpactPct===null?'—':liveQuote.priceImpactPct+'%'});
+      rows.push({label:'Route legs',value:String(liveQuote.routeLegs)});
+      rows.push({label:'Quote source',value:'Real Raydium quote · /api/raydium/quote'});
+      rows.push({label:'Quote fetched',value:new Date(liveQuote.fetchedAt).toLocaleTimeString()+' ('+Math.floor(liveQuoteAgeMs()/1000)+'s ago, fresh under 25 s)'});
+    }else{
+      warn=liveQuoteErr?('No fresh real quote — '+liveQuoteErr):'No fresh real quote for this order yet.';
+      details='<div class="ractions"><button type="button" class="ghost" id="liveReviewRefresh">Refresh real quote</button></div>';
+    }
+  }
+  box.innerHTML='<div class="rhead"><span class="eyebrow">Live order review</span><span class="paperchip">LIVE · LOCKED</span></div><div class="rrows">'+rows.map(rowHtml).join('')+'</div>'+
+    (warn?'<div class="rwarn">'+esc(warn)+'</div>':'')+
+    '<div class="note">The Live instance never prices from the pairs-feed spot. Review-sheet quote = executed quote: when live execution is enabled, confirming requires this exact quote fresh (under 25 s) and unchanged — otherwise the order does not proceed.</div>'+
+    details+
+    '<div class="ractions"><button type="button" class="ghost" id="liveReviewCancel">Back to edit</button><button type="button" class="primary" id="liveReviewConfirm" disabled>Execution locked — N4.4 gate</button></div>'+
+    '<div class="note">Confirm is disabled — live execution is locked (N4.4 gate). Nothing here sends a transaction.</div>';
+  box.hidden=false;
+  var panel=panelEl('ticketLive');if(panel&&panel.classList)panel.classList.add('review-open');
+  var sb=$('submitTradeLive');if(sb)sb.disabled=true;
+  var cancel=$('liveReviewCancel');if(cancel)cancel.onclick=hideLiveReview;
+  var refresh=$('liveReviewRefresh');if(refresh)refresh.onclick=function(){fetchLiveQuote();};
+  var confirm=$('liveReviewConfirm');if(confirm)confirm.onclick=confirmLiveReview;
+}
+function openLiveReview(){
+  hideReview();
+  liveReviewOpen=true;
+  if(orderType==='limit'){renderLiveReview();return;}
+  var spec=liveQuoteSpec();
+  if(!liveQuote||!liveQuoteMatches(spec)){
+    renderLiveReview();
+    if(spec)fetchLiveQuote();
+    return;
+  }
+  if(liveQuoteAgeMs()>=LIVE_QUOTE_FRESH_MS){
+    renderLiveReview();
+    fetchLiveQuote();
+    toast('That quote is stale — a fresh quote was requested. Review the new numbers.');
+    return;
+  }
+  renderLiveReview();
+}
+function confirmLiveReview(){
+  /* Gate evidence (N4.4): the button is disabled while LIVE_TRADING_ENABLED
+     is false, so this handler is defense-in-depth today, not a live path. */
+  if(!LIVE_TRADING_ENABLED){toast('Live execution is locked — the N4.4 pre-trade safety gate has not been cleared. Nothing was sent.');return;}
+  var spec=liveQuoteSpec();
+  if(!liveQuote||!liveQuoteMatches(spec)||liveQuoteAgeMs()>=LIVE_QUOTE_FRESH_MS){
+    fetchLiveQuote();
+    renderLiveReview();
+    toast('Quote changed or stale — a fresh quote was requested. Review the new numbers.');
+    return;
+  }
+  toast('Live execution is not wired on this page yet — nothing was sent.');
+}
+function hideLiveReview(){
+  liveReviewOpen=false;
+  var box=$('reviewSheetLive');
+  if(box){box.hidden=true;box.innerHTML='';}
+  var panel=panelEl('ticketLive');if(panel&&panel.classList)panel.classList.remove('review-open');
+  paintTicketLive();
+}
+(function wireTicketLive(){
+  var live=panelEl('ticketLive');if(!live)return;
+  var b;
+  b=$('buyBtnLive');if(b)b.onclick=function(){setSide('buy');};
+  b=$('sellBtnLive');if(b)b.onclick=function(){setSide('sell');};
+  b=$('mktBtnLive');if(b)b.onclick=function(){setOrderType('market');};
+  b=$('limBtnLive');if(b)b.onclick=function(){setOrderType('limit');};
+  var amtLive=$('orderAmountLive');
+  if(amtLive)amtLive.oninput=function(){
+    var orig=$('orderAmount');if(orig)orig.value=amtLive.value;
+    bootSizeTouched=true;hideReview();hideLiveReview();updatePortfolio();scheduleLiveQuote();
+  };
+  live.querySelectorAll('[data-amt]').forEach(function(btn){
+    btn.addEventListener('click',function(){hideLiveReview();scheduleLiveQuote();});
+  });
+  live.querySelectorAll('#slipPresetsLive button').forEach(function(btn){
+    btn.onclick=function(){onSlipPreset(Number(btn.dataset.slip));hideLiveReview();paintTicketLive();scheduleLiveQuote();};
+  });
+  var slipLive=$('slippageInputLive');
+  if(slipLive)slipLive.addEventListener('change',function(){
+    var p=slipValidate(slipLive.value);
+    if(!p.ok){slipLive.value=String(slipLoad());paintTicketLive();toast(p.error);return;}
+    slipSave(p.bps);
+    var origSlip=$('slippageInput');if(origSlip)origSlip.value=String(p.bps);
+    paintSlipPresets();hideReview();hideLiveReview();paintTicketLive();scheduleLiveQuote();
+    toast('Slippage set to '+(p.bps/100).toFixed(2)+'% — shared with the /raydium/ page.');
+  });
+  var lpLive=$('limitPriceLive');
+  if(lpLive)lpLive.oninput=function(){
+    var orig=$('limitPrice');if(orig)orig.value=lpLive.value;
+    hideReview();hideLiveReview();updateLimitNote();refreshTicket();
+  };
+  live.querySelectorAll('#limitPresetsLive button').forEach(function(btn){
+    btn.onclick=function(){
+      hideReview();hideLiveReview();
+      var p=Number(btn.dataset.lp),spot=ticketPrice();
+      if(!(spot>0))return toast('Waiting for a live price.');
+      var orig=$('limitPrice');if(orig){orig.disabled=false;orig.value=String(parseFloat((spot*(1+p/100)).toPrecision(10)));}
+      updateLimitNote();refreshTicket();
+    };
+  });
+  live.querySelectorAll('#expiryPresetsLive button').forEach(function(btn){
+    btn.onclick=function(){
+      hideReview();hideLiveReview();
+      limitExpirySel=btn.dataset.exp;
+      document.querySelectorAll('#expiryPresets button').forEach(function(x){x.classList.toggle('on',x.dataset.exp===limitExpirySel);});
+      live.querySelectorAll('#expiryPresetsLive button').forEach(function(x){x.classList.toggle('on',x.dataset.exp===limitExpirySel);});
+      var never=limitExpirySel==='never';
+      var wrap0=$('expiryAckWrap'),wrapL=$('expiryAckWrapLive');
+      if(wrap0){wrap0.hidden=!never;wrap0.style.display=never?'flex':'none';if(!never)$('expiryAck').checked=false;}
+      if(wrapL){wrapL.hidden=!never;wrapL.style.display=never?'flex':'none';}
+      saveState();
+    };
+  });
+  var formLive=$('tradeFormLive');
+  if(formLive)formLive.onsubmit=function(e){e.preventDefault();openLiveReview();};
+  var refreshBtn=$('refreshLiveQuoteBtn');
+  if(refreshBtn)refreshBtn.onclick=function(){scheduleLiveQuote(true);};
+  liveTicketWired=true;
+  paintTicketLive();
+  scheduleLiveQuote();
+})();
 /* N5.7 Execution-path discoverability (A37, 2026-10-23): one click from the header
    ("How this works") lands on the honest Execution path panel. Panel copy is NOT
    touched here — renderExecPath() only refreshes the mode-aware copy it already owns. */
