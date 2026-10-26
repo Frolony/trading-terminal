@@ -2872,7 +2872,7 @@ function btSaveConfig(){
    btOverwriteArmKey=name;
    const old=list[ix];
    const sb=$('btSaveCfg');if(sb)sb.textContent='Confirm overwrite?';
-   toast('Save again to replace "'+name+'" ('+old.scheme+(function(){const ps=btParamsSummary(old);return ps?' · '+ps:'';}())+(old.runId?' · run '+old.runId:'')+'). Nothing was replaced yet.');
+   toast('Save again to replace "'+name+'" ('+old.scheme+(function(){const ps=btParamsSummary(old);return ps?' · '+ps:'';}())+' · '+btRangeLabel(old)+(old.runId?' · run '+old.runId:'')+'). Nothing was replaced yet.');
    setTimeout(function(){if(btOverwriteArmKey===name){btOverwriteArmKey=null;const b2=$('btSaveCfg');if(b2)b2.textContent='Save';}},8000);
    return;
   }
@@ -2929,6 +2929,50 @@ function btEnsureSavedCfg(cfg,name){
  return ix>=0?'replaced':'added';
 }
 let btDeleteArmKey=null;
+/* === N7.13 (A69, 2026-10-25): date range in configuration identity and descriptions ===
+   Carlos's N7.12 retest: saved rows identical in every displayed field could
+   hold different results — the selected range (full/1y/6m/custom) was stored
+   but never displayed, and plNormalizeCfg dropped it, so deployments lost
+   the window entirely and plLoadDeploy forced Full history. This is display
+   + carry + identity, not a matching-semantics change beyond the range
+   fields themselves: (1) btRangeLabel renders a record's OWN stored range
+   ('Full history' / '1 year' / '6 months' / 'Custom <from> → <to>'); a
+   record with no stored range reads 'range not recorded', never a guessed
+   'Full history'; saved-row sub-lines and deployment cards carry it, and
+   the overwrite-arm toast names it too. (2) plNormalizeCfg preserves
+   range/from/to, plDeployCfg stores them on the deployment record, and
+   plLoadDeploy restores the deployment's actual range (custom dates
+   populated) instead of forcing Full history; the deploy-ensure path
+   round-trips them into the saved entry. btLoadConfig is fixed the same
+   way (range-first restore): it used to paint Custom for ANY entry with
+   from/to set, which mis-restored saved 1y/6m entries (their runs store
+   trailing-window epochs) as a custom window. (3) range/from/to join the
+   no-runId fallback comparisons in plDeploySame and btCfgSame, so two
+   configurations differing only by range are never the same configuration
+   on any path; runId-first matching is untouched (a runId already stamps
+   the range + data window, N7.5). Relative ranges (1y/6m) re-run over the
+   CURRENT trailing window by design — the same semantics as Load — so
+   exact re-run reproduction holds for custom ranges; the fix is that the
+   form lands on the right range mode. */
+function btRangeDate(t){
+ if(!Number.isFinite(Number(t))||Number(t)<=0)return '';
+ try{return new Date(Number(t)*1000).toISOString().slice(0,10);}catch(_){return '';}
+}
+function btRangeLabel(c){
+ if(!c||typeof c!=='object')return 'range not recorded';
+ if(c.range==='full')return 'Full history';
+ if(c.range==='1y')return '1 year';
+ if(c.range==='6m')return '6 months';
+ if(c.range==='custom'){
+  const f=btRangeDate(c.from),t=btRangeDate(c.to);
+  return (f&&t)?('Custom '+f+' → '+t):'Custom';
+ }
+ if(c.from||c.to){
+  const f=btRangeDate(c.from),t=btRangeDate(c.to);
+  return (f&&t)?('Custom '+f+' → '+t):'Custom';
+ }
+ return 'range not recorded';
+}
 /* === N7.12 (A68, 2026-10-25): saved rows show their parameters and name their blocker ===
    Carlos's N7.11 retest: saved rows read identically after a params-only overwrite
    (the sub-line carried scheme id + pair + fee + deploy + runId, never params),
@@ -2972,7 +3016,7 @@ function btRenderConfigs(){
   const armed=btDeleteArmKey===btCfgKey(c);
   const delLabel=armed?(linked?'Confirm delete — deployments stay':'Confirm delete'):'Delete';
   const ps712=btParamsSummary(c);
-  const sub='<div class="sub">'+esc(c.scheme)+(ps712?' · '+esc(ps712):'')+' · '+esc(c.pair)+' · fee '+esc(c.fee_bps)+'bps · deploy '+esc(c.deploy_pct)+'%'+(c.runId?' · run <span style="user-select:all">'+esc(String(c.runId))+'</span>':'')+'</div>';
+  const sub='<div class="sub">'+esc(c.scheme)+(ps712?' · '+esc(ps712):'')+' · '+esc(c.pair)+' · fee '+esc(c.fee_bps)+'bps · deploy '+esc(c.deploy_pct)+'% · '+esc(btRangeLabel(c))+(c.runId?' · run <span style="user-select:all">'+esc(String(c.runId))+'</span>':'')+'</div>';
   const nc711=plNormalizeCfg(c),depDup711=nc711?plFindDeployDup(nc711):null; /* N7.11: a saved row whose configuration is already deployed shows its state */
   const blocker712=depDup711?btDeployBlockerNote(c.name,depDup711):'';
   if(btRenameIdx===i)return '<div class="btcfg"><div><input class="wrename-input" data-btrename-input="'+i+'" value="'+esc(c.name)+'" maxlength="60" aria-label="New name for this configuration">'+sub+(blocker712?'<div class="sub">'+esc(blocker712)+'</div>':'')+'</div><div style="display:flex;gap:6px"><button type="button" class="action" data-btrename-save="'+i+'">Save</button><button type="button" class="action" data-btrename-cancel="'+i+'">Cancel</button></div></div>';
@@ -3030,6 +3074,9 @@ function btCfgSame(a,b){
  if(a.scheme!==b.scheme||a.pair!==b.pair)return false;
  if(String(a.fee_bps)!==String(b.fee_bps)||String(a.deploy_pct)!==String(b.deploy_pct))return false;
  if(String(a.runId||'')!==String(b.runId||''))return false;
+ if(String(a.range||'')!==String(b.range||''))return false; /* N7.13: range joins identity */
+ if(String(a.from==null?'':a.from)!==String(b.from==null?'':b.from))return false;
+ if(String(a.to==null?'':a.to)!==String(b.to==null?'':b.to))return false;
  const pa=a.params||{},pb=b.params||{};
  const ka=Object.keys(pa),kb=Object.keys(pb);
  if(ka.length!==kb.length)return false;
@@ -3072,11 +3119,20 @@ function btLoadConfig(i){
  if($('btp_fee_bps'))$('btp_fee_bps').value=c.fee_bps;
  if($('btp_deploy_pct'))$('btp_deploy_pct').value=c.deploy_pct;
  if(c.pair)$('btPair').value=c.pair;
- if(c.from||c.to){btRange='custom';}else{btRange=c.range||'full';} /* N7.8 leg 1: a restored config paints its saved range, not always Full history */
+ /* N7.13: range-first restore (fixes N7.8's from/to heuristic, which painted
+    Custom for saved 1y/6m entries because their runs store trailing-window
+    epochs): the saved range mode wins; from/to imply Custom only when no
+    range mode was stored. */
+ if(c.range==='custom'||((c.from||c.to)&&!c.range))btRange='custom';else btRange=c.range||'full';
  document.querySelectorAll('[data-btrange]').forEach(x=>{x.classList.toggle('on',x.dataset.btrange===btRange);x.setAttribute('aria-pressed',x.dataset.btrange===btRange?'true':'false');});
  $('btCustomRange').style.display=btRange==='custom'?'grid':'none';
- if(c.from)$('btFrom').value=new Date(c.from*1000).toISOString().slice(0,10);
- if(c.to)$('btTo').value=new Date(c.to*1000).toISOString().slice(0,10);
+ if(btRange==='custom'){
+  if($('btFrom'))$('btFrom').value=c.from?new Date(c.from*1000).toISOString().slice(0,10):'';
+  if($('btTo'))$('btTo').value=c.to?new Date(c.to*1000).toISOString().slice(0,10):'';
+ }else{
+  if($('btFrom'))$('btFrom').value='';
+  if($('btTo'))$('btTo').value='';
+ }
  btSaveReenable(); /* N7.10: a loaded configuration re-enables Save */
  btPaintDeployBtn(); /* N7.11: a loaded configuration repaints Deploy state */
  toast('Loaded "'+c.name+'". Press Run backtest.');
@@ -3141,7 +3197,10 @@ function plNormalizeCfg(raw){
  const fee=Math.min(1000,Math.max(0,plNum(raw.fee_bps,26)));
  const dep=Math.min(100,Math.max(1,plNum(raw.deploy_pct,95)));
  const pair=BT_PAIRS.some(x=>x.id===raw.pair)?raw.pair:BT_PAIRS[0].id;
+ const rngNum=v=>(v==null||v==='')?null:(Number.isFinite(Number(v))?Number(v):null); /* N7.13: range epochs pass through untouched (no clamping — they are window bounds, not params) */
+ const range=(raw.range==='full'||raw.range==='1y'||raw.range==='6m'||raw.range==='custom')?raw.range:((rngNum(raw.from)!=null||rngNum(raw.to)!=null)?'custom':undefined);
  return {scheme:s.id,params:params,pair:pair,fee_bps:fee,deploy_pct:dep,
+  range:range,from:rngNum(raw.from),to:rngNum(raw.to), /* N7.13: the window rides with the config */
   runId:raw.runId?String(raw.runId).slice(0,64):null,runAt:raw.runAt?String(raw.runAt).slice(0,32):null}; /* N7.5 */
 }
 /*__N711_DUP_DEPLOY_START__*/
@@ -3175,6 +3234,9 @@ function plDeploySame(a,b){
  if(a.runId&&b.runId)return String(a.runId)===String(b.runId);
  if(a.scheme!==b.scheme||a.pair!==b.pair)return false;
  if(String(a.fee_bps)!==String(b.fee_bps)||String(a.deploy_pct)!==String(b.deploy_pct))return false;
+ if(String(a.range||'')!==String(b.range||''))return false; /* N7.13: range joins the no-runId fallback identity */
+ if(String(a.from==null?'':a.from)!==String(b.from==null?'':b.from))return false;
+ if(String(a.to==null?'':a.to)!==String(b.to==null?'':b.to))return false;
  const pa=a.params||{},pb=b.params||{};
  const ka=Object.keys(pa),kb=Object.keys(pb);
  if(ka.length!==kb.length)return false;
@@ -3217,6 +3279,7 @@ function plDeployCfg(cfg,name){
   name:String(name||'Paper-tracked deployment').slice(0,80),
   scheme:cfg.scheme,params:cfg.params,pair:cfg.pair,
   fee_bps:cfg.fee_bps,deploy_pct:cfg.deploy_pct,
+  range:cfg.range||null,from:(cfg.from==null?null:cfg.from),to:(cfg.to==null?null:cfg.to), /* N7.13: the deployment keeps its window */
   runId:cfg.runId||null,runAt:cfg.runAt||null, /* N7.5: the backtest run this deployment was deployed from */
   deployed_at:nowS,createdAt:new Date().toISOString()};
  list.unshift(dep);
@@ -3249,10 +3312,13 @@ function plDeploySaved(i){
  if(!plDeployCfg(cfg,c.name||('Saved configuration · '+new Date().toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'}))))return; /* N7.11: a refused duplicate deploys nothing and ensures nothing */
  btEnsureSavedCfg(c,c.name||('Saved configuration · '+new Date().toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'}))); /* N7.9: no-op when the entry already exists; keeps the invariant at both deploy entry points */
 }
-/* N7.9: restore a deployment into the form AND the saved list. Deployments
-   carry no range window, so the form lands on Full history with no custom
-   dates; btLastCfg is set so the restored config can be Run, then Saved,
-   exactly like a loaded saved config (btFormDirty compares against it). */
+/* N7.9: restore a deployment into the form AND the saved list. N7.13: the
+   deployment's own range window is restored (custom dates populated); a
+   pre-N7.13 deployment with no stored window still lands on Full history
+   in the form, but its btLastCfg carries no range, so the saved entry it
+   ensures honestly reads 'range not recorded'. btLastCfg is set so the
+   restored config can be Run, then Saved, exactly like a loaded saved
+   config (btFormDirty compares against it). */
 function plLoadDeploy(d){
  const s=BT_SCHEMES.find(x=>x.id===d.scheme);
  if(!s)return;
@@ -3261,13 +3327,14 @@ function plLoadDeploy(d){
  if($('btp_fee_bps'))$('btp_fee_bps').value=d.fee_bps;
  if($('btp_deploy_pct'))$('btp_deploy_pct').value=d.deploy_pct;
  if($('btPair'))$('btPair').value=d.pair;
- btRange='full';
- document.querySelectorAll('[data-btrange]').forEach(x=>{x.classList.toggle('on',x.dataset.btrange==='full');x.setAttribute('aria-pressed',x.dataset.btrange==='full'?'true':'false');});
- $('btCustomRange').style.display='none';
- if($('btFrom'))$('btFrom').value='';
- if($('btTo'))$('btTo').value='';
+ var restoredRange=(d.range==='full'||d.range==='1y'||d.range==='6m'||d.range==='custom')?d.range:((d.from||d.to)?'custom':null); /* N7.13: range-first, like btLoadConfig */
+ btRange=restoredRange||'full';
+ document.querySelectorAll('[data-btrange]').forEach(x=>{x.classList.toggle('on',x.dataset.btrange===btRange);x.setAttribute('aria-pressed',x.dataset.btrange===btRange?'true':'false');});
+ $('btCustomRange').style.display=btRange==='custom'?'grid':'none';
+ if($('btFrom'))$('btFrom').value=(btRange==='custom'&&d.from)?new Date(d.from*1000).toISOString().slice(0,10):'';
+ if($('btTo'))$('btTo').value=(btRange==='custom'&&d.to)?new Date(d.to*1000).toISOString().slice(0,10):'';
  const name=d.name||(s.label+' · '+new Date().toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'}));
- btLastCfg={scheme:d.scheme,params:Object.fromEntries(Object.keys(d.params||{}).map(k=>[k,String(d.params[k])])),pair:d.pair,from:null,to:null,fee_bps:String(d.fee_bps),deploy_pct:String(d.deploy_pct),range:'full',runId:d.runId||null,runAt:d.runAt||null};
+ btLastCfg={scheme:d.scheme,params:Object.fromEntries(Object.keys(d.params||{}).map(k=>[k,String(d.params[k])])),pair:d.pair,from:(d.from==null?null:d.from),to:(d.to==null?null:d.to),fee_bps:String(d.fee_bps),deploy_pct:String(d.deploy_pct),range:restoredRange,runId:d.runId||null,runAt:d.runAt||null};
  btEnsureSavedCfg(btLastCfg,name);
  btSaveReenable(); /* N7.10: a loaded deployment re-enables Save */
  btPaintDeployBtn(); /* N7.11: a loaded deployment repaints Deploy state */
@@ -3291,7 +3358,7 @@ function plCardShell(d,i){
  const paramTxt=Object.keys(d.params||{}).map(k=>k+'='+d.params[k]).join(' · ');
  return '<div class="plcard" id="plcard_'+i+'" data-plid="'+esc(d.id)+'">'
   +'<div class="plhead"><span class="pltitle">'+esc(d.name||label)+'</span></div>'
-  +'<div class="sub">'+esc(label)+(paramTxt?' · '+esc(paramTxt):'')+' · '+esc(plPairLabel(d.pair))+' · fee '+esc(String(d.fee_bps))+'bps · deploy '+esc(String(d.deploy_pct))+'% · deployed '+btDate(d.deployed_at)+(d.runId?' · run <span style="user-select:all">'+esc(d.runId)+'</span>':'')+'</div>'
+  +'<div class="sub">'+esc(label)+(paramTxt?' · '+esc(paramTxt):'')+' · '+esc(plPairLabel(d.pair))+' · fee '+esc(String(d.fee_bps))+'bps · deploy '+esc(String(d.deploy_pct))+'% · '+esc(btRangeLabel(d))+' · deployed '+btDate(d.deployed_at)+(d.runId?' · run <span style="user-select:all">'+esc(d.runId)+'</span>':'')+'</div>'
   +'<div id="plbody_'+i+'"><div class="empty">Loading paper-tracked track record…</div></div>'
   +'<div class="plactions"><button type="button" class="action" data-plloadsave="'+i+'">Load &amp; save</button><button type="button" class="action" data-plrefresh="'+i+'">Refresh</button><button type="button" class="action sell" data-plundeploy="'+i+'">Undeploy</button></div>'
   +'<div class="sub" style="margin-top:6px">Simulated fills at daily closes — not trading. The record lives on this device only.</div>'
