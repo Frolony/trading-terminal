@@ -411,7 +411,7 @@ function formatPriceUsd(value){const n=Number(value);if(!Number.isFinite(n)||n<=
    wallet section — syncMarkDirty() is therefore TDZ-safe (try/catch) and the
    sync state initializes before any save hook can fire. */
 const SYNC_NS_LIST=['settings','slippage','layout','paperlive','btConfigs'];
-let syncState={token:null,pubkey:null,authing:false,pushing:false,timer:0,applying:false,status:'off',stage:null};
+let syncState={token:null,pubkey:null,expiresAt:0,authing:false,pushing:false,timer:0,applying:false,status:'off',stage:null};
 let syncLocalTs={}; // ns -> last applied/pushed updatedAt (ms)
 let syncPushedJson={}; // ns -> JSON of the last pushed local data
 const SYNC_STATUS_WORDS={off:'Sync off',syncing:'Sync — signing in…',synced:'Sync on — settings follow this wallet',offline:'Sync off — sign-in failed; settings stay on this device',tap:'Sync off — tap "Sign in to sync" below to sign in'};
@@ -468,9 +468,9 @@ function syncIsUserRejection(e){const m=String((e&&e.message)||e||'').toLowerCas
    MetaMask wallet is present the toast goes straight to the
    disconnect/reconnect advice. */
 function walletHasMetaMask(){try{const names=[];(wallet._stdList||[]).forEach(w=>{if(w&&w.name)names.push(w.name);});(wallet._adapters||[]).forEach(a=>{if(a&&a.name)names.push(a.name);});(wallet.roster||[]).forEach(e=>{if(e&&e.name)names.push(e.name);});return names.some(n=>String(n).toLowerCase().indexOf('metamask')>=0);}catch(_){return false;}}
-async function syncAuthAndPull(pk,opts){const fromSwitch=!!(opts&&opts.fromSwitch);const wname=(wallet&&wallet.name)||'Wallet';if(syncState.authing)return;if(syncState.token&&syncState.pubkey===pk)return;syncState.authing=true;syncSetStatus('syncing');let stage='challenge';try{const ch=await syncPost({action:'challenge',pubkey:pk});if(!ch||!ch.ok||!ch.nonce) {syncSetStatus('offline','challenge');toast(wname+' sync sign-in failed at the challenge step — the app could not start the sign-in. Your settings stay on this device only. Disconnect and reconnect to retry.');return;}const message=syncChallengeMessage(ch.nonce,ch.issuedAt);const adapter=wallet.adapter;if(!adapter||typeof adapter.signMessage!=='function'){syncSetStatus('offline','signature');toast(wname+' sync unavailable at the signature step — this wallet cannot sign the login challenge. Your settings stay on this device only.');return;}stage='signature';let sig;try{sig=await adapter.signMessage(new TextEncoder().encode(message));}catch(e){if(syncIsUserRejection(e)){syncSetStatus('off');toast("Wallet connected — sync is OFF because the sign-in wasn't approved. Your settings stay on this device only.");return;}if(fromSwitch){syncSetStatus('tap','signature');toast(wname+' sync sign-in needs a tap — the background sign-in did not return a signature. Tap "Sign in to sync" in the wallet menu to sign in from your tap. Your settings stay on this device until then.');return;}syncSetStatus('offline','signature');toast(wname+' sync sign-in failed at the signature step — the signature did not come back.'+(walletHasMetaMask()?" If MetaMask showed a flagged-site warning on the signature request, approve the override and retry; otherwise disconnect and reconnect to retry.":" Disconnect and reconnect to retry.")+' Your settings stay on this device only.');return;}/* N2.3+N4.10: a declined sign-in is reported, never silent — wallet connected, sync off; a non-rejection signature error is a stage failure, not a decline */stage='verification';const au=await syncPost({action:'auth',pubkey:pk,nonce:ch.nonce,signature:syncB64(sig)});if(!au||!au.ok||!au.token){syncSetStatus('offline','verification');toast(wname+' sync sign-in failed at the verification step — the signature did not verify. Your settings stay on this device only. Disconnect and reconnect to retry.');return;}syncState.token=au.token;syncState.pubkey=pk;syncPushedJson={};const pull=await syncGetPull();if(pull&&pull.ok)syncApplyNamespaces(pull.namespaces,pk);syncSetStatus('synced');syncPushNow();/* seeds the server with any local-newer namespaces */}catch(_){syncSetStatus('offline',stage);}finally{syncState.authing=false;}}
-function syncClear(){try{clearTimeout(syncState.timer);}catch(_){}syncState.token=null;syncState.pubkey=null;syncState.authing=false;syncState.pushing=false;syncPushedJson={};syncLocalTs={};syncSetStatus('off');}
-document.addEventListener('walletchange',e=>{try{const d=(e&&e.detail)||{};if(d.connected&&d.publicKey)syncAuthAndPull(d.publicKey,{fromSwitch:!!d.fromSwitch});else if(!d.connected)syncClear();}catch(_){}});
+async function syncAuthAndPull(pk,opts){const fromSwitch=!!(opts&&opts.fromSwitch);const wname=(wallet&&wallet.name)||'Wallet';if(syncState.authing)return;if(syncState.token&&syncState.pubkey===pk)return;syncState.authing=true;syncSetStatus('syncing');let stage='challenge';try{const ch=await syncPost({action:'challenge',pubkey:pk});if(!ch||!ch.ok||!ch.nonce) {syncSetStatus('offline','challenge');toast(wname+' sync sign-in failed at the challenge step — the app could not start the sign-in. Your settings stay on this device only. Disconnect and reconnect to retry.');return;}const message=syncChallengeMessage(ch.nonce,ch.issuedAt);const adapter=wallet.adapter;if(!adapter||typeof adapter.signMessage!=='function'){syncSetStatus('offline','signature');toast(wname+' sync unavailable at the signature step — this wallet cannot sign the login challenge. Your settings stay on this device only.');return;}stage='signature';let sig;try{sig=await adapter.signMessage(new TextEncoder().encode(message));}catch(e){if(syncIsUserRejection(e)){syncSetStatus('off');toast("Wallet connected — sync is OFF because the sign-in wasn't approved. Your settings stay on this device only.");return;}if(fromSwitch){syncSetStatus('tap','signature');toast(wname+' sync sign-in needs a tap — the background sign-in did not return a signature. Tap "Sign in to sync" in the wallet menu to sign in from your tap. Your settings stay on this device until then.');return;}syncSetStatus('offline','signature');toast(wname+' sync sign-in failed at the signature step — the signature did not come back.'+(walletHasMetaMask()?" If MetaMask showed a flagged-site warning on the signature request, approve the override and retry; otherwise disconnect and reconnect to retry.":" Disconnect and reconnect to retry.")+' Your settings stay on this device only.');return;}/* N2.3+N4.10: a declined sign-in is reported, never silent — wallet connected, sync off; a non-rejection signature error is a stage failure, not a decline */stage='verification';const au=await syncPost({action:'auth',pubkey:pk,nonce:ch.nonce,signature:syncB64(sig)});if(!au||!au.ok||!au.token){syncSetStatus('offline','verification');toast(wname+' sync sign-in failed at the verification step — the signature did not verify. Your settings stay on this device only. Disconnect and reconnect to retry.');return;}syncState.token=au.token;syncState.pubkey=pk;syncState.expiresAt=(au.expiresAt?Number(au.expiresAt)*1000:0);syncPushedJson={};const pull=await syncGetPull();if(pull&&pull.ok)syncApplyNamespaces(pull.namespaces,pk);syncSetStatus('synced');try{walletSessionSave();}catch(_){}syncPushNow();/* seeds the server with any local-newer namespaces */}catch(_){syncSetStatus('offline',stage);}finally{syncState.authing=false;}}
+function syncClear(){try{clearTimeout(syncState.timer);}catch(_){}syncState.token=null;syncState.pubkey=null;syncState.expiresAt=0;syncState.authing=false;syncState.pushing=false;syncPushedJson={};syncLocalTs={};syncSetStatus('off');}
+document.addEventListener('walletchange',e=>{try{const d=(e&&e.detail)||{};if(d.connected&&d.publicKey){if(wallet._restoreNoAuth){wallet._restoreNoAuth=false;syncSetStatus('tap');}else syncAuthAndPull(d.publicKey,{fromSwitch:!!d.fromSwitch});}else if(!d.connected)syncClear();}catch(_){}});
 /*__N22_SYNC_END__*/
 /* === N2.7 email accounts (optional sign-in; paper stays open signed-out) ===
    App-data identity (settings + paper), NOT money identity — the wallet
@@ -3740,10 +3740,10 @@ function stdWalletEligible(w){
 }
 function stdWalletAdapter(w){
   const shim={name:w.name,icon:w.icon||null,url:null,readyState:'Installed',_std:w,_account:null,publicKey:null,
-    async connect(){
+    async connect(opts){
       const f=w.features&&w.features['standard:connect'];
       if(!f||typeof f.connect!=='function')throw new Error('standard:connect unavailable');
-      const res=await f.connect();
+      const res=(opts&&opts.silent)?await f.connect({silent:true}):await f.connect();
       const accounts=(res&&res.accounts)||[];
       const acc=accounts.find(a=>a&&a.chains&&(a.chains.indexOf('solana:mainnet')>=0||a.chains.some(c=>c.indexOf('solana:')===0)))||accounts[0];
       if(!acc||!acc.address)throw new Error('no solana account');
@@ -4045,6 +4045,7 @@ function setWalletActive(pk,announce){
   $('ticketNote').textContent='Wallet '+truncateAddr(pk)+' connected · paper mode — no real orders or funds';
   try{document.dispatchEvent(new CustomEvent('walletchange',{detail:{connected:true,publicKey:pk,fromSwitch:true}}));}catch(e){}
   if(announce!==false)toast('Active wallet switched to '+truncateAddr(pk)+' — sync sign-in runs for this wallet.');
+  try{walletSessionSave();}catch(e){} // N2.8: the active wallet is the persisted one
   refreshWalletBalances();
   return true;
 }
@@ -4064,6 +4065,7 @@ function setWalletConnected(a,pk){
   paintWalletSync(); // N2.5: anchor the menu Sync line to live syncState at connect
   $('ticketNote').textContent='Wallet '+truncateAddr(pk)+' connected · paper mode — no real orders or funds';
   try{document.dispatchEvent(new CustomEvent('walletchange',{detail:{connected:true,publicKey:pk}}));}catch(e){}
+  try{walletSessionSave();}catch(e){} // N2.8: a connect persists the session (sync token added by auth when it lands)
 }
 async function connectWallet(a){
   if(wallet._connecting)return; // N2.4: a connected first wallet never blocks connecting a second; setWalletConnected dedupes by pubkey
@@ -4158,6 +4160,7 @@ async function disconnectWallet(pk){
   if(!targetPk)return;
   const entry=walletRosterFind(targetPk);
   if(!entry)return;
+  try{walletSessionForget(targetPk);}catch(e){} // N2.8: an explicit disconnect clears persistence for this wallet — it stays disconnected across refreshes, on both pages
   if(targetPk!==wallet.publicKey){
     wallet.roster=wallet.roster.filter(e=>e.pubkey!==targetPk);
     try{await entry.adapter.disconnect();}catch(e){}
@@ -4254,7 +4257,116 @@ function bindWalletUi(){
   $('paperModeBtn').onclick=()=>setTicketMode('paper');
   $('liveModeBtn').onclick=()=>setTicketMode('live');
 }
-bindWalletUi();
+/* N2.8 (2026-10-26, A78): the wallet session survives a refresh.
+   Carlos's ruling — refresh-disconnect was useful for testing, now it is
+   a bug. What persists, device-local only, under WALLET_SESSION_KEY:
+   the active wallet (pubkey + name + kind), the roster identities, and
+   the sync session (our own 24 h bearer token + its server expiry).
+   NEVER keys, NEVER signatures, NEVER the wallet's own credentials.
+   SILENT RESTORE ONLY: legacy adapters reconnect via adapter.autoConnect()
+   (trusted-only — no popup, ever); standard wallets via shim connect with
+   {silent:true} (the wallet-standard silent flag). An adapter with no
+   autoConnect is skipped, never fallen back to a prompting connect. A
+   locked, revoked, or removed wallet fails quietly into the clean
+   disconnected state with zero error noise, and its persisted entry is
+   kept so a later unlock still restores (an explicit disconnect is the
+   only thing that forgets — walletSessionForget, called by
+   disconnectWallet). SYNC RESUMES SILENTLY while the persisted token is
+   still valid (the server expiry-checks it on pull); an expired, absent,
+   or server-rejected token lands on the honest 'tap' state via the
+   _restoreNoAuth flag in the walletchange listener — never an
+   auto-popup signature request. The /raydium/ page shares this key
+   (see SolanaWalletProvider SessionSync): a connect there persists, a
+   disconnect there forgets, and its autoConnect gate reads this key. */
+const WALLET_SESSION_KEY='gecko-terminal:wallet-session:v1';
+function walletSessionLoad(){
+  try{
+    const raw=localStorage.getItem(WALLET_SESSION_KEY);
+    if(!raw)return null;
+    const j=JSON.parse(raw);
+    if(!j||j.version!==1||!j.active||typeof j.active.pubkey!=='string'||!j.active.pubkey)return null;
+    if(!Array.isArray(j.roster))return null;
+    j.roster=j.roster.filter(e=>e&&typeof e.pubkey==='string'&&e.pubkey);
+    if(!j.roster.some(e=>e.pubkey===j.active.pubkey))j.roster.unshift({pubkey:j.active.pubkey,name:j.active.name||'Wallet',kind:j.active.kind||'adapter'});
+    return j;
+  }catch(e){return null;}
+}
+function walletSessionKind(a){return (a&&a._std)?'standard':'adapter';}
+function walletSessionSave(){
+  try{
+    if(!wallet.connected||!wallet.publicKey)return;
+    const prev=walletSessionLoad();
+    const roster=wallet.roster.map(e=>({pubkey:e.pubkey,name:e.name,kind:walletSessionKind(e.adapter)}));
+    let sync=null;
+    if(syncState.token&&syncState.pubkey===wallet.publicKey)sync={pubkey:syncState.pubkey,token:syncState.token,expiresAtMs:syncState.expiresAt||0};
+    else if(prev&&prev.sync&&prev.sync.pubkey===wallet.publicKey)sync=prev.sync;
+    localStorage.setItem(WALLET_SESSION_KEY,JSON.stringify({version:1,active:{pubkey:wallet.publicKey,name:wallet.name,kind:walletSessionKind(wallet.adapter)},roster:roster,sync:sync}));
+  }catch(e){}
+}
+function walletSessionForget(pk){
+  try{
+    const s=walletSessionLoad();if(!s)return;
+    const roster=s.roster.filter(e=>e.pubkey!==pk);
+    if(!roster.length){localStorage.removeItem(WALLET_SESSION_KEY);return;}
+    const active=(s.active&&s.active.pubkey!==pk)?s.active:roster[0];
+    const sync=(s.sync&&s.sync.pubkey!==pk)?s.sync:null;
+    localStorage.setItem(WALLET_SESSION_KEY,JSON.stringify({version:1,active:active,roster:roster,sync:sync}));
+  }catch(e){}
+}
+function walletSessionClearSync(pk){
+  try{
+    const s=walletSessionLoad();if(!s||!s.sync||s.sync.pubkey!==pk)return;
+    localStorage.setItem(WALLET_SESSION_KEY,JSON.stringify({version:1,active:s.active,roster:s.roster,sync:null}));
+  }catch(e){}
+}
+async function walletRestoreSession(){
+  try{
+    const saved=walletSessionLoad();
+    if(!saved||wallet.connected)return;
+    try{await ensureWalletAdapters();}catch(e){return;}
+    try{await ensureStdWallets();}catch(e){/* adapters-only restore */}
+    try{walletAttachAdapterListeners();}catch(e){}
+    let connectables={};
+    try{walletModalRows();connectables=wallet._connectables||{};}catch(e){}
+    const order=[saved.active].concat(saved.roster.filter(e=>e.pubkey!==saved.active.pubkey));
+    const validSync=!!(saved.sync&&saved.sync.pubkey===saved.active.pubkey&&saved.sync.token&&saved.sync.expiresAtMs&&saved.sync.expiresAtMs>Date.now());
+    if(validSync){syncState.token=saved.sync.token;syncState.pubkey=saved.sync.pubkey;syncState.expiresAt=saved.sync.expiresAtMs;}
+    else wallet._restoreNoAuth=true;
+    let restored=false;
+    for(let i=0;i<order.length;i++){
+      const item=order[i];
+      const a=connectables[item.name]||null;
+      if(!a)continue;
+      try{
+        if(item.kind==='standard'){await a.connect({silent:true});}
+        else if(typeof a.autoConnect==='function'){await a.autoConnect();}
+        else continue;
+        const pk=a.publicKey?a.publicKey.toBase58():null;
+        if(!pk)continue;
+        if(!restored){setWalletConnected(a,pk);}
+        else if(!walletRosterFind(pk)){wallet.roster.push({adapter:a,name:a.name,icon:a.icon,pubkey:pk,balances:{sol:null,usdc:null,usdt:null},balErr:{}});}
+        restored=true;
+      }catch(e){/* silent-only: locked, revoked, or untrusted — no popup, no noise */}
+    }
+    if(!restored){
+      try{syncClear();}catch(e){}
+      wallet._restoreNoAuth=false;
+      return;
+    }
+    try{renderWalletRoster();}catch(e){}
+    try{refreshWalletBalances();}catch(e){}
+    if(validSync&&wallet.publicKey!==saved.active.pubkey){try{syncClear();}catch(e){}syncSetStatus('tap');}
+    else if(validSync){
+      try{
+        const pull=await syncGetPull();
+        if(pull&&pull.ok){syncApplyNamespaces(pull.namespaces,saved.active.pubkey);syncSetStatus('synced');walletSessionSave();}
+        else{try{syncClear();}catch(_){}syncSetStatus('tap');walletSessionClearSync(saved.active.pubkey);}
+      }catch(e){try{syncSetStatus('tap');}catch(_){}}
+    }
+  }catch(e){}
+}
+/*__N28_END__*/
+bindWalletUi();walletRestoreSession();
 /*__N41_WALLET_END__*/
 /* N4.7: honest "Execution path" panel (replaces the old stub panel that implied
    server-side infrastructure which never existed).
