@@ -321,6 +321,7 @@ the brief outline flash marks the landing panel without touching its copy.*/
 <div class="btparams" id="btParams"></div>
 <div class="bthead">Data</div>
 <div class="labgrid"><div class="field"><label>Pair</label><select id="btPair" aria-label="Backtest pair"></select></div></div>
+<div class="sub" id="btPairNote" style="margin-top:6px"></div>
 <div class="amounts" id="btRangeBtns"><button type="button" data-btrange="full" class="on" aria-pressed="true">Full history</button><button type="button" data-btrange="1y" aria-pressed="false">1 year</button><button type="button" data-btrange="6m" aria-pressed="false">6 months</button><button type="button" data-btrange="custom" aria-pressed="false">Custom</button></div>
 <div id="btCustomRange" class="labgrid" style="display:none;margin-top:10px"><div class="field"><label>From</label><input id="btFrom" type="date"></div><div class="field"><label>To</label><input id="btTo" type="date"></div></div>
 <button class="primary" id="btRun" type="button" style="margin-top:14px">Run backtest</button>
@@ -2683,10 +2684,39 @@ const BT_SCHEMES=[
 ];
 const BT_PAIRS=[
  {id:'sol-usd',label:'SOL/USD · Kraken spot (longest history)'},
- {id:'sol-usdc',label:'SOL/USDC · GeckoTerminal DEX pool'},
- {id:'ray-usdc',label:'RAY/USDC · GeckoTerminal DEX pool'},
- {id:'jup-usdc',label:'JUP/USDC · GeckoTerminal DEX pool'},
+ {id:'sol-usdc',label:'SOL/USDC · GeckoTerminal DEX pool',gt:true},
+ {id:'ray-usdc',label:'RAY/USDC · GeckoTerminal DEX pool',gt:true},
+ {id:'jup-usdc',label:'JUP/USDC · GeckoTerminal DEX pool',gt:true},
 ];
+/*__N714_GT_FEED_TRUTH_START__*/
+/* N7.14 (A72, 2026-10-25): the pair selector tells the truth about the down
+   DEX feed. The three GeckoTerminal-sourced pairs are the ones served by the
+   server-side GT ingestion that A57 has blocked since 2026-10-24 (keyless
+   GT 401s from server IPs); the Kraken pair is server-reachable and still
+   runs. The app learns the feed's state from the same signal the user would
+   hit — one GET /api/ohlcv?pair=sol-usdc, the ohlcv path the backtest
+   engine shares — and caches it for one market-feed healthy cadence
+   (marketPollDelay(0) = 30 s). There is NO new polling loop: the probe
+   fires on lab init, on pair-select change when stale, and a run's own
+   outcome refreshes the state (a GT-signal failure marks down, a GT-pair
+   success marks up). Markings clear themselves when a probe succeeds —
+   no code change is needed at A57's resolution. NO data substitution:
+   a GT pair's run never executes on another source's data; the user is
+   warned and chooses, informed. */
+const BT_GT_PROBE_TTL_MS=30000;
+let btGtFeedDown=null,btGtFeedCheckedAt=0,btGtFeedProbing=false;
+function btIsGtPair(id){const p=BT_PAIRS.find(x=>x.id===id);return !!(p&&p.gt);}
+function btPairOptionLabel(p){return p.label+(p.gt&&btGtFeedDown===true?' — data feed down':'');}
+function btPaintPairOptions(){const sel=$('btPair');if(!sel)return;const cur=sel.value;sel.innerHTML=BT_PAIRS.map(p=>'<option value="'+p.id+'">'+esc(btPairOptionLabel(p))+'</option>').join('');if(BT_PAIRS.some(x=>x.id===cur))sel.value=cur;btPaintPairNote();}
+function btPaintPairNote(){const n=$('btPairNote');if(!n)return;const sel=$('btPair');if(!sel||!btIsGtPair(sel.value)||btGtFeedDown!==true){n.textContent='';return;}n.textContent='DEX-pool backtests are unavailable while the GeckoTerminal data feed is down — the server-side ingestion it relies on is blocked. The SOL/USD · Kraken spot pair still runs.';}
+/* Pure: returns null unless the failure is a GT-feed signal (a GeckoTerminal
+   mention, an UPSTREAM_BLOCKED code, or any UPSTREAM error on a GT pair).
+   The headline names the cause + the working alternative; the raw error is
+   kept as detail, never as the headline. */
+function btGtFailureCopy(raw,pairId){const msg=String(raw||'');const gtSignal=msg.indexOf('GeckoTerminal')>=0||msg.indexOf('UPSTREAM_BLOCKED')>=0;if(!gtSignal&&!(btIsGtPair(pairId)&&msg.indexOf('UPSTREAM')>=0))return null;return{headline:'DEX-pool backtests are unavailable right now: the GeckoTerminal data feed the server uses is down (its keyless API blocks server requests). The SOL/USD · Kraken spot pair still runs — switch the Pair selector to it, or retry this pair once the feed is restored.',detail:msg};}
+function btSetGtFeedDown(down){btGtFeedDown=down;btGtFeedCheckedAt=Date.now();btPaintPairOptions();}
+async function btProbeGtFeed(force){if(btGtFeedProbing)return btGtFeedDown;const now=Date.now();if(!force&&btGtFeedDown!==null&&now-btGtFeedCheckedAt<BT_GT_PROBE_TTL_MS)return btGtFeedDown;btGtFeedProbing=true;try{const c=new AbortController(),t=setTimeout(()=>c.abort(),10000);try{const r=await fetch('/api/ohlcv?pair=sol-usdc',{signal:c.signal});const j=await r.json().catch(()=>null);btSetGtFeedDown(!(j&&j.ok===true&&Array.isArray(j.bars)));}catch(e){/* Transport failure is inconclusive about the feed itself (the whole API may be unreachable): leave the last state unmarked rather than blaming the feed. */}finally{clearTimeout(t);}}finally{btGtFeedProbing=false;}return btGtFeedDown;}
+/*__N714_GT_FEED_TRUTH_END__*/
 const BT_CFG_KEY='gecko-backtest-configs-v1';
 // N2.2 hook: configs namespace by wallet address once N4.1 lands; 'paper' until then.
 function btIdentity(){return window.__walletAddress||'paper';}
@@ -2739,11 +2769,12 @@ async function btRun(){
   if(!j||j.ok!==true)throw Error((j&&j.error)?j.error+(j.message?': '+j.message:''):'backtest failed');
   btLastCfg={scheme:c.scheme.id,params:Object.fromEntries(Object.keys(c.params).map(k=>[k,String(c.params[k])])),pair:c.pair,from:c.from,to:c.to,fee_bps:String(c.fee_bps),deploy_pct:String(c.deploy_pct),range:btRange};
   btLastCfg.runId=j.run_id||null;btLastCfg.runAt=j.run_at||null; /* N7.5 */
+  if(btIsGtPair(c.pair))btSetGtFeedDown(false); /* N7.14: a GT-pair run succeeding proves the feed is up — markings clear */
   btSaveReenable(); /* N7.10: a completed run re-enables Save */
   btPaintDeployBtn(); /* N7.11: a completed run repaints Deploy state */
   await btRenderResults(j);
   $('btStatus').textContent='Done · '+(j.cached?'cached result':'fresh result');
- }catch(e){console.error('backtest failed',e);$('btResults').innerHTML='<div class="empty">Backtest failed: '+esc(e.message||e)+'</div>';$('btStatus').textContent='Failed';}
+ }catch(e){console.error('backtest failed',e);const raw=e.message||String(e);const gt=btGtFailureCopy(raw,c.pair);if(gt){if(btIsGtPair(c.pair))btSetGtFeedDown(true);$('btResults').innerHTML='<div class="empty">'+esc(gt.headline)+'</div><div class="sub">Raw error: '+esc(gt.detail)+'</div>';}else{$('btResults').innerHTML='<div class="empty">Backtest failed: '+esc(raw)+'</div>';}$('btStatus').textContent='Failed';}
  finally{clearTimeout(timeout);btRunning=false;}
 }
 /*__BT_DIRTY_CHECK_START__*/
@@ -3126,6 +3157,7 @@ function btLoadConfig(i){
  if($('btp_fee_bps'))$('btp_fee_bps').value=c.fee_bps;
  if($('btp_deploy_pct'))$('btp_deploy_pct').value=c.deploy_pct;
  if(c.pair)$('btPair').value=c.pair;
+ btPaintPairNote(); /* N7.14: a loaded GT pair warns before Run when the feed is down */
  /* N7.13: range-first restore (fixes N7.8's from/to heuristic, which painted
     Custom for saved 1y/6m entries because their runs store trailing-window
     epochs): the saved range mode wins; from/to imply Custom only when no
@@ -3147,7 +3179,9 @@ function btLoadConfig(i){
 function btInit(){
  if(!$('btScheme'))return;
  $('btScheme').innerHTML=BT_SCHEMES.map(s=>'<option value="'+s.id+'">'+esc(s.label)+' · #'+s.no+' '+esc(s.asset)+'</option>').join('');
- $('btPair').innerHTML=BT_PAIRS.map(p=>'<option value="'+p.id+'">'+esc(p.label)+'</option>').join('');
+ btPaintPairOptions(); /* N7.14: GT pairs carry the feed-down marking once probed */
+ if($('btPair'))$('btPair').onchange=()=>{btPaintPairNote();btProbeGtFeed(false);}; /* N7.14: selecting a GT pair warns before Run, and re-probes when stale */
+ btProbeGtFeed(true); /* N7.14: probe on lab init; markings paint when it resolves */
  $('btScheme').onchange=btRenderParams;btRenderParams();
  document.querySelectorAll('[data-btrange]').forEach(b=>b.onclick=()=>{document.querySelectorAll('[data-btrange]').forEach(x=>{x.classList.remove('on');x.setAttribute('aria-pressed','false');});b.classList.add('on');b.setAttribute('aria-pressed','true');btRange=b.dataset.btrange;$('btCustomRange').style.display=btRange==='custom'?'grid':'none';});
  $('btRun').onclick=btRun;
@@ -3334,6 +3368,7 @@ function plLoadDeploy(d){
  if($('btp_fee_bps'))$('btp_fee_bps').value=d.fee_bps;
  if($('btp_deploy_pct'))$('btp_deploy_pct').value=d.deploy_pct;
  if($('btPair'))$('btPair').value=d.pair;
+ btPaintPairNote(); /* N7.14: a deployment-restored GT pair warns before Run when the feed is down */
  var restoredRange=(d.range==='full'||d.range==='1y'||d.range==='6m'||d.range==='custom')?d.range:((d.from||d.to)?'custom':null); /* N7.13: range-first, like btLoadConfig */
  btRange=restoredRange||'full';
  document.querySelectorAll('[data-btrange]').forEach(x=>{x.classList.toggle('on',x.dataset.btrange===btRange);x.setAttribute('aria-pressed',x.dataset.btrange===btRange?'true':'false');});
