@@ -103,7 +103,7 @@
       "result": "Success"
     },
     {
-      "cu": 12401,
+      "cu": 12403,
       "error": "AlreadySignalled",
       "error_code": 6078,
       "instruction": "submit_signal:shadow",
@@ -111,7 +111,7 @@
       "result": "Refused"
     },
     {
-      "cu": 12401,
+      "cu": 12403,
       "error": "AlreadySignalled",
       "error_code": 6078,
       "instruction": "submit_signal:replay",
@@ -382,7 +382,7 @@
       "result": "Success"
     },
     {
-      "cu": 12439,
+      "cu": 12437,
       "error": "BookCapExceeded",
       "error_code": 6053,
       "instruction": "borrow",
@@ -398,7 +398,7 @@
       "result": "Refused"
     },
     {
-      "cu": 14975,
+      "cu": 14977,
       "error": "NoActiveLoan",
       "error_code": 6055,
       "instruction": "settle_default",
@@ -466,11 +466,229 @@
       "instruction": "schedule_whale_exit",
       "note": "slice-6 refusal probe: holder-signed 1,000,000 raw on Committed treasury.exit.v1 transition 5 (window 0, zero snapshot) — FLAG = T/30 over snapshot 0 is zero, so no schedule can be sized; NOT a success CU, schedule success still blocked on a funding path",
       "result": "Refused"
+    },
+    {
+      "cu": 13944,
+      "instruction": "deposit",
+      "note": "slice-7 FIRST success measurement: real SPL Token CPI chain (vault create + InitializeAccount + TransferChecked, 60,000,000 raw, 6 decimals) credits TreasuryState; baseline (no §2.2 EST exists for deposit)",
+      "result": "Success"
+    },
+    {
+      "cu": 10624,
+      "instruction": "post_observation:6",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 13308,
+      "instruction": "register_transition:6",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 10556,
+      "instruction": "open_planning:6",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 24045,
+      "instruction": "submit_plan:6",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 15821,
+      "instruction": "submit_signal:6",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 7921,
+      "instruction": "submit_constraint_report:6",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 8978,
+      "instruction": "reconcile:6",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 17959,
+      "instruction": "commit:6",
+      "note": "slice-7 setup (repeat of the gated instruction)",
+      "result": "Success"
+    },
+    {
+      "cu": 11659,
+      "instruction": "record_evidence:6",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 12965,
+      "instruction": "settle:6",
+      "note": "slice-7 setup (repeat of the gated instruction)",
+      "result": "Success"
+    },
+    {
+      "cu": 25484,
+      "instruction": "open_window:1",
+      "note": "slice-7 setup: window 1 opens on the funded snapshot (total 60,000,000)",
+      "result": "Success"
+    },
+    {
+      "cu": 30040,
+      "instruction": "enroll:1",
+      "note": "slice-7 setup: holder enrolls in funded window 1 (cohort 1, position 30,000,000)",
+      "result": "Success"
+    },
+    {
+      "cu": 10624,
+      "instruction": "post_observation:7",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 13308,
+      "instruction": "register_transition:7",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 10556,
+      "instruction": "open_planning:7",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 25545,
+      "instruction": "submit_plan:7",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 15821,
+      "instruction": "submit_signal:7",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 7921,
+      "instruction": "submit_constraint_report:7",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 8978,
+      "instruction": "reconcile:7",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 17959,
+      "instruction": "commit:7",
+      "note": "slice-7 setup (repeat of the gated instruction)",
+      "result": "Success"
+    },
+    {
+      "cu": 11712,
+      "instruction": "pay_tranche:1",
+      "note": "slice-7 setup: operator-settled tranche on funded window 1 (repeat of the gated instruction)",
+      "result": "Success"
+    },
+    {
+      "cu": 12158,
+      "design_estimate_cu": "7000",
+      "gate": "pass",
+      "gate_2x_band_cu": "3500-14000",
+      "instruction": "borrow",
+      "note": "slice-7 GATED measurement: holder-signed 2,000,000 raw on Committed window flow transition 7 (funded window 1: snapshot 60,000,000, book cap 5,000,000, per-holder cap 15,000,000)",
+      "result": "Success"
+    },
+    {
+      "cu": 10607,
+      "design_estimate_cu": "7000",
+      "gate": "pass",
+      "gate_2x_band_cu": "3500-14000",
+      "instruction": "exit",
+      "note": "slice-7 GATED measurement: holder-signed 1,500,000 raw on Committed window flow transition 7 (funded window 1: 1,000,000 accrued at par + 500,000 excess at flat 13% = 65,000 penalty, 1,435,000 paid; D-10 per-order bound L = 10,000,000)",
+      "result": "Success"
+    },
+    {
+      "cu": 14512,
+      "design_estimate_cu": "7000",
+      "gate": "DESIGN-FINDING",
+      "gate_2x_band_cu": "3500-14000",
+      "instruction": "settle_default",
+      "note": "slice-7 GATED measurement: operator-settled default at maturity 12,187,600 on Committed window flow transition 7 (funded window 1: principal 2,000,000 settles against position, interest forgiven, skip-next-dividend set on the pre-default base)",
+      "result": "Success"
+    },
+    {
+      "cu": 13624,
+      "instruction": "post_observation:8",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 13308,
+      "instruction": "register_transition:8",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 10556,
+      "instruction": "open_planning:8",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 25545,
+      "instruction": "submit_plan:8",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 15821,
+      "instruction": "submit_signal:8",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 7921,
+      "instruction": "submit_constraint_report:8",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 8978,
+      "instruction": "reconcile:8",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 17959,
+      "instruction": "commit:8",
+      "note": "slice-7 setup (repeat of the gated instruction)",
+      "result": "Success"
+    },
+    {
+      "cu": 15841,
+      "design_estimate_cu": "7000",
+      "gate": "DESIGN-FINDING",
+      "gate_2x_band_cu": "3500-14000",
+      "instruction": "schedule_whale_exit",
+      "note": "slice-7 GATED measurement: holder-signed 10,000,000 raw schedule on Committed treasury.exit.v1 transition 8 (funded window 1: FLAG 2,000,000, tranche 2,000,000, count 5, entry window 1, lock_until 13; execution rides the next slice's window walk)",
+      "result": "Success"
     }
   ],
   "mollusk_svm": "0.16.2",
   "program_id": "FPGSeLBWEiFKdTuqDbJeKhjXeah5H4c3rqsW4Tzn3RAS",
-  "program_so_sha256": "616d6becc2ba82f6ca9edeaa276d2c38dabb394babfb9c4b09ded593fb5c1917",
-  "slice": 6,
-  "slice_note": "slice-1 genesis/admin chain + slice-2 full governance lifecycle + slice-3 evidence and exact settle + slice-4 init lifecycle to a settled transition, initialize_treasury, open_window (window 0), enroll, flow lifecycle stopped at commit, and the first GATED value-moving measurement pay_tranche (design §2.2 ~7K EST, 2x band 3.5-14K) + slice-5 blocked-family refusal probes (borrow BookCapExceeded 6053, exit ExitExceedsLiquidity 6060, settle_default NoActiveLoan 6055 — refusal CU, NOT success CU) + slice-6 exit lifecycle stopped at commit and schedule_whale_exit zero-FLAG refusal probe (InvalidScheduleAmount 6065 — refusal CU, NOT success CU); launch_stage2 unmeasured by design (ThresholdUnset, D-2); borrow/exit/settle_default/schedule_whale_exit success CU remain blocked on a funding path that puts a nonzero total into TreasuryState, which no instruction on-chain provides yet"
+  "program_so_sha256": "82759c510ee6a94ad58a023fe82cb060095f3b4188978e7b54ed563cee22efac",
+  "slice": 7,
+  "slice_note": "slices 1-6 as before (slice-5/6 refusal probes stand as the unfunded-chain record) + slice-7 FUNDED chain: real SPL Token deposit (vault create + InitializeAccount + TransferChecked, 60,000,000 raw, 6 decimals) credits TreasuryState, window 1 opens on the funded snapshot (total 60,000,000, exit stock L = 10,000,000, book cap 5,000,000, FLAG 2,000,000), holder enrolls window 1 (position 30,000,000), flow lifecycle stopped at commit, pay_tranche:1, and the FIRST success measurements borrow / exit (1,500,000 = 1,000,000 accrued + 500,000 excess at flat 13% = 65,000 penalty) / settle_default (at maturity 12,187,600) / schedule_whale_exit (10,000,000, tranche 2,000,000, count 5, lock_until 13), each gated §2.2 ~7K (2x band 3,500-14,000); execute_whale_tranche success still unmeasured — it needs an execution window >= lock_until (13), i.e. the next slice's 12-window walk; launch_stage2 unmeasured by design (ThresholdUnset, D-2)",
+  "token_program_id": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+  "token_program_so_sha256": "8190d3f7ceb6cb7a7a8d8924bff89f9f611e15ce1f806f2b6237f3311a98f697"
 }

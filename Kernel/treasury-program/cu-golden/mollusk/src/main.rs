@@ -111,6 +111,12 @@ const NOW2: i64 = 2_000_000; // slice-4 phase C (init lifecycle planning)
 const NOW3: i64 = 3_000_000; // slice-4 phase E (settled window lifecycle planning)
 const NOW4: i64 = 4_000_000; // slice-4 phase G (flow lifecycle planning)
 const NOW5: i64 = 5_000_000; // slice-6 phase H (exit lifecycle planning)
+const NOW6: i64 = 6_000_000; // slice-7 phase I (funded window-open lifecycle planning)
+const NOW7: i64 = 7_000_000; // slice-7 phase J (funded window-flow lifecycle planning)
+const NOW8: i64 = 13_000_000; // slice-7 phase K (funded exit lifecycle planning; after the 60-day loan maturity at 12,187,600)
+const TOKEN_PROGRAM_ID_STR: &str = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
+const UPGRADEABLE_LOADER_ID_STR: &str = "BPFLoaderUpgradeab1e11111111111111111111111";
+const RENT_ID_STR: &str = "SysvarRent111111111111111111111111111111111";
 
 fn disc(name: &str) -> Vec<u8> {
     Sha256::digest(format!("global:{name}").as_bytes())[..8].to_vec()
@@ -245,6 +251,249 @@ fn upsert(accounts: &mut Vec<(Pubkey, Account)>, entry: (Pubkey, Account)) {
     }
 }
 
+/// Slice-7 helper: one full governance lifecycle — observation,
+/// register, planning, plan, signal, constraint, reconcile, commit —
+/// optionally followed by evidence + exact settle (the window-open
+/// source transitions need settle; flow and exit transitions stop
+/// at commit, because executions ride commit). All CU are pushed
+/// to `measured` with the given label suffix (e.g. ":6"). The
+/// caller derives every PDA; this helper only threads accounts.
+#[allow(clippy::too_many_arguments)]
+fn lifecycle_to_commit(
+    mollusk: &mut Mollusk,
+    mut accounts: Vec<(Pubkey, Account)>,
+    measured: &mut Vec<serde_json::Value>,
+    program_id: Pubkey,
+    clock_id: Pubkey,
+    system_id: Pubkey,
+    oracle_record: Pubkey,
+    oracle: Pubkey,
+    proposer_record: Pubkey,
+    proposer: Pubkey,
+    evaluator_record: Pubkey,
+    evaluator: Pubkey,
+    chain: Pubkey,
+    stock: Pubkey,
+    policy: Pubkey,
+    observation: Pubkey,
+    transition: Pubkey,
+    plan: Pubkey,
+    signal: Pubkey,
+    signal_bump: u8,
+    tid: u64,
+    obs_exp: i64,
+    expires: i64,
+    declared: [u8; 32],
+    parent_index: u64,
+    parent_hash: [u8; 32],
+    constraint_c: [u8; 32],
+    now: i64,
+    suffix: &str,
+    settle_evidence: Option<Pubkey>,
+) -> Vec<(Pubkey, Account)> {
+    mollusk.sysvars.clock.unix_timestamp = now;
+    upsert(&mut accounts, mollusk.sysvars.keyed_account_for_clock_sysvar());
+    let mut data = disc("post_observation");
+    data.extend_from_slice(&tid.to_le_bytes());
+    data.extend_from_slice(&now.to_le_bytes());
+    data.extend_from_slice(&obs_exp.to_le_bytes());
+    data.extend_from_slice(&1_000_000u64.to_le_bytes());
+    data.extend_from_slice(&[8u8; 32]);
+    let ix = Instruction::new_with_bytes(
+        program_id,
+        &data,
+        vec![
+            AccountMeta::new(oracle_record, false),
+            AccountMeta::new(oracle, true),
+            AccountMeta::new(observation, false),
+            AccountMeta::new_readonly(system_id, false),
+            AccountMeta::new_readonly(clock_id, false),
+        ],
+    );
+    let (next, cu) = run(&mollusk, &format!("post_observation{suffix}"), &ix, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({"instruction": format!("post_observation{suffix}"), "cu": cu, "result": "Success", "note": "slice-7 setup"}));
+    let mut data = disc("register_transition");
+    data.extend_from_slice(&tid.to_le_bytes());
+    data.extend_from_slice(&tid.to_le_bytes());
+    // The transition type is the policy's type: the caller passes
+    // the policy account, and the type bytes are recovered from
+    // the policy account's data (offset 8: 8 disc + 32 type).
+    let policy_type: [u8; 32] = {
+        let p = accounts.iter().find(|(k, _)| *k == policy).map(|(_, a)| a.clone()).unwrap();
+        p.data[8..40].try_into().unwrap()
+    };
+    data.extend_from_slice(&policy_type);
+    data.extend_from_slice(&expires.to_le_bytes());
+    data.extend_from_slice(&declared);
+    data.extend_from_slice(&parent_index.to_le_bytes());
+    data.extend_from_slice(&parent_hash);
+    data.extend_from_slice(&vec32(&[]));
+    let ix = Instruction::new_with_bytes(
+        program_id,
+        &data,
+        vec![
+            AccountMeta::new_readonly(observation, false),
+            AccountMeta::new_readonly(policy, false),
+            AccountMeta::new(transition, false),
+            AccountMeta::new(proposer, true),
+            AccountMeta::new_readonly(system_id, false),
+            AccountMeta::new_readonly(clock_id, false),
+        ],
+    );
+    let (next, cu) = run(&mollusk, &format!("register_transition{suffix}"), &ix, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({"instruction": format!("register_transition{suffix}"), "cu": cu, "result": "Success", "note": "slice-7 setup"}));
+    let mut data = disc("open_planning");
+    data.extend_from_slice(&tid.to_le_bytes());
+    let ix = Instruction::new_with_bytes(
+        program_id,
+        &data,
+        vec![
+            AccountMeta::new_readonly(proposer_record, false),
+            AccountMeta::new(transition, false),
+            AccountMeta::new_readonly(policy, false),
+            AccountMeta::new(proposer, true),
+            AccountMeta::new_readonly(clock_id, false),
+        ],
+    );
+    let (next, cu) = run(&mollusk, &format!("open_planning{suffix}"), &ix, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({"instruction": format!("open_planning{suffix}"), "cu": cu, "result": "Success", "note": "slice-7 setup"}));
+    let mut data = disc("submit_plan");
+    data.extend_from_slice(&tid.to_le_bytes());
+    data.extend_from_slice(&vec_claims(&[(7u16, 100u64)]));
+    data.extend_from_slice(&expires.to_le_bytes());
+    let ix = Instruction::new_with_bytes(
+        program_id,
+        &data,
+        vec![
+            AccountMeta::new_readonly(proposer_record, false),
+            AccountMeta::new(transition, false),
+            AccountMeta::new_readonly(policy, false),
+            AccountMeta::new(plan, false),
+            AccountMeta::new(proposer, true),
+            AccountMeta::new_readonly(system_id, false),
+            AccountMeta::new_readonly(clock_id, false),
+        ],
+    );
+    let (next, cu) = run(&mollusk, &format!("submit_plan{suffix}"), &ix, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({"instruction": format!("submit_plan{suffix}"), "cu": cu, "result": "Success", "note": "slice-7 setup"}));
+    let mut data = disc("submit_signal");
+    data.extend_from_slice(&tid.to_le_bytes());
+    data.extend_from_slice(&0u32.to_le_bytes());
+    data.extend_from_slice(&1_000_000u64.to_le_bytes());
+    data.extend_from_slice(&1_000_000u64.to_le_bytes());
+    data.extend_from_slice(&[signal_bump]);
+    let ix = Instruction::new_with_bytes(
+        program_id,
+        &data,
+        vec![
+            AccountMeta::new_readonly(proposer_record, false),
+            AccountMeta::new(transition, false),
+            AccountMeta::new_readonly(policy, false),
+            AccountMeta::new(signal, false),
+            AccountMeta::new(proposer, true),
+            AccountMeta::new_readonly(system_id, false),
+        ],
+    );
+    let (next, cu) = run(&mollusk, &format!("submit_signal{suffix}"), &ix, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({"instruction": format!("submit_signal{suffix}"), "cu": cu, "result": "Success", "note": "slice-7 setup"}));
+    let mut data = disc("submit_constraint_report");
+    data.extend_from_slice(&tid.to_le_bytes());
+    data.extend_from_slice(&constraint_c);
+    data.push(0u8);
+    let ix = Instruction::new_with_bytes(
+        program_id,
+        &data,
+        vec![
+            AccountMeta::new_readonly(evaluator_record, false),
+            AccountMeta::new(transition, false),
+            AccountMeta::new(evaluator, true),
+        ],
+    );
+    let (next, cu) = run(&mollusk, &format!("submit_constraint_report{suffix}"), &ix, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({"instruction": format!("submit_constraint_report{suffix}"), "cu": cu, "result": "Success", "note": "slice-7 setup"}));
+    mollusk.sysvars.clock.unix_timestamp = now + PLANNING_WINDOW as i64;
+    upsert(&mut accounts, mollusk.sysvars.keyed_account_for_clock_sysvar());
+    let mut data = disc("reconcile");
+    data.extend_from_slice(&tid.to_le_bytes());
+    let mut metas = vec![
+        AccountMeta::new(transition, false),
+        AccountMeta::new(proposer, true),
+        AccountMeta::new_readonly(clock_id, false),
+    ];
+    metas.push(AccountMeta::new(plan, false));
+    metas.push(AccountMeta::new(stock, false));
+    let ix = Instruction::new_with_bytes(program_id, &data, metas);
+    let (next, cu) = run(&mollusk, &format!("reconcile{suffix}"), &ix, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({"instruction": format!("reconcile{suffix}"), "cu": cu, "result": "Success", "note": "slice-7 setup"}));
+    let mut data = disc("commit");
+    data.extend_from_slice(&tid.to_le_bytes());
+    data.extend_from_slice(&tid.to_le_bytes());
+    let mut metas = vec![
+        AccountMeta::new(transition, false),
+        AccountMeta::new_readonly(policy, false),
+        AccountMeta::new_readonly(observation, false),
+        AccountMeta::new(chain, false),
+        AccountMeta::new(proposer, true),
+        AccountMeta::new_readonly(clock_id, false),
+    ];
+    metas.push(AccountMeta::new(plan, false));
+    metas.push(AccountMeta::new_readonly(proposer_record, false));
+    metas.push(AccountMeta::new(stock, false));
+    let ix = Instruction::new_with_bytes(program_id, &data, metas);
+    let (next, cu) = run(&mollusk, &format!("commit{suffix}"), &ix, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({"instruction": format!("commit{suffix}"), "cu": cu, "result": "Success", "note": "slice-7 setup (repeat of the gated instruction)"}));
+    let tr = accounts.iter().find(|(k, _)| *k == transition).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(tr.data[48], 3u8, "transition {tid} is not COMMITTED");
+    if let Some(evidence) = settle_evidence {
+        let mut data = disc("record_evidence");
+        data.extend_from_slice(&tid.to_le_bytes());
+        data.extend_from_slice(&declared);
+        let ix = Instruction::new_with_bytes(
+            program_id,
+            &data,
+            vec![
+                AccountMeta::new_readonly(oracle_record, false),
+                AccountMeta::new_readonly(transition, false),
+                AccountMeta::new(evidence, false),
+                AccountMeta::new(oracle, true),
+                AccountMeta::new_readonly(system_id, false),
+            ],
+        );
+        let (next, cu) = run(&mollusk, &format!("record_evidence{suffix}"), &ix, &accounts);
+        accounts = next;
+        measured.push(serde_json::json!({"instruction": format!("record_evidence{suffix}"), "cu": cu, "result": "Success", "note": "slice-7 setup"}));
+        let mut data = disc("settle");
+        data.extend_from_slice(&tid.to_le_bytes());
+        data.extend_from_slice(&declared);
+        data.extend_from_slice(&1u32.to_le_bytes());
+        data.extend_from_slice(proposer.as_ref());
+        data.extend_from_slice(&5_000_000i64.to_le_bytes());
+        let mut metas = vec![
+            AccountMeta::new_readonly(oracle_record, false),
+            AccountMeta::new(transition, false),
+            AccountMeta::new_readonly(evidence, false),
+            AccountMeta::new_readonly(oracle, true),
+        ];
+        metas.push(AccountMeta::new(proposer_record, false));
+        metas.push(AccountMeta::new(plan, false));
+        let ix = Instruction::new_with_bytes(program_id, &data, metas);
+        let (next, cu) = run(&mollusk, &format!("settle{suffix}"), &ix, &accounts);
+        accounts = next;
+        measured.push(serde_json::json!({"instruction": format!("settle{suffix}"), "cu": cu, "result": "Success", "note": "slice-7 setup (repeat of the gated instruction)"}));
+        let tr = accounts.iter().find(|(k, _)| *k == transition).map(|(_, a)| a.clone()).unwrap();
+        assert_eq!(tr.data[48], 4u8, "transition {tid} is not SETTLED");
+    }
+    accounts
+}
+
 fn funded() -> Account {
     Account {
         lamports: 10_000_000_000,
@@ -270,6 +519,25 @@ fn main() {
     let system_id = Pubkey::from_str(SYSTEM_ID).unwrap();
     let clock_id = Pubkey::from_str(CLOCK_ID).unwrap();
     let mut mollusk = Mollusk::new(&program_id, "treasury_program");
+    // Slice 7: load the REAL SPL Token program into the SVM so
+    // `deposit` executes a genuine TransferChecked CPI, not a
+    // stub. The ELF is the public deployed program bytes dumped
+    // from devnet (`solana program dump`, a read — no deployment,
+    // no wallet, no funds); its sha256 is recorded in the golden
+    // file. Path via SPL_TOKEN_SO_PATH (set by run-mollusk.sh to
+    // the cu-golden fixture); the loader key is the standard
+    // upgradeable loader, matching mollusk's own default.
+    let token_program_id = Pubkey::from_str(TOKEN_PROGRAM_ID_STR).unwrap();
+    let token_elf_path = std::env::var("SPL_TOKEN_SO_PATH")
+        .unwrap_or_else(|_| "spl-token.so".to_string());
+    let token_elf = std::fs::read(&token_elf_path)
+        .unwrap_or_else(|e| panic!("cannot read SPL Token ELF at {token_elf_path}: {e} (set SPL_TOKEN_SO_PATH)"));
+    let token_elf_sha256 = hex_encode(&Sha256::digest(&token_elf));
+    mollusk.add_program_with_loader_and_elf(
+        &token_program_id,
+        &Pubkey::from_str(UPGRADEABLE_LOADER_ID_STR).unwrap(),
+        &token_elf,
+    );
     mollusk.sysvars.clock.unix_timestamp = NOW0;
 
     let authority = Pubkey::new_from_array([1u8; 32]);
@@ -2264,13 +2532,481 @@ fn main() {
     let ch = accounts.iter().find(|(k, _)| *k == chain).map(|(_, a)| a.clone()).unwrap();
     assert_eq!(u64::from_le_bytes(ch.data[8..16].try_into().unwrap()), 5u64, "chain index moved during schedule_whale_exit probe");
 
+    // ---- Slice 7: FUNDED chain — deposit + borrow / exit / settle_default / schedule_whale_exit SUCCESS CU ----
+    // The funding gap that blocked every success measurement since
+    // slice 5 is closed here by a REAL deposit: the SPL Token
+    // program loaded above executes the vault creation
+    // (system create + InitializeAccount) and the TransferChecked
+    // CPI, and only then does the handler credit TreasuryState.
+    // Nothing is seeded: the funded snapshot below is produced
+    // by this deposit, and the slice-5/6 refusal values stand
+    // untouched as the unfunded-chain record.
+    //
+    // Funded-chain numbers (all raw, all ratio-exact):
+    //   deposit 60,000,000 -> T = 60,000,000, cash = 60,000,000
+    //   window 1 snapshot: total 60,000,000, exit stock L = T/6
+    //     = 10,000,000, book cap max_outstanding = T/12 = 5,000,000,
+    //     whale FLAG = T/30 = 2,000,000
+    //   holder window 1: position 30,000,000
+    //   pay_tranche 1,000,000 -> accrued 1,000,000
+    //   borrow 2,000,000 (<= 50% position 15,000,000; <= book cap
+    //     5,000,000) -> maturity = borrow clock + 60d
+    //   exit 1,500,000 = 1,000,000 accrued + 500,000 excess ->
+    //     penalty 13% x 500,000 = 65,000, paid 1,435,000,
+    //     position 29,500,000, exit stock 8,500,000
+    //   settle_default at maturity -> position 27,500,000,
+    //     loan 0, skip flag set, outstanding 0
+    //   schedule 10,000,000 (>= FLAG 2,000,000, <= position) ->
+    //     tranche min(20% x 10,000,000, FLAG) = 2,000,000, count 5,
+    //     entry window 1, lock_until 13
+    // execute_whale_tranche success is NOT measured here: its
+    // gate needs an execution window >= lock_until (13), i.e. a
+    // 12-window walk from window 1 — that walk is the next slice,
+    // not hidden inside this one.
+    let rent_id = Pubkey::from_str(RENT_ID_STR).unwrap();
+    let depositor = Pubkey::new_from_array([9u8; 32]);
+    let mint = Pubkey::new_from_array([10u8; 32]);
+    let (vault, _) = pda(&[b"vault", mint.as_ref()], &program_id);
+    let (window_state_1, _) = pda(&[b"window", &1u64.to_le_bytes()], &program_id);
+    let (holder_record_1, _) = pda(&[b"holder", &1u64.to_le_bytes(), holder.as_ref()], &program_id);
+    let (exit_schedule_1, _) = pda(&[b"schedule", &1u64.to_le_bytes(), holder.as_ref()], &program_id);
+    let (observation6, _) = pda(&[b"observation", &6u64.to_le_bytes()], &program_id);
+    let (transition6, _) = pda(&[b"transition", &6u64.to_le_bytes()], &program_id);
+    let (plan6, _) = pda(&[b"plan", &6u64.to_le_bytes(), proposer.as_ref()], &program_id);
+    let (signal6, signal6_bump) = pda(
+        &[b"signal", &6u64.to_le_bytes(), &0u32.to_le_bytes(), proposer.as_ref()],
+        &program_id,
+    );
+    let (evidence6, _) = pda(&[b"evidence", &6u64.to_le_bytes()], &program_id);
+    let (observation7, _) = pda(&[b"observation", &7u64.to_le_bytes()], &program_id);
+    let (transition7, _) = pda(&[b"transition", &7u64.to_le_bytes()], &program_id);
+    let (plan7, _) = pda(&[b"plan", &7u64.to_le_bytes(), proposer.as_ref()], &program_id);
+    let (signal7, signal7_bump) = pda(
+        &[b"signal", &7u64.to_le_bytes(), &0u32.to_le_bytes(), proposer.as_ref()],
+        &program_id,
+    );
+    let (observation8, _) = pda(&[b"observation", &8u64.to_le_bytes()], &program_id);
+    let (transition8, _) = pda(&[b"transition", &8u64.to_le_bytes()], &program_id);
+    let (plan8, _) = pda(&[b"plan", &8u64.to_le_bytes(), proposer.as_ref()], &program_id);
+    let (signal8, signal8_bump) = pda(
+        &[b"signal", &8u64.to_le_bytes(), &0u32.to_le_bytes(), proposer.as_ref()],
+        &program_id,
+    );
+    // Token account layouts (SPL Token packed form):
+    //   mint (82B): COption mint_authority [0..36] = None,
+    //     supply [36..44], decimals [44] = 6, initialized [45] = 1,
+    //     COption freeze_authority [46..82] = None.
+    //   token account (165B): mint [0..32], owner [32..64],
+    //     amount [64..72], COption delegate [72..108] = None,
+    //     state [108] = 1 (Initialized), COption is_native
+    //     [109..121] = None, delegated [121..129] = 0,
+    //     COption close_authority [129..165] = None.
+    let mut mint_data = vec![0u8; 82];
+    mint_data[36..44].copy_from_slice(&1_000_000_000u64.to_le_bytes());
+    mint_data[44] = 6;
+    mint_data[45] = 1;
+    let mint_account = Account {
+        lamports: 1_000_000,
+        data: mint_data,
+        owner: token_program_id,
+        executable: false,
+        rent_epoch: 0,
+    };
+    let mut source_data = vec![0u8; 165];
+    source_data[0..32].copy_from_slice(mint.as_ref());
+    source_data[32..64].copy_from_slice(depositor.as_ref());
+    source_data[64..72].copy_from_slice(&100_000_000u64.to_le_bytes());
+    source_data[108] = 1;
+    let source_account = Account {
+        lamports: 1_000_000,
+        data: source_data,
+        owner: token_program_id,
+        executable: false,
+        rent_epoch: 0,
+    };
+    let token_program_account = Account {
+        lamports: 1,
+        data: vec![],
+        owner: Pubkey::from_str(UPGRADEABLE_LOADER_ID_STR).unwrap(),
+        executable: true,
+        rent_epoch: 0,
+    };
+    upsert(&mut accounts, (depositor, funded()));
+    upsert(&mut accounts, (mint, mint_account));
+    upsert(&mut accounts, (token_program_id, token_program_account));
+    upsert(&mut accounts, mollusk.sysvars.keyed_account_for_rent_sysvar());
+    // The source account must be threaded by key: the deposit
+    // instruction names it by its own key, not by a PDA.
+    let source_key = Pubkey::new_from_array([11u8; 32]);
+    upsert(&mut accounts, (source_key, source_account));
+    upsert(&mut accounts, (vault, empty.clone()));
+    upsert(&mut accounts, (window_state_1, empty.clone()));
+    upsert(&mut accounts, (holder_record_1, empty.clone()));
+    upsert(&mut accounts, (exit_schedule_1, empty.clone()));
+    upsert(&mut accounts, (observation6, empty.clone()));
+    upsert(&mut accounts, (transition6, empty.clone()));
+    upsert(&mut accounts, (plan6, empty.clone()));
+    upsert(&mut accounts, (signal6, empty.clone()));
+    upsert(&mut accounts, (evidence6, empty.clone()));
+    upsert(&mut accounts, (observation7, empty.clone()));
+    upsert(&mut accounts, (transition7, empty.clone()));
+    upsert(&mut accounts, (plan7, empty.clone()));
+    upsert(&mut accounts, (signal7, empty.clone()));
+    upsert(&mut accounts, (observation8, empty.clone()));
+    upsert(&mut accounts, (transition8, empty.clone()));
+    upsert(&mut accounts, (plan8, empty.clone()));
+    upsert(&mut accounts, (signal8, empty.clone()));
+
+    // (m) deposit — THE GATED-CLASS FIRST: the first real funding
+    // credit on-chain. No §2.2 EST exists for deposit, so this is
+    // recorded as baseline, not gated — but it is a real SPL CPI
+    // chain (vault create + InitializeAccount + TransferChecked),
+    // and its CU is the deposit cost against the real token
+    // program, not a host estimate.
+    let mut data = disc("deposit");
+    data.extend_from_slice(&60_000_000u64.to_le_bytes());
+    let ix = Instruction::new_with_bytes(
+        program_id,
+        &data,
+        vec![
+            AccountMeta::new(treasury_state, false),
+            AccountMeta::new(depositor, true),
+            AccountMeta::new_readonly(mint, false),
+            AccountMeta::new(source_key, false),
+            AccountMeta::new(vault, false),
+            AccountMeta::new_readonly(token_program_id, false),
+            AccountMeta::new_readonly(rent_id, false),
+            AccountMeta::new_readonly(system_id, false),
+        ],
+    );
+    let (next, cu) = run(&mollusk, "deposit", &ix, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({
+        "instruction": "deposit",
+        "cu": cu,
+        "result": "Success",
+        "note": "slice-7 FIRST success measurement: real SPL Token CPI chain (vault create + InitializeAccount + TransferChecked, 60,000,000 raw, 6 decimals) credits TreasuryState; baseline (no §2.2 EST exists for deposit)",
+    }));
+    let ts = accounts.iter().find(|(k, _)| *k == treasury_state).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(ts.data[8..16].try_into().unwrap()), 60_000_000u64, "TreasuryState total not 60,000,000 after deposit");
+    assert_eq!(u64::from_le_bytes(ts.data[16..24].try_into().unwrap()), 60_000_000u64, "TreasuryState cash not 60,000,000 after deposit");
+    assert_eq!(u64::from_le_bytes(ts.data[56..64].try_into().unwrap()), 1u64, "window_count moved during deposit");
+    let va = accounts.iter().find(|(k, _)| *k == vault).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(va.owner, token_program_id, "vault owner is not the token program after deposit");
+    assert_eq!(u64::from_le_bytes(va.data[64..72].try_into().unwrap()), 60_000_000u64, "vault token amount not 60,000,000 after deposit");
+    assert_eq!(&va.data[32..64], treasury_state.as_ref(), "vault owner is not the TreasuryState PDA after deposit");
+    let sa = accounts.iter().find(|(k, _)| *k == source_key).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(sa.data[64..72].try_into().unwrap()), 40_000_000u64, "source token amount not 40,000,000 after deposit (conservation: 100,000,000 - 60,000,000)");
+    println!("deposit vault lamports={} (rent-exact funding for 165 bytes)", va.lamports);
+
+    // (n) Funded window-open lifecycle, transition 6 (window SHA
+    // policy), parent = chain head (5, [47;32]), through settle.
+    accounts = lifecycle_to_commit(
+        &mut mollusk, accounts, &mut measured,
+        program_id, clock_id, system_id,
+        oracle_record, oracle, proposer_record, proposer, evaluator_record, evaluator,
+        chain, stock, policy_sha,
+        observation6, transition6, plan6, signal6, signal6_bump,
+        6, NOW6 + 1_000_000, NOW6 + 2_000_000, [57u8; 32], 5, [47u8; 32],
+        [9u8; 32], NOW6, ":6", Some(evidence6),
+    );
+    let ch = accounts.iter().find(|(k, _)| *k == chain).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(ch.data[8..16].try_into().unwrap()), 6u64, "chain index not 6 after commit:6");
+    assert_eq!(&ch.data[16..48], &[57u8; 32], "chain hash is not transition 6's declared hash");
+    let st = accounts.iter().find(|(k, _)| *k == stock).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(st.data[10..18].try_into().unwrap()), 999_400u64, "stock not 999,400 after six 100 debits");
+
+    // (o) open_window 1 on settled transition 6: the snapshot is
+    // the FUNDED total, not zero — this is the measurement the
+    // funding gap blocked.
+    let mut data = disc("open_window");
+    data.extend_from_slice(&6u64.to_le_bytes());
+    data.extend_from_slice(&1u64.to_le_bytes());
+    let ix = Instruction::new_with_bytes(
+        program_id,
+        &data,
+        vec![
+            AccountMeta::new(treasury_state, false),
+            AccountMeta::new_readonly(lending_book, false),
+            AccountMeta::new_readonly(transition6, false),
+            AccountMeta::new(window_state_1, false),
+            AccountMeta::new(authority, true),
+            AccountMeta::new_readonly(system_id, false),
+        ],
+    );
+    let (next, cu) = run(&mollusk, "open_window:1", &ix, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({"instruction": "open_window:1", "cu": cu, "result": "Success", "note": "slice-7 setup: window 1 opens on the funded snapshot (total 60,000,000)"}));
+    let ts = accounts.iter().find(|(k, _)| *k == treasury_state).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(ts.data[56..64].try_into().unwrap()), 2u64, "window_count not 2 after open_window:1");
+    let ws1 = accounts.iter().find(|(k, _)| *k == window_state_1).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(ws1.data[16..24].try_into().unwrap()), 60_000_000u64, "window 1 snapshot total not 60,000,000");
+    assert_eq!(u64::from_le_bytes(ws1.data[64..72].try_into().unwrap()), 10_000_000u64, "window 1 exit stock not L = 10,000,000");
+    assert_eq!(u64::from_le_bytes(ws1.data[72..80].try_into().unwrap()), 6u64, "window 1 source transition not 6");
+
+    // (p) enroll the holder into window 1 (cohort 1, position
+    // 30,000,000). Next-window-only entry: window 1 is the
+    // currently open window (counter 2, current = 1).
+    let mut data = disc("enroll");
+    data.extend_from_slice(&1u64.to_le_bytes());
+    data.extend_from_slice(&30_000_000u64.to_le_bytes());
+    let ix = Instruction::new_with_bytes(
+        program_id,
+        &data,
+        vec![
+            AccountMeta::new_readonly(treasury_state, false),
+            AccountMeta::new(window_state_1, false),
+            AccountMeta::new(holder_record_1, false),
+            AccountMeta::new(holder, true),
+            AccountMeta::new_readonly(system_id, false),
+        ],
+    );
+    let (next, cu) = run(&mollusk, "enroll:1", &ix, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({"instruction": "enroll:1", "cu": cu, "result": "Success", "note": "slice-7 setup: holder enrolls in funded window 1 (cohort 1, position 30,000,000)"}));
+    let hr1 = accounts.iter().find(|(k, _)| *k == holder_record_1).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(hr1.data[48..56].try_into().unwrap()), 1u64, "holder window-1 cohort not 1");
+    assert_eq!(u64::from_le_bytes(hr1.data[56..64].try_into().unwrap()), 30_000_000u64, "holder window-1 position not 30,000,000");
+    assert_eq!(hr1.data[89], 1u8, "standing authorization not true at enroll:1");
+
+    // (q) Funded window-flow lifecycle, transition 7 (window SHA
+    // policy), parent = chain head (6, [57;32]), stopped at
+    // commit — executions ride commit.
+    accounts = lifecycle_to_commit(
+        &mut mollusk, accounts, &mut measured,
+        program_id, clock_id, system_id,
+        oracle_record, oracle, proposer_record, proposer, evaluator_record, evaluator,
+        chain, stock, policy_sha,
+        observation7, transition7, plan7, signal7, signal7_bump,
+        7, NOW7 + 1_000_000, NOW7 + 2_000_000, [67u8; 32], 6, [57u8; 32],
+        [9u8; 32], NOW7, ":7", None,
+    );
+    let ch = accounts.iter().find(|(k, _)| *k == chain).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(ch.data[8..16].try_into().unwrap()), 7u64, "chain index not 7 after commit:7");
+    assert_eq!(&ch.data[16..48], &[67u8; 32], "chain hash is not transition 7's declared hash");
+
+    // (r) pay_tranche on transition 7, window 1, 1,000,000 —
+    // repeat of the slice-4 gated instruction on the funded
+    // window (cohort 1 holder, operator-settled).
+    let mut data = disc("pay_tranche");
+    data.extend_from_slice(&7u64.to_le_bytes());
+    data.extend_from_slice(&1u64.to_le_bytes());
+    data.extend_from_slice(holder.as_ref());
+    data.extend_from_slice(&1_000_000u64.to_le_bytes());
+    let ix = Instruction::new_with_bytes(
+        program_id,
+        &data,
+        vec![
+            AccountMeta::new(operator, true),
+            AccountMeta::new_readonly(operator_record, false),
+            AccountMeta::new_readonly(transition7, false),
+            AccountMeta::new_readonly(window_state_1, false),
+            AccountMeta::new(holder_record_1, false),
+        ],
+    );
+    let (next, cu) = run(&mollusk, "pay_tranche:1", &ix, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({"instruction": "pay_tranche:1", "cu": cu, "result": "Success", "note": "slice-7 setup: operator-settled tranche on funded window 1 (repeat of the gated instruction)"}));
+    let hr1 = accounts.iter().find(|(k, _)| *k == holder_record_1).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(hr1.data[64..72].try_into().unwrap()), 1_000_000u64, "accrued dividend not 1,000,000 after pay_tranche:1");
+    assert_eq!(hr1.data[98], 1u8, "tranche_paid flag not set after pay_tranche:1");
+
+    // (s) borrow — FIRST SUCCESS MEASUREMENT (gated §2.2 ~7K,
+    // 2x band 3,500–14,000). Clock is NOW7+3600 = 7,003,600, so
+    // maturity = 7,003,600 + 60d = 12,187,600.
+    let mut data = disc("borrow");
+    data.extend_from_slice(&7u64.to_le_bytes());
+    data.extend_from_slice(&1u64.to_le_bytes());
+    data.extend_from_slice(&2_000_000u64.to_le_bytes());
+    let ix = Instruction::new_with_bytes(
+        program_id,
+        &data,
+        vec![
+            AccountMeta::new(holder, true),
+            AccountMeta::new_readonly(transition7, false),
+            AccountMeta::new_readonly(window_state_1, false),
+            AccountMeta::new(holder_record_1, false),
+            AccountMeta::new(lending_book, false),
+        ],
+    );
+    let (next, cu) = run(&mollusk, "borrow", &ix, &accounts);
+    accounts = next;
+    let gate = if (3_500..=14_000).contains(&cu) { "pass" } else { "DESIGN-FINDING" };
+    measured.push(serde_json::json!({
+        "instruction": "borrow",
+        "cu": cu,
+        "result": "Success",
+        "note": "slice-7 GATED measurement: holder-signed 2,000,000 raw on Committed window flow transition 7 (funded window 1: snapshot 60,000,000, book cap 5,000,000, per-holder cap 15,000,000)",
+        "design_estimate_cu": "7000",
+        "gate_2x_band_cu": "3500-14000",
+        "gate": gate,
+    }));
+    let hr1 = accounts.iter().find(|(k, _)| *k == holder_record_1).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(hr1.data[72..80].try_into().unwrap()), 2_000_000u64, "holder loan not 2,000,000 after borrow");
+    assert_eq!(i64::from_le_bytes(hr1.data[80..88].try_into().unwrap()), 12_187_600i64, "loan maturity not 12,187,600 after borrow");
+    let lb = accounts.iter().find(|(k, _)| *k == lending_book).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(lb.data[8..16].try_into().unwrap()), 2_000_000u64, "lending book outstanding not 2,000,000 after borrow");
+    assert_eq!(u32::from_le_bytes(lb.data[16..20].try_into().unwrap()), 1u32, "lending book active loans not 1 after borrow");
+
+    // (t) exit — FIRST SUCCESS MEASUREMENT (gated §2.2 ~7K,
+    // 2x band 3,500–14,000). 1,500,000 = 1,000,000 accrued at
+    // par + 500,000 excess at the flat 13% door: penalty
+    // 65,000, paid 1,435,000; position 29,500,000 stays above
+    // the 2,000,000 loan; exit stock 10,000,000 -> 8,500,000.
+    let mut data = disc("exit");
+    data.extend_from_slice(&7u64.to_le_bytes());
+    data.extend_from_slice(&1u64.to_le_bytes());
+    data.extend_from_slice(&1_500_000u64.to_le_bytes());
+    let ix = Instruction::new_with_bytes(
+        program_id,
+        &data,
+        vec![
+            AccountMeta::new(holder, true),
+            AccountMeta::new_readonly(transition7, false),
+            AccountMeta::new(window_state_1, false),
+            AccountMeta::new(holder_record_1, false),
+        ],
+    );
+    let (next, cu) = run(&mollusk, "exit", &ix, &accounts);
+    accounts = next;
+    let gate = if (3_500..=14_000).contains(&cu) { "pass" } else { "DESIGN-FINDING" };
+    measured.push(serde_json::json!({
+        "instruction": "exit",
+        "cu": cu,
+        "result": "Success",
+        "note": "slice-7 GATED measurement: holder-signed 1,500,000 raw on Committed window flow transition 7 (funded window 1: 1,000,000 accrued at par + 500,000 excess at flat 13% = 65,000 penalty, 1,435,000 paid; D-10 per-order bound L = 10,000,000)",
+        "design_estimate_cu": "7000",
+        "gate_2x_band_cu": "3500-14000",
+        "gate": gate,
+    }));
+    let hr1 = accounts.iter().find(|(k, _)| *k == holder_record_1).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(hr1.data[64..72].try_into().unwrap()), 0u64, "accrued dividend not consumed by exit");
+    assert_eq!(u64::from_le_bytes(hr1.data[56..64].try_into().unwrap()), 29_500_000u64, "position not 29,500,000 after exit");
+    let ws1 = accounts.iter().find(|(k, _)| *k == window_state_1).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(ws1.data[64..72].try_into().unwrap()), 8_500_000u64, "window 1 exit stock not 8,500,000 after exit");
+
+    // (u) settle_default — FIRST SUCCESS MEASUREMENT (gated
+    // §2.2 ~7K, 2x band 3,500–14,000). Clock advances to the
+    // loan maturity (12,187,600); transition 7 is still
+    // Committed, so it still authorizes the settlement, and
+    // the window binding is the loan's window (1), not a
+    // later window's transition. Position 29,500,000 -
+    // 2,000,000 = 27,500,000; skip-next-dividend set (D-3,
+    // pre-default base 29,500,000 carried on the event).
+    mollusk.sysvars.clock.unix_timestamp = 12_187_600;
+    upsert(&mut accounts, mollusk.sysvars.keyed_account_for_clock_sysvar());
+    let mut data = disc("settle_default");
+    data.extend_from_slice(&7u64.to_le_bytes());
+    data.extend_from_slice(&1u64.to_le_bytes());
+    data.extend_from_slice(holder.as_ref());
+    let ix = Instruction::new_with_bytes(
+        program_id,
+        &data,
+        vec![
+            AccountMeta::new(operator, true),
+            AccountMeta::new_readonly(operator_record, false),
+            AccountMeta::new_readonly(transition7, false),
+            AccountMeta::new_readonly(window_state_1, false),
+            AccountMeta::new(holder_record_1, false),
+            AccountMeta::new(lending_book, false),
+        ],
+    );
+    let (next, cu) = run(&mollusk, "settle_default", &ix, &accounts);
+    accounts = next;
+    let gate = if (3_500..=14_000).contains(&cu) { "pass" } else { "DESIGN-FINDING" };
+    measured.push(serde_json::json!({
+        "instruction": "settle_default",
+        "cu": cu,
+        "result": "Success",
+        "note": "slice-7 GATED measurement: operator-settled default at maturity 12,187,600 on Committed window flow transition 7 (funded window 1: principal 2,000,000 settles against position, interest forgiven, skip-next-dividend set on the pre-default base)",
+        "design_estimate_cu": "7000",
+        "gate_2x_band_cu": "3500-14000",
+        "gate": gate,
+    }));
+    let hr1 = accounts.iter().find(|(k, _)| *k == holder_record_1).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(hr1.data[56..64].try_into().unwrap()), 27_500_000u64, "position not 27,500,000 after settle_default");
+    assert_eq!(u64::from_le_bytes(hr1.data[72..80].try_into().unwrap()), 0u64, "loan not cleared by settle_default");
+    assert_eq!(i64::from_le_bytes(hr1.data[80..88].try_into().unwrap()), 0i64, "maturity not cleared by settle_default");
+    assert_eq!(hr1.data[88], 1u8, "skip-next-dividend flag not set by settle_default");
+    let lb = accounts.iter().find(|(k, _)| *k == lending_book).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(lb.data[8..16].try_into().unwrap()), 0u64, "lending book outstanding not 0 after settle_default");
+    assert_eq!(u32::from_le_bytes(lb.data[16..20].try_into().unwrap()), 0u32, "lending book active loans not 0 after settle_default");
+
+    // (v) Funded exit lifecycle, transition 8 (exit policy),
+    // parent = chain head (7, [67;32]), stopped at commit.
+    accounts = lifecycle_to_commit(
+        &mut mollusk, accounts, &mut measured,
+        program_id, clock_id, system_id,
+        oracle_record, oracle, proposer_record, proposer, evaluator_record, evaluator,
+        chain, stock, policy_exit,
+        observation8, transition8, plan8, signal8, signal8_bump,
+        8, NOW8 + 1_000_000, NOW8 + 2_000_000, [77u8; 32], 7, [67u8; 32],
+        [13u8; 32], NOW8, ":8", None,
+    );
+    let ch = accounts.iter().find(|(k, _)| *k == chain).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(ch.data[8..16].try_into().unwrap()), 8u64, "chain index not 8 after commit:8");
+    assert_eq!(&ch.data[16..48], &[77u8; 32], "chain hash is not transition 8's declared hash");
+
+    // (w) schedule_whale_exit — FIRST SUCCESS MEASUREMENT
+    // (gated §2.2 ~7K, 2x band 3,500–14,000). Total
+    // 10,000,000 >= FLAG 2,000,000 and <= position
+    // 27,500,000: tranche min(20% x 10,000,000, FLAG) =
+    // 2,000,000, count 5, entry window 1, lock_until 13.
+    // Execution itself waits for the next slice's window walk.
+    let mut data = disc("schedule_whale_exit");
+    data.extend_from_slice(&8u64.to_le_bytes());
+    data.extend_from_slice(&1u64.to_le_bytes());
+    data.extend_from_slice(&10_000_000u64.to_le_bytes());
+    let ix = Instruction::new_with_bytes(
+        program_id,
+        &data,
+        vec![
+            AccountMeta::new(holder, true),
+            AccountMeta::new_readonly(transition8, false),
+            AccountMeta::new_readonly(window_state_1, false),
+            AccountMeta::new_readonly(holder_record_1, false),
+            AccountMeta::new(exit_schedule_1, false),
+            AccountMeta::new_readonly(system_id, false),
+        ],
+    );
+    let (next, cu) = run(&mollusk, "schedule_whale_exit", &ix, &accounts);
+    accounts = next;
+    let gate = if (3_500..=14_000).contains(&cu) { "pass" } else { "DESIGN-FINDING" };
+    measured.push(serde_json::json!({
+        "instruction": "schedule_whale_exit",
+        "cu": cu,
+        "result": "Success",
+        "note": "slice-7 GATED measurement: holder-signed 10,000,000 raw schedule on Committed treasury.exit.v1 transition 8 (funded window 1: FLAG 2,000,000, tranche 2,000,000, count 5, entry window 1, lock_until 13; execution rides the next slice's window walk)",
+        "design_estimate_cu": "7000",
+        "gate_2x_band_cu": "3500-14000",
+        "gate": gate,
+    }));
+    let es1 = accounts.iter().find(|(k, _)| *k == exit_schedule_1).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(es1.data[48..56].try_into().unwrap()), 10_000_000u64, "schedule total not 10,000,000");
+    assert_eq!(u64::from_le_bytes(es1.data[56..64].try_into().unwrap()), 2_000_000u64, "schedule tranche not 2,000,000");
+    assert_eq!(u64::from_le_bytes(es1.data[64..72].try_into().unwrap()), 5u64, "schedule tranche count not 5");
+    assert_eq!(u64::from_le_bytes(es1.data[72..80].try_into().unwrap()), 0u64, "schedule executed count not 0 at creation");
+    assert_eq!(u64::from_le_bytes(es1.data[80..88].try_into().unwrap()), 1u64, "schedule entry window not 1");
+    assert_eq!(u64::from_le_bytes(es1.data[88..96].try_into().unwrap()), 13u64, "schedule lock_until window not 13");
+    assert_eq!(u64::from_le_bytes(es1.data[96..104].try_into().unwrap()), 0u64, "schedule last_block_time not 0 at creation");
+    // Slice-7 final state: the funded chain is intact — the
+    // slice-4/5/6 unfunded chain is untouched (window 0
+    // snapshot still 0, holder window-0 record unchanged),
+    // and the funded window-1 chain carries its own state.
+    let hr0 = accounts.iter().find(|(k, _)| *k == holder_record).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(hr0.data[56..64].try_into().unwrap()), 10_000_000u64, "window-0 holder position moved during slice 7");
+    let ws0 = accounts.iter().find(|(k, _)| *k == window_state).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(ws0.data[16..24].try_into().unwrap()), 0u64, "window-0 snapshot moved during slice 7");
+
     let golden = serde_json::json!({
         "harness": "cu-golden-mollusk",
         "mollusk_svm": MOLLUSK_SVM_VERSION,
         "program_id": PROGRAM_ID,
         "program_so_sha256": so_sha256,
-        "slice": 6,
-        "slice_note": "slice-1 genesis/admin chain + slice-2 full governance lifecycle + slice-3 evidence and exact settle + slice-4 init lifecycle to a settled transition, initialize_treasury, open_window (window 0), enroll, flow lifecycle stopped at commit, and the first GATED value-moving measurement pay_tranche (design §2.2 ~7K EST, 2x band 3.5-14K) + slice-5 blocked-family refusal probes (borrow BookCapExceeded 6053, exit ExitExceedsLiquidity 6060, settle_default NoActiveLoan 6055 — refusal CU, NOT success CU) + slice-6 exit lifecycle stopped at commit and schedule_whale_exit zero-FLAG refusal probe (InvalidScheduleAmount 6065 — refusal CU, NOT success CU); launch_stage2 unmeasured by design (ThresholdUnset, D-2); borrow/exit/settle_default/schedule_whale_exit success CU remain blocked on a funding path that puts a nonzero total into TreasuryState, which no instruction on-chain provides yet",
+        "token_program_id": TOKEN_PROGRAM_ID_STR,
+        "token_program_so_sha256": token_elf_sha256,
+        "slice": 7,
+        "slice_note": "slices 1-6 as before (slice-5/6 refusal probes stand as the unfunded-chain record) + slice-7 FUNDED chain: real SPL Token deposit (vault create + InitializeAccount + TransferChecked, 60,000,000 raw, 6 decimals) credits TreasuryState, window 1 opens on the funded snapshot (total 60,000,000, exit stock L = 10,000,000, book cap 5,000,000, FLAG 2,000,000), holder enrolls window 1 (position 30,000,000), flow lifecycle stopped at commit, pay_tranche:1, and the FIRST success measurements borrow / exit (1,500,000 = 1,000,000 accrued + 500,000 excess at flat 13% = 65,000 penalty) / settle_default (at maturity 12,187,600) / schedule_whale_exit (10,000,000, tranche 2,000,000, count 5, lock_until 13), each gated §2.2 ~7K (2x band 3,500-14,000); execute_whale_tranche success still unmeasured — it needs an execution window >= lock_until (13), i.e. the next slice's 12-window walk; launch_stage2 unmeasured by design (ThresholdUnset, D-2)",
         "clock": {"phase_a_unix_timestamp": NOW0, "planning_window_s": PLANNING_WINDOW, "phase_b_unix_timestamp": NOW1},
         "instructions": measured,
     });

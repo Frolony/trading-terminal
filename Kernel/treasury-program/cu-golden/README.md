@@ -412,7 +412,101 @@ the funding blocker: schedule success, borrow/exit/settle_default
 success, and the W3.2 re-expression still wait on Carlos's
 funding-path decision.
 
+## Slice 7: funded chain — deposit + borrow / exit / settle_default / schedule_whale_exit SUCCESS CU (2026-10-26)
+
+The funding gap is closed by a REAL deposit, not a seeded
+snapshot. The harness loads the public SPL Token program bytes
+under the Token program id via mollusk's
+`add_program_with_loader_and_elf`, so `deposit` executes the
+genuine CPI chain: system create + InitializeAccount (owner =
+the TreasuryState PDA) + TransferChecked. The fixture is NOT
+committed to the repo (the GitHub snapshot tool accepts UTF-8
+files only, and the ELF is binary — a 5-path push was refused
+on exactly that file, nothing pushed): `run-mollusk.sh` fetches
+it on demand from devnet with
+`solana program dump TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA`
+— a read of public program data, no deployment, no wallet, no
+funds — and verifies sha256
+`8190d3f7ceb6cb7a7a8d8924bff89f9f611e15ce1f806f2b6237f3311a98f697`
+before measuring, refusing on mismatch; the same sha is
+recorded in the golden file. A scratch build of
+spl-token 4.0.0 from the registry was attempted first and
+abandoned with evidence, not guessed away: under the adopted
+Agave 4.x sbpf target (`target_os` unset) solana-program 1.18's
+`cfg(not(target_os = "solana"))` ark deps leak into the SBF unit
+graph and getrandom 0.3.4 has no sbpf backend (compile error);
+the 2.2.20 cargo (1.84) cannot parse the edition2024 manifests
+in the fresh lock. The devnet dump is the real program, not a
+stub, so the deposit CU below is measured against real token
+execution. (The scratch build directory is retained at
+`hidden_files/spl-token-build/`, outside the repo tree.)
+
+Funded-chain numbers (raw, ratio-exact): deposit 60,000,000
+(6 decimals, source 100,000,000 -> vault 60,000,000, source
+40,000,000, conservation asserted) -> T = cash = 60,000,000;
+window 1 snapshot total 60,000,000, exit stock L = 10,000,000,
+book cap 5,000,000, FLAG 2,000,000; holder window 1 position
+30,000,000; pay_tranche:1 1,000,000 (repeat of the gated
+instruction, 11,712 CU again); borrow 2,000,000 at clock
+7,003,600 (maturity 12,187,600); exit 1,500,000; settle_default
+at maturity; schedule 10,000,000 (tranche 2,000,000, count 5,
+entry window 1, lock_until 13). The vault's rent-exact funding
+is 2,039,280 lamports for 165 bytes, exactly the rent formula
+— asserted by the vault's post-deposit lamports, not assumed.
+
+| instruction | CU | result |
+|---|---|---|
+| `deposit` (60,000,000 raw, real SPL CPI chain) | 13,944 | Success, baseline (no §2.2 EST exists for deposit) |
+| `borrow` (2,000,000 raw, funded window 1) | 12,158 | Success, gate PASS (1.74x the ~7K EST point; inside the 2x band) |
+| `exit` (1,500,000 raw: 1,000,000 accrued + 500,000 excess, penalty 65,000, paid 1,435,000) | 10,607 | Success, gate PASS (1.52x; inside the 2x band) |
+| `settle_default` (at maturity 12,187,600; position 27,500,000, skip flag set) | 14,512 | Success, **DESIGN FINDING** (2.07x the ~7K EST point; 512 CU over the 14,000 band top) |
+| `schedule_whale_exit` (10,000,000 raw; tranche 2,000,000, count 5) | 15,841 | Success, **DESIGN FINDING** (2.26x the ~7K EST point) |
+
+Gate readings, stated plainly. The ~7K EST modeled a thin
+bookkeeping instruction shaped like `pay_tranche`. `borrow`
+and `exit` fit that shape and pass. `settle_default` and
+`schedule_whale_exit` do not: the former touches five
+accounts plus a Clock read and an event with authorization
+context; the latter creates an account (system create CPI)
+and writes nine schedule fields. Both findings are recorded
+in the design doc's §2.2 in the same pass, not tuned away,
+and neither moves the batch arithmetic: neither instruction
+is per-payout batched (one default settlement per default,
+one schedule per whale), so the ~119 payouts/tx figure
+(pay_tranche-driven) stands. The two findings also close
+the slice-5 refusal record honestly: the refusals were the
+unfunded chain's truth, and the successes are the funded
+chain's truth, both measured, neither averaged.
+
+Slice 1–6 reproduction note: the golden file regenerated
+against the post-deposit program .so (sha256 recorded in
+the file; the shipped slice-6 golden was generated against
+the pre-deposit .so). 69 of 73 slice 1–6 entries reproduce
+identically, including every gated value (commit 17,959,
+settle 12,965, pay_tranche 11,712); four entries shift by
+exactly ±2 CU (submit_signal shadow/replay 12,401 -> 12,403,
+borrow refusal 12,439 -> 12,437, settle_default refusal
+14,975 -> 14,977) — the deposit build's codegen footprint
+on the program binary, not a behavior change, and the
+repeat run reproduces the new values exactly.
+
+NOT measured here, by design, not by omission:
+`execute_whale_tranche` success. Its gate needs an
+execution window >= lock_until (13), so it waits for the
+next slice's 12-window walk from window 1 (windows 2..13,
+each with its own Settled window transition + open). The
+schedule created here (entry 1, lock_until 13) is the walk's
+input; the walk measures the tranche, it does not re-create
+the schedule.
+
 ## Next slices
+
+Slice 8 (queue head): the 12-window walk to an
+`execute_whale_tranche` SUCCESS measurement on this slice's
+schedule (execution window 13, tranche 2,000,000, gated
+§2.2 ~7K, 2x band 3,500–14,000), then the W3.2 adversarial
+suite re-expressed against the program's interface with
+measured CU per instruction.
 
 Optimization pass step 2 (ATTEMPTED 2026-10-25, BLOCKED, REVERTED —
 NOT blocked by the funding decision, blocked by the toolchain):
@@ -437,7 +531,9 @@ per-PDA search cost (1,500 CU/attempt; attempts=1 baselines
 Carlos's call, not builder improvisation: (a) accept the search
 cost, (b) an Anchor upgrade, or (c) hand-rolled account creation
 via system-program CPI (drops Anchor's `init` checks — needs its
-own design review). Then, once Carlos rules the funding path:
-`borrow` / `exit` / `settle_default` / `schedule_whale_exit` /
-whale-tranche SUCCESS CU, then the W3.2 adversarial suite
-re-expressed against the program's interface with measured CU.
+own design review). (The funding-path sentence that followed here is
+superseded: the funding path LANDED 2026-10-26 as the deposit
+instruction + token vault, and slice 7 above measures the
+borrow / exit / settle_default / schedule_whale_exit SUCCESS
+CU on it; only the execute_whale_tranche success — the
+12-window walk — and the W3.2 re-expression remain queued.)
