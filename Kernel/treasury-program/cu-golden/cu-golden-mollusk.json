@@ -7,115 +7,115 @@
   "harness": "cu-golden-mollusk",
   "instructions": [
     {
-      "cu": 19109,
+      "cu": 17968,
       "instruction": "initialize_config",
       "note": "slice-1 baseline",
       "result": "Success"
     },
     {
-      "cu": 9927,
+      "cu": 9236,
       "instruction": "register_agent",
       "note": "slice-1 baseline",
       "result": "Success"
     },
     {
-      "cu": 5984,
+      "cu": 6240,
       "instruction": "grant_role",
       "note": "slice-1 baseline",
       "result": "Success"
     },
     {
-      "cu": 9486,
+      "cu": 8812,
       "instruction": "set_capacity",
       "note": "slice-1 baseline",
       "result": "Success"
     },
     {
-      "cu": 6172,
+      "cu": 6393,
       "instruction": "grant_capability",
       "note": "slice-1 baseline",
       "result": "Success"
     },
     {
-      "cu": 9927,
+      "cu": 9236,
       "instruction": "register_agent:proposer",
       "note": "slice-2 setup",
       "result": "Success"
     },
     {
-      "cu": 12927,
+      "cu": 12236,
       "instruction": "register_agent:evaluator",
       "note": "slice-2 setup",
       "result": "Success"
     },
     {
-      "cu": 5986,
+      "cu": 6243,
       "instruction": "grant_role:evaluator",
       "note": "slice-2 setup",
       "result": "Success"
     },
     {
-      "cu": 12927,
+      "cu": 12236,
       "instruction": "register_agent:oracle",
       "note": "slice-2 setup",
       "result": "Success"
     },
     {
-      "cu": 5985,
+      "cu": 6242,
       "instruction": "grant_role:oracle",
       "note": "slice-2 setup",
       "result": "Success"
     },
     {
-      "cu": 10698,
+      "cu": 9880,
       "instruction": "policy_transition",
       "note": "slice-2 setup",
       "result": "Success"
     },
     {
-      "cu": 10791,
+      "cu": 10580,
       "instruction": "post_observation",
       "note": "slice-2 setup",
       "result": "Success"
     },
     {
-      "cu": 14150,
+      "cu": 13221,
       "instruction": "register_transition",
       "note": "slice-2 setup",
       "result": "Success"
     },
     {
-      "cu": 10393,
+      "cu": 10477,
       "instruction": "open_planning",
       "note": "slice-2 setup",
       "result": "Success"
     },
     {
-      "cu": 17715,
+      "cu": 23966,
       "instruction": "submit_plan",
       "note": "slice-2 setup",
       "result": "Success"
     },
     {
-      "cu": 20144,
+      "cu": 19463,
       "instruction": "submit_signal",
       "note": "slice-2 setup",
       "result": "Success"
     },
     {
-      "cu": 7706,
+      "cu": 7842,
       "instruction": "submit_constraint_report",
       "note": "slice-2 setup",
       "result": "Success"
     },
     {
-      "cu": 8652,
+      "cu": 8899,
       "instruction": "reconcile",
       "note": "slice-2 setup",
       "result": "Success"
     },
     {
-      "cu": 17633,
+      "cu": 17876,
       "design_estimate_cu": "25000-40000",
       "gate": "pass",
       "gate_2x_band_cu": "12500-80000",
@@ -124,13 +124,13 @@
       "result": "Success"
     },
     {
-      "cu": 12413,
+      "cu": 11622,
       "instruction": "record_evidence",
       "note": "slice-3 baseline (no §2.2 estimate)",
       "result": "Success"
     },
     {
-      "cu": 12860,
+      "cu": 12845,
       "design_estimate_cu": "8000-12000",
       "gate": "pass",
       "gate_2x_band_cu": "4000-24000",
@@ -139,217 +139,217 @@
       "result": "Success"
     },
     {
-      "cu": 12198,
+      "cu": 11380,
       "instruction": "policy_transition:init",
       "note": "slice-4 setup",
       "result": "Success"
     },
     {
-      "cu": 18291,
+      "cu": 18080,
       "instruction": "post_observation:2",
       "note": "slice-4 setup",
       "result": "Success"
     },
     {
-      "cu": 14150,
+      "cu": 13221,
       "instruction": "register_transition:2",
       "note": "slice-4 setup",
       "result": "Success"
     },
     {
-      "cu": 10393,
+      "cu": 10477,
       "instruction": "open_planning:2",
       "note": "slice-4 setup",
       "result": "Success"
     },
     {
-      "cu": 22215,
+      "cu": 28466,
       "instruction": "submit_plan:2",
       "note": "slice-4 setup",
       "result": "Success"
     },
     {
-      "cu": 17144,
+      "cu": 16463,
       "instruction": "submit_signal:2",
       "note": "slice-4 setup",
       "result": "Success"
     },
     {
-      "cu": 7706,
+      "cu": 7842,
       "instruction": "submit_constraint_report:2",
       "note": "slice-4 setup",
       "result": "Success"
     },
     {
-      "cu": 8652,
+      "cu": 8899,
       "instruction": "reconcile:2",
       "note": "slice-4 setup",
       "result": "Success"
     },
     {
-      "cu": 17633,
+      "cu": 17876,
       "instruction": "commit:2",
       "note": "slice-4 setup (repeat of the gated instruction; the gate was paid at slice 2)",
       "result": "Success"
     },
     {
-      "cu": 16913,
+      "cu": 16122,
       "instruction": "record_evidence:2",
       "note": "slice-4 setup",
       "result": "Success"
     },
     {
-      "cu": 12860,
+      "cu": 12845,
       "instruction": "settle:2",
       "note": "slice-4 setup (repeat of the gated instruction)",
       "result": "Success"
     },
     {
-      "cu": 27485,
+      "cu": 25456,
       "instruction": "initialize_treasury",
       "note": "slice-4 baseline (no §2.2 estimate)",
       "result": "Success"
     },
     {
-      "cu": 12198,
+      "cu": 11380,
       "instruction": "policy_transition:window-sha",
       "note": "slice-4 setup",
       "result": "Success"
     },
     {
-      "cu": 10791,
+      "cu": 10580,
       "instruction": "post_observation:3",
       "note": "slice-4 setup",
       "result": "Success"
     },
     {
-      "cu": 20150,
+      "cu": 19221,
       "instruction": "register_transition:3",
       "note": "slice-4 setup",
       "result": "Success"
     },
     {
-      "cu": 10393,
+      "cu": 10477,
       "instruction": "open_planning:3",
       "note": "slice-4 setup",
       "result": "Success"
     },
     {
-      "cu": 17715,
+      "cu": 23966,
       "instruction": "submit_plan:3",
       "note": "slice-4 setup",
       "result": "Success"
     },
     {
-      "cu": 17144,
+      "cu": 16463,
       "instruction": "submit_signal:3",
       "note": "slice-4 setup",
       "result": "Success"
     },
     {
-      "cu": 7706,
+      "cu": 7842,
       "instruction": "submit_constraint_report:3",
       "note": "slice-4 setup",
       "result": "Success"
     },
     {
-      "cu": 8652,
+      "cu": 8899,
       "instruction": "reconcile:3",
       "note": "slice-4 setup",
       "result": "Success"
     },
     {
-      "cu": 17633,
+      "cu": 17876,
       "instruction": "commit:3",
       "note": "slice-4 setup (repeat of the gated instruction)",
       "result": "Success"
     },
     {
-      "cu": 19913,
+      "cu": 19122,
       "instruction": "record_evidence:3",
       "note": "slice-4 setup",
       "result": "Success"
     },
     {
-      "cu": 12860,
+      "cu": 12845,
       "instruction": "settle:3",
       "note": "slice-4 setup (repeat of the gated instruction)",
       "result": "Success"
     },
     {
-      "cu": 15445,
+      "cu": 14947,
       "instruction": "open_window",
       "note": "slice-4 baseline (no §2.2 estimate)",
       "result": "Success"
     },
     {
-      "cu": 14050,
+      "cu": 27040,
       "instruction": "enroll",
       "note": "slice-4 baseline (no §2.2 estimate)",
       "result": "Success"
     },
     {
-      "cu": 9927,
+      "cu": 9236,
       "instruction": "register_agent:operator",
       "note": "slice-4 setup",
       "result": "Success"
     },
     {
-      "cu": 6172,
+      "cu": 6393,
       "instruction": "grant_capability:operator",
       "note": "slice-4 setup",
       "result": "Success"
     },
     {
-      "cu": 12291,
+      "cu": 12080,
       "instruction": "post_observation:4",
       "note": "slice-4 setup",
       "result": "Success"
     },
     {
-      "cu": 15650,
+      "cu": 14721,
       "instruction": "register_transition:4",
       "note": "slice-4 setup",
       "result": "Success"
     },
     {
-      "cu": 10393,
+      "cu": 10477,
       "instruction": "open_planning:4",
       "note": "slice-4 setup",
       "result": "Success"
     },
     {
-      "cu": 20715,
+      "cu": 26966,
       "instruction": "submit_plan:4",
       "note": "slice-4 setup",
       "result": "Success"
     },
     {
-      "cu": 30644,
+      "cu": 29963,
       "instruction": "submit_signal:4",
       "note": "slice-4 setup",
       "result": "Success"
     },
     {
-      "cu": 7706,
+      "cu": 7842,
       "instruction": "submit_constraint_report:4",
       "note": "slice-4 setup",
       "result": "Success"
     },
     {
-      "cu": 8652,
+      "cu": 8899,
       "instruction": "reconcile:4",
       "note": "slice-4 setup",
       "result": "Success"
     },
     {
-      "cu": 17633,
+      "cu": 17876,
       "instruction": "commit:4",
       "note": "slice-4 setup (repeat of the gated instruction)",
       "result": "Success"
     },
     {
-      "cu": 11703,
+      "cu": 11675,
       "design_estimate_cu": "7000",
       "gate": "pass",
       "gate_2x_band_cu": "3500-14000",
@@ -358,7 +358,7 @@
       "result": "Success"
     },
     {
-      "cu": 11948,
+      "cu": 12400,
       "error": "BookCapExceeded",
       "error_code": 6053,
       "instruction": "borrow",
@@ -366,7 +366,7 @@
       "result": "Refused"
     },
     {
-      "cu": 9893,
+      "cu": 10427,
       "error": "ExitExceedsLiquidity",
       "error_code": 6060,
       "instruction": "exit",
@@ -374,7 +374,7 @@
       "result": "Refused"
     },
     {
-      "cu": 14575,
+      "cu": 14938,
       "error": "NoActiveLoan",
       "error_code": 6055,
       "instruction": "settle_default",
@@ -382,61 +382,61 @@
       "result": "Refused"
     },
     {
-      "cu": 10698,
+      "cu": 9880,
       "instruction": "policy_transition:exit",
       "note": "slice-6 setup",
       "result": "Success"
     },
     {
-      "cu": 12291,
+      "cu": 12080,
       "instruction": "post_observation:5",
       "note": "slice-6 setup",
       "result": "Success"
     },
     {
-      "cu": 14150,
+      "cu": 13221,
       "instruction": "register_transition:5",
       "note": "slice-6 setup",
       "result": "Success"
     },
     {
-      "cu": 10393,
+      "cu": 10477,
       "instruction": "open_planning:5",
       "note": "slice-6 setup",
       "result": "Success"
     },
     {
-      "cu": 22215,
+      "cu": 28466,
       "instruction": "submit_plan:5",
       "note": "slice-6 setup",
       "result": "Success"
     },
     {
-      "cu": 18644,
+      "cu": 17963,
       "instruction": "submit_signal:5",
       "note": "slice-6 setup",
       "result": "Success"
     },
     {
-      "cu": 7706,
+      "cu": 7842,
       "instruction": "submit_constraint_report:5",
       "note": "slice-6 setup",
       "result": "Success"
     },
     {
-      "cu": 8652,
+      "cu": 8899,
       "instruction": "reconcile:5",
       "note": "slice-6 setup",
       "result": "Success"
     },
     {
-      "cu": 17633,
+      "cu": 17876,
       "instruction": "commit:5",
       "note": "slice-6 setup (repeat of the gated instruction)",
       "result": "Success"
     },
     {
-      "cu": 16017,
+      "cu": 15017,
       "error": "InvalidScheduleAmount",
       "error_code": 6065,
       "instruction": "schedule_whale_exit",
@@ -446,7 +446,7 @@
   ],
   "mollusk_svm": "0.16.2",
   "program_id": "FPGSeLBWEiFKdTuqDbJeKhjXeah5H4c3rqsW4Tzn3RAS",
-  "program_so_sha256": "a447e9074a049e18a96f05a97f7ae72ef7ceb15ea3882989d92ac181cfd8c4fc",
+  "program_so_sha256": "e6dfb548cf5026e0427c1c906c32ad71ffa864fb56d85348471112483d21c87d",
   "slice": 6,
   "slice_note": "slice-1 genesis/admin chain + slice-2 full governance lifecycle + slice-3 evidence and exact settle + slice-4 init lifecycle to a settled transition, initialize_treasury, open_window (window 0), enroll, flow lifecycle stopped at commit, and the first GATED value-moving measurement pay_tranche (design §2.2 ~7K EST, 2x band 3.5-14K) + slice-5 blocked-family refusal probes (borrow BookCapExceeded 6053, exit ExitExceedsLiquidity 6060, settle_default NoActiveLoan 6055 — refusal CU, NOT success CU) + slice-6 exit lifecycle stopped at commit and schedule_whale_exit zero-FLAG refusal probe (InvalidScheduleAmount 6065 — refusal CU, NOT success CU); launch_stage2 unmeasured by design (ThresholdUnset, D-2); borrow/exit/settle_default/schedule_whale_exit success CU remain blocked on a funding path that puts a nonzero total into TreasuryState, which no instruction on-chain provides yet"
 }

@@ -25,6 +25,15 @@ in-process and records real CU; it is the harness of record for
 measured CU, and the validator path is retained only as a fallback
 shape, not a measurement source.
 
+**ADOPTION NOTE (2026-10-25, Anchor 1.2.1): the figures in the STATUS paragraph above are the
+Anchor 0.31 dataset, now superseded. `cu-golden-mollusk.json` was regenerated under Anchor 1.2.1 /
+Solana 4.1.2 (platform-tools v1.54) in the adoption pass: 70/70 entries, same result family,
+every value shifted by new codegen. Current key figures: `commit` 17,876 CU, `settle` 12,845 CU,
+`pay_tranche` 11,675 CU, `submit_signal` 16,463–29,963 CU, slice-5 refusals `borrow` 12,400 /
+`exit` 10,427 / `settle_default` 14,938 CU, slice-6 `schedule_whale_exit` refusal 15,017 CU,
+`enroll` 27,040 CU, `submit_plan` +6,251 CU at every call site. The design doc's §2.2 carries
+the same figures; this README's STATUS paragraph is retained as the 0.31 record.**
+
 ## Sandbox findings (2026-10-25, proven, not guessed)
 
 - Validator boots and answers RPC: `getHealth` ok, `getVersion`

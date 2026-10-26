@@ -318,9 +318,22 @@ than 2× is a design finding — reported, never tuned away silently. CU
 measurement lands with the instruction families (local-validator harness);
 this skeleton's tests are pure-constant checks only.
 
-**Toolchain:** Anchor 0.31.0, Solana 2.2.20 (platform-tools v1.48 /
-rustc 1.84.1; 2.1.21 kept at `~/workspace/toolchains/solana-2.1.21/` for
-rollback), rustc 1.99.1 host (see `~/TOOLS.md`).
+**Toolchain (ADOPTED 2026-10-25, Carlos's 17:18 CST upgrade ruling):** Anchor 1.2.1, Solana 4.1.2
+(platform-tools v1.54 / SBF rustc 1.89.0; 2.2.20 kept at
+`~/workspace/toolchains/solana-2.2.20/` for rollback, 0.31 Anchor binary kept at
+`~/workspace/toolchains/anchor-0.31/`), rustc 1.99.1 host (see `~/TOOLS.md`).
+The 1.2.1 patch is one API rename: a `sha256_bytes` helper via pinned sha2 0.10.8
+replacing all 8 `solana_program::hash` call sites (1.2.1's re-export set has no `hash`
+module) — semantics identical, IDL unchanged (36/17/78), host tests 78/78 (the 0.31
+framework-generated `test_id` is absent under 1.2.1, not a program regression). Anchor
+1.2.1, like 0.31, rejects explicit-bump `init` at parse time — step 2 of the
+`submit_signal` optimization therefore proceeds as the hand-rolled mechanism Carlos
+ruled for on 2026-10-25 ~18:54 CST (research + design note first, no code before his
+review), not as an Anchor-form change. Invoke the 1.2.1 CLI by absolute path
+(`~/workspace/toolchains/anchor/bin/anchor` after promotion; the scratch binary at
+`~/workspace/toolchains/anchor-1x-scratch/bin/anchor` is the same from-source build) —
+never via the AVM shim on PATH, which resolves versions through AVM's registry and
+reports the version "not installed" for a from-source CLI.
 The SBF pin set (incl. the vendored `patches/cpufeatures`) is the proven
 W3.3 mock set. This project is self-contained: the patch path is relative,
 so it builds without the W3.3 scratch directories.

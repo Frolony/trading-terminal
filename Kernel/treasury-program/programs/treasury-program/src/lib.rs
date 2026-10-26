@@ -4326,6 +4326,16 @@ pub fn validate_policy(
 /// declared hash; at execution the handler recomputes it from the
 /// supplied values and refuses any mismatch.
 #[allow(clippy::too_many_arguments)]
+/// SHA-256 of `data` as a 32-byte array (Anchor 1.x migration: the old
+/// `anchor_lang::solana_program::hash` module does not exist in the 1.2.1
+/// re-export set — the Solana v3 crate split moved hashing out of
+/// `solana_program`. Semantics identical: SHA-256, same bytes the old
+/// `hash(...).to_bytes()` produced, via the program's pinned sha2 0.10.8.
+fn sha256_bytes(data: &[u8]) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(data).into()
+}
+
 pub fn policy_payload_hash(
     target_type: [u8; 32],
     quorum_required: u64,
@@ -4356,7 +4366,7 @@ pub fn policy_payload_hash(
         bytes.extend_from_slice(&cap.id);
         bytes.extend_from_slice(&cap.min_weight.to_le_bytes());
     }
-    anchor_lang::solana_program::hash::hash(&bytes).to_bytes()
+    sha256_bytes(&bytes)
 }
 
 /// The `apply_policy_amendment` gate, as a pure check (design §4.1):
@@ -4968,7 +4978,7 @@ pub fn roster_hash_update(old: [u8; 32], holder: Pubkey, position_raw: u64) -> [
     bytes.extend_from_slice(&old);
     bytes.extend_from_slice(holder.as_ref());
     bytes.extend_from_slice(&position_raw.to_le_bytes());
-    anchor_lang::solana_program::hash::hash(&bytes).to_bytes()
+    sha256_bytes(&bytes)
 }
 
 /// Event for [`treasury_program::submit_constraint_report`] (design
@@ -5397,7 +5407,7 @@ pub fn claims_hash(claims: &[Claim]) -> [u8; 32] {
         bytes.extend_from_slice(&claim.resource_id.to_le_bytes());
         bytes.extend_from_slice(&claim.amount.to_le_bytes());
     }
-    anchor_lang::solana_program::hash::hash(&bytes).to_bytes()
+    sha256_bytes(&bytes)
 }
 
 /// Event for [`treasury_program::submit_plan`] (design §4.1): the
@@ -8920,8 +8930,7 @@ mod tests {
         // an arbitrary constant: recompute it here from the string.
         assert_eq!(
             POLICY_TRANSITION_TYPE,
-            anchor_lang::solana_program::hash::hash(b"treasury.policy.v1")
-                .to_bytes()
+            sha256_bytes(b"treasury.policy.v1")
         );
     }
 
@@ -9210,7 +9219,7 @@ mod tests {
         // type id. (Cross-checked: this hash function reproduces the
         // existing POLICY_TRANSITION_TYPE bytes for its own tag.)
         let computed =
-            anchor_lang::solana_program::hash::hash(b"treasury.init.v1").to_bytes();
+            sha256_bytes(b"treasury.init.v1");
         assert_eq!(TREASURY_INIT_TYPE, computed);
         assert_ne!(TREASURY_INIT_TYPE, POLICY_TRANSITION_TYPE);
     }
@@ -9238,7 +9247,7 @@ mod tests {
         // reproduces the existing POLICY_TRANSITION_TYPE and
         // TREASURY_INIT_TYPE bytes for their own tags.)
         let computed =
-            anchor_lang::solana_program::hash::hash(b"treasury.launch.v1").to_bytes();
+            sha256_bytes(b"treasury.launch.v1");
         assert_eq!(TREASURY_LAUNCH_TYPE, computed);
         assert_ne!(TREASURY_LAUNCH_TYPE, TREASURY_INIT_TYPE);
         assert_ne!(TREASURY_LAUNCH_TYPE, POLICY_TRANSITION_TYPE);
@@ -9273,7 +9282,7 @@ mod tests {
         // trusted as a literal — the same discipline as the init,
         // launch, and policy type ids.
         let computed =
-            anchor_lang::solana_program::hash::hash(b"treasury.window.v1").to_bytes();
+            sha256_bytes(b"treasury.window.v1");
         assert_eq!(TREASURY_WINDOW_TYPE, computed);
         assert_ne!(TREASURY_WINDOW_TYPE, TREASURY_LAUNCH_TYPE);
         assert_ne!(TREASURY_WINDOW_TYPE, TREASURY_INIT_TYPE);
@@ -9419,7 +9428,7 @@ mod tests {
         // id is recomputed from the string, never a trusted literal.
         assert_eq!(
             OPERATOR_SETTLE,
-            anchor_lang::solana_program::hash::hash(b"operator.settle").to_bytes()
+            sha256_bytes(b"operator.settle")
         );
     }
 
