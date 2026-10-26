@@ -730,14 +730,71 @@ both gated exits confirm the exit family's figure within 1 CU; deposit has no §
 As in every slice, `exit` here is bookkeeping, not token movement; `deposit` moves real
 tokens via the SPL CPI.
 
+## Slice 14: the remaining §4.2 row `reinvest` (design §4.2, engine-sim T8) (2026-10-26)
+
+The first program change since the golden campaign's funded chain froze:
+`reinvest` lands as a holder-signed instruction gated by a Committed
+`treasury.window.v1` transition (IDL 37 → 38 instructions, 85 → 88 errors
+— the three new errors appended at the end of the enum, 6085
+`ReinvestMismatch` / 6086 `InvalidReinvestAmount` / 6087
+`ReinvestExceedsAccrued`, so no existing error code moves — accounts 16,
+program host tests 82 → 83 with the new `reinvest_gate_matrix`, new
+`Reinvested` event). The reading implemented, stated plainly because the
+design row is one line ("claims no cash; increases the position"): the
+reinvested amount comes out of the holder's accrued unpaid dividend on
+THIS record and into the same record's locked position — accrued falls
+by exactly the amount, position rises by exactly the amount, nothing else
+moves. A partial reinvest is allowed; an amount above the accrued
+dividend refuses, never a partial reinvest of a larger request. No exit
+stock is debited (the stock is the period budget for cash exits, and a
+reinvest pays no cash), no penalty is taken (the 13% door prices cash
+extraction above the allowance), and no TreasuryState total moves
+(`pay_tranche` already accounted the dividend; reinvesting re-labels it
+as position, it does not create value). Reinvesting a BORROWED amount
+(Carlos's 2026-10-22 window-rule phrasing) is NOT this instruction: a
+loan's principal is cash disbursed from the sleeve, and folding it back
+into the locked position would tangle the loan's settlement against
+that same position — that reading needs its own ruling and its own
+instruction, and is not claimed here.
+
+Measured on the slice-13 chain (holder 27's tranche is spent, so fresh
+holder 29 enrolls in the still-current window 14, collects a 1,000,000
+tranche on Committed window-flow transition 7, and reinvests it in two
+parts):
+
+| instruction | CU | result |
+|---|---|---|
+| `enroll:14holder29` (5,000,000, cohort 2) | 28,542 | Success, setup |
+| `pay_tranche:14holder29` (1,000,000) | 11,712 | Success, gate PASS — exactly the slice-12 figure |
+| `reinvest:14partial` (400,000 of 1,000,000 accrued) | 9,310 | Success, gate PASS — accrued 1,000,000 -> 600,000, position 5,000,000 -> 5,400,000, window 14 exit stock UNCHANGED at 8,000,000, TreasuryState UNCHANGED |
+| `reinvest:14over_accrued` (600,001 of 600,000 accrued) | 9,979 | Refused `ReinvestExceedsAccrued` (6087), state unchanged, NOT a success CU |
+| `reinvest:14rest` (600,000 of 600,000 accrued) | 9,310 | Success, gate PASS — accrued -> 0, position -> 6,000,000, stock still 8,000,000 |
+| `reinvest:14zero` (0) | 9,944 | Refused `InvalidReinvestAmount` (6086), NOT a success CU |
+
+Re-baseline, stated not hidden: adding an instruction re-measures slices
+1–13 against the new .so (sha `e0f40adf…`, was `82759c51…`), and 112 of
+the 278 prior entries shift by −4…+6 CU (code-layout jitter from the
+larger binary) — with ZERO gate flips and no design-finding status
+change. The §2.2 canonical figures are updated to the slice-14
+measurements in the same pass (commit 17,959 → 17,963, borrow 12,158 →
+12,162, schedule_whale_exit 15,841 → 15,839; pay_tranche 11,712, exit
+10,607, settle_default 14,512, execute_whale_tranche 16,360 unchanged),
+per Carlos's measured-figures directive. Final state: T and cash
+70,000,000, window_count 15, window 14 stock 8,000,000, window 13 stock
+4,000,000, window 1 stock 0, whale schedule untouched (2 blocks,
+last_block_time 31,608,400), clock 37,003,600, FeeVault collected_raw
+still 0 (collect_fees still unbuilt; reinvest touches no fees). Golden
+file 284 entries. As in every slice, `reinvest` here is bookkeeping,
+not token movement.
+
 ## Next slices
 
 Queue head, continued: the W3.2 adversarial suite re-expressed against
 the program's interface with measured CU per instruction — next the
-remaining §4.2 rows (reinvest, collect_fees — the latter completes the
-fee-flow class this slice half-proved) and the carried Part B4 items in
-roadmap order (including the skip-enforcement item slice 11 confirmed
-open, and the open_window source-transition consumption fix).
+remaining §4.2 row (`collect_fees` — it completes the fee-flow class
+slice 13 half-proved) and the carried Part B4 items in roadmap order
+(including the skip-enforcement item slice 11 confirmed open, and the
+open_window source-transition consumption fix).
 
 Optimization pass step 2 (ATTEMPTED 2026-10-25, BLOCKED, REVERTED —
 NOT blocked by the funding decision, blocked by the toolchain):

@@ -4236,6 +4236,226 @@ fn main() {
     let fv13f = accounts.iter().find(|(k, _)| *k == fee_vault).map(|(_, a)| a.clone()).unwrap();
     assert_eq!(u64::from_le_bytes(fv13f.data[8..16].try_into().unwrap()), 0u64, "FeeVault collected_raw not 0 after slice 13 (collect_fees is unbuilt; a nonzero value here would mean an undocumented collection path)");
 
+    // ---- Slice 14: the remaining §4.2 row `reinvest` (design §4.2, engine-sim T8) ----
+    // The program changed under this slice (new instruction, IDL 37 -> 38, errors
+    // 85 -> 88, .so sha 82759c51... -> e0f40adf...), so slices 1-13 are re-measured
+    // here against the new .so and the diff against the slice-13 golden is reported
+    // in the run log — a program change must never silently re-baseline a golden
+    // file. The reading implemented, stated plainly because the design row is one
+    // line ("claims no cash; increases the position"): the reinvested amount comes
+    // out of the holder's accrued unpaid dividend on THIS record and into the same
+    // record's locked position — accrued falls by exactly the amount, position rises
+    // by exactly the amount, nothing else moves. A partial reinvest is allowed; an
+    // amount above the accrued dividend refuses with ReinvestExceedsAccrued (6087),
+    // never a partial reinvest of a larger request. No exit stock is debited (the
+    // stock is the period budget for cash exits, and a reinvest pays no cash), no
+    // penalty is taken (the 13% door prices cash extraction above the allowance),
+    // and no TreasuryState total moves (pay_tranche already accounted the dividend;
+    // reinvesting re-labels it as position, it does not create value). Holder 27
+    // cannot carry this slice — slice 13 consumed its whole tranche — so a fresh
+    // holder 29 enrolls in the still-current window 14, collects a 1,000,000 tranche
+    // on Committed window-flow transition 7, and reinvests it in two parts.
+    // (a) holder 29 enrolls in window 14 (setup): cohort 2 (14 % 12), position 5,000,000.
+    let holder_29 = Pubkey::new_from_array([29u8; 32]);
+    let (holder_record_29_14, _) = pda(&[b"holder", &14u64.to_le_bytes(), holder_29.as_ref()], &program_id);
+    upsert(&mut accounts, (holder_29, funded()));
+    upsert(&mut accounts, (holder_record_29_14, empty.clone()));
+    let mut data14a = disc("enroll");
+    data14a.extend_from_slice(&14u64.to_le_bytes());
+    data14a.extend_from_slice(&5_000_000u64.to_le_bytes());
+    let ix14a = Instruction::new_with_bytes(
+        program_id,
+        &data14a,
+        vec![
+            AccountMeta::new_readonly(treasury_state, false),
+            AccountMeta::new(window_state_14, false),
+            AccountMeta::new(holder_record_29_14, false),
+            AccountMeta::new(holder_29, true),
+            AccountMeta::new_readonly(system_id, false),
+        ],
+    );
+    let (next, cu) = run(&mollusk, "enroll:14holder29", &ix14a, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({"instruction": "enroll:14holder29", "cu": cu, "result": "Success", "note": "slice-14 setup: holder 29 enrolls in the current window 14 (cohort 2, position 5,000,000) — the reinvest subject; holder 27's tranche is spent, so a fresh record is required"}));
+    let hr14a = accounts.iter().find(|(k, _)| *k == holder_record_29_14).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(hr14a.data[48..56].try_into().unwrap()), 2u64, "holder 29 cohort not 2 (14 % 12)");
+    assert_eq!(u64::from_le_bytes(hr14a.data[56..64].try_into().unwrap()), 5_000_000u64, "holder 29 position not 5,000,000 after enroll:14holder29");
+    assert_eq!(hr14a.data[89], 1u8, "holder 29 standing authorization not true at enroll:14holder29");
+    // (b) the fresh cohort's tranche: pay_tranche 1,000,000 on holder 29 in window 14
+    // (slot 14 % 12 = 2, holder cohort 2) on Committed window-flow transition 7, gated §2.2 ~7K.
+    let mut data14b = disc("pay_tranche");
+    data14b.extend_from_slice(&7u64.to_le_bytes());
+    data14b.extend_from_slice(&14u64.to_le_bytes());
+    data14b.extend_from_slice(holder_29.as_ref());
+    data14b.extend_from_slice(&1_000_000u64.to_le_bytes());
+    let ix14b = Instruction::new_with_bytes(
+        program_id,
+        &data14b,
+        vec![
+            AccountMeta::new(operator, true),
+            AccountMeta::new_readonly(operator_record, false),
+            AccountMeta::new_readonly(transition7, false),
+            AccountMeta::new_readonly(window_state_14, false),
+            AccountMeta::new(holder_record_29_14, false),
+        ],
+    );
+    let (next, cu) = run(&mollusk, "pay_tranche:14holder29", &ix14b, &accounts);
+    accounts = next;
+    let gate14 = if (3_500..=14_000).contains(&cu) { "pass" } else { "DESIGN-FINDING" };
+    measured.push(serde_json::json!({
+        "instruction": "pay_tranche:14holder29",
+        "cu": cu,
+        "result": "Success",
+        "note": "slice-14 setup, GATED: operator pay_tranche 1,000,000 on holder 29 in window 14 on Committed window flow transition 7 — the dividend the reinvest probes then fold into position",
+        "design_estimate_cu": "7000",
+        "gate_2x_band_cu": "3500-14000",
+        "gate": gate14,
+    }));
+    let hr14b = accounts.iter().find(|(k, _)| *k == holder_record_29_14).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(hr14b.data[64..72].try_into().unwrap()), 1_000_000u64, "holder 29 accrued not 1,000,000 after pay_tranche:14holder29");
+    assert_eq!(hr14b.data[98], 1u8, "holder 29 tranche_paid flag not set by pay_tranche:14holder29");
+    assert_eq!(u64::from_le_bytes(hr14b.data[56..64].try_into().unwrap()), 5_000_000u64, "holder 29 position moved during pay_tranche:14holder29");
+    // (c) partial reinvest: 400,000 of the 1,000,000 accrued dividend folds into the
+    // position — accrued 1,000,000 -> 600,000, position 5,000,000 -> 5,400,000, and
+    // NOTHING else moves: window 14 stock stays 8,000,000 (no cash claim, no stock
+    // debit), TreasuryState stays 70,000,000 (no value created), FeeVault stays 0.
+    let mut data14c = disc("reinvest");
+    data14c.extend_from_slice(&7u64.to_le_bytes());
+    data14c.extend_from_slice(&14u64.to_le_bytes());
+    data14c.extend_from_slice(&400_000u64.to_le_bytes());
+    let ix14c = Instruction::new_with_bytes(
+        program_id,
+        &data14c,
+        vec![
+            AccountMeta::new(holder_29, true),
+            AccountMeta::new_readonly(transition7, false),
+            AccountMeta::new_readonly(window_state_14, false),
+            AccountMeta::new(holder_record_29_14, false),
+        ],
+    );
+    let (next, cu) = run(&mollusk, "reinvest:14partial", &ix14c, &accounts);
+    accounts = next;
+    let gate14 = if (3_500..=14_000).contains(&cu) { "pass" } else { "DESIGN-FINDING" };
+    measured.push(serde_json::json!({
+        "instruction": "reinvest:14partial",
+        "cu": cu,
+        "result": "Success",
+        "note": "slice-14 FIRST reinvest measurement (design §4.2, T8): holder 29 reinvests 400,000 of a 1,000,000 accrued dividend on Committed window flow transition 7, window 14 — accrued 1,000,000 -> 600,000, position 5,000,000 -> 5,400,000, window 14 exit stock UNCHANGED at 8,000,000 (claims no cash), TreasuryState UNCHANGED (re-labels dividend as position, creates nothing)",
+        "design_estimate_cu": "7000",
+        "gate_2x_band_cu": "3500-14000",
+        "gate": gate14,
+    }));
+    let hr14c = accounts.iter().find(|(k, _)| *k == holder_record_29_14).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(hr14c.data[64..72].try_into().unwrap()), 600_000u64, "holder 29 accrued not 600,000 after reinvest:14partial");
+    assert_eq!(u64::from_le_bytes(hr14c.data[56..64].try_into().unwrap()), 5_400_000u64, "holder 29 position not 5,400,000 after reinvest:14partial");
+    let ws14_14c = accounts.iter().find(|(k, _)| *k == window_state_14).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(ws14_14c.data[64..72].try_into().unwrap()), 8_000_000u64, "window 14 exit stock moved during reinvest:14partial (a reinvest claims no cash and debits no stock)");
+    // (d) over-accrued reinvest MUST refuse: 600,001 against 600,000 accrued refuses
+    // ReinvestExceedsAccrued (6087) — never a partial reinvest of a larger request —
+    // and changes no state.
+    let mut data14d = disc("reinvest");
+    data14d.extend_from_slice(&7u64.to_le_bytes());
+    data14d.extend_from_slice(&14u64.to_le_bytes());
+    data14d.extend_from_slice(&600_001u64.to_le_bytes());
+    let ix14d = Instruction::new_with_bytes(
+        program_id,
+        &data14d,
+        vec![
+            AccountMeta::new(holder_29, true),
+            AccountMeta::new_readonly(transition7, false),
+            AccountMeta::new_readonly(window_state_14, false),
+            AccountMeta::new(holder_record_29_14, false),
+        ],
+    );
+    let cu14d = run_expect_err(&mollusk, "reinvest:14over_accrued", &ix14d, &accounts, 6087);
+    measured.push(serde_json::json!({
+        "instruction": "reinvest:14over_accrued",
+        "cu": cu14d,
+        "result": "Refused",
+        "error": "ReinvestExceedsAccrued",
+        "error_code": 6087,
+        "note": "slice-14 refusal: holder 29 reinvests 600,001 against 600,000 accrued — refuses ReinvestExceedsAccrued (6087), never a partial reinvest of a larger request; state unchanged, NOT a success CU",
+    }));
+    let hr14d = accounts.iter().find(|(k, _)| *k == holder_record_29_14).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(hr14d.data[64..72].try_into().unwrap()), 600_000u64, "holder 29 accrued moved during reinvest:14over_accrued refusal");
+    assert_eq!(u64::from_le_bytes(hr14d.data[56..64].try_into().unwrap()), 5_400_000u64, "holder 29 position moved during reinvest:14over_accrued refusal");
+    // (e) the rest reinvests at the inclusive boundary: 600,000 of 600,000 accrued —
+    // accrued -> 0, position 5,400,000 -> 6,000,000, stock still 8,000,000.
+    let mut data14e = disc("reinvest");
+    data14e.extend_from_slice(&7u64.to_le_bytes());
+    data14e.extend_from_slice(&14u64.to_le_bytes());
+    data14e.extend_from_slice(&600_000u64.to_le_bytes());
+    let ix14e = Instruction::new_with_bytes(
+        program_id,
+        &data14e,
+        vec![
+            AccountMeta::new(holder_29, true),
+            AccountMeta::new_readonly(transition7, false),
+            AccountMeta::new_readonly(window_state_14, false),
+            AccountMeta::new(holder_record_29_14, false),
+        ],
+    );
+    let (next, cu) = run(&mollusk, "reinvest:14rest", &ix14e, &accounts);
+    accounts = next;
+    let gate14 = if (3_500..=14_000).contains(&cu) { "pass" } else { "DESIGN-FINDING" };
+    measured.push(serde_json::json!({
+        "instruction": "reinvest:14rest",
+        "cu": cu,
+        "result": "Success",
+        "note": "slice-14: holder 29 reinvests the remaining 600,000 accrued dividend at the inclusive boundary — accrued -> 0, position 5,400,000 -> 6,000,000, window 14 exit stock still 8,000,000",
+        "design_estimate_cu": "7000",
+        "gate_2x_band_cu": "3500-14000",
+        "gate": gate14,
+    }));
+    let hr14e = accounts.iter().find(|(k, _)| *k == holder_record_29_14).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(hr14e.data[64..72].try_into().unwrap()), 0u64, "holder 29 accrued not 0 after reinvest:14rest");
+    assert_eq!(u64::from_le_bytes(hr14e.data[56..64].try_into().unwrap()), 6_000_000u64, "holder 29 position not 6,000,000 after reinvest:14rest");
+    // (f) a zero reinvest MUST refuse InvalidReinvestAmount (6086): it would consume
+    // a window execution while moving nothing.
+    let mut data14f = disc("reinvest");
+    data14f.extend_from_slice(&7u64.to_le_bytes());
+    data14f.extend_from_slice(&14u64.to_le_bytes());
+    data14f.extend_from_slice(&0u64.to_le_bytes());
+    let ix14f = Instruction::new_with_bytes(
+        program_id,
+        &data14f,
+        vec![
+            AccountMeta::new(holder_29, true),
+            AccountMeta::new_readonly(transition7, false),
+            AccountMeta::new_readonly(window_state_14, false),
+            AccountMeta::new(holder_record_29_14, false),
+        ],
+    );
+    let cu14f = run_expect_err(&mollusk, "reinvest:14zero", &ix14f, &accounts, 6086);
+    measured.push(serde_json::json!({
+        "instruction": "reinvest:14zero",
+        "cu": cu14f,
+        "result": "Refused",
+        "error": "InvalidReinvestAmount",
+        "error_code": 6086,
+        "note": "slice-14 refusal: holder 29 reinvests 0 — refuses InvalidReinvestAmount (6086); a zero reinvestment would consume a window execution while moving nothing, NOT a success CU",
+    }));
+    // Final slice-14 state: the whole tranche is now position, nothing else moved.
+    let hr14f = accounts.iter().find(|(k, _)| *k == holder_record_29_14).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(hr14f.data[64..72].try_into().unwrap()), 0u64, "holder 29 accrued moved during reinvest:14zero refusal");
+    assert_eq!(u64::from_le_bytes(hr14f.data[56..64].try_into().unwrap()), 6_000_000u64, "holder 29 position moved during reinvest:14zero refusal");
+    let ts14f = accounts.iter().find(|(k, _)| *k == treasury_state).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(ts14f.data[8..16].try_into().unwrap()), 70_000_000u64, "TreasuryState total moved during slice 14 (reinvest creates no value)");
+    assert_eq!(u64::from_le_bytes(ts14f.data[16..24].try_into().unwrap()), 70_000_000u64, "TreasuryState cash moved during slice 14");
+    assert_eq!(u64::from_le_bytes(ts14f.data[56..64].try_into().unwrap()), 15u64, "window_count moved during slice 14");
+    let ws14_14f = accounts.iter().find(|(k, _)| *k == window_state_14).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(ws14_14f.data[64..72].try_into().unwrap()), 8_000_000u64, "window 14 exit stock moved during slice 14 (reinvest debits no stock)");
+    let ws13_14f = accounts.iter().find(|(k, _)| *k == window_state_13).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(ws13_14f.data[64..72].try_into().unwrap()), 4_000_000u64, "window 13 exit stock moved during slice 14");
+    let ws1_14f = accounts.iter().find(|(k, _)| *k == window_state_1).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(ws1_14f.data[64..72].try_into().unwrap()), 0u64, "window 1 exit stock moved during slice 14");
+    let es14f = accounts.iter().find(|(k, _)| *k == exit_schedule_1).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(es14f.data[72..80].try_into().unwrap()), 2u64, "schedule tranches_executed moved during slice 14");
+    assert_eq!(i64::from_le_bytes(es14f.data[96..104].try_into().unwrap()), 31_608_400i64, "schedule last_block_time moved during slice 14");
+    let fv14f = accounts.iter().find(|(k, _)| *k == fee_vault).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(fv14f.data[8..16].try_into().unwrap()), 0u64, "FeeVault collected_raw not 0 after slice 14 (collect_fees is still unbuilt; reinvest touches no fees)");
+    assert_eq!(mollusk.sysvars.clock.unix_timestamp, 37_003_600i64, "clock not 37,003,600 after slice 14");
+
     let golden = serde_json::json!({
         "harness": "cu-golden-mollusk",
         "mollusk_svm": MOLLUSK_SVM_VERSION,
@@ -4243,8 +4463,8 @@ fn main() {
         "program_so_sha256": so_sha256,
         "token_program_id": TOKEN_PROGRAM_ID_STR,
         "token_program_so_sha256": token_elf_sha256,
-        "slice": 13,
-        "slice_note": "slices 1-8 as before (slice-5/6 refusal probes stand as the unfunded-chain record; slice-7 FUNDED chain: real SPL Token deposit credits TreasuryState 60,000,000, window 1 opens on the funded snapshot, borrow / exit / settle_default / schedule_whale_exit FIRST successes; slice-8 12-window walk: windows 2..13 each open on their own Settled treasury.window.v1 transition (transitions 9..20, parented in sequence), each on the funded snapshot (total 60,000,000, exit stock 10,000,000, FLAG 2,000,000), and the FIRST success measurement execute_whale_tranche (tranche 1 of 5, 2,000,000 raw, on Committed treasury.exit.v1 transition 8, creation window 1, execution window 13 >= lock_until 13), gated §2.2 ~7K (2x band 3,500-14,000)) + slice-9 W3.2 re-expression part 1: tranche-2 weekly cadence on the slice-8 chain — TrancheTooSoon refusals at the tranche-1 clock and at last_block_time + WEEK_SECS - 1, then tranche 2 of 5 (2,000,000 raw) SUCCESS at exactly last_block_time + WEEK_SECS (31,608,400), gated §2.2 ~7K; launch_stage2 unmeasured by design (ThresholdUnset, D-2) + slice-10 W3.2 re-expression part 2: blind-ape bulk exit (T11) on the funded chain — the whole-position order (23,500,000 raw) refuses ExitExceedsLiquidity under the D-10 hard bound (L = 10,000,000), the largest executable bulk exit (8,500,000 raw, the remaining window-1 stock) succeeds with the flat 13% penalty on the full excess (1,105,000 penalty, 7,395,000 paid), and a further window-1 exit refuses ExitStockExhausted with aggregate window-1 exits exactly at L + slice-11 W3.2 re-expression part 3: default-as-exit (T10) on twin holders in window 13 (position 10,000,000 each) — borrow above the cap refuses LoanExceedsPosition, the max loan 5,000,000 succeeds at the inclusive boundary of the 50%-of-position and book caps, pre-maturity settle_default refuses LoanNotMatured, at-maturity settle_default succeeds (position 10,000,000 -> 5,000,000, skip flag set), and the PROBE: pay_tranche AFTER the default SUCCEEDS despite skip_next_dividend set, because can_pay_tranche takes no skip argument — the forfeiture half of T10 is unenforced on the program today, the one-cycle ledgers come out EQUAL (11,000,000 each), and T10 is NOT claimed re-expressed until the carried skip-enforcement item lands; window 13 exit stock ends 4,000,000, clock ends 36,792,400 + slice-12 W3.2 re-expression part 4: cohort-timing at window boundaries (D-11) — enroll into past window 12 refuses NotCurrentWindow, zero-position enroll into current window 13 refuses InvalidPosition, a double enroll in window 13 refuses at the account layer (one record per holder per window), a current-window-13 enroll succeeds (cohort 1); then the boundary is crossed for real (Settled transition 21 opens window 14, window_count 15): the just-closed window 13 now refuses NotCurrentWindow, a window-14 enroll succeeds (cohort 2), a future window-15 enroll refuses at the account layer (no window account exists yet), and the new cohort's pay_tranche 1,000,000 succeeds on its own slot (14 % 12 = 2), gated §2.2 ~7K; window 13 stock ends 4,000,000, window 14 stock 10,000,000, clock ends 37,003,600 + slice-13 W3.2 re-expression part 5: fee-flow edge cases under the single 73 bps stream (D-5) — a second real deposit 10,000,000 credits TreasuryState by exactly 10,000,000 (a funding-time skim would credit 9,927,000) with vault/source conserving exactly and FeeVault collected_raw still 0, and a mid-window deposit does not inflate window 14's snapshot or stock; holder 27's all-accrued exit 1,000,000 takes neither penalty nor fee (position stays 5,000,000, stock 10,000,000 -> 9,000,000) and a further 1,000,000 all-excess exit carries exactly the flat 13% penalty (position 5,000,000 -> 4,000,000, stock 9,000,000 -> 8,000,000, can_exit has no FEE_PPM term so no second skim exists); the negative half of the fee flow is proven, but the positive half — collection and reconciliation — is NOT: FeeVault collected_raw is still 0 because collect_fees is unbuilt, and the 73 bps income identity has no on-chain realization until that remaining §4.2 row lands",
+        "slice": 14,
+        "slice_note": "slices 1-8 as before (slice-5/6 refusal probes stand as the unfunded-chain record; slice-7 FUNDED chain: real SPL Token deposit credits TreasuryState 60,000,000, window 1 opens on the funded snapshot, borrow / exit / settle_default / schedule_whale_exit FIRST successes; slice-8 12-window walk: windows 2..13 each open on their own Settled treasury.window.v1 transition (transitions 9..20, parented in sequence), each on the funded snapshot (total 60,000,000, exit stock 10,000,000, FLAG 2,000,000), and the FIRST success measurement execute_whale_tranche (tranche 1 of 5, 2,000,000 raw, on Committed treasury.exit.v1 transition 8, creation window 1, execution window 13 >= lock_until 13), gated §2.2 ~7K (2x band 3,500-14,000)) + slice-9 W3.2 re-expression part 1: tranche-2 weekly cadence on the slice-8 chain — TrancheTooSoon refusals at the tranche-1 clock and at last_block_time + WEEK_SECS - 1, then tranche 2 of 5 (2,000,000 raw) SUCCESS at exactly last_block_time + WEEK_SECS (31,608,400), gated §2.2 ~7K; launch_stage2 unmeasured by design (ThresholdUnset, D-2) + slice-10 W3.2 re-expression part 2: blind-ape bulk exit (T11) on the funded chain — the whole-position order (23,500,000 raw) refuses ExitExceedsLiquidity under the D-10 hard bound (L = 10,000,000), the largest executable bulk exit (8,500,000 raw, the remaining window-1 stock) succeeds with the flat 13% penalty on the full excess (1,105,000 penalty, 7,395,000 paid), and a further window-1 exit refuses ExitStockExhausted with aggregate window-1 exits exactly at L + slice-11 W3.2 re-expression part 3: default-as-exit (T10) on twin holders in window 13 (position 10,000,000 each) — borrow above the cap refuses LoanExceedsPosition, the max loan 5,000,000 succeeds at the inclusive boundary of the 50%-of-position and book caps, pre-maturity settle_default refuses LoanNotMatured, at-maturity settle_default succeeds (position 10,000,000 -> 5,000,000, skip flag set), and the PROBE: pay_tranche AFTER the default SUCCEEDS despite skip_next_dividend set, because can_pay_tranche takes no skip argument — the forfeiture half of T10 is unenforced on the program today, the one-cycle ledgers come out EQUAL (11,000,000 each), and T10 is NOT claimed re-expressed until the carried skip-enforcement item lands; window 13 exit stock ends 4,000,000, clock ends 36,792,400 + slice-12 W3.2 re-expression part 4: cohort-timing at window boundaries (D-11) — enroll into past window 12 refuses NotCurrentWindow, zero-position enroll into current window 13 refuses InvalidPosition, a double enroll in window 13 refuses at the account layer (one record per holder per window), a current-window-13 enroll succeeds (cohort 1); then the boundary is crossed for real (Settled transition 21 opens window 14, window_count 15): the just-closed window 13 now refuses NotCurrentWindow, a window-14 enroll succeeds (cohort 2), a future window-15 enroll refuses at the account layer (no window account exists yet), and the new cohort's pay_tranche 1,000,000 succeeds on its own slot (14 % 12 = 2), gated §2.2 ~7K; window 13 stock ends 4,000,000, window 14 stock 10,000,000, clock ends 37,003,600 + slice-13 W3.2 re-expression part 5: fee-flow edge cases under the single 73 bps stream (D-5) — a second real deposit 10,000,000 credits TreasuryState by exactly 10,000,000 (a funding-time skim would credit 9,927,000) with vault/source conserving exactly and FeeVault collected_raw still 0, and a mid-window deposit does not inflate window 14's snapshot or stock; holder 27's all-accrued exit 1,000,000 takes neither penalty nor fee (position stays 5,000,000, stock 10,000,000 -> 9,000,000) and a further 1,000,000 all-excess exit carries exactly the flat 13% penalty (position 5,000,000 -> 4,000,000, stock 9,000,000 -> 8,000,000, can_exit has no FEE_PPM term so no second skim exists); the negative half of the fee flow is proven, but the positive half — collection and reconciliation — is NOT: FeeVault collected_raw is still 0 because collect_fees is unbuilt, and the 73 bps income identity has no on-chain realization until that remaining §4.2 row lands + slice-14 the remaining §4.2 row `reinvest` (design §4.2, engine-sim T8) on a fresh holder 29 in window 14 — enroll 5,000,000 (cohort 2), pay_tranche 1,000,000 on Committed window-flow transition 7, then reinvest 400,000 (accrued 1,000,000 -> 600,000, position 5,000,000 -> 5,400,000, window 14 exit stock UNCHANGED at 8,000,000, TreasuryState UNCHANGED), a 600,001 reinvest refusing ReinvestExceedsAccrued (6087), the remaining 600,000 reinvesting at the inclusive boundary (accrued -> 0, position -> 6,000,000), and a zero reinvest refusing InvalidReinvestAmount (6086); the reinvest reading is accrued-dividend-only, partial allowed, no stock debit, no penalty, no value created — reinvesting a borrowed amount is NOT this instruction and needs its own ruling; program IDL 37 -> 38 instructions, 85 -> 88 errors, accounts 16, host tests 82 -> 83, and slices 1-13 re-measured against the new .so (sha e0f40adf...) with any shifts reported in the run log, not silently re-baselined",
         "clock": {"phase_a_unix_timestamp": NOW0, "planning_window_s": PLANNING_WINDOW, "phase_b_unix_timestamp": NOW1},
         "instructions": measured,
     });

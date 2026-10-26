@@ -3388,6 +3388,93 @@ pub mod treasury_program {
         Ok(())
     }
 
+    /// Reinvest (design §4.2): the window protocol's extract-or-
+    /// reinvest step, after the tranche and before any further
+    /// exit in the pinned protocol order. Holder-signed intent —
+    /// the holder reinvests their own accrued dividend, the
+    /// HolderRecord PDA seeds bind the record to the signer —
+    /// and the gate rides a Committed window flow transition
+    /// of the canonical `treasury.window.v1` type, as in
+    /// `borrow` / `exit`.
+    ///
+    /// The reading, stated plainly because the design row is
+    /// one line ("claims no cash; increases the position"):
+    /// the reinvested amount comes out of the holder's
+    /// accrued unpaid dividend on THIS record and into the
+    /// same record's locked position — accrued falls by
+    /// exactly the amount, position rises by exactly the
+    /// amount, and nothing else moves. A partial reinvest is
+    /// allowed (amount at or below the accrued dividend), so
+    /// a holder may reinvest part of a tranche and exit the
+    /// rest; an amount above the accrued dividend refuses
+    /// with `ReinvestExceedsAccrued`, never a partial
+    /// reinvest of a larger request. Claims no cash: no
+    /// window exit stock is debited (the stock is the period
+    /// budget for cash exits, and a reinvest pays no cash),
+    /// no penalty is taken (the 13% door prices cash
+    /// extraction above the allowance, and a reinvest
+    /// extracts nothing), and no TreasuryState total moves
+    /// (the dividend was already accounted when
+    /// `pay_tranche` credited it — reinvesting re-labels
+    /// it as position, it does not create value). Position
+    /// only grows here, so the outstanding-loan floor
+    /// `exit` guards cannot be violated by this
+    /// instruction, and the `skip_next_dividend` flag is
+    /// neither read nor cleared: the skip names a future
+    /// slot's dividend, and honoring it at that slot's
+    /// `pay_tranche` is the carried skip-enforcement item,
+    /// not this instruction's job.
+    ///
+    /// Scope, stated not buried: this is the dividend
+    /// reinvestment of engine-sim T8. Reinvesting a
+    /// BORROWED amount (Carlos's 2026-10-22 window-rule
+    /// phrasing, "reinvest their dividend and/or their
+    /// borrowed $50") is NOT this instruction: a loan's
+    /// principal is cash disbursed from the sleeve, and
+    /// folding it back into the locked position would
+    /// tangle the loan's settlement against that same
+    /// position — that reading needs its own ruling and
+    /// its own instruction, and is not claimed here.
+    /// Bookkeeping only, as in the sibling slices: no
+    /// token movement yet.
+    pub fn reinvest(
+        ctx: Context<Reinvest>,
+        transition_id: u64,
+        window_id: u64,
+        amount_raw: u64,
+    ) -> Result<()> {
+        can_reinvest(
+            ctx.accounts.transition_record.state,
+            ctx.accounts.transition_record.transition_type,
+            ctx.accounts.holder_record.window_id,
+            window_id,
+            amount_raw,
+            ctx.accounts.holder_record.accrued_dividend_raw,
+        )?;
+        let record = &mut ctx.accounts.holder_record;
+        record.accrued_dividend_raw = record
+            .accrued_dividend_raw
+            .checked_sub(amount_raw)
+            .ok_or(TreasuryError::Overflow)?;
+        record.position_raw = record
+            .position_raw
+            .checked_add(amount_raw)
+            .ok_or(TreasuryError::Overflow)?;
+        let position_after = record.position_raw;
+        let accrued_after = record.accrued_dividend_raw;
+        emit!(Reinvested {
+            window_id,
+            holder: ctx.accounts.holder.key(),
+            amount_raw,
+            position_after_raw: position_after,
+            accrued_after_raw: accrued_after,
+            transition_id,
+            commit_index: ctx.accounts.transition_record.commit_index,
+            declared_hash: ctx.accounts.transition_record.declared_hash,
+        });
+        Ok(())
+    }
+
     /// Schedule a whale exit (design §4.2): the window protocol's
     /// timed/tranched exit contract, for purses at or above the
     /// whale FLAG (1/5 of movable liquidity, D-10 revised). Holder-signed intent — the holder schedules
@@ -5200,6 +5287,39 @@ pub fn can_exit(
     Ok((penalty_raw, paid_raw))
 }
 
+/// Who may reinvest, as a pure check (design §4.2, engine-sim
+/// T8): the window flow transition must be Committed and of
+/// the canonical window type, and the holder's record must
+/// belong to this window (the PDA seeds enforce the same
+/// binding on-chain; the helper checks it explicitly so the
+/// matrix tests the rule, not the seeds). The amount must be
+/// positive and must fit inside the accrued unpaid dividend —
+/// a reinvest moves dividend into position, never position
+/// into position and never cash into position, so no
+/// position, loan, stock, or penalty term appears here at
+/// all. Order mirrors [`can_exit`]: the transition binding
+/// first, the amount rules next.
+pub fn can_reinvest(
+    state: u8,
+    transition_type: [u8; 32],
+    record_window_id: u64,
+    window_id: u64,
+    amount_raw: u64,
+    accrued_dividend_raw: u64,
+) -> Result<()> {
+    require!(state == STATE_COMMITTED, TreasuryError::BadState);
+    require!(
+        transition_type == TREASURY_WINDOW_TYPE && record_window_id == window_id,
+        TreasuryError::ReinvestMismatch
+    );
+    require!(amount_raw != 0, TreasuryError::InvalidReinvestAmount);
+    require!(
+        amount_raw <= accrued_dividend_raw,
+        TreasuryError::ReinvestExceedsAccrued
+    );
+    Ok(())
+}
+
 /// Who may schedule a whale exit, as a pure check (design §4.2,
 /// D-10 REVISED 2026-10-24 ~18:49 CST): the authorizing
 /// transition must be Committed and of the canonical
@@ -5788,6 +5908,26 @@ pub struct Exited {
     pub penalty_raw: u64,
     pub paid_raw: u64,
     pub position_after_raw: u64,
+    pub transition_id: u64,
+    pub commit_index: u64,
+    pub declared_hash: [u8; 32],
+}
+
+/// Event for [`treasury_program::reinvest`] (design §4.2, §6):
+/// the window, the holder, the amount moved from accrued
+/// dividend into the locked position, the position and the
+/// accrued dividend after the move — plus the authorization
+/// context, the Committed window flow transition's id,
+/// commit index, and declared hash. The reinvest here is
+/// bookkeeping, not a token movement: no cash is paid and
+/// no exit stock is debited.
+#[event]
+pub struct Reinvested {
+    pub window_id: u64,
+    pub holder: Pubkey,
+    pub amount_raw: u64,
+    pub position_after_raw: u64,
+    pub accrued_after_raw: u64,
     pub transition_id: u64,
     pub commit_index: u64,
     pub declared_hash: [u8; 32],
@@ -7660,6 +7800,38 @@ pub struct Exit<'info> {
     pub holder_record: Account<'info, HolderRecord>,
 }
 
+/// Accounts for [`treasury_program::reinvest`].
+#[derive(Accounts)]
+#[instruction(transition_id: u64, window_id: u64, amount_raw: u64)]
+pub struct Reinvest<'info> {
+    /// The reinvesting holder (signer). Holder-signed intent,
+    /// not operator-settled: the record below is seeds-bound
+    /// to this signer, so a holder reinvests only their own
+    /// accrued dividend, and design §5's standing
+    /// authorization is not stretched to cover an
+    /// instruction it does not name.
+    pub holder: Signer<'info>,
+    /// The window flow transition, seeds-bound to its id. Must
+    /// be Committed and of the canonical window type — the
+    /// authority for this reinvestment, not the holder's
+    /// discretion over the accrued balance.
+    #[account(seeds = [b"transition", transition_id.to_le_bytes().as_ref()], bump = transition_record.bump)]
+    pub transition_record: Account<'info, TransitionRecord>,
+    /// The window being reinvested in, seeds-bound to its id.
+    /// Read-only here: a reinvest claims no cash, so it
+    /// debits no exit stock and moves no snapshot — but the
+    /// account's presence binds the reinvestment to an
+    /// opened window, not to a bare id.
+    #[account(seeds = [b"window", window_id.to_le_bytes().as_ref()], bump = window_state.bump)]
+    pub window_state: Account<'info, WindowState>,
+    /// The holder's record for this window, seeds-bound to the
+    /// window and the signer. Mutated: accrued dividend
+    /// falls by the reinvested amount, position rises by
+    /// exactly the same amount.
+    #[account(mut, seeds = [b"holder", window_id.to_le_bytes().as_ref(), holder.key().as_ref()], bump = holder_record.bump)]
+    pub holder_record: Account<'info, HolderRecord>,
+}
+
 /// Accounts for [`treasury_program::schedule_whale_exit`].
 #[derive(Accounts)]
 #[instruction(transition_id: u64, window_id: u64, total_raw: u64)]
@@ -8321,6 +8493,25 @@ pub enum TreasuryError {
     /// moving nothing — and the credit would invent value.
     #[msg("Deposit program mismatch: the token program must be the Token or Token-2022 program, executable, and the mint's owner.")]
     DepositProgramMismatch,
+    /// A reinvest does not match its window: the authorizing
+    /// transition is not a canonical `treasury.window.v1`
+    /// transition, or the holder's record belongs to another
+    /// window. A reinvestment names its window by address,
+    /// never by claim. Appended at the end of the enum, not
+    /// inserted among the exit errors, so no existing error
+    /// code moves (the golden file records codes verbatim).
+    #[msg("Reinvest window mismatch: authorizing transition is not a treasury.window.v1 transition, or the holder's record belongs to another window.")]
+    ReinvestMismatch,
+    /// A reinvest reinvests nothing: a zero amount would
+    /// move nothing while consuming a window execution.
+    #[msg("Reinvest amount must be positive: a zero reinvestment moves nothing.")]
+    InvalidReinvestAmount,
+    /// The reinvest exceeds the holder's accrued unpaid
+    /// dividend: a reinvest moves dividend into position,
+    /// never position into position and never cash into
+    /// position, so the accrued balance is its hard bound.
+    #[msg("Reinvest exceeds accrued dividend: the reinvested amount must fit inside the accrued unpaid dividend.")]
+    ReinvestExceedsAccrued,
 }
 
 #[cfg(test)]
@@ -10587,6 +10778,70 @@ mod tests {
             600_000, 100_000,
         )
         .expect("an exit down to exactly the outstanding loan passes");
+    }
+
+    #[test]
+    fn reinvest_gate_matrix() {
+        // Argument order: state, type, record window, window,
+        // amount, accrued dividend. A reinvest moves accrued
+        // dividend into position and touches nothing else, so
+        // the matrix has no position, loan, stock, or penalty
+        // cases — those are exactly the terms this gate must
+        // NOT judge.
+        // Happy path, partial: 400 of a 1,000 dividend
+        // reinvests, leaving 600 accrued for a later exit.
+        can_reinvest(
+            STATE_COMMITTED, TREASURY_WINDOW_TYPE, 13, 13, 400, 1_000,
+        )
+        .expect("a partial reinvestment passes");
+        // Happy path, full: the whole accrued dividend folds
+        // into the position at the inclusive boundary.
+        can_reinvest(
+            STATE_COMMITTED, TREASURY_WINDOW_TYPE, 13, 13, 1_000, 1_000,
+        )
+        .expect("a full accrued reinvestment passes");
+        // Pre-commit and post-commit states refuse: reinvests
+        // ride commit, before settle, as in `exit`.
+        for state in [
+            STATE_COMMITTABLE,
+            STATE_SETTLED,
+            STATE_REJECTED,
+            STATE_EXPIRED,
+        ] {
+            assert!(can_reinvest(
+                state, TREASURY_WINDOW_TYPE, 13, 13, 400, 1_000,
+            )
+            .is_err());
+        }
+        // Wrong transition type, and a record belonging to
+        // another window, both refuse as a mismatch.
+        assert!(can_reinvest(
+            STATE_COMMITTED, TREASURY_LAUNCH_TYPE, 13, 13, 400, 1_000,
+        )
+        .is_err());
+        assert!(can_reinvest(
+            STATE_COMMITTED, TREASURY_WINDOW_TYPE, 12, 13, 400, 1_000,
+        )
+        .is_err());
+        // A zero amount refuses: it would consume a window
+        // execution while moving nothing.
+        assert!(can_reinvest(
+            STATE_COMMITTED, TREASURY_WINDOW_TYPE, 13, 13, 0, 1_000,
+        )
+        .is_err());
+        // Above the accrued dividend refuses, even by one:
+        // 1,001 against 1,000 accrued is not a partial
+        // reinvest of a larger request.
+        assert!(can_reinvest(
+            STATE_COMMITTED, TREASURY_WINDOW_TYPE, 13, 13, 1_001, 1_000,
+        )
+        .is_err());
+        // Nothing accrued refuses any positive amount: an
+        // empty dividend reinvests nothing.
+        assert!(can_reinvest(
+            STATE_COMMITTED, TREASURY_WINDOW_TYPE, 13, 13, 1, 0,
+        )
+        .is_err());
     }
 
     #[test]

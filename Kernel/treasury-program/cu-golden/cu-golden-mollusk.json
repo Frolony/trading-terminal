@@ -7,13 +7,13 @@
   "harness": "cu-golden-mollusk",
   "instructions": [
     {
-      "cu": 18035,
+      "cu": 18033,
       "instruction": "initialize_config",
       "note": "slice-1 baseline",
       "result": "Success"
     },
     {
-      "cu": 10179,
+      "cu": 10177,
       "instruction": "register_agent",
       "note": "slice-1 baseline",
       "result": "Success"
@@ -25,7 +25,7 @@
       "result": "Success"
     },
     {
-      "cu": 8830,
+      "cu": 8832,
       "instruction": "set_capacity",
       "note": "slice-1 baseline",
       "result": "Success"
@@ -37,13 +37,13 @@
       "result": "Success"
     },
     {
-      "cu": 10179,
+      "cu": 10177,
       "instruction": "register_agent:proposer",
       "note": "slice-2 setup",
       "result": "Success"
     },
     {
-      "cu": 13179,
+      "cu": 13177,
       "instruction": "register_agent:evaluator",
       "note": "slice-2 setup",
       "result": "Success"
@@ -55,7 +55,7 @@
       "result": "Success"
     },
     {
-      "cu": 13179,
+      "cu": 13177,
       "instruction": "register_agent:oracle",
       "note": "slice-2 setup",
       "result": "Success"
@@ -73,7 +73,7 @@
       "result": "Success"
     },
     {
-      "cu": 10624,
+      "cu": 10628,
       "instruction": "post_observation",
       "note": "slice-2 setup",
       "result": "Success"
@@ -85,7 +85,7 @@
       "result": "Success"
     },
     {
-      "cu": 10556,
+      "cu": 10554,
       "instruction": "open_planning",
       "note": "slice-2 setup",
       "result": "Success"
@@ -97,13 +97,13 @@
       "result": "Success"
     },
     {
-      "cu": 15821,
+      "cu": 15819,
       "instruction": "submit_signal",
       "note": "slice-2 setup",
       "result": "Success"
     },
     {
-      "cu": 12403,
+      "cu": 12399,
       "error": "AlreadySignalled",
       "error_code": 6078,
       "instruction": "submit_signal:shadow",
@@ -111,7 +111,7 @@
       "result": "Refused"
     },
     {
-      "cu": 12403,
+      "cu": 12399,
       "error": "AlreadySignalled",
       "error_code": 6078,
       "instruction": "submit_signal:replay",
@@ -119,7 +119,7 @@
       "result": "Refused"
     },
     {
-      "cu": 12313,
+      "cu": 12311,
       "error": "SeedsConstraint",
       "error_code": 2006,
       "instruction": "submit_signal:mismatch",
@@ -139,7 +139,7 @@
       "result": "Success"
     },
     {
-      "cu": 17959,
+      "cu": 17963,
       "design_estimate_cu": "25000-40000",
       "gate": "pass",
       "gate_2x_band_cu": "12500-80000",
@@ -169,7 +169,7 @@
       "result": "Success"
     },
     {
-      "cu": 18124,
+      "cu": 18128,
       "instruction": "post_observation:2",
       "note": "slice-4 setup",
       "result": "Success"
@@ -181,7 +181,7 @@
       "result": "Success"
     },
     {
-      "cu": 10556,
+      "cu": 10554,
       "instruction": "open_planning:2",
       "note": "slice-4 setup",
       "result": "Success"
@@ -193,7 +193,7 @@
       "result": "Success"
     },
     {
-      "cu": 15821,
+      "cu": 15819,
       "instruction": "submit_signal:2",
       "note": "slice-4 setup",
       "result": "Success"
@@ -211,7 +211,7 @@
       "result": "Success"
     },
     {
-      "cu": 17959,
+      "cu": 17963,
       "instruction": "commit:2",
       "note": "slice-4 setup (repeat of the gated instruction; the gate was paid at slice 2)",
       "result": "Success"
@@ -241,7 +241,7 @@
       "result": "Success"
     },
     {
-      "cu": 10624,
+      "cu": 10628,
       "instruction": "post_observation:3",
       "note": "slice-4 setup",
       "result": "Success"
@@ -253,7 +253,7 @@
       "result": "Success"
     },
     {
-      "cu": 10556,
+      "cu": 10554,
       "instruction": "open_planning:3",
       "note": "slice-4 setup",
       "result": "Success"
@@ -265,7 +265,7 @@
       "result": "Success"
     },
     {
-      "cu": 15821,
+      "cu": 15819,
       "instruction": "submit_signal:3",
       "note": "slice-4 setup",
       "result": "Success"
@@ -283,7 +283,7 @@
       "result": "Success"
     },
     {
-      "cu": 17959,
+      "cu": 17963,
       "instruction": "commit:3",
       "note": "slice-4 setup (repeat of the gated instruction)",
       "result": "Success"
@@ -307,13 +307,13 @@
       "result": "Success"
     },
     {
-      "cu": 27040,
+      "cu": 27042,
       "instruction": "enroll",
       "note": "slice-4 baseline (no §2.2 estimate)",
       "result": "Success"
     },
     {
-      "cu": 10179,
+      "cu": 10177,
       "instruction": "register_agent:operator",
       "note": "slice-4 setup",
       "result": "Success"
@@ -325,7 +325,7 @@
       "result": "Success"
     },
     {
-      "cu": 12124,
+      "cu": 12128,
       "instruction": "post_observation:4",
       "note": "slice-4 setup",
       "result": "Success"
@@ -337,7 +337,7 @@
       "result": "Success"
     },
     {
-      "cu": 10556,
+      "cu": 10554,
       "instruction": "open_planning:4",
       "note": "slice-4 setup",
       "result": "Success"
@@ -349,7 +349,7 @@
       "result": "Success"
     },
     {
-      "cu": 15821,
+      "cu": 15819,
       "instruction": "submit_signal:4",
       "note": "slice-4 setup",
       "result": "Success"
@@ -367,7 +367,7 @@
       "result": "Success"
     },
     {
-      "cu": 17959,
+      "cu": 17963,
       "instruction": "commit:4",
       "note": "slice-4 setup (repeat of the gated instruction)",
       "result": "Success"
@@ -382,7 +382,7 @@
       "result": "Success"
     },
     {
-      "cu": 12437,
+      "cu": 12443,
       "error": "BookCapExceeded",
       "error_code": 6053,
       "instruction": "borrow",
@@ -398,7 +398,7 @@
       "result": "Refused"
     },
     {
-      "cu": 14977,
+      "cu": 14975,
       "error": "NoActiveLoan",
       "error_code": 6055,
       "instruction": "settle_default",
@@ -412,7 +412,7 @@
       "result": "Success"
     },
     {
-      "cu": 12124,
+      "cu": 12128,
       "instruction": "post_observation:5",
       "note": "slice-6 setup",
       "result": "Success"
@@ -424,7 +424,7 @@
       "result": "Success"
     },
     {
-      "cu": 10556,
+      "cu": 10554,
       "instruction": "open_planning:5",
       "note": "slice-6 setup",
       "result": "Success"
@@ -436,7 +436,7 @@
       "result": "Success"
     },
     {
-      "cu": 15821,
+      "cu": 15819,
       "instruction": "submit_signal:5",
       "note": "slice-6 setup",
       "result": "Success"
@@ -454,7 +454,7 @@
       "result": "Success"
     },
     {
-      "cu": 17959,
+      "cu": 17963,
       "instruction": "commit:5",
       "note": "slice-6 setup (repeat of the gated instruction)",
       "result": "Success"
@@ -474,7 +474,7 @@
       "result": "Success"
     },
     {
-      "cu": 10624,
+      "cu": 10628,
       "instruction": "post_observation:6",
       "note": "slice-7 setup",
       "result": "Success"
@@ -486,7 +486,7 @@
       "result": "Success"
     },
     {
-      "cu": 10556,
+      "cu": 10554,
       "instruction": "open_planning:6",
       "note": "slice-7 setup",
       "result": "Success"
@@ -498,7 +498,7 @@
       "result": "Success"
     },
     {
-      "cu": 15821,
+      "cu": 15819,
       "instruction": "submit_signal:6",
       "note": "slice-7 setup",
       "result": "Success"
@@ -516,7 +516,7 @@
       "result": "Success"
     },
     {
-      "cu": 17959,
+      "cu": 17963,
       "instruction": "commit:6",
       "note": "slice-7 setup (repeat of the gated instruction)",
       "result": "Success"
@@ -540,13 +540,13 @@
       "result": "Success"
     },
     {
-      "cu": 30040,
+      "cu": 30042,
       "instruction": "enroll:1",
       "note": "slice-7 setup: holder enrolls in funded window 1 (cohort 1, position 30,000,000)",
       "result": "Success"
     },
     {
-      "cu": 10624,
+      "cu": 10628,
       "instruction": "post_observation:7",
       "note": "slice-7 setup",
       "result": "Success"
@@ -558,7 +558,7 @@
       "result": "Success"
     },
     {
-      "cu": 10556,
+      "cu": 10554,
       "instruction": "open_planning:7",
       "note": "slice-7 setup",
       "result": "Success"
@@ -570,7 +570,7 @@
       "result": "Success"
     },
     {
-      "cu": 15821,
+      "cu": 15819,
       "instruction": "submit_signal:7",
       "note": "slice-7 setup",
       "result": "Success"
@@ -588,7 +588,7 @@
       "result": "Success"
     },
     {
-      "cu": 17959,
+      "cu": 17963,
       "instruction": "commit:7",
       "note": "slice-7 setup (repeat of the gated instruction)",
       "result": "Success"
@@ -600,7 +600,7 @@
       "result": "Success"
     },
     {
-      "cu": 12158,
+      "cu": 12162,
       "design_estimate_cu": "7000",
       "gate": "pass",
       "gate_2x_band_cu": "3500-14000",
@@ -627,7 +627,7 @@
       "result": "Success"
     },
     {
-      "cu": 13624,
+      "cu": 13628,
       "instruction": "post_observation:8",
       "note": "slice-7 setup",
       "result": "Success"
@@ -639,7 +639,7 @@
       "result": "Success"
     },
     {
-      "cu": 10556,
+      "cu": 10554,
       "instruction": "open_planning:8",
       "note": "slice-7 setup",
       "result": "Success"
@@ -651,7 +651,7 @@
       "result": "Success"
     },
     {
-      "cu": 15821,
+      "cu": 15819,
       "instruction": "submit_signal:8",
       "note": "slice-7 setup",
       "result": "Success"
@@ -669,13 +669,13 @@
       "result": "Success"
     },
     {
-      "cu": 17959,
+      "cu": 17963,
       "instruction": "commit:8",
       "note": "slice-7 setup (repeat of the gated instruction)",
       "result": "Success"
     },
     {
-      "cu": 15841,
+      "cu": 15839,
       "design_estimate_cu": "7000",
       "gate": "DESIGN-FINDING",
       "gate_2x_band_cu": "3500-14000",
@@ -684,7 +684,7 @@
       "result": "Success"
     },
     {
-      "cu": 15124,
+      "cu": 15128,
       "instruction": "post_observation:9",
       "note": "slice-7 setup",
       "result": "Success"
@@ -696,7 +696,7 @@
       "result": "Success"
     },
     {
-      "cu": 10556,
+      "cu": 10554,
       "instruction": "open_planning:9",
       "note": "slice-7 setup",
       "result": "Success"
@@ -708,7 +708,7 @@
       "result": "Success"
     },
     {
-      "cu": 15821,
+      "cu": 15819,
       "instruction": "submit_signal:9",
       "note": "slice-7 setup",
       "result": "Success"
@@ -726,7 +726,7 @@
       "result": "Success"
     },
     {
-      "cu": 17959,
+      "cu": 17963,
       "instruction": "commit:9",
       "note": "slice-7 setup (repeat of the gated instruction)",
       "result": "Success"
@@ -750,7 +750,7 @@
       "result": "Success"
     },
     {
-      "cu": 12124,
+      "cu": 12128,
       "instruction": "post_observation:10",
       "note": "slice-7 setup",
       "result": "Success"
@@ -762,7 +762,7 @@
       "result": "Success"
     },
     {
-      "cu": 10556,
+      "cu": 10554,
       "instruction": "open_planning:10",
       "note": "slice-7 setup",
       "result": "Success"
@@ -774,7 +774,7 @@
       "result": "Success"
     },
     {
-      "cu": 15821,
+      "cu": 15819,
       "instruction": "submit_signal:10",
       "note": "slice-7 setup",
       "result": "Success"
@@ -792,7 +792,7 @@
       "result": "Success"
     },
     {
-      "cu": 17959,
+      "cu": 17963,
       "instruction": "commit:10",
       "note": "slice-7 setup (repeat of the gated instruction)",
       "result": "Success"
@@ -816,7 +816,7 @@
       "result": "Success"
     },
     {
-      "cu": 10624,
+      "cu": 10628,
       "instruction": "post_observation:11",
       "note": "slice-7 setup",
       "result": "Success"
@@ -828,7 +828,7 @@
       "result": "Success"
     },
     {
-      "cu": 10556,
+      "cu": 10554,
       "instruction": "open_planning:11",
       "note": "slice-7 setup",
       "result": "Success"
@@ -840,7 +840,7 @@
       "result": "Success"
     },
     {
-      "cu": 15821,
+      "cu": 15819,
       "instruction": "submit_signal:11",
       "note": "slice-7 setup",
       "result": "Success"
@@ -858,7 +858,7 @@
       "result": "Success"
     },
     {
-      "cu": 17959,
+      "cu": 17963,
       "instruction": "commit:11",
       "note": "slice-7 setup (repeat of the gated instruction)",
       "result": "Success"
@@ -882,7 +882,7 @@
       "result": "Success"
     },
     {
-      "cu": 13624,
+      "cu": 13628,
       "instruction": "post_observation:12",
       "note": "slice-7 setup",
       "result": "Success"
@@ -894,7 +894,7 @@
       "result": "Success"
     },
     {
-      "cu": 10556,
+      "cu": 10554,
       "instruction": "open_planning:12",
       "note": "slice-7 setup",
       "result": "Success"
@@ -906,7 +906,7 @@
       "result": "Success"
     },
     {
-      "cu": 15821,
+      "cu": 15819,
       "instruction": "submit_signal:12",
       "note": "slice-7 setup",
       "result": "Success"
@@ -924,7 +924,7 @@
       "result": "Success"
     },
     {
-      "cu": 17959,
+      "cu": 17963,
       "instruction": "commit:12",
       "note": "slice-7 setup (repeat of the gated instruction)",
       "result": "Success"
@@ -948,7 +948,7 @@
       "result": "Success"
     },
     {
-      "cu": 13624,
+      "cu": 13628,
       "instruction": "post_observation:13",
       "note": "slice-7 setup",
       "result": "Success"
@@ -960,7 +960,7 @@
       "result": "Success"
     },
     {
-      "cu": 10556,
+      "cu": 10554,
       "instruction": "open_planning:13",
       "note": "slice-7 setup",
       "result": "Success"
@@ -972,7 +972,7 @@
       "result": "Success"
     },
     {
-      "cu": 15821,
+      "cu": 15819,
       "instruction": "submit_signal:13",
       "note": "slice-7 setup",
       "result": "Success"
@@ -990,7 +990,7 @@
       "result": "Success"
     },
     {
-      "cu": 17959,
+      "cu": 17963,
       "instruction": "commit:13",
       "note": "slice-7 setup (repeat of the gated instruction)",
       "result": "Success"
@@ -1014,7 +1014,7 @@
       "result": "Success"
     },
     {
-      "cu": 10624,
+      "cu": 10628,
       "instruction": "post_observation:14",
       "note": "slice-7 setup",
       "result": "Success"
@@ -1026,7 +1026,7 @@
       "result": "Success"
     },
     {
-      "cu": 10556,
+      "cu": 10554,
       "instruction": "open_planning:14",
       "note": "slice-7 setup",
       "result": "Success"
@@ -1038,7 +1038,7 @@
       "result": "Success"
     },
     {
-      "cu": 15821,
+      "cu": 15819,
       "instruction": "submit_signal:14",
       "note": "slice-7 setup",
       "result": "Success"
@@ -1056,7 +1056,7 @@
       "result": "Success"
     },
     {
-      "cu": 17959,
+      "cu": 17963,
       "instruction": "commit:14",
       "note": "slice-7 setup (repeat of the gated instruction)",
       "result": "Success"
@@ -1080,7 +1080,7 @@
       "result": "Success"
     },
     {
-      "cu": 12124,
+      "cu": 12128,
       "instruction": "post_observation:15",
       "note": "slice-7 setup",
       "result": "Success"
@@ -1092,7 +1092,7 @@
       "result": "Success"
     },
     {
-      "cu": 10556,
+      "cu": 10554,
       "instruction": "open_planning:15",
       "note": "slice-7 setup",
       "result": "Success"
@@ -1104,7 +1104,7 @@
       "result": "Success"
     },
     {
-      "cu": 15821,
+      "cu": 15819,
       "instruction": "submit_signal:15",
       "note": "slice-7 setup",
       "result": "Success"
@@ -1122,7 +1122,7 @@
       "result": "Success"
     },
     {
-      "cu": 17959,
+      "cu": 17963,
       "instruction": "commit:15",
       "note": "slice-7 setup (repeat of the gated instruction)",
       "result": "Success"
@@ -1146,7 +1146,7 @@
       "result": "Success"
     },
     {
-      "cu": 12124,
+      "cu": 12128,
       "instruction": "post_observation:16",
       "note": "slice-7 setup",
       "result": "Success"
@@ -1158,7 +1158,7 @@
       "result": "Success"
     },
     {
-      "cu": 10556,
+      "cu": 10554,
       "instruction": "open_planning:16",
       "note": "slice-7 setup",
       "result": "Success"
@@ -1170,7 +1170,7 @@
       "result": "Success"
     },
     {
-      "cu": 15821,
+      "cu": 15819,
       "instruction": "submit_signal:16",
       "note": "slice-7 setup",
       "result": "Success"
@@ -1188,7 +1188,7 @@
       "result": "Success"
     },
     {
-      "cu": 17959,
+      "cu": 17963,
       "instruction": "commit:16",
       "note": "slice-7 setup (repeat of the gated instruction)",
       "result": "Success"
@@ -1212,7 +1212,7 @@
       "result": "Success"
     },
     {
-      "cu": 10624,
+      "cu": 10628,
       "instruction": "post_observation:17",
       "note": "slice-7 setup",
       "result": "Success"
@@ -1224,7 +1224,7 @@
       "result": "Success"
     },
     {
-      "cu": 10556,
+      "cu": 10554,
       "instruction": "open_planning:17",
       "note": "slice-7 setup",
       "result": "Success"
@@ -1236,7 +1236,7 @@
       "result": "Success"
     },
     {
-      "cu": 15821,
+      "cu": 15819,
       "instruction": "submit_signal:17",
       "note": "slice-7 setup",
       "result": "Success"
@@ -1254,7 +1254,7 @@
       "result": "Success"
     },
     {
-      "cu": 17959,
+      "cu": 17963,
       "instruction": "commit:17",
       "note": "slice-7 setup (repeat of the gated instruction)",
       "result": "Success"
@@ -1278,7 +1278,7 @@
       "result": "Success"
     },
     {
-      "cu": 12124,
+      "cu": 12128,
       "instruction": "post_observation:18",
       "note": "slice-7 setup",
       "result": "Success"
@@ -1290,7 +1290,7 @@
       "result": "Success"
     },
     {
-      "cu": 10556,
+      "cu": 10554,
       "instruction": "open_planning:18",
       "note": "slice-7 setup",
       "result": "Success"
@@ -1302,7 +1302,7 @@
       "result": "Success"
     },
     {
-      "cu": 15821,
+      "cu": 15819,
       "instruction": "submit_signal:18",
       "note": "slice-7 setup",
       "result": "Success"
@@ -1320,7 +1320,7 @@
       "result": "Success"
     },
     {
-      "cu": 17959,
+      "cu": 17963,
       "instruction": "commit:18",
       "note": "slice-7 setup (repeat of the gated instruction)",
       "result": "Success"
@@ -1344,7 +1344,7 @@
       "result": "Success"
     },
     {
-      "cu": 10624,
+      "cu": 10628,
       "instruction": "post_observation:19",
       "note": "slice-7 setup",
       "result": "Success"
@@ -1356,7 +1356,7 @@
       "result": "Success"
     },
     {
-      "cu": 10556,
+      "cu": 10554,
       "instruction": "open_planning:19",
       "note": "slice-7 setup",
       "result": "Success"
@@ -1368,7 +1368,7 @@
       "result": "Success"
     },
     {
-      "cu": 15821,
+      "cu": 15819,
       "instruction": "submit_signal:19",
       "note": "slice-7 setup",
       "result": "Success"
@@ -1386,7 +1386,7 @@
       "result": "Success"
     },
     {
-      "cu": 17959,
+      "cu": 17963,
       "instruction": "commit:19",
       "note": "slice-7 setup (repeat of the gated instruction)",
       "result": "Success"
@@ -1410,7 +1410,7 @@
       "result": "Success"
     },
     {
-      "cu": 10624,
+      "cu": 10628,
       "instruction": "post_observation:20",
       "note": "slice-7 setup",
       "result": "Success"
@@ -1422,7 +1422,7 @@
       "result": "Success"
     },
     {
-      "cu": 10556,
+      "cu": 10554,
       "instruction": "open_planning:20",
       "note": "slice-7 setup",
       "result": "Success"
@@ -1434,7 +1434,7 @@
       "result": "Success"
     },
     {
-      "cu": 15821,
+      "cu": 15819,
       "instruction": "submit_signal:20",
       "note": "slice-7 setup",
       "result": "Success"
@@ -1452,7 +1452,7 @@
       "result": "Success"
     },
     {
-      "cu": 17959,
+      "cu": 17963,
       "instruction": "commit:20",
       "note": "slice-7 setup (repeat of the gated instruction)",
       "result": "Success"
@@ -1535,19 +1535,19 @@
       "result": "Refused"
     },
     {
-      "cu": 30040,
+      "cu": 30042,
       "instruction": "enroll:13D",
       "note": "slice-11 setup: defaulter twin enrolls in window 13 (cohort 1, position 10,000,000)",
       "result": "Success"
     },
     {
-      "cu": 27040,
+      "cu": 27042,
       "instruction": "enroll:13S",
       "note": "slice-11 setup: scheduled-path twin enrolls in window 13 (cohort 1, position 10,000,000)",
       "result": "Success"
     },
     {
-      "cu": 12406,
+      "cu": 12410,
       "error": "LoanExceedsPosition",
       "error_code": 6052,
       "instruction": "borrow:over_cap",
@@ -1555,7 +1555,7 @@
       "result": "Refused"
     },
     {
-      "cu": 12159,
+      "cu": 12163,
       "design_estimate_cu": "7000",
       "gate": "pass",
       "gate_2x_band_cu": "3500-14000",
@@ -1564,7 +1564,7 @@
       "result": "Success"
     },
     {
-      "cu": 14962,
+      "cu": 14960,
       "error": "LoanNotMatured",
       "error_code": 6056,
       "instruction": "settle_default:pre_maturity",
@@ -1614,7 +1614,7 @@
       "result": "Success"
     },
     {
-      "cu": 14388,
+      "cu": 14392,
       "error": "NotCurrentWindow",
       "error_code": 6043,
       "instruction": "enroll:12past",
@@ -1622,7 +1622,7 @@
       "result": "Refused"
     },
     {
-      "cu": 12868,
+      "cu": 12870,
       "error": "InvalidPosition",
       "error_code": 6044,
       "instruction": "enroll:13zero",
@@ -1630,20 +1630,20 @@
       "result": "Refused"
     },
     {
-      "cu": 8619,
+      "cu": 8621,
       "error": "Failure(Custom(0))",
       "instruction": "enroll:13double",
       "note": "slice-12 W3.2 re-expression (D-11): slice-11 twin D enrolls a second time in window 13 — refused at the account layer before the handler: the Anchor init's system-program create_account CPI fails with custom 0x0 on the already-existing holder record, so one holder's funds are never counted twice in one pool; the rendered error is recorded verbatim, NOT a success CU",
       "result": "Refused"
     },
     {
-      "cu": 27040,
+      "cu": 27042,
       "instruction": "enroll:13current",
       "note": "slice-12 setup: holder 25 enrolls in the still-current window 13 (cohort 1, position 5,000,000) — the live side of the boundary before it is crossed",
       "result": "Success"
     },
     {
-      "cu": 10624,
+      "cu": 10628,
       "instruction": "post_observation:21",
       "note": "slice-7 setup",
       "result": "Success"
@@ -1655,7 +1655,7 @@
       "result": "Success"
     },
     {
-      "cu": 10556,
+      "cu": 10554,
       "instruction": "open_planning:21",
       "note": "slice-7 setup",
       "result": "Success"
@@ -1667,7 +1667,7 @@
       "result": "Success"
     },
     {
-      "cu": 15821,
+      "cu": 15819,
       "instruction": "submit_signal:21",
       "note": "slice-7 setup",
       "result": "Success"
@@ -1685,7 +1685,7 @@
       "result": "Success"
     },
     {
-      "cu": 17959,
+      "cu": 17963,
       "instruction": "commit:21",
       "note": "slice-7 setup (repeat of the gated instruction)",
       "result": "Success"
@@ -1709,7 +1709,7 @@
       "result": "Success"
     },
     {
-      "cu": 14388,
+      "cu": 14392,
       "error": "NotCurrentWindow",
       "error_code": 6043,
       "instruction": "enroll:13closed",
@@ -1717,13 +1717,13 @@
       "result": "Refused"
     },
     {
-      "cu": 27040,
+      "cu": 27042,
       "instruction": "enroll:14current",
       "note": "slice-12 setup: holder 27 enrolls in the new current window 14 (cohort 2, position 5,000,000) — next-window-only entry in its positive form: the newcomer joins the new pool, never the closed one",
       "result": "Success"
     },
     {
-      "cu": 3500,
+      "cu": 3502,
       "error": "Failure(Custom(3012))",
       "instruction": "enroll:15future",
       "note": "slice-12 W3.2 re-expression (D-11): enroll into future window 15 while window_count is 15 (current window 14) — refused at the Anchor account layer because no window 15 account exists yet, before can_enroll runs; no custom error code, the rendered error is recorded verbatim, NOT a success CU",
@@ -1761,13 +1761,62 @@
       "instruction": "exit:13excess_penalty",
       "note": "slice-13 GATED fee-flow probe (D-5): holder 27 exits 1,000,000 of pure excess on Committed window flow transition 7, window 14 — penalty exactly the flat 13% (130,000; paid 870,000 by can_exit, which has no FEE_PPM term, so no second skim exists to take), position 5,000,000 -> 4,000,000",
       "result": "Success"
+    },
+    {
+      "cu": 28542,
+      "instruction": "enroll:14holder29",
+      "note": "slice-14 setup: holder 29 enrolls in the current window 14 (cohort 2, position 5,000,000) — the reinvest subject; holder 27's tranche is spent, so a fresh record is required",
+      "result": "Success"
+    },
+    {
+      "cu": 11712,
+      "design_estimate_cu": "7000",
+      "gate": "pass",
+      "gate_2x_band_cu": "3500-14000",
+      "instruction": "pay_tranche:14holder29",
+      "note": "slice-14 setup, GATED: operator pay_tranche 1,000,000 on holder 29 in window 14 on Committed window flow transition 7 — the dividend the reinvest probes then fold into position",
+      "result": "Success"
+    },
+    {
+      "cu": 9310,
+      "design_estimate_cu": "7000",
+      "gate": "pass",
+      "gate_2x_band_cu": "3500-14000",
+      "instruction": "reinvest:14partial",
+      "note": "slice-14 FIRST reinvest measurement (design §4.2, T8): holder 29 reinvests 400,000 of a 1,000,000 accrued dividend on Committed window flow transition 7, window 14 — accrued 1,000,000 -> 600,000, position 5,000,000 -> 5,400,000, window 14 exit stock UNCHANGED at 8,000,000 (claims no cash), TreasuryState UNCHANGED (re-labels dividend as position, creates nothing)",
+      "result": "Success"
+    },
+    {
+      "cu": 9979,
+      "error": "ReinvestExceedsAccrued",
+      "error_code": 6087,
+      "instruction": "reinvest:14over_accrued",
+      "note": "slice-14 refusal: holder 29 reinvests 600,001 against 600,000 accrued — refuses ReinvestExceedsAccrued (6087), never a partial reinvest of a larger request; state unchanged, NOT a success CU",
+      "result": "Refused"
+    },
+    {
+      "cu": 9310,
+      "design_estimate_cu": "7000",
+      "gate": "pass",
+      "gate_2x_band_cu": "3500-14000",
+      "instruction": "reinvest:14rest",
+      "note": "slice-14: holder 29 reinvests the remaining 600,000 accrued dividend at the inclusive boundary — accrued -> 0, position 5,400,000 -> 6,000,000, window 14 exit stock still 8,000,000",
+      "result": "Success"
+    },
+    {
+      "cu": 9944,
+      "error": "InvalidReinvestAmount",
+      "error_code": 6086,
+      "instruction": "reinvest:14zero",
+      "note": "slice-14 refusal: holder 29 reinvests 0 — refuses InvalidReinvestAmount (6086); a zero reinvestment would consume a window execution while moving nothing, NOT a success CU",
+      "result": "Refused"
     }
   ],
   "mollusk_svm": "0.16.2",
   "program_id": "FPGSeLBWEiFKdTuqDbJeKhjXeah5H4c3rqsW4Tzn3RAS",
-  "program_so_sha256": "82759c510ee6a94ad58a023fe82cb060095f3b4188978e7b54ed563cee22efac",
-  "slice": 13,
-  "slice_note": "slices 1-8 as before (slice-5/6 refusal probes stand as the unfunded-chain record; slice-7 FUNDED chain: real SPL Token deposit credits TreasuryState 60,000,000, window 1 opens on the funded snapshot, borrow / exit / settle_default / schedule_whale_exit FIRST successes; slice-8 12-window walk: windows 2..13 each open on their own Settled treasury.window.v1 transition (transitions 9..20, parented in sequence), each on the funded snapshot (total 60,000,000, exit stock 10,000,000, FLAG 2,000,000), and the FIRST success measurement execute_whale_tranche (tranche 1 of 5, 2,000,000 raw, on Committed treasury.exit.v1 transition 8, creation window 1, execution window 13 >= lock_until 13), gated §2.2 ~7K (2x band 3,500-14,000)) + slice-9 W3.2 re-expression part 1: tranche-2 weekly cadence on the slice-8 chain — TrancheTooSoon refusals at the tranche-1 clock and at last_block_time + WEEK_SECS - 1, then tranche 2 of 5 (2,000,000 raw) SUCCESS at exactly last_block_time + WEEK_SECS (31,608,400), gated §2.2 ~7K; launch_stage2 unmeasured by design (ThresholdUnset, D-2) + slice-10 W3.2 re-expression part 2: blind-ape bulk exit (T11) on the funded chain — the whole-position order (23,500,000 raw) refuses ExitExceedsLiquidity under the D-10 hard bound (L = 10,000,000), the largest executable bulk exit (8,500,000 raw, the remaining window-1 stock) succeeds with the flat 13% penalty on the full excess (1,105,000 penalty, 7,395,000 paid), and a further window-1 exit refuses ExitStockExhausted with aggregate window-1 exits exactly at L + slice-11 W3.2 re-expression part 3: default-as-exit (T10) on twin holders in window 13 (position 10,000,000 each) — borrow above the cap refuses LoanExceedsPosition, the max loan 5,000,000 succeeds at the inclusive boundary of the 50%-of-position and book caps, pre-maturity settle_default refuses LoanNotMatured, at-maturity settle_default succeeds (position 10,000,000 -> 5,000,000, skip flag set), and the PROBE: pay_tranche AFTER the default SUCCEEDS despite skip_next_dividend set, because can_pay_tranche takes no skip argument — the forfeiture half of T10 is unenforced on the program today, the one-cycle ledgers come out EQUAL (11,000,000 each), and T10 is NOT claimed re-expressed until the carried skip-enforcement item lands; window 13 exit stock ends 4,000,000, clock ends 36,792,400 + slice-12 W3.2 re-expression part 4: cohort-timing at window boundaries (D-11) — enroll into past window 12 refuses NotCurrentWindow, zero-position enroll into current window 13 refuses InvalidPosition, a double enroll in window 13 refuses at the account layer (one record per holder per window), a current-window-13 enroll succeeds (cohort 1); then the boundary is crossed for real (Settled transition 21 opens window 14, window_count 15): the just-closed window 13 now refuses NotCurrentWindow, a window-14 enroll succeeds (cohort 2), a future window-15 enroll refuses at the account layer (no window account exists yet), and the new cohort's pay_tranche 1,000,000 succeeds on its own slot (14 % 12 = 2), gated §2.2 ~7K; window 13 stock ends 4,000,000, window 14 stock 10,000,000, clock ends 37,003,600 + slice-13 W3.2 re-expression part 5: fee-flow edge cases under the single 73 bps stream (D-5) — a second real deposit 10,000,000 credits TreasuryState by exactly 10,000,000 (a funding-time skim would credit 9,927,000) with vault/source conserving exactly and FeeVault collected_raw still 0, and a mid-window deposit does not inflate window 14's snapshot or stock; holder 27's all-accrued exit 1,000,000 takes neither penalty nor fee (position stays 5,000,000, stock 10,000,000 -> 9,000,000) and a further 1,000,000 all-excess exit carries exactly the flat 13% penalty (position 5,000,000 -> 4,000,000, stock 9,000,000 -> 8,000,000, can_exit has no FEE_PPM term so no second skim exists); the negative half of the fee flow is proven, but the positive half — collection and reconciliation — is NOT: FeeVault collected_raw is still 0 because collect_fees is unbuilt, and the 73 bps income identity has no on-chain realization until that remaining §4.2 row lands",
+  "program_so_sha256": "e0f40adf5552a1913288086a99bf329d7c901063d31d7bd49cd7e3f02e8b6f92",
+  "slice": 14,
+  "slice_note": "slices 1-8 as before (slice-5/6 refusal probes stand as the unfunded-chain record; slice-7 FUNDED chain: real SPL Token deposit credits TreasuryState 60,000,000, window 1 opens on the funded snapshot, borrow / exit / settle_default / schedule_whale_exit FIRST successes; slice-8 12-window walk: windows 2..13 each open on their own Settled treasury.window.v1 transition (transitions 9..20, parented in sequence), each on the funded snapshot (total 60,000,000, exit stock 10,000,000, FLAG 2,000,000), and the FIRST success measurement execute_whale_tranche (tranche 1 of 5, 2,000,000 raw, on Committed treasury.exit.v1 transition 8, creation window 1, execution window 13 >= lock_until 13), gated §2.2 ~7K (2x band 3,500-14,000)) + slice-9 W3.2 re-expression part 1: tranche-2 weekly cadence on the slice-8 chain — TrancheTooSoon refusals at the tranche-1 clock and at last_block_time + WEEK_SECS - 1, then tranche 2 of 5 (2,000,000 raw) SUCCESS at exactly last_block_time + WEEK_SECS (31,608,400), gated §2.2 ~7K; launch_stage2 unmeasured by design (ThresholdUnset, D-2) + slice-10 W3.2 re-expression part 2: blind-ape bulk exit (T11) on the funded chain — the whole-position order (23,500,000 raw) refuses ExitExceedsLiquidity under the D-10 hard bound (L = 10,000,000), the largest executable bulk exit (8,500,000 raw, the remaining window-1 stock) succeeds with the flat 13% penalty on the full excess (1,105,000 penalty, 7,395,000 paid), and a further window-1 exit refuses ExitStockExhausted with aggregate window-1 exits exactly at L + slice-11 W3.2 re-expression part 3: default-as-exit (T10) on twin holders in window 13 (position 10,000,000 each) — borrow above the cap refuses LoanExceedsPosition, the max loan 5,000,000 succeeds at the inclusive boundary of the 50%-of-position and book caps, pre-maturity settle_default refuses LoanNotMatured, at-maturity settle_default succeeds (position 10,000,000 -> 5,000,000, skip flag set), and the PROBE: pay_tranche AFTER the default SUCCEEDS despite skip_next_dividend set, because can_pay_tranche takes no skip argument — the forfeiture half of T10 is unenforced on the program today, the one-cycle ledgers come out EQUAL (11,000,000 each), and T10 is NOT claimed re-expressed until the carried skip-enforcement item lands; window 13 exit stock ends 4,000,000, clock ends 36,792,400 + slice-12 W3.2 re-expression part 4: cohort-timing at window boundaries (D-11) — enroll into past window 12 refuses NotCurrentWindow, zero-position enroll into current window 13 refuses InvalidPosition, a double enroll in window 13 refuses at the account layer (one record per holder per window), a current-window-13 enroll succeeds (cohort 1); then the boundary is crossed for real (Settled transition 21 opens window 14, window_count 15): the just-closed window 13 now refuses NotCurrentWindow, a window-14 enroll succeeds (cohort 2), a future window-15 enroll refuses at the account layer (no window account exists yet), and the new cohort's pay_tranche 1,000,000 succeeds on its own slot (14 % 12 = 2), gated §2.2 ~7K; window 13 stock ends 4,000,000, window 14 stock 10,000,000, clock ends 37,003,600 + slice-13 W3.2 re-expression part 5: fee-flow edge cases under the single 73 bps stream (D-5) — a second real deposit 10,000,000 credits TreasuryState by exactly 10,000,000 (a funding-time skim would credit 9,927,000) with vault/source conserving exactly and FeeVault collected_raw still 0, and a mid-window deposit does not inflate window 14's snapshot or stock; holder 27's all-accrued exit 1,000,000 takes neither penalty nor fee (position stays 5,000,000, stock 10,000,000 -> 9,000,000) and a further 1,000,000 all-excess exit carries exactly the flat 13% penalty (position 5,000,000 -> 4,000,000, stock 9,000,000 -> 8,000,000, can_exit has no FEE_PPM term so no second skim exists); the negative half of the fee flow is proven, but the positive half — collection and reconciliation — is NOT: FeeVault collected_raw is still 0 because collect_fees is unbuilt, and the 73 bps income identity has no on-chain realization until that remaining §4.2 row lands + slice-14 the remaining §4.2 row `reinvest` (design §4.2, engine-sim T8) on a fresh holder 29 in window 14 — enroll 5,000,000 (cohort 2), pay_tranche 1,000,000 on Committed window-flow transition 7, then reinvest 400,000 (accrued 1,000,000 -> 600,000, position 5,000,000 -> 5,400,000, window 14 exit stock UNCHANGED at 8,000,000, TreasuryState UNCHANGED), a 600,001 reinvest refusing ReinvestExceedsAccrued (6087), the remaining 600,000 reinvesting at the inclusive boundary (accrued -> 0, position -> 6,000,000), and a zero reinvest refusing InvalidReinvestAmount (6086); the reinvest reading is accrued-dividend-only, partial allowed, no stock debit, no penalty, no value created — reinvesting a borrowed amount is NOT this instruction and needs its own ruling; program IDL 37 -> 38 instructions, 85 -> 88 errors, accounts 16, host tests 82 -> 83, and slices 1-13 re-measured against the new .so (sha e0f40adf...) with any shifts reported in the run log, not silently re-baselined",
   "token_program_id": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
   "token_program_so_sha256": "8190d3f7ceb6cb7a7a8d8924bff89f9f611e15ce1f806f2b6237f3311a98f697"
 }

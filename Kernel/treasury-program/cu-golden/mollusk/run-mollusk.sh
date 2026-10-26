@@ -1,13 +1,12 @@
 #!/usr/bin/env bash
-# W4.3 CU golden-test harness (mollusk path). Executes the slice-13
-# chain (slices 1-12 as before, plus the W3.2 re-expression part 5:
-# fee-flow edge cases under the single 73 bps stream (D-5) — a
-# second real deposit 10,000,000 credits TreasuryState by exactly
-# 10,000,000 (no funding-time skim; FeeVault collected_raw stays 0)
-# without inflating window 14's snapshot or stock, holder 27's
-# all-accrued exit 1,000,000 takes neither penalty nor fee, and a
-# further all-excess exit 1,000,000 carries exactly the flat 13%
-# penalty, gated against design §2.2 ~7K CU, 2x band 3,500-14,000)
+# W4.3 CU golden-test harness (mollusk path). Executes the slice-14
+# chain (slices 1-13 as before, plus the remaining §4.2 row
+# `reinvest`: holder 29 enrolls in window 14, collects a 1,000,000
+# tranche, and reinvests it in two parts — accrued falls and
+# position rises by exactly the reinvested amount, window 14 exit
+# stock and TreasuryState totals unchanged, over-accrued and zero
+# reinvests refusing with ReinvestExceedsAccrued / InvalidReinvestAmount,
+# gated against design §2.2 ~7K CU, 2x band 3,500-14,000)
 # against the already-built program .so
 # (build it first: `anchor build` from Kernel/treasury-program/) and
 # writes ../cu-golden-mollusk.json. No validator, no network, no real funds.
