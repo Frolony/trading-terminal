@@ -613,15 +613,59 @@ revision: the exit family already carries the 10,607 figure, and
 entries: all 243 slice-9 entries reproduce exactly (program .so
 sha unchanged).
 
+## Slice 11: W3.2 re-expression, part 3 — default-as-exit (T10) on the funded chain (2026-10-26)
+
+Engine-sim T10: the attacker borrows the max at every window and
+defaults (interest forgiven, principal settles against the position,
+next dividend forfeited), ending strictly worse than the scheduled
+path because the forfeited dividends are the gap. This slice
+separates T10's two halves on the program instead of asserting the
+engine's conclusion onto it. Twin holders in the currently open
+window 13 (window_count 14, cohort 13 % 12 = 1, snapshot 60,000,000,
+exit stock 6,000,000 after tranche 2, Committed window-flow
+transition 7 still authorizing executions), each enrolled at
+position 10,000,000:
+
+| instruction | CU | result |
+|---|---|---|
+| `enroll:13D` / `enroll:13S` (twin enrolls, window 13) | 30,040 / 27,040 | Success, setup (ungated; the 3,000 CU delta is two extra PDA bump-search attempts at the known 1,500 CU/attempt cost, not a behavior difference) |
+| `borrow:over_cap` (5,000,001 raw, twin D) | 12,406 | Refused, `LoanExceedsPosition` (6052) |
+| `borrow:11max` (5,000,000 raw, twin D) | 12,159 | Success, gate PASS (1 CU above slice-7 `borrow` 12,158 — the same 1-CU repeat class as slice 10's exit) |
+| `settle_default:pre_maturity` (twin D, clock 31,608,400 < maturity 36,792,400) | 14,962 | Refused, `LoanNotMatured` (6056) |
+| `settle_default:11` (twin D, at maturity 36,792,400) | 14,513 | Success, **same DESIGN FINDING as slice-7 `settle_default` 14,512** (1 CU above it, 513 CU over the 14,000 band top — the finding is confirmed, not new) |
+| `pay_tranche:11skip_probe` (twin D, AFTER the default set skip_next_dividend) | 11,711 | **Success — THE PROBE.** The skip flag does not gate `pay_tranche`: `can_pay_tranche` takes no skip argument (state, type, cohort, standing authorization, operator, tranche-paid, amount), and the `settle_default` handler itself carries the gap in its docs (the skipped slot is a FUTURE window's separate HolderRecord; honoring the skip at that window's `pay_tranche` is still owed) |
+| `exit:11D_par` (twin D, 1,000,000 raw) | 10,607 | Success, gate PASS (penalty 0, position stays 5,000,000) |
+| `pay_tranche:11S` / `exit:11S_par` (twin S, scheduled path, 1,000,000 raw) | 11,712 / 10,608 | Success, gate PASS (penalty 0, position stays 10,000,000) |
+
+The one-cycle ledgers come out EQUAL on the program today:
+defaulter 5,000,000 loan cash + 5,000,000 position + 1,000,000 paid
+tranche = 11,000,000; scheduled 1,000,000 paid + 10,000,000
+position = 11,000,000. That equality is the finding, stated, not a
+pass: the mechanics half of T10 (max-loan boundary, maturity gate,
+position settlement on the pre-default base, skip flag set) is
+measured and green, but the forfeiture half that makes engine T10
+strictly worse is unenforced on the program — the carried
+skip-enforcement item must land before T10 can be claimed as
+re-expressed on the program. No §2.2 revision: `borrow`,
+`settle_default`, `pay_tranche`, and `exit` repeats all confirm
+their existing §2.2 figures within 1 CU (the slice-10 treatment).
+Window 13 exit stock ends 4,000,000 (6,000,000 − twin D 1,000,000 −
+twin S 1,000,000); window 1 stock stays 0; the schedule is untouched
+(2 blocks, last_block_time 31,608,400); clock ends 36,792,400, which
+later slices must account for. Golden file 256 entries: all 246
+slice-10 entries reproduce exactly (program .so sha unchanged).
+As in every slice, `borrow` / `exit` / `settle_default` here are
+bookkeeping, not token movement.
+
 ## Next slices
 
 Queue head, continued: the W3.2 adversarial suite re-expressed against
 the program's interface with measured CU per instruction — next parts
 are the engine-sim adversarial classes on the funded chain
-(default-as-exit vs scheduled exit, cohort-timing at window
-boundaries, fee-flow edge cases under the single 73 bps stream),
-then the remaining §4.2 rows (reinvest, collect_fees) and the
-carried Part B4 items in roadmap order.
+(cohort-timing at window boundaries, fee-flow edge cases under the
+single 73 bps stream), then the remaining §4.2 rows (reinvest,
+collect_fees) and the carried Part B4 items in roadmap order
+(including the skip-enforcement item this slice confirmed open).
 
 Optimization pass step 2 (ATTEMPTED 2026-10-25, BLOCKED, REVERTED —
 NOT blocked by the funding decision, blocked by the toolchain):

@@ -3359,6 +3359,367 @@ fn main() {
     let ws1_10c = accounts.iter().find(|(k, _)| *k == window_state_1).map(|(_, a)| a.clone()).unwrap();
     assert_eq!(u64::from_le_bytes(ws1_10c.data[64..72].try_into().unwrap()), 0u64, "window 1 exit stock moved during exit:stock_exhausted refusal");
 
+    // ---- Slice 11: W3.2 re-expression, part 3 — default-as-exit (T10) on the funded chain ----
+    // Engine-sim T10: the attacker borrows the max against their
+    // position at every window and defaults (interest forgiven,
+    // principal settles against the position, next dividend
+    // forfeited), and ends strictly worse than the scheduled path
+    // because the forfeited dividends are the gap. On the program
+    // that claim has two halves, and this slice separates them
+    // honestly instead of asserting the engine's conclusion onto
+    // the program. The mechanics half is measured here, on twin
+    // holders in the currently open window 13 (window_count 14,
+    // so 13 is the current window under can_enroll; cohort
+    // 13 % 12 = 1; snapshot 60,000,000, exit stock 6,000,000
+    // after tranche 2, Committed window-flow transition 7 still
+    // authorizing executions; clock 31,608,400 at slice start):
+    // twin D (the defaulter) and twin S (the scheduled path),
+    // each enrolled at position 10,000,000. Twin D: a borrow
+    // above the per-holder cap MUST refuse LoanExceedsPosition
+    // (5,000,001 > 50% x 10,000,000), then the max loan
+    // 5,000,000 SUCCEEDS at the inclusive boundary of BOTH caps
+    // (50% of position AND book cap max_outstanding(60,000,000)
+    // = 5,000,000, outstanding 0 + 5,000,000); a settle_default
+    // before maturity MUST refuse LoanNotMatured; at maturity
+    // (31,608,400 + 60d = 36,792,400) settle_default SUCCEEDS,
+    // position 10,000,000 -> 5,000,000, loan cleared, skip flag
+    // set, book back to 0. Twin S: pay_tranche 1,000,000, then
+    // exit 1,000,000 at par (penalty 0, position untouched).
+    // The forfeiture half is the PROBE, and it is measured, not
+    // assumed: after twin D's default sets skip_next_dividend,
+    // a pay_tranche on that same record is attempted. The
+    // program's can_pay_tranche takes no skip argument (state,
+    // type, cohort, standing authorization, operator, tranche
+    // paid, amount) — and the settle_default handler itself
+    // carries the gap in its docs: the skipped slot is a FUTURE
+    // window's separate HolderRecord, and honoring the skip at
+    // that window's pay_tranche is still owed. If the probe
+    // tranche succeeds, the one-cycle ledgers come out EQUAL
+    // (defaulter: loan cash 5,000,000 + position 5,000,000 +
+    // paid tranche 1,000,000 = 11,000,000; scheduled: paid
+    // 1,000,000 + position 10,000,000 = 11,000,000), and T10's
+    // strict-worse gap on the program rests entirely on the
+    // carried skip-enforcement item — it is NOT claimed as
+    // re-expressed until that item lands. As in every slice,
+    // borrow / exit / settle_default here are bookkeeping, not
+    // token movement; the disbursement step is separate.
+    let holder_d = Pubkey::new_from_array([21u8; 32]);
+    let holder_s = Pubkey::new_from_array([22u8; 32]);
+    let (holder_record_d, _) = pda(&[b"holder", &13u64.to_le_bytes(), holder_d.as_ref()], &program_id);
+    let (holder_record_s, _) = pda(&[b"holder", &13u64.to_le_bytes(), holder_s.as_ref()], &program_id);
+    upsert(&mut accounts, (holder_d, funded()));
+    upsert(&mut accounts, (holder_s, funded()));
+    upsert(&mut accounts, (holder_record_d, empty.clone()));
+    upsert(&mut accounts, (holder_record_s, empty.clone()));
+    // (a) enroll twin D into window 13 (cohort 1, position 10,000,000).
+    let mut data11a = disc("enroll");
+    data11a.extend_from_slice(&13u64.to_le_bytes());
+    data11a.extend_from_slice(&10_000_000u64.to_le_bytes());
+    let ix11a = Instruction::new_with_bytes(
+        program_id,
+        &data11a,
+        vec![
+            AccountMeta::new_readonly(treasury_state, false),
+            AccountMeta::new(window_state_13, false),
+            AccountMeta::new(holder_record_d, false),
+            AccountMeta::new(holder_d, true),
+            AccountMeta::new_readonly(system_id, false),
+        ],
+    );
+    let (next, cu) = run(&mollusk, "enroll:13D", &ix11a, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({"instruction": "enroll:13D", "cu": cu, "result": "Success", "note": "slice-11 setup: defaulter twin enrolls in window 13 (cohort 1, position 10,000,000)"}));
+    let hr11d = accounts.iter().find(|(k, _)| *k == holder_record_d).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(hr11d.data[48..56].try_into().unwrap()), 1u64, "twin D cohort not 1 (13 % 12)");
+    assert_eq!(u64::from_le_bytes(hr11d.data[56..64].try_into().unwrap()), 10_000_000u64, "twin D position not 10,000,000 after enroll:13D");
+    assert_eq!(hr11d.data[89], 1u8, "twin D standing authorization not true at enroll:13D");
+    // (b) enroll twin S into window 13 (cohort 1, position 10,000,000).
+    let mut data11b = disc("enroll");
+    data11b.extend_from_slice(&13u64.to_le_bytes());
+    data11b.extend_from_slice(&10_000_000u64.to_le_bytes());
+    let ix11b = Instruction::new_with_bytes(
+        program_id,
+        &data11b,
+        vec![
+            AccountMeta::new_readonly(treasury_state, false),
+            AccountMeta::new(window_state_13, false),
+            AccountMeta::new(holder_record_s, false),
+            AccountMeta::new(holder_s, true),
+            AccountMeta::new_readonly(system_id, false),
+        ],
+    );
+    let (next, cu) = run(&mollusk, "enroll:13S", &ix11b, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({"instruction": "enroll:13S", "cu": cu, "result": "Success", "note": "slice-11 setup: scheduled-path twin enrolls in window 13 (cohort 1, position 10,000,000)"}));
+    let hr11s = accounts.iter().find(|(k, _)| *k == holder_record_s).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(hr11s.data[48..56].try_into().unwrap()), 1u64, "twin S cohort not 1 (13 % 12)");
+    assert_eq!(u64::from_le_bytes(hr11s.data[56..64].try_into().unwrap()), 10_000_000u64, "twin S position not 10,000,000 after enroll:13S");
+    let ws13_11 = accounts.iter().find(|(k, _)| *k == window_state_13).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(ws13_11.data[16..24].try_into().unwrap()), 60_000_000u64, "window 13 snapshot moved during slice-11 enrolls");
+    assert_eq!(u64::from_le_bytes(ws13_11.data[64..72].try_into().unwrap()), 6_000_000u64, "window 13 exit stock moved during slice-11 enrolls");
+    let ts11 = accounts.iter().find(|(k, _)| *k == treasury_state).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(ts11.data[56..64].try_into().unwrap()), 14u64, "window_count moved during slice-11 enrolls");
+    // (c) borrow above the per-holder cap MUST refuse LoanExceedsPosition (6052).
+    let mut data11c = disc("borrow");
+    data11c.extend_from_slice(&7u64.to_le_bytes());
+    data11c.extend_from_slice(&13u64.to_le_bytes());
+    data11c.extend_from_slice(&5_000_001u64.to_le_bytes());
+    let ix11c = Instruction::new_with_bytes(
+        program_id,
+        &data11c,
+        vec![
+            AccountMeta::new(holder_d, true),
+            AccountMeta::new_readonly(transition7, false),
+            AccountMeta::new_readonly(window_state_13, false),
+            AccountMeta::new(holder_record_d, false),
+            AccountMeta::new(lending_book, false),
+        ],
+    );
+    let cu = run_expect_err(&mollusk, "borrow:over_cap", &ix11c, &accounts, 6052);
+    measured.push(serde_json::json!({
+        "instruction": "borrow:over_cap",
+        "cu": cu,
+        "result": "Refused",
+        "error": "LoanExceedsPosition",
+        "error_code": 6052,
+        "note": "slice-11 W3.2 re-expression (T10): twin D borrow 5,000,001 raw on Committed window flow transition 7, window 13 — above the 50%-of-position cap (5,000,000), NOT a success CU",
+    }));
+    let hr11cr = accounts.iter().find(|(k, _)| *k == holder_record_d).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(hr11cr.data[72..80].try_into().unwrap()), 0u64, "loan moved during borrow:over_cap refusal");
+    // (d) borrow at the max — the inclusive boundary of BOTH caps — SUCCEEDS, gated §2.2 ~7K.
+    let mut data11d = disc("borrow");
+    data11d.extend_from_slice(&7u64.to_le_bytes());
+    data11d.extend_from_slice(&13u64.to_le_bytes());
+    data11d.extend_from_slice(&5_000_000u64.to_le_bytes());
+    let ix11d = Instruction::new_with_bytes(
+        program_id,
+        &data11d,
+        vec![
+            AccountMeta::new(holder_d, true),
+            AccountMeta::new_readonly(transition7, false),
+            AccountMeta::new_readonly(window_state_13, false),
+            AccountMeta::new(holder_record_d, false),
+            AccountMeta::new(lending_book, false),
+        ],
+    );
+    let (next, cu) = run(&mollusk, "borrow:11max", &ix11d, &accounts);
+    accounts = next;
+    let gate11 = if (3_500..=14_000).contains(&cu) { "pass" } else { "DESIGN-FINDING" };
+    measured.push(serde_json::json!({
+        "instruction": "borrow:11max",
+        "cu": cu,
+        "result": "Success",
+        "note": "slice-11 GATED measurement (W3.2 re-expression, T10): twin D borrows the max 5,000,000 raw on Committed window flow transition 7, window 13 — at the inclusive boundary of the 50%-of-position cap (5,000,000) and the book cap (max_outstanding(60,000,000) = 5,000,000, outstanding 0 + 5,000,000)",
+        "design_estimate_cu": "7000",
+        "gate_2x_band_cu": "3500-14000",
+        "gate": gate11,
+    }));
+    let hr11d = accounts.iter().find(|(k, _)| *k == holder_record_d).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(hr11d.data[72..80].try_into().unwrap()), 5_000_000u64, "twin D loan not 5,000,000 after borrow:11max");
+    assert_eq!(i64::from_le_bytes(hr11d.data[80..88].try_into().unwrap()), 36_792_400i64, "twin D maturity not 36,792,400 (31,608,400 + 60d) after borrow:11max");
+    let lb11 = accounts.iter().find(|(k, _)| *k == lending_book).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(lb11.data[8..16].try_into().unwrap()), 5_000_000u64, "lending book outstanding not 5,000,000 after borrow:11max");
+    assert_eq!(u32::from_le_bytes(lb11.data[16..20].try_into().unwrap()), 1u32, "lending book active loans not 1 after borrow:11max");
+    // (e) settle_default before maturity MUST refuse LoanNotMatured (6056).
+    let mut data11e = disc("settle_default");
+    data11e.extend_from_slice(&7u64.to_le_bytes());
+    data11e.extend_from_slice(&13u64.to_le_bytes());
+    data11e.extend_from_slice(holder_d.as_ref());
+    let ix11e = Instruction::new_with_bytes(
+        program_id,
+        &data11e,
+        vec![
+            AccountMeta::new(operator, true),
+            AccountMeta::new_readonly(operator_record, false),
+            AccountMeta::new_readonly(transition7, false),
+            AccountMeta::new_readonly(window_state_13, false),
+            AccountMeta::new(holder_record_d, false),
+            AccountMeta::new(lending_book, false),
+        ],
+    );
+    let cu = run_expect_err(&mollusk, "settle_default:pre_maturity", &ix11e, &accounts, 6056);
+    measured.push(serde_json::json!({
+        "instruction": "settle_default:pre_maturity",
+        "cu": cu,
+        "result": "Refused",
+        "error": "LoanNotMatured",
+        "error_code": 6056,
+        "note": "slice-11 W3.2 re-expression (T10): operator settle_default on twin D at clock 31,608,400, before maturity 36,792,400 — no operator seizes a position before it is due, NOT a success CU",
+    }));
+    let hr11er = accounts.iter().find(|(k, _)| *k == holder_record_d).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(hr11er.data[56..64].try_into().unwrap()), 10_000_000u64, "position moved during settle_default:pre_maturity refusal");
+    assert_eq!(u64::from_le_bytes(hr11er.data[72..80].try_into().unwrap()), 5_000_000u64, "loan moved during settle_default:pre_maturity refusal");
+    // (f) settle_default at maturity SUCCEEDS, gated §2.2 ~7K: position 10,000,000 -> 5,000,000,
+    // loan cleared, skip flag set, book back to 0. D-3: the event carries position_before 10,000,000.
+    mollusk.sysvars.clock.unix_timestamp = 36_792_400;
+    upsert(&mut accounts, mollusk.sysvars.keyed_account_for_clock_sysvar());
+    let mut data11f = disc("settle_default");
+    data11f.extend_from_slice(&7u64.to_le_bytes());
+    data11f.extend_from_slice(&13u64.to_le_bytes());
+    data11f.extend_from_slice(holder_d.as_ref());
+    let ix11f = Instruction::new_with_bytes(
+        program_id,
+        &data11f,
+        vec![
+            AccountMeta::new(operator, true),
+            AccountMeta::new_readonly(operator_record, false),
+            AccountMeta::new_readonly(transition7, false),
+            AccountMeta::new_readonly(window_state_13, false),
+            AccountMeta::new(holder_record_d, false),
+            AccountMeta::new(lending_book, false),
+        ],
+    );
+    let (next, cu) = run(&mollusk, "settle_default:11", &ix11f, &accounts);
+    accounts = next;
+    let gate11 = if (3_500..=14_000).contains(&cu) { "pass" } else { "DESIGN-FINDING" };
+    measured.push(serde_json::json!({
+        "instruction": "settle_default:11",
+        "cu": cu,
+        "result": "Success",
+        "note": "slice-11 GATED measurement (W3.2 re-expression, T10): operator-settled default at maturity 36,792,400 on Committed window flow transition 7, window 13 — principal 5,000,000 settles against position, interest forgiven, skip-next-dividend set on the pre-default base 10,000,000 (D-3)",
+        "design_estimate_cu": "7000",
+        "gate_2x_band_cu": "3500-14000",
+        "gate": gate11,
+    }));
+    let hr11d = accounts.iter().find(|(k, _)| *k == holder_record_d).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(hr11d.data[56..64].try_into().unwrap()), 5_000_000u64, "twin D position not 5,000,000 after settle_default:11");
+    assert_eq!(u64::from_le_bytes(hr11d.data[72..80].try_into().unwrap()), 0u64, "twin D loan not cleared by settle_default:11");
+    assert_eq!(i64::from_le_bytes(hr11d.data[80..88].try_into().unwrap()), 0i64, "twin D maturity not cleared by settle_default:11");
+    assert_eq!(hr11d.data[88], 1u8, "twin D skip-next-dividend flag not set by settle_default:11");
+    let lb11 = accounts.iter().find(|(k, _)| *k == lending_book).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(lb11.data[8..16].try_into().unwrap()), 0u64, "lending book outstanding not 0 after settle_default:11");
+    assert_eq!(u32::from_le_bytes(lb11.data[16..20].try_into().unwrap()), 0u32, "lending book active loans not 0 after settle_default:11");
+    // (g) THE PROBE: pay_tranche on twin D AFTER the default set skip_next_dividend.
+    // can_pay_tranche takes no skip argument, so the gate cannot see the flag;
+    // the outcome is measured, not assumed, and the golden note records it.
+    let mut data11g = disc("pay_tranche");
+    data11g.extend_from_slice(&7u64.to_le_bytes());
+    data11g.extend_from_slice(&13u64.to_le_bytes());
+    data11g.extend_from_slice(holder_d.as_ref());
+    data11g.extend_from_slice(&1_000_000u64.to_le_bytes());
+    let ix11g = Instruction::new_with_bytes(
+        program_id,
+        &data11g,
+        vec![
+            AccountMeta::new(operator, true),
+            AccountMeta::new_readonly(operator_record, false),
+            AccountMeta::new_readonly(transition7, false),
+            AccountMeta::new_readonly(window_state_13, false),
+            AccountMeta::new(holder_record_d, false),
+        ],
+    );
+    let (next, cu) = run(&mollusk, "pay_tranche:11skip_probe", &ix11g, &accounts);
+    accounts = next;
+    let gate11 = if (3_500..=14_000).contains(&cu) { "pass" } else { "DESIGN-FINDING" };
+    measured.push(serde_json::json!({
+        "instruction": "pay_tranche:11skip_probe",
+        "cu": cu,
+        "result": "Success",
+        "note": "slice-11 PROBE (W3.2 re-expression, T10): operator pay_tranche 1,000,000 on twin D AFTER settle_default set skip_next_dividend — SUCCEEDS: the skip flag does not gate pay_tranche (can_pay_tranche takes no skip argument), so the forfeiture half of T10 is unenforced on the program today and the carried skip-enforcement item (a future window's separate record) stays open; T10 is NOT claimed re-expressed until it lands",
+        "design_estimate_cu": "7000",
+        "gate_2x_band_cu": "3500-14000",
+        "gate": gate11,
+    }));
+    let hr11d = accounts.iter().find(|(k, _)| *k == holder_record_d).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(hr11d.data[64..72].try_into().unwrap()), 1_000_000u64, "twin D accrued not 1,000,000 after pay_tranche:11skip_probe");
+    assert_eq!(hr11d.data[88], 1u8, "twin D skip flag cleared by pay_tranche:11skip_probe");
+    assert_eq!(hr11d.data[98], 1u8, "twin D tranche_paid flag not set by pay_tranche:11skip_probe");
+    assert_eq!(u64::from_le_bytes(hr11d.data[56..64].try_into().unwrap()), 5_000_000u64, "twin D position moved during pay_tranche:11skip_probe");
+    // (h) twin D exits the accrued dividend at par: penalty 0, position untouched, stock 6,000,000 -> 5,000,000.
+    let mut data11h = disc("exit");
+    data11h.extend_from_slice(&7u64.to_le_bytes());
+    data11h.extend_from_slice(&13u64.to_le_bytes());
+    data11h.extend_from_slice(&1_000_000u64.to_le_bytes());
+    let ix11h = Instruction::new_with_bytes(
+        program_id,
+        &data11h,
+        vec![
+            AccountMeta::new(holder_d, true),
+            AccountMeta::new_readonly(transition7, false),
+            AccountMeta::new(window_state_13, false),
+            AccountMeta::new(holder_record_d, false),
+        ],
+    );
+    let (next, cu) = run(&mollusk, "exit:11D_par", &ix11h, &accounts);
+    accounts = next;
+    let gate11 = if (3_500..=14_000).contains(&cu) { "pass" } else { "DESIGN-FINDING" };
+    measured.push(serde_json::json!({
+        "instruction": "exit:11D_par",
+        "cu": cu,
+        "result": "Success",
+        "note": "slice-11 GATED measurement (W3.2 re-expression, T10): twin D exits the probed tranche 1,000,000 at par on Committed window flow transition 7, window 13 — accrued consumed, penalty 0, position stays 5,000,000",
+        "design_estimate_cu": "7000",
+        "gate_2x_band_cu": "3500-14000",
+        "gate": gate11,
+    }));
+    let hr11d = accounts.iter().find(|(k, _)| *k == holder_record_d).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(hr11d.data[64..72].try_into().unwrap()), 0u64, "twin D accrued not consumed by exit:11D_par");
+    assert_eq!(u64::from_le_bytes(hr11d.data[56..64].try_into().unwrap()), 5_000_000u64, "twin D position moved during exit:11D_par");
+    // (i) twin S, the scheduled path: pay_tranche 1,000,000, then exit 1,000,000 at par.
+    let mut data11i = disc("pay_tranche");
+    data11i.extend_from_slice(&7u64.to_le_bytes());
+    data11i.extend_from_slice(&13u64.to_le_bytes());
+    data11i.extend_from_slice(holder_s.as_ref());
+    data11i.extend_from_slice(&1_000_000u64.to_le_bytes());
+    let ix11i = Instruction::new_with_bytes(
+        program_id,
+        &data11i,
+        vec![
+            AccountMeta::new(operator, true),
+            AccountMeta::new_readonly(operator_record, false),
+            AccountMeta::new_readonly(transition7, false),
+            AccountMeta::new_readonly(window_state_13, false),
+            AccountMeta::new(holder_record_s, false),
+        ],
+    );
+    let (next, cu) = run(&mollusk, "pay_tranche:11S", &ix11i, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({"instruction": "pay_tranche:11S", "cu": cu, "result": "Success", "note": "slice-11 setup: scheduled-path twin S pay_tranche 1,000,000 on Committed window flow transition 7, window 13"}));
+    let mut data11j = disc("exit");
+    data11j.extend_from_slice(&7u64.to_le_bytes());
+    data11j.extend_from_slice(&13u64.to_le_bytes());
+    data11j.extend_from_slice(&1_000_000u64.to_le_bytes());
+    let ix11j = Instruction::new_with_bytes(
+        program_id,
+        &data11j,
+        vec![
+            AccountMeta::new(holder_s, true),
+            AccountMeta::new_readonly(transition7, false),
+            AccountMeta::new(window_state_13, false),
+            AccountMeta::new(holder_record_s, false),
+        ],
+    );
+    let (next, cu) = run(&mollusk, "exit:11S_par", &ix11j, &accounts);
+    accounts = next;
+    let gate11 = if (3_500..=14_000).contains(&cu) { "pass" } else { "DESIGN-FINDING" };
+    measured.push(serde_json::json!({
+        "instruction": "exit:11S_par",
+        "cu": cu,
+        "result": "Success",
+        "note": "slice-11 GATED measurement (W3.2 re-expression, T10): twin S exits the scheduled tranche 1,000,000 at par on Committed window flow transition 7, window 13 — accrued consumed, penalty 0, position stays 10,000,000",
+        "design_estimate_cu": "7000",
+        "gate_2x_band_cu": "3500-14000",
+        "gate": gate11,
+    }));
+    let hr11s = accounts.iter().find(|(k, _)| *k == holder_record_s).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(hr11s.data[64..72].try_into().unwrap()), 0u64, "twin S accrued not consumed by exit:11S_par");
+    assert_eq!(u64::from_le_bytes(hr11s.data[56..64].try_into().unwrap()), 10_000_000u64, "twin S position moved during exit:11S_par");
+    assert_eq!(hr11s.data[88], 0u8, "twin S skip flag set without a default");
+    // Final slice-11 state: the one-cycle ledgers are EQUAL on the program today —
+    // defaulter 5,000,000 loan cash + 5,000,000 position + 1,000,000 paid = 11,000,000;
+    // scheduled 1,000,000 paid + 10,000,000 position = 11,000,000 — because the
+    // forfeiture that makes engine T10 strictly worse is the unenforced skip.
+    // That equality is the finding, stated, not a pass: T10's gap needs the
+    // carried skip-enforcement item before it can be claimed on the program.
+    let ws13_11f = accounts.iter().find(|(k, _)| *k == window_state_13).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(ws13_11f.data[16..24].try_into().unwrap()), 60_000_000u64, "window 13 snapshot moved during slice 11");
+    assert_eq!(u64::from_le_bytes(ws13_11f.data[64..72].try_into().unwrap()), 4_000_000u64, "window 13 exit stock not 4,000,000 after slice 11 (6,000,000 - twin D 1,000,000 - twin S 1,000,000)");
+    let ws1_11f = accounts.iter().find(|(k, _)| *k == window_state_1).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(ws1_11f.data[64..72].try_into().unwrap()), 0u64, "window 1 exit stock moved during slice 11");
+    let es11f = accounts.iter().find(|(k, _)| *k == exit_schedule_1).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(es11f.data[72..80].try_into().unwrap()), 2u64, "schedule tranches_executed moved during slice 11");
+    assert_eq!(i64::from_le_bytes(es11f.data[96..104].try_into().unwrap()), 31_608_400i64, "schedule last_block_time moved during slice 11");
+
     let golden = serde_json::json!({
         "harness": "cu-golden-mollusk",
         "mollusk_svm": MOLLUSK_SVM_VERSION,
@@ -3366,8 +3727,8 @@ fn main() {
         "program_so_sha256": so_sha256,
         "token_program_id": TOKEN_PROGRAM_ID_STR,
         "token_program_so_sha256": token_elf_sha256,
-        "slice": 10,
-        "slice_note": "slices 1-8 as before (slice-5/6 refusal probes stand as the unfunded-chain record; slice-7 FUNDED chain: real SPL Token deposit credits TreasuryState 60,000,000, window 1 opens on the funded snapshot, borrow / exit / settle_default / schedule_whale_exit FIRST successes; slice-8 12-window walk: windows 2..13 each open on their own Settled treasury.window.v1 transition (transitions 9..20, parented in sequence), each on the funded snapshot (total 60,000,000, exit stock 10,000,000, FLAG 2,000,000), and the FIRST success measurement execute_whale_tranche (tranche 1 of 5, 2,000,000 raw, on Committed treasury.exit.v1 transition 8, creation window 1, execution window 13 >= lock_until 13), gated §2.2 ~7K (2x band 3,500-14,000)) + slice-9 W3.2 re-expression part 1: tranche-2 weekly cadence on the slice-8 chain — TrancheTooSoon refusals at the tranche-1 clock and at last_block_time + WEEK_SECS - 1, then tranche 2 of 5 (2,000,000 raw) SUCCESS at exactly last_block_time + WEEK_SECS (31,608,400), gated §2.2 ~7K; launch_stage2 unmeasured by design (ThresholdUnset, D-2) + slice-10 W3.2 re-expression part 2: blind-ape bulk exit (T11) on the funded chain — the whole-position order (23,500,000 raw) refuses ExitExceedsLiquidity under the D-10 hard bound (L = 10,000,000), the largest executable bulk exit (8,500,000 raw, the remaining window-1 stock) succeeds with the flat 13% penalty on the full excess (1,105,000 penalty, 7,395,000 paid), and a further window-1 exit refuses ExitStockExhausted with aggregate window-1 exits exactly at L",
+        "slice": 11,
+        "slice_note": "slices 1-8 as before (slice-5/6 refusal probes stand as the unfunded-chain record; slice-7 FUNDED chain: real SPL Token deposit credits TreasuryState 60,000,000, window 1 opens on the funded snapshot, borrow / exit / settle_default / schedule_whale_exit FIRST successes; slice-8 12-window walk: windows 2..13 each open on their own Settled treasury.window.v1 transition (transitions 9..20, parented in sequence), each on the funded snapshot (total 60,000,000, exit stock 10,000,000, FLAG 2,000,000), and the FIRST success measurement execute_whale_tranche (tranche 1 of 5, 2,000,000 raw, on Committed treasury.exit.v1 transition 8, creation window 1, execution window 13 >= lock_until 13), gated §2.2 ~7K (2x band 3,500-14,000)) + slice-9 W3.2 re-expression part 1: tranche-2 weekly cadence on the slice-8 chain — TrancheTooSoon refusals at the tranche-1 clock and at last_block_time + WEEK_SECS - 1, then tranche 2 of 5 (2,000,000 raw) SUCCESS at exactly last_block_time + WEEK_SECS (31,608,400), gated §2.2 ~7K; launch_stage2 unmeasured by design (ThresholdUnset, D-2) + slice-10 W3.2 re-expression part 2: blind-ape bulk exit (T11) on the funded chain — the whole-position order (23,500,000 raw) refuses ExitExceedsLiquidity under the D-10 hard bound (L = 10,000,000), the largest executable bulk exit (8,500,000 raw, the remaining window-1 stock) succeeds with the flat 13% penalty on the full excess (1,105,000 penalty, 7,395,000 paid), and a further window-1 exit refuses ExitStockExhausted with aggregate window-1 exits exactly at L + slice-11 W3.2 re-expression part 3: default-as-exit (T10) on twin holders in window 13 (position 10,000,000 each) — borrow above the cap refuses LoanExceedsPosition, the max loan 5,000,000 succeeds at the inclusive boundary of the 50%-of-position and book caps, pre-maturity settle_default refuses LoanNotMatured, at-maturity settle_default succeeds (position 10,000,000 -> 5,000,000, skip flag set), and the PROBE: pay_tranche AFTER the default SUCCEEDS despite skip_next_dividend set, because can_pay_tranche takes no skip argument — the forfeiture half of T10 is unenforced on the program today, the one-cycle ledgers come out EQUAL (11,000,000 each), and T10 is NOT claimed re-expressed until the carried skip-enforcement item lands; window 13 exit stock ends 4,000,000, clock ends 36,792,400",
         "clock": {"phase_a_unix_timestamp": NOW0, "planning_window_s": PLANNING_WINDOW, "phase_b_unix_timestamp": NOW1},
         "instructions": measured,
     });

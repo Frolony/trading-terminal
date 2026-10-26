@@ -1,13 +1,18 @@
 #!/usr/bin/env bash
-# W4.3 CU golden-test harness (mollusk path). Executes the slice-10
-# chain (slices 1-9 as before, plus the W3.2 re-expression part 2:
-# blind-ape bulk exit — whole-position order refused by the D-10
-# hard bound (ExitExceedsLiquidity), largest executable bulk exit
-# (8,500,000 raw) SUCCESS with the flat 13% penalty on the full
-# excess, then a further window-1 exit refused (ExitStockExhausted),
-# gated against design §2.2 ~7K CU, 2x band 3,500-14,000) against the
-# already-built program .so (build it first: `anchor build` from
-# Kernel/treasury-program/) and writes ../cu-golden-mollusk.json. No validator, no network, no real funds.
+# W4.3 CU golden-test harness (mollusk path). Executes the slice-11
+# chain (slices 1-10 as before, plus the W3.2 re-expression part 3:
+# default-as-exit (T10) on twin holders in window 13 — borrow above
+# the cap refused (LoanExceedsPosition), max loan 5,000,000 SUCCESS
+# at the inclusive cap boundary, pre-maturity settle_default refused
+# (LoanNotMatured), at-maturity settle_default SUCCESS, and the
+# probe: pay_tranche AFTER the default SUCCEEDS despite
+# skip_next_dividend set, because can_pay_tranche takes no skip
+# argument — the forfeiture half of T10 is unenforced on the program
+# today, so T10 is NOT claimed re-expressed until the carried
+# skip-enforcement item lands; gated against design §2.2 ~7K CU,
+# 2x band 3,500-14,000) against the already-built program .so
+# (build it first: `anchor build` from Kernel/treasury-program/) and
+# writes ../cu-golden-mollusk.json. No validator, no network, no real funds.
 # The keys below are throwaway local-test keys, never real secrets.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
