@@ -243,6 +243,33 @@ fn run_expect_err(
     result.compute_units_consumed
 }
 
+/// Runs one instruction, asserts it REFUSES with any error, and
+/// returns its measured CU plus the rendered error. For refusals
+/// that happen at the Anchor account layer before the handler's
+/// own gate runs (a double `init`, an account that does not exist
+/// yet) there is no custom code to assert — the refusal itself,
+/// with its rendered error recorded verbatim in the golden note,
+/// is the measurement. The threaded accounts are deliberately NOT
+/// replaced, as in `run_expect_err`.
+fn run_expect_any_err(
+    mollusk: &Mollusk,
+    label: &str,
+    ix: &Instruction,
+    accounts: &[(Pubkey, Account)],
+) -> (u64, String) {
+    let result = mollusk.process_instruction(ix, accounts);
+    println!(
+        "{label}: program_result={:?} cu={}",
+        result.program_result, result.compute_units_consumed
+    );
+    assert!(
+        result.program_result.is_err(),
+        "{label} unexpectedly succeeded"
+    );
+    let rendered = format!("{:?}", result.program_result);
+    (result.compute_units_consumed, rendered)
+}
+
 fn upsert(accounts: &mut Vec<(Pubkey, Account)>, entry: (Pubkey, Account)) {
     if let Some(slot) = accounts.iter_mut().find(|(k, _)| *k == entry.0) {
         *slot = entry;
@@ -3720,6 +3747,348 @@ fn main() {
     assert_eq!(u64::from_le_bytes(es11f.data[72..80].try_into().unwrap()), 2u64, "schedule tranches_executed moved during slice 11");
     assert_eq!(i64::from_le_bytes(es11f.data[96..104].try_into().unwrap()), 31_608_400i64, "schedule last_block_time moved during slice 11");
 
+    // ---- Slice 12: W3.2 re-expression, part 4 — cohort-timing at window boundaries (D-11) ----
+    // Engine-sim cohort-timing games ask whether a holder can slip
+    // into a window that has closed, reserve a window that has not
+    // opened, enter twice, or enter with nothing locked. The
+    // program answers all four at the enroll gate (can_enroll:
+    // window_id must equal window_count - 1, position positive)
+    // plus the PDA init (one record per holder per window). This
+    // slice measures the gate on the slice-11 chain (window_count
+    // 14, current window 13, clock 36,792,400, window 13 snapshot
+    // 60,000,000 / stock 4,000,000, Committed window-flow
+    // transition 7 still authorizing executions), then CROSSES
+    // the boundary for real — a new Settled window transition
+    // opens window 14 — and measures both sides of the crossing:
+    // the just-closed window 13 now refuses, the new current
+    // window 14 accepts with the next rotation slot (14 % 12 = 2),
+    // and the new cohort's payout rides that slot. A future
+    // window's enroll cannot even reach can_enroll: its window
+    // account does not exist yet, so Anchor's account layer
+    // refuses first — measured with the any-error helper and the
+    // rendered error recorded verbatim, not forced into a custom
+    // code it never reaches. Same for the double enroll: the
+    // second init refuses at the account layer, which IS the
+    // counted-once mechanism, not a gate bypass. As in every
+    // slice, enroll / pay_tranche here are bookkeeping, not token
+    // movement; the disbursement step is separate.
+    let holder_23 = Pubkey::new_from_array([23u8; 32]);
+    let holder_24 = Pubkey::new_from_array([24u8; 32]);
+    let holder_25 = Pubkey::new_from_array([25u8; 32]);
+    let holder_26 = Pubkey::new_from_array([26u8; 32]);
+    let holder_27 = Pubkey::new_from_array([27u8; 32]);
+    let holder_28 = Pubkey::new_from_array([28u8; 32]);
+    let (window_state_12, _) = pda(&[b"window", &12u64.to_le_bytes()], &program_id);
+    let (window_state_14, _) = pda(&[b"window", &14u64.to_le_bytes()], &program_id);
+    let (window_state_15, _) = pda(&[b"window", &15u64.to_le_bytes()], &program_id);
+    let ws12_pre = accounts.iter().find(|(k, _)| *k == window_state_12).map(|(_, a)| a.clone()).unwrap();
+    let ws12_roster_pre: Vec<u8> = ws12_pre.data[88..120].to_vec();
+    // (a) enroll into PAST window 12 MUST refuse NotCurrentWindow (6043).
+    let (holder_record_23_12, _) = pda(&[b"holder", &12u64.to_le_bytes(), holder_23.as_ref()], &program_id);
+    upsert(&mut accounts, (holder_23, funded()));
+    upsert(&mut accounts, (holder_record_23_12, empty.clone()));
+    let mut data12a = disc("enroll");
+    data12a.extend_from_slice(&12u64.to_le_bytes());
+    data12a.extend_from_slice(&5_000_000u64.to_le_bytes());
+    let ix12a = Instruction::new_with_bytes(
+        program_id,
+        &data12a,
+        vec![
+            AccountMeta::new_readonly(treasury_state, false),
+            AccountMeta::new(window_state_12, false),
+            AccountMeta::new(holder_record_23_12, false),
+            AccountMeta::new(holder_23, true),
+            AccountMeta::new_readonly(system_id, false),
+        ],
+    );
+    let cu = run_expect_err(&mollusk, "enroll:12past", &ix12a, &accounts, 6043);
+    measured.push(serde_json::json!({
+        "instruction": "enroll:12past",
+        "cu": cu,
+        "result": "Refused",
+        "error": "NotCurrentWindow",
+        "error_code": 6043,
+        "note": "slice-12 W3.2 re-expression (D-11): enroll into past window 12 while window_count is 14 (current window 13) — a closed pool admits no newcomer, NOT a success CU",
+    }));
+    let ws12r = accounts.iter().find(|(k, _)| *k == window_state_12).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(ws12r.data[88..120].to_vec(), ws12_roster_pre, "window 12 roster hash moved during enroll:12past refusal");
+    let ts12r = accounts.iter().find(|(k, _)| *k == treasury_state).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(ts12r.data[56..64].try_into().unwrap()), 14u64, "window_count moved during enroll:12past refusal");
+    // (b) enroll into the CURRENT window 13 with a ZERO position MUST refuse InvalidPosition (6044).
+    let (holder_record_24_13, _) = pda(&[b"holder", &13u64.to_le_bytes(), holder_24.as_ref()], &program_id);
+    upsert(&mut accounts, (holder_24, funded()));
+    upsert(&mut accounts, (holder_record_24_13, empty.clone()));
+    let mut data12b = disc("enroll");
+    data12b.extend_from_slice(&13u64.to_le_bytes());
+    data12b.extend_from_slice(&0u64.to_le_bytes());
+    let ix12b = Instruction::new_with_bytes(
+        program_id,
+        &data12b,
+        vec![
+            AccountMeta::new_readonly(treasury_state, false),
+            AccountMeta::new(window_state_13, false),
+            AccountMeta::new(holder_record_24_13, false),
+            AccountMeta::new(holder_24, true),
+            AccountMeta::new_readonly(system_id, false),
+        ],
+    );
+    let cu = run_expect_err(&mollusk, "enroll:13zero", &ix12b, &accounts, 6044);
+    measured.push(serde_json::json!({
+        "instruction": "enroll:13zero",
+        "cu": cu,
+        "result": "Refused",
+        "error": "InvalidPosition",
+        "error_code": 6044,
+        "note": "slice-12 W3.2 re-expression (D-11): enroll into current window 13 with position 0 — a zero lock is not an entry, NOT a success CU",
+    }));
+    let ws13_12b = accounts.iter().find(|(k, _)| *k == window_state_13).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(ws13_12b.data[64..72].try_into().unwrap()), 4_000_000u64, "window 13 exit stock moved during enroll:13zero refusal");
+    // (c) DOUBLE enroll: slice-11 twin D enrolls again in window 13 MUST refuse at the account layer
+    // (the record already exists; the one-record-per-holder-per-window init is the counted-once mechanism).
+    let mut data12c = disc("enroll");
+    data12c.extend_from_slice(&13u64.to_le_bytes());
+    data12c.extend_from_slice(&1_000_000u64.to_le_bytes());
+    let ix12c = Instruction::new_with_bytes(
+        program_id,
+        &data12c,
+        vec![
+            AccountMeta::new_readonly(treasury_state, false),
+            AccountMeta::new(window_state_13, false),
+            AccountMeta::new(holder_record_d, false),
+            AccountMeta::new(holder_d, true),
+            AccountMeta::new_readonly(system_id, false),
+        ],
+    );
+    let (cu, err12c) = run_expect_any_err(&mollusk, "enroll:13double", &ix12c, &accounts);
+    measured.push(serde_json::json!({
+        "instruction": "enroll:13double",
+        "cu": cu,
+        "result": "Refused",
+        "error": err12c,
+        "note": "slice-12 W3.2 re-expression (D-11): slice-11 twin D enrolls a second time in window 13 — refused at the account layer before the handler: the Anchor init's system-program create_account CPI fails with custom 0x0 on the already-existing holder record, so one holder's funds are never counted twice in one pool; the rendered error is recorded verbatim, NOT a success CU",
+    }));
+    let hr12c = accounts.iter().find(|(k, _)| *k == holder_record_d).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(hr12c.data[56..64].try_into().unwrap()), 5_000_000u64, "twin D position moved during enroll:13double refusal");
+    assert_eq!(u64::from_le_bytes(hr12c.data[64..72].try_into().unwrap()), 0u64, "twin D accrued moved during enroll:13double refusal");
+    assert_eq!(hr12c.data[88], 1u8, "twin D skip flag moved during enroll:13double refusal");
+    // (d) enroll into the CURRENT window 13 SUCCEEDS (setup, as in slice 11): cohort 1, standing authorization true.
+    let (holder_record_25_13, _) = pda(&[b"holder", &13u64.to_le_bytes(), holder_25.as_ref()], &program_id);
+    upsert(&mut accounts, (holder_25, funded()));
+    upsert(&mut accounts, (holder_record_25_13, empty.clone()));
+    let mut data12d = disc("enroll");
+    data12d.extend_from_slice(&13u64.to_le_bytes());
+    data12d.extend_from_slice(&5_000_000u64.to_le_bytes());
+    let ix12d = Instruction::new_with_bytes(
+        program_id,
+        &data12d,
+        vec![
+            AccountMeta::new_readonly(treasury_state, false),
+            AccountMeta::new(window_state_13, false),
+            AccountMeta::new(holder_record_25_13, false),
+            AccountMeta::new(holder_25, true),
+            AccountMeta::new_readonly(system_id, false),
+        ],
+    );
+    let (next, cu) = run(&mollusk, "enroll:13current", &ix12d, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({"instruction": "enroll:13current", "cu": cu, "result": "Success", "note": "slice-12 setup: holder 25 enrolls in the still-current window 13 (cohort 1, position 5,000,000) — the live side of the boundary before it is crossed"}));
+    let hr12d = accounts.iter().find(|(k, _)| *k == holder_record_25_13).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(hr12d.data[48..56].try_into().unwrap()), 1u64, "holder 25 cohort not 1 (13 % 12)");
+    assert_eq!(u64::from_le_bytes(hr12d.data[56..64].try_into().unwrap()), 5_000_000u64, "holder 25 position not 5,000,000 after enroll:13current");
+    assert_eq!(hr12d.data[89], 1u8, "holder 25 standing authorization not true at enroll:13current");
+    let ws13_12d = accounts.iter().find(|(k, _)| *k == window_state_13).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(ws13_12d.data[64..72].try_into().unwrap()), 4_000_000u64, "window 13 exit stock moved during enroll:13current (enroll debits no stock)");
+    let ws13_roster_after_d: Vec<u8> = ws13_12d.data[88..120].to_vec();
+    // (e) CROSS THE BOUNDARY: Settled treasury.window.v1 transition 21 (parent 20, [197;32],
+    // declared [207;32], now 37,000,000 — after the slice-11 clock 36,792,400) opens window 14.
+    // One lifecycle, in the slice-8 shape: its 10 setup entries carry the helper's notes.
+    let (observation_21, _) = pda(&[b"observation", &21u64.to_le_bytes()], &program_id);
+    let (transition_21, _) = pda(&[b"transition", &21u64.to_le_bytes()], &program_id);
+    let (plan_21, _) = pda(&[b"plan", &21u64.to_le_bytes(), proposer.as_ref()], &program_id);
+    let (signal_21, signal_21_bump) = pda(
+        &[b"signal", &21u64.to_le_bytes(), &0u32.to_le_bytes(), proposer.as_ref()],
+        &program_id,
+    );
+    let (evidence_21, _) = pda(&[b"evidence", &21u64.to_le_bytes()], &program_id);
+    upsert(&mut accounts, (observation_21, empty.clone()));
+    upsert(&mut accounts, (transition_21, empty.clone()));
+    upsert(&mut accounts, (plan_21, empty.clone()));
+    upsert(&mut accounts, (signal_21, empty.clone()));
+    upsert(&mut accounts, (evidence_21, empty.clone()));
+    upsert(&mut accounts, (window_state_14, empty.clone()));
+    accounts = lifecycle_to_commit(
+        &mut mollusk, accounts, &mut measured,
+        program_id, clock_id, system_id,
+        oracle_record, oracle, proposer_record, proposer, evaluator_record, evaluator,
+        chain, stock, policy_sha,
+        observation_21, transition_21, plan_21, signal_21, signal_21_bump,
+        21, 38_000_000, 39_000_000, [207u8; 32], 20, [197u8; 32],
+        [9u8; 32], 37_000_000, ":21", Some(evidence_21),
+    );
+    let mut data12e = disc("open_window");
+    data12e.extend_from_slice(&21u64.to_le_bytes());
+    data12e.extend_from_slice(&14u64.to_le_bytes());
+    let ix12e = Instruction::new_with_bytes(
+        program_id,
+        &data12e,
+        vec![
+            AccountMeta::new(treasury_state, false),
+            AccountMeta::new_readonly(lending_book, false),
+            AccountMeta::new_readonly(transition_21, false),
+            AccountMeta::new(window_state_14, false),
+            AccountMeta::new(authority, true),
+            AccountMeta::new_readonly(system_id, false),
+        ],
+    );
+    let (next, cu) = run(&mollusk, "open_window:14", &ix12e, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({"instruction": "open_window:14", "cu": cu, "result": "Success", "note": "slice-12 setup: window 14 opens on Settled transition 21 (funded snapshot total 60,000,000, exit stock 10,000,000) — the boundary crossing; window_count 14 -> 15, current window 13 -> 14"}));
+    let ts12e = accounts.iter().find(|(k, _)| *k == treasury_state).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(ts12e.data[56..64].try_into().unwrap()), 15u64, "window_count not 15 after open_window:14");
+    let ws14_12e = accounts.iter().find(|(k, _)| *k == window_state_14).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(ws14_12e.data[16..24].try_into().unwrap()), 60_000_000u64, "window 14 snapshot total not 60,000,000");
+    assert_eq!(u64::from_le_bytes(ws14_12e.data[64..72].try_into().unwrap()), 10_000_000u64, "window 14 exit stock not 10,000,000");
+    assert_eq!(u64::from_le_bytes(ws14_12e.data[72..80].try_into().unwrap()), 21u64, "window 14 source transition not 21");
+    // (f) enroll into the JUST-CLOSED window 13 MUST refuse NotCurrentWindow (6043):
+    // the holder who waited one window too long has lost the old pool.
+    let (holder_record_26_13, _) = pda(&[b"holder", &13u64.to_le_bytes(), holder_26.as_ref()], &program_id);
+    upsert(&mut accounts, (holder_26, funded()));
+    upsert(&mut accounts, (holder_record_26_13, empty.clone()));
+    let mut data12f = disc("enroll");
+    data12f.extend_from_slice(&13u64.to_le_bytes());
+    data12f.extend_from_slice(&5_000_000u64.to_le_bytes());
+    let ix12f = Instruction::new_with_bytes(
+        program_id,
+        &data12f,
+        vec![
+            AccountMeta::new_readonly(treasury_state, false),
+            AccountMeta::new(window_state_13, false),
+            AccountMeta::new(holder_record_26_13, false),
+            AccountMeta::new(holder_26, true),
+            AccountMeta::new_readonly(system_id, false),
+        ],
+    );
+    let cu = run_expect_err(&mollusk, "enroll:13closed", &ix12f, &accounts, 6043);
+    measured.push(serde_json::json!({
+        "instruction": "enroll:13closed",
+        "cu": cu,
+        "result": "Refused",
+        "error": "NotCurrentWindow",
+        "error_code": 6043,
+        "note": "slice-12 W3.2 re-expression (D-11): enroll into window 13 AFTER window 14 opened (window_count 15) — the same window that accepted enroll:13current minutes earlier now refuses; the boundary is the counter, not the clock, NOT a success CU",
+    }));
+    let ws13_12f = accounts.iter().find(|(k, _)| *k == window_state_13).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(ws13_12f.data[88..120].to_vec(), ws13_roster_after_d, "window 13 roster hash moved during enroll:13closed refusal");
+    // (g) enroll into the NEW current window 14 SUCCEEDS (setup): cohort 2 (14 % 12), standing authorization true.
+    let (holder_record_27_14, _) = pda(&[b"holder", &14u64.to_le_bytes(), holder_27.as_ref()], &program_id);
+    upsert(&mut accounts, (holder_27, funded()));
+    upsert(&mut accounts, (holder_record_27_14, empty.clone()));
+    let mut data12g = disc("enroll");
+    data12g.extend_from_slice(&14u64.to_le_bytes());
+    data12g.extend_from_slice(&5_000_000u64.to_le_bytes());
+    let ix12g = Instruction::new_with_bytes(
+        program_id,
+        &data12g,
+        vec![
+            AccountMeta::new_readonly(treasury_state, false),
+            AccountMeta::new(window_state_14, false),
+            AccountMeta::new(holder_record_27_14, false),
+            AccountMeta::new(holder_27, true),
+            AccountMeta::new_readonly(system_id, false),
+        ],
+    );
+    let (next, cu) = run(&mollusk, "enroll:14current", &ix12g, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({"instruction": "enroll:14current", "cu": cu, "result": "Success", "note": "slice-12 setup: holder 27 enrolls in the new current window 14 (cohort 2, position 5,000,000) — next-window-only entry in its positive form: the newcomer joins the new pool, never the closed one"}));
+    let hr12g = accounts.iter().find(|(k, _)| *k == holder_record_27_14).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(hr12g.data[48..56].try_into().unwrap()), 2u64, "holder 27 cohort not 2 (14 % 12)");
+    assert_eq!(u64::from_le_bytes(hr12g.data[56..64].try_into().unwrap()), 5_000_000u64, "holder 27 position not 5,000,000 after enroll:14current");
+    assert_eq!(hr12g.data[89], 1u8, "holder 27 standing authorization not true at enroll:14current");
+    let ws14_12g = accounts.iter().find(|(k, _)| *k == window_state_14).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(ws14_12g.data[16..24].try_into().unwrap()), 60_000_000u64, "window 14 snapshot moved during enroll:14current");
+    assert_eq!(u64::from_le_bytes(ws14_12g.data[64..72].try_into().unwrap()), 10_000_000u64, "window 14 exit stock moved during enroll:14current (enroll debits no stock)");
+    // (h) enroll into FUTURE window 15 MUST refuse at the account layer: no window 15 account
+    // exists yet, so the gate is never reached — the reservation of a not-yet-opened pool is
+    // impossible by construction, not merely by policy. Rendered error recorded verbatim.
+    let (holder_record_28_15, _) = pda(&[b"holder", &15u64.to_le_bytes(), holder_28.as_ref()], &program_id);
+    upsert(&mut accounts, (holder_28, funded()));
+    upsert(&mut accounts, (window_state_15, empty.clone()));
+    upsert(&mut accounts, (holder_record_28_15, empty.clone()));
+    let mut data12h = disc("enroll");
+    data12h.extend_from_slice(&15u64.to_le_bytes());
+    data12h.extend_from_slice(&5_000_000u64.to_le_bytes());
+    let ix12h = Instruction::new_with_bytes(
+        program_id,
+        &data12h,
+        vec![
+            AccountMeta::new_readonly(treasury_state, false),
+            AccountMeta::new(window_state_15, false),
+            AccountMeta::new(holder_record_28_15, false),
+            AccountMeta::new(holder_28, true),
+            AccountMeta::new_readonly(system_id, false),
+        ],
+    );
+    let (cu, err12h) = run_expect_any_err(&mollusk, "enroll:15future", &ix12h, &accounts);
+    measured.push(serde_json::json!({
+        "instruction": "enroll:15future",
+        "cu": cu,
+        "result": "Refused",
+        "error": err12h,
+        "note": "slice-12 W3.2 re-expression (D-11): enroll into future window 15 while window_count is 15 (current window 14) — refused at the Anchor account layer because no window 15 account exists yet, before can_enroll runs; no custom error code, the rendered error is recorded verbatim, NOT a success CU",
+    }));
+    let ts12h = accounts.iter().find(|(k, _)| *k == treasury_state).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(ts12h.data[56..64].try_into().unwrap()), 15u64, "window_count moved during enroll:15future refusal");
+    // (i) the new cohort's payout rides its own slot: pay_tranche 1,000,000 on holder 27 in
+    // window 14 (slot 14 % 12 = 2, holder cohort 2) on Committed window-flow transition 7,
+    // gated §2.2 ~7K. A window-13 cohort could not collect this slot: its record is
+    // PDA-bound to window 13, so no cross-window payout address exists to attempt.
+    let mut data12i = disc("pay_tranche");
+    data12i.extend_from_slice(&7u64.to_le_bytes());
+    data12i.extend_from_slice(&14u64.to_le_bytes());
+    data12i.extend_from_slice(holder_27.as_ref());
+    data12i.extend_from_slice(&1_000_000u64.to_le_bytes());
+    let ix12i = Instruction::new_with_bytes(
+        program_id,
+        &data12i,
+        vec![
+            AccountMeta::new(operator, true),
+            AccountMeta::new_readonly(operator_record, false),
+            AccountMeta::new_readonly(transition7, false),
+            AccountMeta::new_readonly(window_state_14, false),
+            AccountMeta::new(holder_record_27_14, false),
+        ],
+    );
+    let (next, cu) = run(&mollusk, "pay_tranche:14cohort", &ix12i, &accounts);
+    accounts = next;
+    let gate12 = if (3_500..=14_000).contains(&cu) { "pass" } else { "DESIGN-FINDING" };
+    measured.push(serde_json::json!({
+        "instruction": "pay_tranche:14cohort",
+        "cu": cu,
+        "result": "Success",
+        "note": "slice-12 GATED measurement (W3.2 re-expression, D-11): operator pay_tranche 1,000,000 on holder 27 in window 14 on Committed window flow transition 7 — holder cohort 2 equals window 14's rotation slot (14 % 12), so the new cohort's slot pays in its own window",
+        "design_estimate_cu": "7000",
+        "gate_2x_band_cu": "3500-14000",
+        "gate": gate12,
+    }));
+    let hr12i = accounts.iter().find(|(k, _)| *k == holder_record_27_14).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(hr12i.data[64..72].try_into().unwrap()), 1_000_000u64, "holder 27 accrued not 1,000,000 after pay_tranche:14cohort");
+    assert_eq!(hr12i.data[98], 1u8, "holder 27 tranche_paid flag not set by pay_tranche:14cohort");
+    assert_eq!(u64::from_le_bytes(hr12i.data[56..64].try_into().unwrap()), 5_000_000u64, "holder 27 position moved during pay_tranche:14cohort");
+    // Final slice-12 state: the boundary moved, nothing else did.
+    let ws13_12f2 = accounts.iter().find(|(k, _)| *k == window_state_13).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(ws13_12f2.data[16..24].try_into().unwrap()), 60_000_000u64, "window 13 snapshot moved during slice 12");
+    assert_eq!(u64::from_le_bytes(ws13_12f2.data[64..72].try_into().unwrap()), 4_000_000u64, "window 13 exit stock not 4,000,000 after slice 12");
+    assert_eq!(ws13_12f2.data[88..120].to_vec(), ws13_roster_after_d, "window 13 roster hash moved after enroll:13current");
+    let ws14_12f = accounts.iter().find(|(k, _)| *k == window_state_14).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(ws14_12f.data[16..24].try_into().unwrap()), 60_000_000u64, "window 14 snapshot moved during slice 12");
+    assert_eq!(u64::from_le_bytes(ws14_12f.data[64..72].try_into().unwrap()), 10_000_000u64, "window 14 exit stock not 10,000,000 after slice 12");
+    let ws1_12f = accounts.iter().find(|(k, _)| *k == window_state_1).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(ws1_12f.data[64..72].try_into().unwrap()), 0u64, "window 1 exit stock moved during slice 12");
+    let es12f = accounts.iter().find(|(k, _)| *k == exit_schedule_1).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(es12f.data[72..80].try_into().unwrap()), 2u64, "schedule tranches_executed moved during slice 12");
+    assert_eq!(i64::from_le_bytes(es12f.data[96..104].try_into().unwrap()), 31_608_400i64, "schedule last_block_time moved during slice 12");
+    assert_eq!(mollusk.sysvars.clock.unix_timestamp, 37_003_600i64, "clock not 37,003,600 after slice 12 (transition 21 lifecycle close)");
+
     let golden = serde_json::json!({
         "harness": "cu-golden-mollusk",
         "mollusk_svm": MOLLUSK_SVM_VERSION,
@@ -3727,8 +4096,8 @@ fn main() {
         "program_so_sha256": so_sha256,
         "token_program_id": TOKEN_PROGRAM_ID_STR,
         "token_program_so_sha256": token_elf_sha256,
-        "slice": 11,
-        "slice_note": "slices 1-8 as before (slice-5/6 refusal probes stand as the unfunded-chain record; slice-7 FUNDED chain: real SPL Token deposit credits TreasuryState 60,000,000, window 1 opens on the funded snapshot, borrow / exit / settle_default / schedule_whale_exit FIRST successes; slice-8 12-window walk: windows 2..13 each open on their own Settled treasury.window.v1 transition (transitions 9..20, parented in sequence), each on the funded snapshot (total 60,000,000, exit stock 10,000,000, FLAG 2,000,000), and the FIRST success measurement execute_whale_tranche (tranche 1 of 5, 2,000,000 raw, on Committed treasury.exit.v1 transition 8, creation window 1, execution window 13 >= lock_until 13), gated §2.2 ~7K (2x band 3,500-14,000)) + slice-9 W3.2 re-expression part 1: tranche-2 weekly cadence on the slice-8 chain — TrancheTooSoon refusals at the tranche-1 clock and at last_block_time + WEEK_SECS - 1, then tranche 2 of 5 (2,000,000 raw) SUCCESS at exactly last_block_time + WEEK_SECS (31,608,400), gated §2.2 ~7K; launch_stage2 unmeasured by design (ThresholdUnset, D-2) + slice-10 W3.2 re-expression part 2: blind-ape bulk exit (T11) on the funded chain — the whole-position order (23,500,000 raw) refuses ExitExceedsLiquidity under the D-10 hard bound (L = 10,000,000), the largest executable bulk exit (8,500,000 raw, the remaining window-1 stock) succeeds with the flat 13% penalty on the full excess (1,105,000 penalty, 7,395,000 paid), and a further window-1 exit refuses ExitStockExhausted with aggregate window-1 exits exactly at L + slice-11 W3.2 re-expression part 3: default-as-exit (T10) on twin holders in window 13 (position 10,000,000 each) — borrow above the cap refuses LoanExceedsPosition, the max loan 5,000,000 succeeds at the inclusive boundary of the 50%-of-position and book caps, pre-maturity settle_default refuses LoanNotMatured, at-maturity settle_default succeeds (position 10,000,000 -> 5,000,000, skip flag set), and the PROBE: pay_tranche AFTER the default SUCCEEDS despite skip_next_dividend set, because can_pay_tranche takes no skip argument — the forfeiture half of T10 is unenforced on the program today, the one-cycle ledgers come out EQUAL (11,000,000 each), and T10 is NOT claimed re-expressed until the carried skip-enforcement item lands; window 13 exit stock ends 4,000,000, clock ends 36,792,400",
+        "slice": 12,
+        "slice_note": "slices 1-8 as before (slice-5/6 refusal probes stand as the unfunded-chain record; slice-7 FUNDED chain: real SPL Token deposit credits TreasuryState 60,000,000, window 1 opens on the funded snapshot, borrow / exit / settle_default / schedule_whale_exit FIRST successes; slice-8 12-window walk: windows 2..13 each open on their own Settled treasury.window.v1 transition (transitions 9..20, parented in sequence), each on the funded snapshot (total 60,000,000, exit stock 10,000,000, FLAG 2,000,000), and the FIRST success measurement execute_whale_tranche (tranche 1 of 5, 2,000,000 raw, on Committed treasury.exit.v1 transition 8, creation window 1, execution window 13 >= lock_until 13), gated §2.2 ~7K (2x band 3,500-14,000)) + slice-9 W3.2 re-expression part 1: tranche-2 weekly cadence on the slice-8 chain — TrancheTooSoon refusals at the tranche-1 clock and at last_block_time + WEEK_SECS - 1, then tranche 2 of 5 (2,000,000 raw) SUCCESS at exactly last_block_time + WEEK_SECS (31,608,400), gated §2.2 ~7K; launch_stage2 unmeasured by design (ThresholdUnset, D-2) + slice-10 W3.2 re-expression part 2: blind-ape bulk exit (T11) on the funded chain — the whole-position order (23,500,000 raw) refuses ExitExceedsLiquidity under the D-10 hard bound (L = 10,000,000), the largest executable bulk exit (8,500,000 raw, the remaining window-1 stock) succeeds with the flat 13% penalty on the full excess (1,105,000 penalty, 7,395,000 paid), and a further window-1 exit refuses ExitStockExhausted with aggregate window-1 exits exactly at L + slice-11 W3.2 re-expression part 3: default-as-exit (T10) on twin holders in window 13 (position 10,000,000 each) — borrow above the cap refuses LoanExceedsPosition, the max loan 5,000,000 succeeds at the inclusive boundary of the 50%-of-position and book caps, pre-maturity settle_default refuses LoanNotMatured, at-maturity settle_default succeeds (position 10,000,000 -> 5,000,000, skip flag set), and the PROBE: pay_tranche AFTER the default SUCCEEDS despite skip_next_dividend set, because can_pay_tranche takes no skip argument — the forfeiture half of T10 is unenforced on the program today, the one-cycle ledgers come out EQUAL (11,000,000 each), and T10 is NOT claimed re-expressed until the carried skip-enforcement item lands; window 13 exit stock ends 4,000,000, clock ends 36,792,400 + slice-12 W3.2 re-expression part 4: cohort-timing at window boundaries (D-11) — enroll into past window 12 refuses NotCurrentWindow, zero-position enroll into current window 13 refuses InvalidPosition, a double enroll in window 13 refuses at the account layer (one record per holder per window), a current-window-13 enroll succeeds (cohort 1); then the boundary is crossed for real (Settled transition 21 opens window 14, window_count 15): the just-closed window 13 now refuses NotCurrentWindow, a window-14 enroll succeeds (cohort 2), a future window-15 enroll refuses at the account layer (no window account exists yet), and the new cohort's pay_tranche 1,000,000 succeeds on its own slot (14 % 12 = 2), gated §2.2 ~7K; window 13 stock ends 4,000,000, window 14 stock 10,000,000, clock ends 37,003,600",
         "clock": {"phase_a_unix_timestamp": NOW0, "planning_window_s": PLANNING_WINDOW, "phase_b_unix_timestamp": NOW1},
         "instructions": measured,
     });

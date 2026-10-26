@@ -657,6 +657,48 @@ slice-10 entries reproduce exactly (program .so sha unchanged).
 As in every slice, `borrow` / `exit` / `settle_default` here are
 bookkeeping, not token movement.
 
+## Slice 12: W3.2 re-expression, part 4 — cohort-timing at window boundaries (D-11) (2026-10-26)
+
+Engine-sim cohort-timing games ask whether a holder can slip into
+a window that has closed, reserve a window that has not opened,
+enter twice, or enter with nothing locked. The program answers
+all four at the enroll gate (`can_enroll`: window_id must equal
+window_count − 1, position positive) plus the PDA `init` (one
+record per holder per window). Measured on the slice-11 chain
+(window_count 14, current window 13, clock 36,792,400, window 13
+snapshot 60,000,000 / stock 4,000,000, Committed window-flow
+transition 7 still authorizing executions), then the boundary is
+crossed for real — Settled transition 21 opens window 14 — and
+both sides of the crossing are measured:
+
+| instruction | CU | result |
+|---|---|---|
+| `enroll:12past` (past window 12, window_count 14) | 14,388 | Refused, `NotCurrentWindow` (6043) — a closed pool admits no newcomer |
+| `enroll:13zero` (current window 13, position 0) | 12,868 | Refused, `InvalidPosition` (6044) — a zero lock is not an entry |
+| `enroll:13double` (slice-11 twin D again in window 13) | 8,619 | Refused at the account layer before the handler: the Anchor `init`'s system-program create_account CPI fails with custom 0x0 on the already-existing holder record — the counted-once mechanism, not a gate bypass |
+| `enroll:13current` (holder 25, window 13, 5,000,000) | 27,040 | Success, setup — cohort 1 (13 % 12), standing authorization true; the live side of the boundary before it is crossed |
+| `open_window:14` (Settled transition 21) | 16,484 | Success, setup — window_count 14 → 15, snapshot 60,000,000, exit stock 10,000,000; the 10 transition-21 lifecycle entries ride the slice-8 shape |
+| `enroll:13closed` (window 13 AFTER window 14 opened) | 14,388 | Refused, `NotCurrentWindow` (6043) — the same window that accepted `enroll:13current` now refuses; the boundary is the counter, not the clock |
+| `enroll:14current` (holder 27, window 14, 5,000,000) | 27,040 | Success, setup — cohort 2 (14 % 12), standing authorization true; next-window-only entry in its positive form |
+| `enroll:15future` (future window 15, window_count 15) | 3,500 | Refused at the account layer: no window 15 account exists yet, so Anchor fails with `AccountNotInitialized` (3012) on `window_state` before `can_enroll` runs — reserving a not-yet-opened pool is impossible by construction, not merely by policy |
+| `pay_tranche:14cohort` (holder 27, window 14, 1,000,000) | 11,712 | Success, gate PASS — holder cohort 2 equals window 14's rotation slot (14 % 12), so the new cohort's slot pays in its own window |
+
+Final state: window 13 snapshot 60,000,000 / stock 4,000,000
+unchanged after its enroll (enroll debits no stock); window 14
+snapshot 60,000,000 / stock 10,000,000 unchanged by its enroll
+and payout; window 1 stock stays 0; the whale schedule is
+untouched (2 blocks, last_block_time 31,608,400); clock ends
+37,003,600 (transition 21 lifecycle close), which later slices
+must account for. Golden file 275 entries: all 256 slice-11
+entries reproduce exactly (program .so sha unchanged,
+`82759c51…`). No §2.2 revision: the one gated figure
+(`pay_tranche` 11,712) confirms the family's existing figure
+within 1 CU. As in every slice, `enroll` / `pay_tranche` here
+are bookkeeping, not token movement. A window-13 cohort holder
+cannot collect a window-14 slot by the same construction: its
+record is PDA-bound to window 13, so no cross-window payout
+address exists to attempt.
+
 ## Next slices
 
 Queue head, continued: the W3.2 adversarial suite re-expressed against

@@ -1,16 +1,18 @@
 #!/usr/bin/env bash
-# W4.3 CU golden-test harness (mollusk path). Executes the slice-11
-# chain (slices 1-10 as before, plus the W3.2 re-expression part 3:
-# default-as-exit (T10) on twin holders in window 13 — borrow above
-# the cap refused (LoanExceedsPosition), max loan 5,000,000 SUCCESS
-# at the inclusive cap boundary, pre-maturity settle_default refused
-# (LoanNotMatured), at-maturity settle_default SUCCESS, and the
-# probe: pay_tranche AFTER the default SUCCEEDS despite
-# skip_next_dividend set, because can_pay_tranche takes no skip
-# argument — the forfeiture half of T10 is unenforced on the program
-# today, so T10 is NOT claimed re-expressed until the carried
-# skip-enforcement item lands; gated against design §2.2 ~7K CU,
-# 2x band 3,500-14,000) against the already-built program .so
+# W4.3 CU golden-test harness (mollusk path). Executes the slice-12
+# chain (slices 1-11 as before, plus the W3.2 re-expression part 4:
+# cohort-timing at window boundaries (D-11) — past-window enroll
+# refused (NotCurrentWindow), zero-position enroll refused
+# (InvalidPosition), double enroll refused at the account layer
+# (system create_account 0x0 on the existing record), current
+# window 13 enroll succeeds (cohort 1), then the boundary is
+# crossed for real (Settled transition 21 opens window 14): the
+# just-closed window 13 now refuses (NotCurrentWindow), window 14
+# enroll succeeds (cohort 2), future window 15 enroll refused at
+# the account layer (AccountNotInitialized 3012 — no window account
+# exists yet), and the new cohort's pay_tranche 1,000,000 succeeds
+# on its own slot, gated against design §2.2 ~7K CU, 2x band
+# 3,500-14,000) against the already-built program .so
 # (build it first: `anchor build` from Kernel/treasury-program/) and
 # writes ../cu-golden-mollusk.json. No validator, no network, no real funds.
 # The keys below are throwaway local-test keys, never real secrets.
