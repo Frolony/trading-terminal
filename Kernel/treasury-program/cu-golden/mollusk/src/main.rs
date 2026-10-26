@@ -3132,6 +3132,104 @@ fn main() {
     let ws1 = accounts.iter().find(|(k, _)| *k == window_state_1).map(|(_, a)| a.clone()).unwrap();
     assert_eq!(u64::from_le_bytes(ws1.data[64..72].try_into().unwrap()), 8_500_000u64, "window 1 exit stock moved during execute_whale_tranche (execution debits the execution window only)");
 
+    // ---- Slice 9: W3.2 re-expression, part 1 — tranche-2 weekly cadence ----
+    // The D-10 revised contract pays a whale schedule in weekly blocks:
+    // tranche 2 may execute only at now >= last_block_time + WEEK_SECS
+    // (604,800s), the gate inclusive (`now >= earliest`). Three
+    // measurements on the slice-8 chain, all on execution window 13
+    // (13 >= lock_until 13; window-13 exit stock 8,000,000 after
+    // tranche 1 still covers a 2,000,000 block) under the same
+    // Committed exit transition 8:
+    // (a) too-soon probe at the tranche-1 clock (31,003,600 ==
+    // last_block_time, a full week short of the earliest lawful
+    // block) MUST refuse TrancheTooSoon (6069);
+    // (b) boundary-minus-one probe at 31,608,399 (one second short)
+    // MUST refuse TrancheTooSoon — the boundary is exact, not
+    // approximate;
+    // (c) success at exactly 31,608,400, gated §2.2 ~7K (2x band
+    // 3,500–14,000) like tranche 1. Refusals change no state
+    // (run_expect_err keeps the pre-state); the success asserts
+    // tranches_executed 2, last_block_time 31,608,400, position
+    // 23,500,000, window-13 exit stock 6,000,000, window-1 stock
+    // untouched at 8,500,000.
+    let mut data9 = disc("execute_whale_tranche");
+    data9.extend_from_slice(&8u64.to_le_bytes());
+    data9.extend_from_slice(&1u64.to_le_bytes());
+    data9.extend_from_slice(&13u64.to_le_bytes());
+    data9.extend_from_slice(holder.as_ref());
+    let ix9 = Instruction::new_with_bytes(
+        program_id,
+        &data9,
+        vec![
+            AccountMeta::new(operator, true),
+            AccountMeta::new_readonly(operator_record, false),
+            AccountMeta::new_readonly(transition8, false),
+            AccountMeta::new(window_state_13, false),
+            AccountMeta::new(holder_record_1, false),
+            AccountMeta::new(exit_schedule_1, false),
+        ],
+    );
+    // (a) too-soon at the tranche-1 clock.
+    mollusk.sysvars.clock.unix_timestamp = 31_003_600;
+    upsert(&mut accounts, mollusk.sysvars.keyed_account_for_clock_sysvar());
+    let cu = run_expect_err(&mollusk, "execute_whale_tranche:too_soon", &ix9, &accounts, 6069);
+    measured.push(serde_json::json!({
+        "instruction": "execute_whale_tranche:too_soon",
+        "cu": cu,
+        "result": "Refused",
+        "error": "TrancheTooSoon",
+        "error_code": 6069,
+        "note": "slice-9 W3.2 re-expression: tranche 2 attempted at the tranche-1 clock (31,003,600 == last_block_time, 604,800s short of the earliest lawful block) — weekly cadence refuses, NOT a success CU",
+    }));
+    // (b) boundary minus one second.
+    mollusk.sysvars.clock.unix_timestamp = 31_608_399;
+    upsert(&mut accounts, mollusk.sysvars.keyed_account_for_clock_sysvar());
+    let cu = run_expect_err(&mollusk, "execute_whale_tranche:too_soon_boundary_minus_1", &ix9, &accounts, 6069);
+    measured.push(serde_json::json!({
+        "instruction": "execute_whale_tranche:too_soon_boundary_minus_1",
+        "cu": cu,
+        "result": "Refused",
+        "error": "TrancheTooSoon",
+        "error_code": 6069,
+        "note": "slice-9 W3.2 re-expression: tranche 2 attempted at last_block_time + WEEK_SECS - 1 (31,608,399) — the cadence boundary is exact, one second short still refuses, NOT a success CU",
+    }));
+    // Post-refusal assertions: NOTHING moved. Schedule still 1
+    // executed block, last_block_time still the tranche-1 clock,
+    // position and both window stocks unchanged.
+    let es9r = accounts.iter().find(|(k, _)| *k == exit_schedule_1).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(es9r.data[72..80].try_into().unwrap()), 1u64, "schedule tranches_executed moved during tranche-2 refusal probes");
+    assert_eq!(i64::from_le_bytes(es9r.data[96..104].try_into().unwrap()), 31_003_600i64, "schedule last_block_time moved during tranche-2 refusal probes");
+    let hr9r = accounts.iter().find(|(k, _)| *k == holder_record_1).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(hr9r.data[56..64].try_into().unwrap()), 25_500_000u64, "position moved during tranche-2 refusal probes");
+    let ws13r = accounts.iter().find(|(k, _)| *k == window_state_13).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(ws13r.data[64..72].try_into().unwrap()), 8_000_000u64, "window 13 exit stock moved during tranche-2 refusal probes");
+    // (c) success at exactly the boundary: last_block_time + WEEK_SECS.
+    mollusk.sysvars.clock.unix_timestamp = 31_608_400;
+    upsert(&mut accounts, mollusk.sysvars.keyed_account_for_clock_sysvar());
+    let (next, cu) = run(&mollusk, "execute_whale_tranche:tranche2", &ix9, &accounts);
+    accounts = next;
+    let gate9 = if (3_500..=14_000).contains(&cu) { "pass" } else { "DESIGN-FINDING" };
+    measured.push(serde_json::json!({
+        "instruction": "execute_whale_tranche:tranche2",
+        "cu": cu,
+        "result": "Success",
+        "note": "slice-9 GATED measurement (W3.2 re-expression): tranche 2 of 5 (2,000,000 raw) at exactly last_block_time + WEEK_SECS (31,608,400), on Committed treasury.exit.v1 transition 8, creation window 1, execution window 13 >= lock_until 13, execution window 13 snapshot 60,000,000 / FLAG 2,000,000, position 25,500,000, loan 0",
+        "design_estimate_cu": "7000",
+        "gate_2x_band_cu": "3500-14000",
+        "gate": gate9,
+    }));
+    let es9 = accounts.iter().find(|(k, _)| *k == exit_schedule_1).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(es9.data[72..80].try_into().unwrap()), 2u64, "schedule tranches_executed not 2 after execute_whale_tranche:tranche2");
+    assert_eq!(i64::from_le_bytes(es9.data[96..104].try_into().unwrap()), 31_608_400i64, "schedule last_block_time not 31,608,400 after execute_whale_tranche:tranche2");
+    assert_eq!(u64::from_le_bytes(es9.data[48..56].try_into().unwrap()), 10_000_000u64, "schedule total moved during execute_whale_tranche:tranche2");
+    assert_eq!(u64::from_le_bytes(es9.data[64..72].try_into().unwrap()), 5u64, "schedule tranche count moved during execute_whale_tranche:tranche2");
+    let hr9 = accounts.iter().find(|(k, _)| *k == holder_record_1).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(hr9.data[56..64].try_into().unwrap()), 23_500_000u64, "position not 23,500,000 after execute_whale_tranche:tranche2");
+    let ws13_9 = accounts.iter().find(|(k, _)| *k == window_state_13).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(ws13_9.data[64..72].try_into().unwrap()), 6_000_000u64, "window 13 exit stock not 6,000,000 after execute_whale_tranche:tranche2");
+    let ws1_9 = accounts.iter().find(|(k, _)| *k == window_state_1).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(ws1_9.data[64..72].try_into().unwrap()), 8_500_000u64, "window 1 exit stock moved during execute_whale_tranche:tranche2 (execution debits the execution window only)");
+
     let golden = serde_json::json!({
         "harness": "cu-golden-mollusk",
         "mollusk_svm": MOLLUSK_SVM_VERSION,
@@ -3139,8 +3237,8 @@ fn main() {
         "program_so_sha256": so_sha256,
         "token_program_id": TOKEN_PROGRAM_ID_STR,
         "token_program_so_sha256": token_elf_sha256,
-        "slice": 8,
-        "slice_note": "slices 1-7 as before (slice-5/6 refusal probes stand as the unfunded-chain record; slice-7 FUNDED chain: real SPL Token deposit credits TreasuryState 60,000,000, window 1 opens on the funded snapshot, borrow / exit / settle_default / schedule_whale_exit FIRST successes) + slice-8 12-window walk: windows 2..13 each open on their own Settled treasury.window.v1 transition (transitions 9..20, parented in sequence), each on the funded snapshot (total 60,000,000, exit stock 10,000,000, FLAG 2,000,000), and the FIRST success measurement execute_whale_tranche (tranche 1 of 5, 2,000,000 raw, on Committed treasury.exit.v1 transition 8, creation window 1, execution window 13 >= lock_until 13), gated §2.2 ~7K (2x band 3,500-14,000); tranche 2's weekly cadence (last_block_time + WEEK_SECS) is not measured here; launch_stage2 unmeasured by design (ThresholdUnset, D-2)",
+        "slice": 9,
+        "slice_note": "slices 1-8 as before (slice-5/6 refusal probes stand as the unfunded-chain record; slice-7 FUNDED chain: real SPL Token deposit credits TreasuryState 60,000,000, window 1 opens on the funded snapshot, borrow / exit / settle_default / schedule_whale_exit FIRST successes; slice-8 12-window walk: windows 2..13 each open on their own Settled treasury.window.v1 transition (transitions 9..20, parented in sequence), each on the funded snapshot (total 60,000,000, exit stock 10,000,000, FLAG 2,000,000), and the FIRST success measurement execute_whale_tranche (tranche 1 of 5, 2,000,000 raw, on Committed treasury.exit.v1 transition 8, creation window 1, execution window 13 >= lock_until 13), gated §2.2 ~7K (2x band 3,500-14,000)) + slice-9 W3.2 re-expression part 1: tranche-2 weekly cadence on the slice-8 chain — TrancheTooSoon refusals at the tranche-1 clock and at last_block_time + WEEK_SECS - 1, then tranche 2 of 5 (2,000,000 raw) SUCCESS at exactly last_block_time + WEEK_SECS (31,608,400), gated §2.2 ~7K; launch_stage2 unmeasured by design (ThresholdUnset, D-2)",
         "clock": {"phase_a_unix_timestamp": NOW0, "planning_window_s": PLANNING_WINDOW, "phase_b_unix_timestamp": NOW1},
         "instructions": measured,
     });

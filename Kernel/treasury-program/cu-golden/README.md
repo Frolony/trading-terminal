@@ -537,13 +537,46 @@ walk setup entries and this measurement. The finding joins
 the batch arithmetic: one tranche execution is not
 per-payout batched.
 
+## Slice 9: W3.2 re-expression, part 1 — tranche-2 weekly cadence (2026-10-26)
+
+The D-10 revised contract pays a whale schedule in weekly blocks:
+tranche 2 may execute only at `now >= last_block_time + WEEK_SECS`
+(604,800s), the gate inclusive. Three measurements on the slice-8
+chain, all on execution window 13 (13 >= lock_until 13; window-13
+exit stock 8,000,000 after tranche 1 still covers a 2,000,000 block)
+under the same Committed exit transition 8:
+
+| instruction | CU | result |
+|---|---|---|
+| `execute_whale_tranche:too_soon` (tranche 2 at the tranche-1 clock, 31,003,600 == last_block_time, a full week short) | 15,647 | Refused, `TrancheTooSoon` (6069) |
+| `execute_whale_tranche:too_soon_boundary_minus_1` (tranche 2 at 31,608,399 = last_block_time + WEEK_SECS − 1) | 15,647 | Refused, `TrancheTooSoon` (6069) |
+| `execute_whale_tranche:tranche2` (tranche 2 of 5, 2,000,000 raw, at exactly 31,608,400) | 16,369 | Success, **DESIGN FINDING** (2.34x the ~7K EST point; 2,369 CU over the 14,000 band top) |
+
+Post-refusal state asserted unchanged (schedule still 1 block executed,
+last_block_time still 31,003,600, position 25,500,000, window-13 stock
+8,000,000); post-success state asserted: tranches_executed 2,
+last_block_time 31,608,400, position 23,500,000, window-13 exit stock
+6,000,000, window-1 stock untouched at 8,500,000 (execution debits the
+execution window only). The two refusals cost identically (15,647 CU):
+the clock value cannot move CU through this gate — only the branch
+outcome can, and both refusals take the same branch. The success costs
+9 CU above tranche 1 (16,360 CU): the cadence check itself, now
+actually evaluated (tranche 1, with tranches_executed 0, skips it).
+The finding joins tranche 1, `settle_default`, and
+`schedule_whale_exit` as the same class of ~7K-EST miss above the band,
+and like them it does not move the batch arithmetic: one tranche
+execution is not per-payout batched. Golden file 243 entries: all 240
+slice-8 entries reproduce exactly (program .so sha unchanged).
+
 ## Next slices
 
-Queue head: the W3.2 adversarial suite re-expressed against
-the program's interface with measured CU per instruction
-(tranche 2's weekly cadence — `TrancheTooSoon` refusal, then
-a success at last_block_time + WEEK_SECS — is part of that
-re-expression, not a separate slice).
+Queue head, continued: the W3.2 adversarial suite re-expressed against
+the program's interface with measured CU per instruction — next parts
+are the engine-sim adversarial classes on the funded chain (blind-ape
+bulk exit vs the flat 13% penalty door, default-as-exit vs scheduled
+exit, cohort-timing at window boundaries, fee-flow edge cases under the
+single 73 bps stream), then the remaining §4.2 rows (reinvest,
+collect_fees) and the carried Part B4 items in roadmap order.
 
 Optimization pass step 2 (ATTEMPTED 2026-10-25, BLOCKED, REVERTED —
 NOT blocked by the funding decision, blocked by the toolchain):
