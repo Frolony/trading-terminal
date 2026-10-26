@@ -298,7 +298,10 @@ fn main() {
     let (transition, _) = pda(&[b"transition", &1u64.to_le_bytes()], &program_id);
     let (evidence, _) = pda(&[b"evidence", &1u64.to_le_bytes()], &program_id);
     let (plan, _) = pda(&[b"plan", &1u64.to_le_bytes(), proposer.as_ref()], &program_id);
-    let (signal, _) = pda(
+    // Step-2 fork: the harness keeps the canonical bump (it derives
+    // canonically off-chain, as a real caller would) and passes it as
+    // the new trailing `signal_bump` argument.
+    let (signal, signal_bump) = pda(
         &[b"signal", &1u64.to_le_bytes(), &0u32.to_le_bytes(), proposer.as_ref()],
         &program_id,
     );
@@ -307,14 +310,14 @@ fn main() {
     let (transition2, _) = pda(&[b"transition", &2u64.to_le_bytes()], &program_id);
     let (evidence2, _) = pda(&[b"evidence", &2u64.to_le_bytes()], &program_id);
     let (plan2, _) = pda(&[b"plan", &2u64.to_le_bytes(), proposer.as_ref()], &program_id);
-    let (signal2, _) = pda(
+    let (signal2, signal2_bump) = pda(
         &[b"signal", &2u64.to_le_bytes(), &0u32.to_le_bytes(), proposer.as_ref()],
         &program_id,
     );
     let (observation3, _) = pda(&[b"observation", &3u64.to_le_bytes()], &program_id);
     let (transition3, _) = pda(&[b"transition", &3u64.to_le_bytes()], &program_id);
     let (plan3, _) = pda(&[b"plan", &3u64.to_le_bytes(), proposer.as_ref()], &program_id);
-    let (signal3, _) = pda(
+    let (signal3, signal3_bump) = pda(
         &[b"signal", &3u64.to_le_bytes(), &0u32.to_le_bytes(), proposer.as_ref()],
         &program_id,
     );
@@ -323,7 +326,7 @@ fn main() {
     let (observation4, _) = pda(&[b"observation", &4u64.to_le_bytes()], &program_id);
     let (transition4, _) = pda(&[b"transition", &4u64.to_le_bytes()], &program_id);
     let (plan4, _) = pda(&[b"plan", &4u64.to_le_bytes(), proposer.as_ref()], &program_id);
-    let (signal4, _) = pda(
+    let (signal4, signal4_bump) = pda(
         &[b"signal", &4u64.to_le_bytes(), &0u32.to_le_bytes(), proposer.as_ref()],
         &program_id,
     );
@@ -331,7 +334,7 @@ fn main() {
     let (observation5, _) = pda(&[b"observation", &5u64.to_le_bytes()], &program_id);
     let (transition5, _) = pda(&[b"transition", &5u64.to_le_bytes()], &program_id);
     let (plan5, _) = pda(&[b"plan", &5u64.to_le_bytes(), proposer.as_ref()], &program_id);
-    let (signal5, _) = pda(
+    let (signal5, signal5_bump) = pda(
         &[b"signal", &5u64.to_le_bytes(), &0u32.to_le_bytes(), proposer.as_ref()],
         &program_id,
     );
@@ -421,7 +424,7 @@ fn main() {
     accounts = next;
     push("initialize_config", cu, "slice-1 baseline");
     let cfg = accounts.iter().find(|(k, _)| *k == config).map(|(_, a)| a.clone()).unwrap();
-    assert_eq!(cfg.data.len(), 74, "Config account size changed");
+    assert_eq!(cfg.data.len(), 76, "Config account size changed");
     assert_eq!(&cfg.data[8..40], &authority.to_bytes(), "Config authority mismatch");
 
     // 2. register_agent(agent, [], 0, 0)
@@ -434,7 +437,7 @@ fn main() {
         program_id,
         &data,
         vec![
-            AccountMeta::new_readonly(config, false),
+            AccountMeta::new(config, false),
             AccountMeta::new(agent_record, false),
             AccountMeta::new(authority, true),
             AccountMeta::new_readonly(system_id, false),
@@ -507,7 +510,7 @@ fn main() {
         program_id,
         &data,
         vec![
-            AccountMeta::new_readonly(config, false),
+            AccountMeta::new(config, false),
             AccountMeta::new(proposer_record, false),
             AccountMeta::new(authority, true),
             AccountMeta::new_readonly(system_id, false),
@@ -527,7 +530,7 @@ fn main() {
         program_id,
         &data,
         vec![
-            AccountMeta::new_readonly(config, false),
+            AccountMeta::new(config, false),
             AccountMeta::new(evaluator_record, false),
             AccountMeta::new(authority, true),
             AccountMeta::new_readonly(system_id, false),
@@ -562,7 +565,7 @@ fn main() {
         program_id,
         &data,
         vec![
-            AccountMeta::new_readonly(config, false),
+            AccountMeta::new(config, false),
             AccountMeta::new(oracle_record, false),
             AccountMeta::new(authority, true),
             AccountMeta::new_readonly(system_id, false),
@@ -711,6 +714,7 @@ fn main() {
     data.extend_from_slice(&0u32.to_le_bytes());
     data.extend_from_slice(&1_000_000u64.to_le_bytes());
     data.extend_from_slice(&1_000_000u64.to_le_bytes());
+    data.extend_from_slice(&[signal_bump]);
     let ix = Instruction::new_with_bytes(
         program_id,
         &data,
@@ -726,6 +730,242 @@ fn main() {
     let (next, cu) = run(&mollusk, "submit_signal", &ix, &accounts);
     accounts = next;
     push("submit_signal", cu, "slice-2 setup");
+
+    // Step-2 fork, Attempt 2 — SHADOW-BUMP PROOF (the proof bar's
+    // centerpiece). The proposer has just signalled transition 1
+    // round 0 at the canonical bump. A second signal from the same
+    // agent in the same round, carrying a DIFFERENT valid bump — the
+    // next off-curve bump below the canonical one, hence a different
+    // valid address — must refuse AlreadySignalled (6078) and change
+    // nothing: the round aggregates stay bit-identical and no shadow
+    // SignalRecord is created. Under canonical `init` this case could
+    // not arise (one canonical address, collision refusal); under a
+    // supplied bump, only the state gate stands between the second
+    // signal and a double-counted aggregate.
+    let tid_bytes = 1u64.to_le_bytes();
+    let round_bytes = 0u32.to_le_bytes();
+    let mut shadow_found: Option<(Pubkey, u8)> = None;
+    for b in (0..signal_bump).rev() {
+        let bump_seed = [b];
+        if let Ok(addr) = Pubkey::create_program_address(
+            &[
+                b"signal",
+                &tid_bytes,
+                &round_bytes,
+                proposer.as_ref(),
+                &bump_seed,
+            ],
+            &program_id,
+        ) {
+            shadow_found = Some((addr, b));
+            break;
+        }
+    }
+    let (shadow_addr, shadow_bump) = shadow_found.expect("no second valid bump below the canonical bump");
+    let mut shadow_data = disc("submit_signal");
+    shadow_data.extend_from_slice(&1u64.to_le_bytes());
+    shadow_data.extend_from_slice(&0u32.to_le_bytes());
+    shadow_data.extend_from_slice(&1_000_000u64.to_le_bytes());
+    shadow_data.extend_from_slice(&1_000_000u64.to_le_bytes());
+    shadow_data.extend_from_slice(&[shadow_bump]);
+    let shadow_ix = Instruction::new_with_bytes(
+        program_id,
+        &shadow_data,
+        vec![
+            AccountMeta::new_readonly(proposer_record, false),
+            AccountMeta::new(transition, false),
+            AccountMeta::new_readonly(policy, false),
+            AccountMeta::new(shadow_addr, false),
+            AccountMeta::new(proposer, true),
+            AccountMeta::new_readonly(system_id, false),
+        ],
+    );
+    let mut shadow_accounts = accounts.clone();
+    upsert(&mut shadow_accounts, (shadow_addr, empty.clone()));
+    let pre_tr = accounts
+        .iter()
+        .find(|(k, _)| *k == transition)
+        .map(|(_, a)| a.clone())
+        .unwrap();
+    let shadow_result = mollusk.process_instruction(&shadow_ix, &shadow_accounts);
+    println!(
+        "submit_signal:shadow: program_result={:?} cu={}",
+        shadow_result.program_result, shadow_result.compute_units_consumed
+    );
+    let shadow_rendered = format!("{:?}", shadow_result.program_result);
+    assert!(
+        shadow_result.program_result.is_err()
+            && shadow_rendered.contains("Custom(6078)"),
+        "shadow signal refused with the wrong outcome: {shadow_rendered} (expected AlreadySignalled Custom(6078))"
+    );
+    let post_tr = shadow_result
+        .resulting_accounts
+        .iter()
+        .find(|(k, _)| *k == transition)
+        .map(|(_, a)| a.clone())
+        .unwrap();
+    // TransitionRecord layout: total at data[113..121], weighted at
+    // data[121..129] (8 disc + 8 id + 32 type + 1 state + 32 proposer
+    // + 8 observation + 8 expiry + 8 deadline + 4 plans + 4 rounds).
+    assert_eq!(
+        &post_tr.data[113..121],
+        &pre_tr.data[113..121],
+        "shadow signal moved the round total"
+    );
+    assert_eq!(
+        &post_tr.data[121..129],
+        &pre_tr.data[121..129],
+        "shadow signal moved the round weighted sum"
+    );
+    let post_shadow = shadow_result
+        .resulting_accounts
+        .iter()
+        .find(|(k, _)| *k == shadow_addr)
+        .map(|(_, a)| a.clone())
+        .unwrap();
+    assert_eq!(
+        post_shadow.data.len(),
+        0,
+        "shadow signal created a shadow SignalRecord"
+    );
+    // Deferred push: the `push` closure still borrows `measured`
+    // mutably at this point (it is used again below for the report
+    // and reconcile entries), so a direct push here fails E0499.
+    // The entry is inserted in order after the closure's last use.
+    let shadow_entry = serde_json::json!({"instruction": "submit_signal:shadow", "cu": shadow_result.compute_units_consumed, "result": "Refused", "error": "AlreadySignalled", "error_code": 6078, "note": "step-2 fork Attempt 2 shadow-bump proof: second signal, same agent + round, different valid bump — gate refusal, aggregates bit-identical, no shadow record"});
+
+    // Step-2 fork, Attempt 2 — REPLAY PROOF (the proof-bar item the
+    // shadow probe alone does not cover: same agent, same round,
+    // CANONICAL bump and address). The gate runs before creation,
+    // so a replay must refuse AlreadySignalled (6078) with aggregates
+    // bit-identical and the original SignalRecord byte-identical —
+    // it must never reach the creation CPI a second time.
+    let pre_signal = accounts
+        .iter()
+        .find(|(k, _)| *k == signal)
+        .map(|(_, a)| a.clone())
+        .unwrap();
+    let mut replay_data = disc("submit_signal");
+    replay_data.extend_from_slice(&1u64.to_le_bytes());
+    replay_data.extend_from_slice(&0u32.to_le_bytes());
+    replay_data.extend_from_slice(&1_000_000u64.to_le_bytes());
+    replay_data.extend_from_slice(&1_000_000u64.to_le_bytes());
+    replay_data.extend_from_slice(&[signal_bump]);
+    let replay_ix = Instruction::new_with_bytes(
+        program_id,
+        &replay_data,
+        vec![
+            AccountMeta::new_readonly(proposer_record, false),
+            AccountMeta::new(transition, false),
+            AccountMeta::new_readonly(policy, false),
+            AccountMeta::new(signal, false),
+            AccountMeta::new(proposer, true),
+            AccountMeta::new_readonly(system_id, false),
+        ],
+    );
+    let replay_result = mollusk.process_instruction(&replay_ix, &accounts);
+    println!(
+        "submit_signal:replay: program_result={:?} cu={}",
+        replay_result.program_result, replay_result.compute_units_consumed
+    );
+    let replay_rendered = format!("{:?}", replay_result.program_result);
+    assert!(
+        replay_result.program_result.is_err()
+            && replay_rendered.contains("Custom(6078)"),
+        "replay refused with the wrong outcome: {replay_rendered} (expected AlreadySignalled Custom(6078))"
+    );
+    let post_tr_replay = replay_result
+        .resulting_accounts
+        .iter()
+        .find(|(k, _)| *k == transition)
+        .map(|(_, a)| a.clone())
+        .unwrap();
+    assert_eq!(
+        &post_tr_replay.data[113..121], &pre_tr.data[113..121],
+        "replay moved the round total"
+    );
+    assert_eq!(
+        &post_tr_replay.data[121..129], &pre_tr.data[121..129],
+        "replay moved the round weighted sum"
+    );
+    let post_signal_replay = replay_result
+        .resulting_accounts
+        .iter()
+        .find(|(k, _)| *k == signal)
+        .map(|(_, a)| a.clone())
+        .unwrap();
+    assert_eq!(
+        &post_signal_replay.data, &pre_signal.data,
+        "replay changed the original SignalRecord"
+    );
+    let replay_entry = serde_json::json!({"instruction": "submit_signal:replay", "cu": replay_result.compute_units_consumed, "result": "Refused", "error": "AlreadySignalled", "error_code": 6078, "note": "step-2 fork Attempt 2 replay proof: second signal, same agent + round, canonical bump + address — gate refusal before creation, aggregates bit-identical, original SignalRecord byte-identical"});
+
+    // Step-2 fork, Attempt 2 — MISMATCHED (address, bump) PROOF.
+    // The shadow address paired with the CANONICAL bump: the seeds
+    // constraint derives the canonical address, not the passed one,
+    // so validation must fail BEFORE the handler (hence before the
+    // gate) — a different error than AlreadySignalled, no state
+    // change, and no record created at the shadow address.
+    let mut mismatch_data = disc("submit_signal");
+    mismatch_data.extend_from_slice(&1u64.to_le_bytes());
+    mismatch_data.extend_from_slice(&0u32.to_le_bytes());
+    mismatch_data.extend_from_slice(&1_000_000u64.to_le_bytes());
+    mismatch_data.extend_from_slice(&1_000_000u64.to_le_bytes());
+    mismatch_data.extend_from_slice(&[signal_bump]);
+    let mismatch_ix = Instruction::new_with_bytes(
+        program_id,
+        &mismatch_data,
+        vec![
+            AccountMeta::new_readonly(proposer_record, false),
+            AccountMeta::new(transition, false),
+            AccountMeta::new_readonly(policy, false),
+            AccountMeta::new(shadow_addr, false),
+            AccountMeta::new(proposer, true),
+            AccountMeta::new_readonly(system_id, false),
+        ],
+    );
+    let mut mismatch_accounts = accounts.clone();
+    upsert(&mut mismatch_accounts, (shadow_addr, empty.clone()));
+    let mismatch_result = mollusk.process_instruction(&mismatch_ix, &mismatch_accounts);
+    println!(
+        "submit_signal:mismatch: program_result={:?} cu={}",
+        mismatch_result.program_result, mismatch_result.compute_units_consumed
+    );
+    let mismatch_rendered = format!("{:?}", mismatch_result.program_result);
+    assert!(
+        mismatch_result.program_result.is_err(),
+        "mismatched (address, bump) unexpectedly succeeded"
+    );
+    assert!(
+        !mismatch_rendered.contains("Custom(6078)"),
+        "mismatched (address, bump) reached the gate instead of failing seeds validation: {mismatch_rendered}"
+    );
+    let post_tr_mismatch = mismatch_result
+        .resulting_accounts
+        .iter()
+        .find(|(k, _)| *k == transition)
+        .map(|(_, a)| a.clone())
+        .unwrap();
+    assert_eq!(
+        &post_tr_mismatch.data[113..121], &pre_tr.data[113..121],
+        "mismatch moved the round total"
+    );
+    assert_eq!(
+        &post_tr_mismatch.data[121..129], &pre_tr.data[121..129],
+        "mismatch moved the round weighted sum"
+    );
+    let post_shadow_mismatch = mismatch_result
+        .resulting_accounts
+        .iter()
+        .find(|(k, _)| *k == shadow_addr)
+        .map(|(_, a)| a.clone())
+        .unwrap();
+    assert_eq!(
+        post_shadow_mismatch.data.len(),
+        0,
+        "mismatched (address, bump) created a record at the shadow address"
+    );
+    let mismatch_entry = serde_json::json!({"instruction": "submit_signal:mismatch", "cu": mismatch_result.compute_units_consumed, "result": "Refused", "error": "SeedsConstraint", "error_code": 2006, "note": format!("step-2 fork Attempt 2 mismatch proof: shadow address + canonical bump — seeds validation fails before the handler (program_result={mismatch_rendered}), aggregates bit-identical, no record created")});
 
     // 17. submit_constraint_report(1, C1, PASS=0) by the evaluator
     let mut data = disc("submit_constraint_report");
@@ -763,6 +1003,18 @@ fn main() {
     let (next, cu) = run(&mollusk, "reconcile", &ix, &accounts);
     accounts = next;
     push("reconcile", cu, "slice-2 setup");
+
+    // Step-2 fork: the `push` closure's last use is the reconcile
+    // entry above, so its borrow of `measured` is dead from here on
+    // and the deferred shadow entry can be inserted in order, right
+    // after the original submit_signal entry.
+    let shadow_pos = measured
+        .iter()
+        .position(|v| v["instruction"] == "submit_signal")
+        .expect("submit_signal entry missing");
+    measured.insert(shadow_pos + 1, shadow_entry);
+    measured.insert(shadow_pos + 2, replay_entry);
+    measured.insert(shadow_pos + 3, mismatch_entry);
 
     // 19. commit(1, obs 1) — THE GATED MEASUREMENT.
     //     remaining = [plan, proposer_record, stock]; mask must be 0.
@@ -1020,6 +1272,7 @@ fn main() {
     data.extend_from_slice(&0u32.to_le_bytes());
     data.extend_from_slice(&1_000_000u64.to_le_bytes());
     data.extend_from_slice(&1_000_000u64.to_le_bytes());
+    data.extend_from_slice(&[signal2_bump]);
     let ix = Instruction::new_with_bytes(
         program_id,
         &data,
@@ -1279,6 +1532,7 @@ fn main() {
     data.extend_from_slice(&0u32.to_le_bytes());
     data.extend_from_slice(&1_000_000u64.to_le_bytes());
     data.extend_from_slice(&1_000_000u64.to_le_bytes());
+    data.extend_from_slice(&[signal3_bump]);
     let ix = Instruction::new_with_bytes(
         program_id,
         &data,
@@ -1452,7 +1706,7 @@ fn main() {
         program_id,
         &data,
         vec![
-            AccountMeta::new_readonly(config, false),
+            AccountMeta::new(config, false),
             AccountMeta::new(operator_record, false),
             AccountMeta::new(authority, true),
             AccountMeta::new_readonly(system_id, false),
@@ -1567,6 +1821,7 @@ fn main() {
     data.extend_from_slice(&0u32.to_le_bytes());
     data.extend_from_slice(&1_000_000u64.to_le_bytes());
     data.extend_from_slice(&1_000_000u64.to_le_bytes());
+    data.extend_from_slice(&[signal4_bump]);
     let ix = Instruction::new_with_bytes(
         program_id,
         &data,
@@ -1888,6 +2143,7 @@ fn main() {
     data.extend_from_slice(&0u32.to_le_bytes());
     data.extend_from_slice(&1_000_000u64.to_le_bytes());
     data.extend_from_slice(&1_000_000u64.to_le_bytes());
+    data.extend_from_slice(&[signal5_bump]);
     let ix = Instruction::new_with_bytes(
         program_id,
         &data,

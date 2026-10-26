@@ -707,6 +707,10 @@ pub mod treasury_program {
         config.fee_vault = fee_vault;
         config.stage = STAGE_1;
         config.bump = ctx.bumps.config;
+        // Step-2 fork, Attempt 2: the bitmap gate's index space starts
+        // empty — the first registered agent takes index 0, and
+        // `register_agent` assigns from here, never from a caller.
+        config.next_agent_index = 0;
         // Genesis declared chain (design §3): index 0, zero hash —
         // the kernel's genesis `SystemState`. Created here, at
         // genesis, so `commit` never needs a create-on-first-use path
@@ -729,6 +733,14 @@ pub mod treasury_program {
     /// is bounded 0–100 units, matching the launch config (kernel_bridge).
     /// Groups are the kernel's `GroupId` (u16) values, at most
     /// [`MAX_GROUPS`] — the account reserves exactly that many slots.
+    /// Step-2 fork, Attempt 2: registration also assigns the agent's
+    /// bitmap index, taken from `Config.next_agent_index` and then
+    /// incremented — the index is authority-assigned, never
+    /// caller-chosen, because two agents sharing one bit would make
+    /// the second one's signals refuse as the first one's duplicates.
+    /// Registration past the 512-agent index space refuses
+    /// (`AgentIndexSpaceExhausted`); it is a capacity refusal, not a
+    /// size refusal — entry is still never refused by position size.
     pub fn register_agent(
         ctx: Context<RegisterAgent>,
         agent: Pubkey,
@@ -745,7 +757,18 @@ pub mod treasury_program {
             reputation_raw <= REP_MAX_RAW,
             TreasuryError::InvalidReputation
         );
+        // Step-2 fork, Attempt 2: authority-assigned bitmap index.
+        // The counter lives on Config (mut here for exactly this
+        // write); the check precedes the increment, so index 512 is
+        // never assigned and the bitmap's 512 bits are never overrun.
+        let index = ctx.accounts.config.next_agent_index;
+        require!(
+            (index as usize) < MAX_BITMAP_AGENTS,
+            TreasuryError::AgentIndexSpaceExhausted
+        );
+        ctx.accounts.config.next_agent_index = index + 1;
         let record = &mut ctx.accounts.agent_record;
+        record.agent_index = index;
         record.agent = agent;
         record.active = true;
         record.is_admin = false;
@@ -1018,6 +1041,7 @@ pub mod treasury_program {
         record.unresolved_blocking = 0;
         record.policy_amendment_applied = false;
         record.bump = ctx.bumps.transition_record;
+        record.signalled_bitmap = [0u8; 64];
         Ok(())
     }
 
@@ -1156,11 +1180,16 @@ pub mod treasury_program {
     /// The signal agent == caller rule is structural: the
     /// `SignalRecord` PDA seeds bind the signal to the signer, and the
     /// AgentRecord must match the signer (`AgentMismatch` otherwise).
-    /// The duplicate rule is structural too: the seeds bind one signal
-    /// per (transition, round, agent), so a second signal in the same
-    /// round fails at account creation and changes no state
-    /// (`AlreadySignalled` in the design taxonomy, enforced by account
-    /// existence, like the plan duplicate before it). The raw weight is
+    /// Step-2 fork, Attempt 2: the duplicate rule is now enforced by
+    /// STATE, not by address collision — the TransitionRecord's
+    /// signalled-bitmap gate refuses a second signal from the same
+    /// agent in the same round (`AlreadySignalled`), whatever bump it
+    /// arrives with, because a caller-supplied bump could otherwise
+    /// open a shadow SignalRecord at a second valid address and fold
+    /// the agent's weight into the round aggregates twice. The
+    /// record's address is therefore first-come definitional, not
+    /// canonical: the first creation's stored bump defines it, and
+    /// off-chain readers must locate it via the stored bump. The raw weight is
     /// stored as supplied; the effective weight (raw × relevance ×
     /// influence × group policy, FlatWeights at launch) is computed
     /// when the recorded signals are replayed through the kernel at
@@ -1186,8 +1215,8 @@ pub mod treasury_program {
         round: u32,
         raw: u64,
         support: u64,
+        signal_bump: u8,
     ) -> Result<()> {
-        let _ = transition_id;
         let caller_key = ctx.accounts.caller.key();
         let record = &ctx.accounts.agent_record;
         require!(
@@ -1203,6 +1232,81 @@ pub mod treasury_program {
             ctx.accounts.policy_record.max_rounds,
             transition.round_count.checked_sub(1).unwrap_or(0),
         )?;
+        // Step-2 fork, Attempt 2 — the bitmap gate, checked BEFORE any
+        // creation or aggregate fold, so a refused signal changes no
+        // state at all: a caller whose bit is already set refuses
+        // whatever bump they arrive with (shadow-bump proof). The bit
+        // is keyed by the authority-assigned agent_index on the
+        // caller's AgentRecord, never by a caller argument.
+        check_signal_gate(&transition.signalled_bitmap, record.agent_index)?;
+        // Step-2 fork, Attempt 2 — hand-rolled creation, replicating
+        // the `init` checklist item by item. (1) Existing-account
+        // failure, explicit: the target must be system-owned, empty,
+        // and unfunded — under `init` this fell out of the system
+        // program's allocate failure. (2) Creation CPI: system
+        // `create_account` via `invoke_signed` with the caller-supplied
+        // bump as the signer seed, rent-exact funding from the caller,
+        // `SignalRecord::SPACE`, owner this program. The seeds
+        // constraint on the accounts struct already verified that
+        // (address, bump) pair with one derivation, so the CPI's
+        // signed seeds cannot mint a record at an unverified address.
+        let signal_info = ctx.accounts.signal_record.to_account_info();
+        require!(
+            signal_info.owner
+                == &anchor_lang::solana_program::system_program::ID
+                && signal_info.data_is_empty()
+                && signal_info.lamports() == 0,
+            TreasuryError::SignalAccountExists
+        );
+        // Anchor 1.2.1's split-crate layout: Rent lives at
+        // `solana_program::rent`, not `sysvar::rent` (the 0.31 path).
+        let rent = anchor_lang::solana_program::rent::Rent::get()?;
+        let lamports = rent.minimum_balance(SignalRecord::SPACE);
+        let tid_bytes = transition_id.to_le_bytes();
+        let round_bytes = round.to_le_bytes();
+        let bump_seed = [signal_bump];
+        let signer_seeds: &[&[u8]] = &[
+            b"signal",
+            &tid_bytes,
+            &round_bytes,
+            caller_key.as_ref(),
+            &bump_seed,
+        ];
+        let create_ix = anchor_lang::solana_program::system_instruction::create_account(
+            &caller_key,
+            signal_info.key,
+            lamports,
+            SignalRecord::SPACE as u64,
+            &crate::ID,
+        );
+        anchor_lang::solana_program::program::invoke_signed(
+            &create_ix,
+            &[
+                ctx.accounts.caller.to_account_info(),
+                signal_info.clone(),
+            ],
+            &[signer_seeds],
+        )?;
+        // (3) Manual exit write: an unchecked field gets no framework
+        // write, so the discriminator + payload are serialized here.
+        // (4) Stored bump: the record stores the SUPPLIED bump, exactly
+        // as handlers stored `ctx.bumps` before — every later
+        // derivation uses the stored byte, never a re-search.
+        let signal = SignalRecord {
+            transition_id,
+            round,
+            agent: caller_key,
+            raw,
+            support,
+            bump: signal_bump,
+        };
+        {
+            let mut data = signal_info
+                .try_borrow_mut_data()
+                .map_err(|_| TreasuryError::SignalAccountExists)?;
+            let mut dst: &mut [u8] = &mut data;
+            signal.try_serialize(&mut dst)?;
+        }
         // Round aggregates, maintained on-chain so `advance_round`
         // can judge RoundEmpty the way the kernel does (total == ZERO).
         // FlatWeights: relevance and group policy are 1.0, so the
@@ -1218,13 +1322,7 @@ pub mod treasury_program {
             .current_round_weighted
             .checked_add(term)
             .ok_or(TreasuryError::Overflow)?;
-        let signal = &mut ctx.accounts.signal_record;
-        signal.transition_id = transition.transition_id;
-        signal.round = round;
-        signal.agent = caller_key;
-        signal.raw = raw;
-        signal.support = support;
-        signal.bump = ctx.bumps.signal_record;
+        set_signal_bitmap_bit(&mut transition.signalled_bitmap, record.agent_index)?;
         emit!(SignalSubmitted {
             transition_id: transition.transition_id,
             agent: caller_key,
@@ -1357,6 +1455,9 @@ pub mod treasury_program {
             round_mean(transition.current_round_weighted, transition.current_round_total)?;
         transition.current_round_total = 0;
         transition.current_round_weighted = 0;
+        // Step-2 fork, Attempt 2: the bitmap gate belongs to the
+        // round, so it clears with the aggregates it guards.
+        transition.signalled_bitmap = [0u8; 64];
         transition.round_count = transition
             .round_count
             .checked_add(1)
@@ -3489,6 +3590,43 @@ pub fn can_submit_signal(
     Ok(())
 }
 
+/// Step-2 fork, Attempt 2 — the pure half of the signalled-bitmap
+/// gate, factored out of the `submit_signal` handler so host tests
+/// can prove it without a chain: the caller's bit is tested by their
+/// authority-assigned agent_index (bit `index` = byte `index / 8`,
+/// bit `index % 8`). An index outside the 512-bit space refuses
+/// (`AgentIndexSpaceExhausted` — unreachable through `register_agent`,
+/// which caps assignment, but the gate never trusts that alone); a
+/// set bit refuses (`AlreadySignalled`) whatever bump the signal
+/// arrives with, because the gate runs before creation and before
+/// any aggregate fold.
+pub fn check_signal_gate(signalled_bitmap: &[u8; 64], agent_index: u16) -> Result<()> {
+    let index = agent_index as usize;
+    require!(
+        index < MAX_BITMAP_AGENTS,
+        TreasuryError::AgentIndexSpaceExhausted
+    );
+    require!(
+        signalled_bitmap[index / 8] & (1u8 << (index % 8)) == 0,
+        TreasuryError::AlreadySignalled
+    );
+    Ok(())
+}
+
+/// Step-2 fork, Attempt 2 — set the caller's bit after a successful
+/// signal. The gate has already validated the index, so this cannot
+/// fail on a handler path; it still returns `Result` so a future
+/// caller cannot silently set an out-of-space bit.
+pub fn set_signal_bitmap_bit(signalled_bitmap: &mut [u8; 64], agent_index: u16) -> Result<()> {
+    let index = agent_index as usize;
+    require!(
+        index < MAX_BITMAP_AGENTS,
+        TreasuryError::AgentIndexSpaceExhausted
+    );
+    signalled_bitmap[index / 8] |= 1u8 << (index % 8);
+    Ok(())
+}
+
 /// The kernel's monotone-revision rule for a re-signal (kernel
 /// `submit_signal`): let `mean` be the previous round's weighted mean
 /// support and `prev_support` the agent's previous-round signal. The
@@ -5498,11 +5636,15 @@ pub struct Config {
     pub stage: u8,
     /// PDA bump for the `["config"]` seed.
     pub bump: u8,
+    /// Step-2 fork, Attempt 2: the next bitmap index register_agent
+    /// assigns, starting at 0. Appended after bump deliberately so
+    /// every pre-fork field keeps its byte offset.
+    pub next_agent_index: u16,
 }
 
 impl Config {
-    /// 8 (discriminator) + 32 + 32 + 1 + 1.
-    pub const SPACE: usize = 8 + 32 + 32 + 1 + 1;
+    /// 8 (discriminator) + 32 + 32 + 1 + 1 + 2.
+    pub const SPACE: usize = 8 + 32 + 32 + 1 + 1 + 2;
 }
 
 /// Maximum groups per agent (design §3: groups are the kernel's u16
@@ -5525,8 +5667,10 @@ pub const REP_MAX_RAW: u64 = 100_000_000;
 #[derive(Accounts)]
 #[instruction(agent: Pubkey)]
 pub struct RegisterAgent<'info> {
-    /// Program configuration PDA — read to check the authority.
-    #[account(seeds = [b"config"], bump = config.bump)]
+    /// Program configuration PDA — read to check the authority, and
+    /// (step-2 fork, Attempt 2) written to advance the bitmap-index
+    /// counter on each registration.
+    #[account(mut, seeds = [b"config"], bump = config.bump)]
     pub config: Account<'info, Config>,
     /// Agent record PDA, seeds `["agent", agent]`. One-time init.
     #[account(
@@ -5592,12 +5736,18 @@ pub struct AgentRecord {
     pub capabilities: Vec<[u8; 32]>,
     /// PDA bump for the `["agent", agent]` seeds.
     pub bump: u8,
+    /// Step-2 fork, Attempt 2: this agent's bitmap index, assigned by
+    /// register_agent from the Config counter. submit_signal reads
+    /// this field — never a caller argument — to test and set the
+    /// agent's bit on the TransitionRecord. Appended after bump
+    /// deliberately so every pre-fork field keeps its byte offset.
+    pub agent_index: u16,
 }
 
 impl AgentRecord {
     /// 8 (discriminator) + 32 + 1 + 1 + 1 + 1 + 8 + 8 + (4 + 8×2)
-    /// + (4 + 8×32) + 1.
-    pub const SPACE: usize = 8 + 32 + 4 + 8 + 8 + 20 + 260 + 1;
+    /// + (4 + 8×32) + 1 + 2.
+    pub const SPACE: usize = 8 + 32 + 4 + 8 + 8 + 20 + 260 + 1 + 2;
 
     /// Set or clear one role flag. Role codes: 0 = Admin, 1 = Oracle,
     /// 2 = Evaluator — the kernel's `Role` enum order. Any other code is
@@ -5942,13 +6092,36 @@ pub struct TransitionRecord {
     pub policy_amendment_applied: bool,
     /// PDA bump for the `["transition", id]` seeds.
     pub bump: u8,
+    /// Step-2 fork, Attempt 2 bitmap gate: the agents who have
+    /// signalled in the CURRENT round, one bit per agent index
+    /// (assigned at registration). submit_signal refuses with
+    /// AlreadySignalled if the caller's bit is already set, and sets
+    /// it on success; advance_round zeroes it alongside the
+    /// aggregates reset. This state — not address collision — is now
+    /// the one-signal-per-agent-per-round enforcement, because a
+    /// caller-supplied bump can otherwise open a shadow SignalRecord
+    /// at a second valid address for the same slot. Appended after
+    /// bump deliberately so every pre-fork field keeps its byte
+    /// offset; at most MAX_BITMAP_AGENTS bits, all in these 64 bytes.
+    pub signalled_bitmap: [u8; 64],
 }
+
+/// Step-2 fork, Attempt 2 — bitmap gate geometry: 64 fixed bytes
+/// covering 512 agent indices, indexed by the agent_index assigned
+/// at register_agent. No per-agent space growth (Attempt 1's list
+/// cost 1028 bytes at cap 32; this costs 64 bytes at cap 512), but
+/// registration gains the index assignment and the cap becomes 512
+/// registered agents per index space, a different limit in a
+/// different place — the comparative trial's trade, stated plainly.
+pub const SIGNALLED_BITMAP_LEN: usize = 64;
+pub const MAX_BITMAP_AGENTS: usize = SIGNALLED_BITMAP_LEN * 8;
 
 impl TransitionRecord {
     /// 8 (discriminator) + 8 + 32 + 1 + 32 + 8 + 8 + 8 + 4 + 4
     /// + 8 + 8 + 8 + (4 + 8 × 33) + 1 + 1 + 32 + 8 + 32 + 8 + 32
-    /// + (4 + 8 × 34) + 4 + 1 + 1 = 801.
-    pub const SPACE: usize = 8 + 8 + 32 + 1 + 32 + 8 + 8 + 8 + 4 + 4 + 8 + 8 + 8 + 268 + 1 + 1 + 32 + 8 + 32 + 8 + 32 + 276 + 4 + 1 + 1;
+    /// + (4 + 8 × 34) + 4 + 1 + 1 + 64 = 865.
+    /// The last term is the step-2 bitmap gate (Attempt 2).
+    pub const SPACE: usize = 8 + 8 + 32 + 1 + 32 + 8 + 8 + 8 + 4 + 4 + 8 + 8 + 8 + 268 + 1 + 1 + 32 + 8 + 32 + 8 + 32 + 276 + 4 + 1 + 1 + 64;
 }
 
 /// One transition type's policy (design §3 `PolicyRecord`, §4.1
@@ -6425,7 +6598,7 @@ impl AllocationRecord {
 
 /// Accounts for [`treasury_program::submit_signal`].
 #[derive(Accounts)]
-#[instruction(transition_id: u64, round: u32)]
+#[instruction(transition_id: u64, round: u32, raw: u64, support: u64, signal_bump: u8)]
 pub struct SubmitSignal<'info> {
     /// The signalling agent's record (must exist and be bound to the
     /// signer; active flag is the eligibility half enforced here).
@@ -6439,22 +6612,33 @@ pub struct SubmitSignal<'info> {
     /// enforces, never a stranger's policy and never a constant.
     #[account(seeds = [b"policy", transition_record.transition_type.as_ref()], bump = policy_record.bump)]
     pub policy_record: Account<'info, PolicyRecord>,
-    /// SignalRecord PDA, seeds `["signal", transition_id, round, caller]`.
-    /// One-time init: a second signal from the same agent in the same
-    /// round fails and changes no state (AlreadySignalled in the
-    /// design taxonomy).
+    /// Step-2 fork, Attempt 2: the SignalRecord is NO LONGER Anchor
+    /// `init`. The caller supplies `signal_bump`; the seeds constraint
+    /// below verifies it with exactly one derivation (1,500 CU, flat —
+    /// the canonical search it replaces cost one attempt per bump tried),
+    /// and the handler creates the account itself via a system-program
+    /// CPI, replicating the `init` checklist (existing-account failure,
+    /// rent-exact funding, program ownership, discriminator + payload
+    /// write, stored bump). One-signal-per-agent-per-round is enforced by
+    /// the TransitionRecord's signalled-bitmap gate, not by collision.
+    /// SignalRecord PDA, seeds `["signal", transition_id, round, caller]`,
+    /// bump supplied by the caller and derivation-checked here.
+    /// CHECK: unchecked by type because the handler creates it by hand
+    /// (see the struct-level note): safety comes from the seeds
+    /// constraint pinning (address, bump) with one derivation, plus the
+    /// handler's explicit existing-account check (system-owned, empty,
+    /// unfunded) before the creation CPI — no framework
+    /// owner/deserialization check applies to this field.
     #[account(
-        init,
-        payer = caller,
-        space = SignalRecord::SPACE,
+        mut,
         seeds = [b"signal", transition_id.to_le_bytes().as_ref(), round.to_le_bytes().as_ref(), caller.key().as_ref()],
-        bump
+        bump = signal_bump
     )]
-    pub signal_record: Account<'info, SignalRecord>,
+    pub signal_record: UncheckedAccount<'info>,
     /// The signalling agent (signer; pays rent for the signal record).
     #[account(mut)]
     pub caller: Signer<'info>,
-    /// Rent sysvar, required by the `init` constraint.
+    /// System program, the creation CPI's target.
     pub system_program: Program<'info, System>,
 }
 
@@ -7662,6 +7846,28 @@ pub enum TreasuryError {
     /// needs a real recipient.
     #[msg("Invalid allocation recipient: the recipient key must be nonzero.")]
     InvalidRecipient,
+    /// Step-2 fork, appended at the END of the enum deliberately:
+    /// Anchor codes run sequentially from 6000 in declaration order,
+    /// so appending here keeps every pre-fork code unchanged (the
+    /// slice-5/6 refusal probes still expect their canonical codes).
+    /// The caller already signalled in this round, enforced by the
+    /// TransitionRecord's signalled-bitmap gate, not by address
+    /// collision, since a caller-supplied bump can otherwise open a
+    /// shadow SignalRecord for the same slot.
+    #[msg("Agent already signalled in this round.")]
+    AlreadySignalled,
+    /// Step-2 fork: the hand-rolled SignalRecord creation found its
+    /// target account already in use (non-empty, funded, or not
+    /// system-owned). Under canonical `init` this fell out of the
+    /// system program's allocate failure; hand-rolled, it is explicit.
+    #[msg("Signal record account already initialized.")]
+    SignalAccountExists,
+    /// Step-2 fork, Attempt 2: the bitmap index space is exhausted —
+    /// `register_agent` found `Config.next_agent_index` at or above
+    /// 512, so no new agent index can be assigned. Registration
+    /// capacity, not position size: entry is never refused by size.
+    #[msg("Agent index space exhausted: at most 512 registered agents.")]
+    AgentIndexSpaceExhausted,
 }
 
 #[cfg(test)]
@@ -7684,12 +7890,12 @@ mod tests {
 
     #[test]
     fn config_space_matches_fields() {
-        assert_eq!(Config::SPACE, 74);
+        assert_eq!(Config::SPACE, 76);
     }
 
     #[test]
     fn agent_record_space_matches_fields() {
-        assert_eq!(AgentRecord::SPACE, 341);
+        assert_eq!(AgentRecord::SPACE, 343);
         assert_eq!(MAX_GROUPS, 8);
         assert_eq!(MAX_CAPABILITIES, 8);
         assert_eq!(REP_MAX_RAW, 100_000_000);
@@ -7709,6 +7915,7 @@ mod tests {
             groups: vec![1],
             capabilities: vec![],
             bump: 0,
+            agent_index: 0,
         };
         record.apply_role(1, true).expect("oracle grant lands");
         assert!(record.is_oracle);
@@ -7739,6 +7946,7 @@ mod tests {
             groups: vec![],
             capabilities: vec![],
             bump: 0,
+            agent_index: 0,
         };
         let cap_a = [1u8; 32];
         record.grant_capability(cap_a).expect("first grant lands");
@@ -7825,7 +8033,7 @@ mod tests {
         // type (32) with policy_transition, and the one-time
         // policy-amendment execution flag (1) with
         // apply_policy_amendment.
-        assert_eq!(TransitionRecord::SPACE, 801);
+        assert_eq!(TransitionRecord::SPACE, 865);
         assert_eq!(DeclaredChain::SPACE, 49);
         assert_eq!(MAX_CONSTRAINTS, 8);
         assert_eq!(MAX_EXCEPTIONS, 8);
@@ -8011,10 +8219,11 @@ mod tests {
 
     #[test]
     fn submit_signal_gate_matrix() {
-        // Caller binding and the duplicate rule are structural (PDA
-        // seeds + AgentRecord match; one SignalRecord per
-        // (transition, round, agent)), so the helper takes no caller
-        // argument. max_rounds 3, current round 0 at launch.
+        // Caller binding is structural (PDA seeds + AgentRecord
+        // match), so the helper takes no caller argument. The
+        // duplicate rule is NOT structural anymore (step-2 fork): it
+        // is the signalled-bitmap gate, tested separately below.
+        // max_rounds 3, current round 0 at launch.
         let base = |state: u8, support: u64, round: u32, active: bool| {
             can_submit_signal(active, state, support, round, 3, 0)
         };
@@ -8031,6 +8240,45 @@ mod tests {
         assert!(base(STATE_PLANNING, 500_000, 1, true).is_err());
         // Inactive agents are not eligible.
         assert!(base(STATE_PLANNING, 500_000, 0, false).is_err());
+    }
+
+    #[test]
+    fn signal_gate_step2_bitmap() {
+        // Step-2 fork, Attempt 2: the bitmap gate's pure half. Bit
+        // layout: index 0 = byte 0 bit 0, index 8 = byte 1 bit 0,
+        // index 511 = byte 63 bit 7 — the two boundary-crossing cases
+        // below pin the byte/bit arithmetic, not just one byte.
+        let mut bitmap = [0u8; 64];
+        // Empty gate admits any in-space index.
+        assert!(check_signal_gate(&bitmap, 0).is_ok());
+        assert!(check_signal_gate(&bitmap, 511).is_ok());
+        // Setting a bit makes only that index refuse — this is the
+        // shadow-bump case: the bump never reaches this check, so no
+        // second address can reopen the slot.
+        set_signal_bitmap_bit(&mut bitmap, 5).expect("bit 5 sets");
+        assert!(check_signal_gate(&bitmap, 5).is_err());
+        assert!(check_signal_gate(&bitmap, 6).is_ok());
+        assert!(check_signal_gate(&bitmap, 4).is_ok());
+        // Byte-boundary indices: 8 lives in byte 1, 511 in byte 63.
+        set_signal_bitmap_bit(&mut bitmap, 8).expect("bit 8 sets");
+        set_signal_bitmap_bit(&mut bitmap, 511).expect("bit 511 sets");
+        assert_eq!(bitmap[0], 0b0010_0000);
+        assert_eq!(bitmap[1], 0b0000_0001);
+        assert_eq!(bitmap[63], 0b1000_0000);
+        assert!(check_signal_gate(&bitmap, 8).is_err());
+        assert!(check_signal_gate(&bitmap, 511).is_err());
+        assert!(check_signal_gate(&bitmap, 9).is_ok());
+        assert!(check_signal_gate(&bitmap, 510).is_ok());
+        // Out-of-space indices refuse on both halves, never panic.
+        assert!(check_signal_gate(&bitmap, 512).is_err());
+        assert!(set_signal_bitmap_bit(&mut bitmap, 512).is_err());
+        // A full bitmap (all 512 bits set) refuses every valid index.
+        let full = [0xFFu8; 64];
+        assert!(check_signal_gate(&full, 0).is_err());
+        assert!(check_signal_gate(&full, 511).is_err());
+        // Geometry constants agree: 64 bytes, 512 agents.
+        assert_eq!(SIGNALLED_BITMAP_LEN, 64);
+        assert_eq!(MAX_BITMAP_AGENTS, 512);
     }
 
     #[test]
@@ -8188,6 +8436,7 @@ mod tests {
             unresolved_blocking: 0,
             policy_amendment_applied: false,
             bump: 255,
+            signalled_bitmap: [0u8; 64],
         };
         assert_eq!(record.state, STATE_REGISTERED);
         assert!(!record.policy_amendment_applied);
