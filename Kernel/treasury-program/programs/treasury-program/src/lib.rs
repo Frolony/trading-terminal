@@ -464,6 +464,8 @@
 ///! (`ScheduleLocked` before entry + 12, inclusive
 ///! boundary at the lock window).
 use anchor_lang::prelude::*;
+use anchor_lang::solana_program::instruction::{AccountMeta, Instruction};
+use anchor_lang::solana_program::rent::Rent;
 
 declare_id!("FPGSeLBWEiFKdTuqDbJeKhjXeah5H4c3rqsW4Tzn3RAS");
 
@@ -2550,6 +2552,229 @@ pub mod treasury_program {
         Ok(())
     }
 
+    /// Funding deposit (design §4.2, funding-path ruling 2026-10-26):
+    /// the ONLY writer of nonzero totals into TreasuryState. A
+    /// deposit moves real tokens into the program-owned vault and
+    /// credits TreasuryState by exactly the transferred amount —
+    /// governed bookkeeping is rejected: no instruction may assert
+    /// a total the vault does not hold, and enrollment aggregation
+    /// (summing HolderRecord positions into T) is rejected as
+    /// backwards. The transfer runs FIRST and the credit second,
+    /// so a failed transfer credits nothing; an overflow on the
+    /// credit rolls the whole transaction back, transfer included
+    /// (Solana atomicity) — there is no state in which the vault
+    /// holds tokens the ledger does not count, or vice versa.
+    ///
+    /// Mint-generic, hand-rolled by necessity (see Cargo.toml):
+    /// anchor-spl's token interface cannot build for SBF in this
+    /// cohort (spl-token-2022-interface -> solana-zk-sdk ->
+    /// getrandom, which has no SBF target), so the transfer and
+    /// the vault creation are raw CPIs against the stable SPL
+    /// Token layouts, verified against the interface builders:
+    /// TransferChecked data `[12, amount LE, decimals]`,
+    /// accounts source/mint/vault/authority; InitializeAccount
+    /// data `[1]`, accounts vault/mint/owner/rent, no signers.
+    /// The vault is one token account per mint, PDA seeds
+    /// `["vault", mint]`, owner the TreasuryState PDA, on either
+    /// the Token or the Token-2022 program — the handler accepts
+    /// exactly those two program ids (constants below), because
+    /// the credit-integrity invariant ("credited only against
+    /// assets actually transferred") holds only if the CPI
+    /// program really is a token program: a fake program could
+    /// return success without moving anything. Any SPL mint on
+    /// either program deposits — including wrapped SOL; a
+    /// native-SOL vault (system-account vault, no mint) is a
+    /// separate instruction, not smuggled into this one, and the
+    /// holder's USDC-or-SOL disbursement choice is a payout-step
+    /// decision, not a deposit-step one. Carried, not hidden:
+    /// any mint on either program is accepted, so a junk mint
+    /// would credit T with junk value — an accepted-mints
+    /// registry is a governance item for a later increment, and
+    /// until it lands the pilot uses one intended mint (USDC).
+    ///
+    /// Sleeve rule, stated plainly: new money arrives as cash.
+    /// The credit adds the amount to `total_raw` AND `cash_raw`
+    /// only — it does NOT apply the 50/25/25 split, because
+    /// that would invent bond and arb holdings that were never
+    /// bought. The split is a portfolio target applied when
+    /// governed flows deploy cash into bonds/arb, not a
+    /// deposit-time fiction. Until such a deployment, a funded
+    /// treasury is honestly all-cash, and every formula that
+    /// reads T (movable liquidity T/6, the T/12 book cap, the
+    /// T/30 whale flag) reads the funded total.
+    ///
+    /// Authorization: none from a transition, deliberately.
+    /// Funding is value inflow, not governance — the depositor's
+    /// own signature plus the executed transfer IS the
+    /// authorization, exactly as `enroll` is holder-signed rather
+    /// than transition-authorized. The event therefore carries
+    /// the depositor, mint, vault, and post-credit totals as its
+    /// authorization context (§6), and no transition id. The
+    /// instruction is stage-agnostic: funding precedes Stage 2
+    /// and continues after it; the stage flag gates launch, not
+    /// funding. The depositor pays vault rent on the first
+    /// deposit of a mint (the `init_if_needed` payer); later
+    /// deposits into the same vault pay no rent.
+    ///
+    /// Honest gap, carried not hidden: deposit and enroll are
+    /// not yet bound — a HolderRecord's `position_raw` is still
+    /// an unenforced claim against deposits, not a check
+    /// against them. Binding enrolled positions to deposited
+    /// balances (and the enrollment-opted-out-of-contract rule
+    /// until funded T reaches the Treasury Target) is the next
+    /// funding-path item, not something this instruction
+    /// pretends to enforce.
+    pub fn deposit(ctx: Context<Deposit>, amount_raw: u64) -> Result<()> {
+        let depositor_key = ctx.accounts.depositor.key();
+        let mint_key = *ctx.accounts.mint.key;
+        let vault_info = ctx.accounts.vault.to_account_info();
+        let token_program_id = *ctx.accounts.token_program.key;
+        // Token-program binding first: the CPI program must be
+        // one of the two real token programs, and the mint must
+        // be owned by it — otherwise the "transfer" below could
+        // be a fake program returning success while moving
+        // nothing, and the credit would invent value.
+        let program_ok = is_token_program(&token_program_id)
+            && ctx.accounts.token_program.executable
+            && ctx.accounts.mint.owner == &token_program_id;
+        // Source binding: a real token account of this program,
+        // for this mint, owned by the depositor.
+        let source_fields = token_account_fields(
+            &ctx.accounts.source.try_borrow_data()
+                .map_err(|_| TreasuryError::DepositSourceMismatch)?,
+        )
+        .ok_or(TreasuryError::DepositSourceMismatch)?;
+        let source_ok = ctx.accounts.source.owner == &token_program_id
+            && source_fields.0 == mint_key
+            && source_fields.1 == depositor_key;
+        // Vault binding: either a fresh PDA (system-owned, empty,
+        // unfunded — the step-2 hand-rolled-creation checklist)
+        // or an existing token account of this program, for this
+        // mint, owned by the TreasuryState PDA. Anything else at
+        // the PDA refuses: a foreign account is never adopted.
+        let vault_is_fresh = vault_info.owner
+            == &anchor_lang::solana_program::system_program::ID
+            && vault_info.data_is_empty()
+            && vault_info.lamports() == 0;
+        let vault_ok = if vault_is_fresh {
+            true
+        } else {
+            ctx.accounts.vault.owner == &token_program_id
+                && token_account_fields(
+                    &ctx.accounts.vault.try_borrow_data()
+                        .map_err(|_| TreasuryError::DepositVaultMismatch)?,
+                )
+                .map(|f| f.0 == mint_key && f.1 == ctx.accounts.treasury_state.key())
+                .unwrap_or(false)
+        };
+        can_deposit(amount_raw, program_ok, source_ok, vault_ok)?;
+        // Mint decimals come from the mint account itself, never
+        // from a caller argument: a caller-supplied decimals
+        // value could misstate the transferred amount's scale.
+        let decimals = mint_decimals(
+            &ctx.accounts.mint.try_borrow_data()
+                .map_err(|_| TreasuryError::DepositProgramMismatch)?,
+        )
+        .ok_or(TreasuryError::DepositProgramMismatch)?;
+        if vault_is_fresh {
+            // Vault creation, hand-rolled, same checklist as the
+            // step-2 SignalRecord creation: rent-exact funding
+            // from the depositor, space the token account size,
+            // owner the token program, signed by the vault PDA
+            // seeds (the seeds constraint already verified the
+            // address/bump pair, so the CPI cannot mint a vault
+            // at an unverified address). Then InitializeAccount
+            // (no signers — the owner is recorded, not asked to
+            // sign) with owner the TreasuryState PDA.
+            let rent =
+                anchor_lang::solana_program::rent::Rent::get()?;
+            let lamports = rent.minimum_balance(TOKEN_ACCOUNT_SPACE);
+            let mint_bytes = mint_key.to_bytes();
+            let bump_seed = [ctx.bumps.vault];
+            let signer_seeds: &[&[u8]] = &[
+                b"vault",
+                &mint_bytes,
+                &bump_seed,
+            ];
+            let create_ix = anchor_lang::solana_program::system_instruction::create_account(
+                &depositor_key,
+                vault_info.key,
+                lamports,
+                TOKEN_ACCOUNT_SPACE as u64,
+                &token_program_id,
+            );
+            anchor_lang::solana_program::program::invoke_signed(
+                &create_ix,
+                &[
+                    ctx.accounts.depositor.to_account_info(),
+                    vault_info.clone(),
+                ],
+                &[signer_seeds],
+            )?;
+            let init_ix = Instruction {
+                program_id: token_program_id,
+                accounts: vec![
+                    AccountMeta::new(*vault_info.key, false),
+                    AccountMeta::new_readonly(mint_key, false),
+                    AccountMeta::new_readonly(ctx.accounts.treasury_state.key(), false),
+                    AccountMeta::new_readonly(
+                        ctx.accounts.rent.key(),
+                        false,
+                    ),
+                ],
+                data: vec![1],
+            };
+            anchor_lang::solana_program::program::invoke(
+                &init_ix,
+                &[
+                    vault_info.clone(),
+                    ctx.accounts.mint.to_account_info(),
+                    ctx.accounts.treasury_state.to_account_info(),
+                    ctx.accounts.rent.as_ref().clone(),
+                ],
+            )?;
+        }
+        // The transfer itself: source -> vault, authority the
+        // depositor (a signer of this transaction, so the CPI
+        // carries their signature through). Transfer runs FIRST
+        // and the credit second, so a failed transfer credits
+        // nothing; an overflow on the credit rolls the whole
+        // transaction back, transfer included.
+        let transfer_ix = Instruction {
+            program_id: token_program_id,
+            accounts: vec![
+                AccountMeta::new(*ctx.accounts.source.key, false),
+                AccountMeta::new_readonly(mint_key, false),
+                AccountMeta::new(*vault_info.key, false),
+                AccountMeta::new_readonly(depositor_key, true),
+            ],
+            data: transfer_checked_data(amount_raw, decimals),
+        };
+        anchor_lang::solana_program::program::invoke(
+            &transfer_ix,
+            &[
+                ctx.accounts.source.to_account_info(),
+                ctx.accounts.mint.to_account_info(),
+                vault_info.clone(),
+                ctx.accounts.depositor.to_account_info(),
+            ],
+        )?;
+        let state = &mut ctx.accounts.treasury_state;
+        let (total_raw, cash_raw) =
+            apply_deposit(state.total_raw, state.cash_raw, amount_raw)?;
+        state.total_raw = total_raw;
+        state.cash_raw = cash_raw;
+        emit!(TreasuryDeposit {
+            depositor: depositor_key,
+            mint: mint_key,
+            vault: *vault_info.key,
+            amount_raw,
+            total_raw,
+            cash_raw,
+        });
+        Ok(())
+    }
+
     /// Stage 2 launch (design §4.2): flip the stage flag on Config
     /// from Stage 1 to Stage 2, executed from a Settled
     /// `treasury.launch.v1` transition — never from a config check
@@ -4571,6 +4796,134 @@ pub fn can_initialize_treasury(
     Ok(())
 }
 
+/// The `deposit` gate, as a pure check (design §4.2, funding-path
+/// ruling 2026-10-26): the token program must be a real token
+/// program (see [`is_token_program`]), the source must be the
+/// depositor's account for exactly this mint, and the vault must
+/// be the program-owned vault for exactly this mint (owner the
+/// TreasuryState PDA) or a fresh PDA awaiting creation. Order:
+/// the amount rule first (a zero deposit would pay vault rent
+/// on a first-mint deposit while funding nothing), the program
+/// binding second, the source binding third, the vault binding
+/// last. The handler computes the three booleans from the
+/// account fields and data; the PDA seeds constraint on the
+/// vault is the same address binding enforced at account
+/// validation, so a wrong vault refuses twice, never zero
+/// times. Deliberately no transition, stage, or enrollment
+/// check here: funding is value inflow authorized by the
+/// depositor's signature plus the transfer, not by governance.
+pub fn can_deposit(
+    amount_raw: u64,
+    program_ok: bool,
+    source_ok: bool,
+    vault_ok: bool,
+) -> Result<()> {
+    require!(amount_raw != 0, TreasuryError::InvalidDepositAmount);
+    require!(program_ok, TreasuryError::DepositProgramMismatch);
+    require!(source_ok, TreasuryError::DepositSourceMismatch);
+    require!(vault_ok, TreasuryError::DepositVaultMismatch);
+    Ok(())
+}
+
+/// SPL Token program id (TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA),
+/// as bytes: the base58 string is verified against
+/// spl-token-interface's `declare_id!`, and the byte array below
+/// round-trips back to exactly that string. Only this program and
+/// [`TOKEN_2022_PROGRAM_ID`] may be the deposit CPI program.
+pub const TOKEN_PROGRAM_ID: Pubkey = Pubkey::new_from_array([
+    6, 221, 246, 225, 215, 101, 161, 147, 217, 203, 225, 70, 206, 235, 121, 172,
+    28, 180, 133, 237, 95, 91, 55, 145, 58, 140, 245, 133, 126, 255, 0, 169,
+]);
+
+/// SPL Token-2022 program id
+/// (TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb), same
+/// verification as [`TOKEN_PROGRAM_ID`].
+pub const TOKEN_2022_PROGRAM_ID: Pubkey = Pubkey::new_from_array([
+    6, 221, 246, 225, 238, 117, 143, 222, 24, 66, 93, 188, 228, 108, 205, 218,
+    182, 26, 252, 77, 131, 185, 13, 39, 254, 189, 249, 40, 216, 161, 139, 252,
+]);
+
+/// Whether a program id is one of the two real token programs.
+/// Any other id — including a program an attacker deployed to
+/// mimic the token interface — is not a token program for
+/// deposit purposes, because only the real programs enforce
+/// that a transfer_checked CPI actually moves tokens.
+pub fn is_token_program(id: &Pubkey) -> bool {
+    *id == TOKEN_PROGRAM_ID || *id == TOKEN_2022_PROGRAM_ID
+}
+
+/// SPL Token account size in bytes (the `Account::LEN` of the
+/// token programs, no extensions): the vault creation funds
+/// exactly this many bytes rent-exempt.
+pub const TOKEN_ACCOUNT_SPACE: usize = 165;
+
+/// A token account's (mint, owner, amount), parsed from raw
+/// account data in the programs' packed layout: mint at [0..32],
+/// owner at [32..64], amount as LE u64 at [64..72]. Returns
+/// `None` for data shorter than a token account — a short
+/// account is not a token account, whatever its owner says.
+/// Token and Token-2022 share this base-account prefix, so one
+/// parser serves both programs.
+pub fn token_account_fields(data: &[u8]) -> Option<(Pubkey, Pubkey, u64)> {
+    if data.len() < TOKEN_ACCOUNT_SPACE {
+        return None;
+    }
+    let mint_bytes: [u8; 32] = data[0..32].try_into().ok()?;
+    let owner_bytes: [u8; 32] = data[32..64].try_into().ok()?;
+    let amount_bytes: [u8; 8] = data[64..72].try_into().ok()?;
+    Some((
+        Pubkey::new_from_array(mint_bytes),
+        Pubkey::new_from_array(owner_bytes),
+        u64::from_le_bytes(amount_bytes),
+    ))
+}
+
+/// A mint's decimals, from raw mint data in the programs' packed
+/// layout: mint-authority COption (36 bytes), supply u64
+/// ([36..44]), decimals u8 at [44]. Returns `None` for data
+/// shorter than the decimals offset. Token and Token-2022 share
+/// this base-mint prefix, so one reader serves both programs.
+pub fn mint_decimals(data: &[u8]) -> Option<u8> {
+    if data.len() < 45 {
+        return None;
+    }
+    Some(data[44])
+}
+
+/// TransferChecked instruction data, both token programs: the
+/// discriminant byte 12, the amount as LE u64, then the
+/// decimals byte — exactly the packing of the interface
+/// builders (`TransferChecked { amount, decimals }.pack()`).
+pub fn transfer_checked_data(amount_raw: u64, decimals: u8) -> Vec<u8> {
+    let mut data = Vec::with_capacity(10);
+    data.push(12);
+    data.extend_from_slice(&amount_raw.to_le_bytes());
+    data.push(decimals);
+    data
+}
+
+/// The deposit credit, as a pure function: the transferred amount
+/// joins the treasury total AND the cash sleeve, and nothing
+/// else. Bonds and arb are untouched — new money arrives as
+/// cash, and the 50/25/25 split is a deployment target, not a
+/// deposit-time reallocation (see [`treasury_program::deposit`]).
+/// Both additions are checked: an overflow refuses with
+/// `Overflow` and, on-chain, rolls the transfer back with it.
+pub fn apply_deposit(
+    total_raw: u64,
+    cash_raw: u64,
+    amount_raw: u64,
+) -> Result<(u64, u64)> {
+    Ok((
+        total_raw
+            .checked_add(amount_raw)
+            .ok_or(TreasuryError::Overflow)?,
+        cash_raw
+            .checked_add(amount_raw)
+            .ok_or(TreasuryError::Overflow)?,
+    ))
+}
+
 /// The `launch_stage2` gate, as a pure check (design §4.2):
 /// Settled state first, then the canonical `treasury.launch.v1`
 /// type, then the stage still being Stage 1, then threshold B set.
@@ -5290,6 +5643,27 @@ pub struct TreasuryInitialized {
     pub lending_book: Pubkey,
     pub fee_vault: Pubkey,
     pub executor: Pubkey,
+}
+
+/// Event for [`treasury_program::deposit`] (design §4.2, §6):
+/// the funding receipt. Deposit has no authorizing transition —
+/// funding is value inflow, not governance — so the
+/// authorization context is the depositor's signature plus the
+/// executed transfer, recorded here as the depositor, mint, and
+/// vault keys, with the post-credit totals. A deposit event
+/// with an amount the vault does not hold cannot exist: the
+/// credit follows a successful transfer CPI in the same
+/// transaction, so the event and the vault agree by
+/// construction, and any observer can verify the vault balance
+/// against the running total of these events.
+#[event]
+pub struct TreasuryDeposit {
+    pub depositor: Pubkey,
+    pub mint: Pubkey,
+    pub vault: Pubkey,
+    pub amount_raw: u64,
+    pub total_raw: u64,
+    pub cash_raw: u64,
 }
 
 /// Event for [`treasury_program::launch_stage2`] (design §4.2,
@@ -7004,6 +7378,55 @@ pub struct InitializeTreasury<'info> {
     pub system_program: Program<'info, System>,
 }
 
+/// Accounts for [`treasury_program::deposit`].
+#[derive(Accounts)]
+pub struct Deposit<'info> {
+    /// Treasury state PDA — mutated: the ONLY funding credit in
+    /// the program. `total_raw` and `cash_raw` both advance by
+    /// exactly the transferred amount, here and nowhere else.
+    #[account(mut, seeds = [b"treasury"], bump = treasury_state.bump)]
+    pub treasury_state: Account<'info, TreasuryState>,
+    /// The funding depositor (signer; source-account authority;
+    /// pays vault rent on the first deposit of a mint).
+    #[account(mut)]
+    pub depositor: Signer<'info>,
+    /// CHECK: the deposited mint (any SPL mint on Token or
+    /// Token-2022 — the handler checks the owning program, not
+    /// a hardcoded mint). Unchecked type by necessity: no
+    /// anchor-spl type is available in this SBF cohort (see
+    /// Cargo.toml); the handler parses the decimals byte itself
+    /// and checks the mint's owner against the token program id.
+    pub mint: UncheckedAccount<'info>,
+    /// CHECK: the depositor's source token account. Unchecked
+    /// type for the same reason; the handler parses its
+    /// mint/owner fields and the transfer CPI requires the
+    /// depositor's signature as authority, so a stranger's
+    /// account cannot be drained through this instruction even
+    /// if passed.
+    #[account(mut)]
+    pub source: UncheckedAccount<'info>,
+    /// CHECK: program-owned vault token account, PDA seeds
+    /// `["vault", mint]`. Unchecked type for the same reason;
+    /// the handler creates it on the first deposit of a mint
+    /// (system create + InitializeAccount CPIs, signed by the
+    /// PDA seeds) or validates the existing account's mint/owner
+    /// fields. A foreign account at the PDA refuses, never
+    /// adopted.
+    #[account(mut, seeds = [b"vault", mint.key.as_ref()], bump)]
+    pub vault: UncheckedAccount<'info>,
+    /// CHECK: the token program (Token or Token-2022).
+    /// Unchecked type: the id check in the handler IS the
+    /// validation — the key must be one of the two program ids
+    /// and the account must be executable, and it must own the
+    /// mint.
+    pub token_program: UncheckedAccount<'info>,
+    /// Rent sysvar, required by the InitializeAccount CPI on
+    /// the first deposit of a mint.
+    pub rent: Sysvar<'info, Rent>,
+    /// System program, required by the vault-creation CPI.
+    pub system_program: Program<'info, System>,
+}
+
 /// Accounts for [`treasury_program::launch_stage2`].
 #[derive(Accounts)]
 #[instruction(transition_id: u64)]
@@ -7868,6 +8291,36 @@ pub enum TreasuryError {
     /// capacity, not position size: entry is never refused by size.
     #[msg("Agent index space exhausted: at most 512 registered agents.")]
     AgentIndexSpaceExhausted,
+    /// Funding path, appended at the END of the enum deliberately:
+    /// Anchor codes run sequentially from 6000 in declaration order,
+    /// so appending here keeps every pre-deposit code unchanged
+    /// (the slice-5/6 refusal probes still expect their canonical
+    /// codes). A deposit of nothing: a zero deposit would pay
+    /// vault rent on a first-mint deposit while funding nothing.
+    #[msg("Deposit amount must be positive: a zero deposit funds nothing.")]
+    InvalidDepositAmount,
+    /// The deposit source is not the depositor's account for this
+    /// mint: its mint differs from the deposited mint, or its
+    /// owner differs from the depositor. A stranger's account
+    /// cannot fund the treasury through this instruction.
+    #[msg("Deposit source mismatch: the source account must be the depositor's account for this mint.")]
+    DepositSourceMismatch,
+    /// The deposit vault is not the program-owned vault for this
+    /// mint: its mint differs from the deposited mint, or its
+    /// owner differs from the TreasuryState PDA. Treasury funds
+    /// land only in the program-owned vault, never in a foreign
+    /// token account passed as the vault.
+    #[msg("Deposit vault mismatch: the vault must be the program-owned vault for this mint.")]
+    DepositVaultMismatch,
+    /// The deposit token program is not a real token program:
+    /// its key is neither the Token nor the Token-2022 program
+    /// id, it is not executable, or it does not own the mint.
+    /// Only the real token programs enforce that a
+    /// transfer_checked CPI actually moves tokens, so any other
+    /// program id would let a fake program report success while
+    /// moving nothing — and the credit would invent value.
+    #[msg("Deposit program mismatch: the token program must be the Token or Token-2022 program, executable, and the mint's owner.")]
+    DepositProgramMismatch,
 }
 
 #[cfg(test)]
@@ -9486,6 +9939,81 @@ mod tests {
         assert!(can_initialize_treasury(STATE_SETTLED, [0; 32], true).is_err());
         // A vault key that does not match Config.fee_vault refuses.
         assert!(can_initialize_treasury(STATE_SETTLED, TREASURY_INIT_TYPE, false).is_err());
+    }
+
+    #[test]
+    fn deposit_gate_matrix() {
+        // All bindings true, positive amount: passes.
+        can_deposit(1_000, true, true, true)
+            .expect("a well-bound positive deposit passes");
+        // A zero deposit refuses, whatever the bindings are.
+        assert!(can_deposit(0, true, true, true).is_err());
+        // Each single binding failure refuses on its own.
+        assert!(can_deposit(1_000, false, true, true).is_err());
+        assert!(can_deposit(1_000, true, false, true).is_err());
+        assert!(can_deposit(1_000, true, true, false).is_err());
+        // The gate order is amount first, program binding
+        // second, source binding third, vault binding last (see
+        // `can_deposit`): each refusal above fires on exactly
+        // one rule, in that order.
+    }
+
+    #[test]
+    fn deposit_token_layouts() {
+        // Only the two real token programs pass the program
+        // check; any other id (including the default key) fails.
+        assert!(is_token_program(&TOKEN_PROGRAM_ID));
+        assert!(is_token_program(&TOKEN_2022_PROGRAM_ID));
+        assert!(!is_token_program(&Pubkey::default()));
+        // A packed token account parses at the documented
+        // offsets: mint [0..32], owner [32..64], amount LE
+        // [64..72]. Short data is not a token account.
+        let mut account_data = vec![0u8; TOKEN_ACCOUNT_SPACE];
+        let mint = Pubkey::new_from_array([7u8; 32]);
+        let owner = Pubkey::new_from_array([9u8; 32]);
+        account_data[0..32].copy_from_slice(mint.as_ref());
+        account_data[32..64].copy_from_slice(owner.as_ref());
+        account_data[64..72].copy_from_slice(&123_456u64.to_le_bytes());
+        assert_eq!(
+            token_account_fields(&account_data).expect("packed account parses"),
+            (mint, owner, 123_456)
+        );
+        assert!(token_account_fields(&account_data[..100]).is_none());
+        // A packed mint reads decimals at [44]; short data is
+        // not a mint.
+        let mut mint_data = vec![0u8; 82];
+        mint_data[44] = 6;
+        assert_eq!(mint_decimals(&mint_data), Some(6));
+        assert!(mint_decimals(&mint_data[..44]).is_none());
+        // TransferChecked data is exactly the interface
+        // packing: discriminant 12, amount LE, decimals.
+        assert_eq!(
+            transfer_checked_data(1_000, 6),
+            vec![12, 232, 3, 0, 0, 0, 0, 0, 0, 6]
+        );
+    }
+
+    #[test]
+    fn deposit_credits_total_and_cash_only() {
+        // New money arrives as cash: total and cash advance by
+        // exactly the amount, and no sleeve split is applied here
+        // (bonds/arb are not inputs to this function at all, so
+        // no deposit-time fiction can credit them).
+        assert_eq!(
+            apply_deposit(100_000, 100_000, 50_000).expect("plain credit"),
+            (150_000, 150_000)
+        );
+        // An all-cash funded treasury stays all-cash after a
+        // deposit: total == cash is preserved, not re-split.
+        assert_eq!(
+            apply_deposit(0, 0, 7_500).expect("first funding"),
+            (7_500, 7_500)
+        );
+        // Either addition overflowing refuses — on-chain this
+        // rolls the transfer back with it, so no vault/ledger
+        // divergence can survive.
+        assert!(apply_deposit(u64::MAX, 0, 1).is_err());
+        assert!(apply_deposit(0, u64::MAX, 1).is_err());
     }
 
     #[test]

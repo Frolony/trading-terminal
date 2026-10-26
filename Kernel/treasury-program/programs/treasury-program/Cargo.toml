@@ -18,6 +18,24 @@ idl-build = ["anchor-lang/idl-build"]
 [dependencies]
 anchor-lang = "=1.2.1"
 
+# Funding path (deposit, 2026-10-26): NO anchor-spl dependency, by
+# finding, not by taste. anchor-spl 1.2.1's token_2022 /
+# token_interface modules pull spl-token-2022-interface, which
+# depends unconditionally on solana-zk-sdk, which depends on
+# getrandom — and getrandom does not support the SBF target, so
+# `anchor build` fails (reproduced 2026-10-26, both with default
+# features and with the minimal token_2022 feature set; the
+# token_2022_extensions feature is not the only poison path).
+# The deposit CPI is therefore hand-rolled against the stable SPL
+# Token instruction layouts (TransferChecked = 12, amount LE +
+# decimals; InitializeAccount = 1; account orders per the
+# interface builders), verified against
+# spl-token-2022-interface 2.1.0's instruction builders in the
+# registry source. This follows the program's own precedent:
+# hand-rolled SignalRecord creation (step-2 fork) exists because
+# Anchor's machinery failed there too. Revisit anchor-spl only
+# if the zk-sdk/getrandom chain becomes SBF-safe.
+
 # Placement C (design §1.2): the pristine kernel crate, compiled into the
 # program (no_std SBF). `default-features = false` selects the crate's
 # no_std + alloc build; the program uses only the no_std-compatible API
