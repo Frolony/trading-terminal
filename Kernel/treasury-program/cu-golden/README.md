@@ -499,14 +499,51 @@ schedule created here (entry 1, lock_until 13) is the walk's
 input; the walk measures the tranche, it does not re-create
 the schedule.
 
+## Slice 8: 12-window walk -> execute_whale_tranche SUCCESS CU (2026-10-26)
+
+The slice-7 schedule (entry window 1, lock_until 13, tranche
+2,000,000, count 5) executes here, on its own terms. Windows
+2..13 each open on their OWN Settled `treasury.window.v1`
+transition (transitions 9..20, parented in sequence on the
+previous transition's declared hash, transition 9 on head 8),
+because `open_window` requires window_id == window_count and
+each open consumes exactly one count slot — no transition is
+reused, and the carried source-transition-consumption item is
+satisfied by construction on this chain (one transition, one
+window). Every window opens on the same funded snapshot
+(total 60,000,000, exit stock 10,000,000, FLAG 2,000,000):
+no further deposit lands in this chain. The walk's 132
+setup entries (12 lifecycles through settle + 12 opens)
+reproduce deterministically; the walk `open_window` values
+vary by window id (14,984–19,484 CU) in 1,500 CU steps — the
+known per-PDA bump-search cost (see the §2.2 finding), not a
+behavior difference, and these are setup values, ungated.
+
+| instruction | CU | result |
+|---|---|---|
+| `execute_whale_tranche` (tranche 1 of 5, 2,000,000 raw; Committed exit transition 8, creation window 1, execution window 13 >= lock_until 13, execution window 13 snapshot 60,000,000 / FLAG 2,000,000, position 27,500,000, loan 0) | 16,360 | Success, **DESIGN FINDING** (2.34x the ~7K EST point; 2,360 CU over the 14,000 band top) |
+
+Post-execution state asserted: schedule tranches_executed 1,
+last_block_time 31,003,600 (the walk's closing clock — the
+weekly-cadence baseline for tranche 2, not measured here);
+position 25,500,000; window 13 exit stock 8,000,000; window 1
+exit stock unchanged at 8,500,000 (execution debits the
+execution window only, as the D-10 cross-window design
+requires). Golden file 240 entries: all 107 slice-7 entries
+reproduce exactly (program .so sha unchanged), plus the 132
+walk setup entries and this measurement. The finding joins
+`settle_default` and `schedule_whale_exit` as the third
+~7K-EST miss above the band, and like them it does not move
+the batch arithmetic: one tranche execution is not
+per-payout batched.
+
 ## Next slices
 
-Slice 8 (queue head): the 12-window walk to an
-`execute_whale_tranche` SUCCESS measurement on this slice's
-schedule (execution window 13, tranche 2,000,000, gated
-§2.2 ~7K, 2x band 3,500–14,000), then the W3.2 adversarial
-suite re-expressed against the program's interface with
-measured CU per instruction.
+Queue head: the W3.2 adversarial suite re-expressed against
+the program's interface with measured CU per instruction
+(tranche 2's weekly cadence — `TrancheTooSoon` refusal, then
+a success at last_block_time + WEEK_SECS — is part of that
+re-expression, not a separate slice).
 
 Optimization pass step 2 (ATTEMPTED 2026-10-25, BLOCKED, REVERTED —
 NOT blocked by the funding decision, blocked by the toolchain):

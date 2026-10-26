@@ -2998,6 +2998,140 @@ fn main() {
     let ws0 = accounts.iter().find(|(k, _)| *k == window_state).map(|(_, a)| a.clone()).unwrap();
     assert_eq!(u64::from_le_bytes(ws0.data[16..24].try_into().unwrap()), 0u64, "window-0 snapshot moved during slice 7");
 
+    // ---- Slice 8: 12-window walk -> execute_whale_tranche SUCCESS CU ----
+    // The slice-7 schedule (entry window 1, lock_until 13, tranche
+    // 2,000,000, count 5) cannot execute until an execution window
+    // >= 13 exists. Each new window needs its OWN Settled
+    // treasury.window.v1 transition as its open source
+    // (open_window requires window_id == window_count, so windows
+    // open strictly in sequence; a single transition authorizes
+    // exactly one window open because each open consumes the
+    // window_count slot, and no transition is reused here).
+    // Windows 2..13 ride transitions 9..20, each a full lifecycle
+    // through settle on the window-SHA policy, parented on the
+    // previous transition's declared hash (transition 9 parents on
+    // head 8, [77;32]). Planning times step 1,000,000s from
+    // 20,000,000 — harness parameters, not design values. Every
+    // window opens on the same funded snapshot (total 60,000,000,
+    // exit stock L = 10,000,000, FLAG = 2,000,000), because no
+    // further deposit lands in this chain.
+    // The tranche gate then reads: Committed exit transition 8,
+    // creation window 1 (schedule + holder record), execution
+    // window 13 (>= lock_until 13), execution window 13's own
+    // exit stock (10,000,000) and FLAG (2,000,000) as the bound's
+    // basis, position 27,500,000 after slice-7 settle_default,
+    // loan 0, first tranche (no weekly-cadence check yet).
+    let mut parent_index: u64 = 8;
+    let mut parent_hash: [u8; 32] = [77u8; 32];
+    for w in 2..=13u64 {
+        let tid = w + 7;
+        let (observation_w, _) = pda(&[b"observation", &tid.to_le_bytes()], &program_id);
+        let (transition_w, _) = pda(&[b"transition", &tid.to_le_bytes()], &program_id);
+        let (plan_w, _) = pda(&[b"plan", &tid.to_le_bytes(), proposer.as_ref()], &program_id);
+        let (signal_w, signal_w_bump) = pda(
+            &[b"signal", &tid.to_le_bytes(), &0u32.to_le_bytes(), proposer.as_ref()],
+            &program_id,
+        );
+        let (evidence_w, _) = pda(&[b"evidence", &tid.to_le_bytes()], &program_id);
+        let (window_state_w, _) = pda(&[b"window", &w.to_le_bytes()], &program_id);
+        upsert(&mut accounts, (observation_w, empty.clone()));
+        upsert(&mut accounts, (transition_w, empty.clone()));
+        upsert(&mut accounts, (plan_w, empty.clone()));
+        upsert(&mut accounts, (signal_w, empty.clone()));
+        upsert(&mut accounts, (evidence_w, empty.clone()));
+        upsert(&mut accounts, (window_state_w, empty.clone()));
+        let now_w: i64 = 20_000_000 + ((w - 2) as i64) * 1_000_000;
+        let declared_w: [u8; 32] = [((87 + (w - 2) * 10) as u8); 32];
+        accounts = lifecycle_to_commit(
+            &mut mollusk, accounts, &mut measured,
+            program_id, clock_id, system_id,
+            oracle_record, oracle, proposer_record, proposer, evaluator_record, evaluator,
+            chain, stock, policy_sha,
+            observation_w, transition_w, plan_w, signal_w, signal_w_bump,
+            tid, now_w + 1_000_000, now_w + 2_000_000, declared_w, parent_index, parent_hash,
+            [9u8; 32], now_w, &format!(":{tid}"), Some(evidence_w),
+        );
+        let ch = accounts.iter().find(|(k, _)| *k == chain).map(|(_, a)| a.clone()).unwrap();
+        assert_eq!(u64::from_le_bytes(ch.data[8..16].try_into().unwrap()), tid, "chain index not {tid} after commit:{tid}");
+        assert_eq!(&ch.data[16..48], &declared_w, "chain hash is not transition {tid}'s declared hash");
+        let mut data = disc("open_window");
+        data.extend_from_slice(&tid.to_le_bytes());
+        data.extend_from_slice(&w.to_le_bytes());
+        let ix = Instruction::new_with_bytes(
+            program_id,
+            &data,
+            vec![
+                AccountMeta::new(treasury_state, false),
+                AccountMeta::new_readonly(lending_book, false),
+                AccountMeta::new_readonly(transition_w, false),
+                AccountMeta::new(window_state_w, false),
+                AccountMeta::new(authority, true),
+                AccountMeta::new_readonly(system_id, false),
+            ],
+        );
+        let (next, cu) = run(&mollusk, &format!("open_window:{w}"), &ix, &accounts);
+        accounts = next;
+        measured.push(serde_json::json!({"instruction": format!("open_window:{w}"), "cu": cu, "result": "Success", "note": format!("slice-8 setup: window {w} opens on Settled transition {tid} (funded snapshot total 60,000,000, exit stock 10,000,000)")}));
+        let ts = accounts.iter().find(|(k, _)| *k == treasury_state).map(|(_, a)| a.clone()).unwrap();
+        assert_eq!(u64::from_le_bytes(ts.data[56..64].try_into().unwrap()), w + 1, "window_count not {w} + 1 after open_window:{w}");
+        let wsw = accounts.iter().find(|(k, _)| *k == window_state_w).map(|(_, a)| a.clone()).unwrap();
+        assert_eq!(u64::from_le_bytes(wsw.data[16..24].try_into().unwrap()), 60_000_000u64, "window {w} snapshot total not 60,000,000");
+        assert_eq!(u64::from_le_bytes(wsw.data[64..72].try_into().unwrap()), 10_000_000u64, "window {w} exit stock not 10,000,000");
+        assert_eq!(u64::from_le_bytes(wsw.data[72..80].try_into().unwrap()), tid, "window {w} source transition not {tid}");
+        parent_index = tid;
+        parent_hash = declared_w;
+    }
+
+    // (x) execute_whale_tranche — FIRST SUCCESS MEASUREMENT (gated
+    // §2.2 ~7K, 2x band 3,500–14,000). Operator-settled, on
+    // Committed exit transition 8, creation window 1, execution
+    // window 13: tranche 2,000,000, exactly the FLAG over window
+    // 13's snapshot. Clock at execution is the last walk
+    // lifecycle's close (31,000,000 + 3,600 = 31,003,600), which
+    // becomes the schedule's last_block_time for the weekly
+    // cadence on tranche 2 (not measured here).
+    let (window_state_13, _) = pda(&[b"window", &13u64.to_le_bytes()], &program_id);
+    let mut data = disc("execute_whale_tranche");
+    data.extend_from_slice(&8u64.to_le_bytes());
+    data.extend_from_slice(&1u64.to_le_bytes());
+    data.extend_from_slice(&13u64.to_le_bytes());
+    data.extend_from_slice(holder.as_ref());
+    let ix = Instruction::new_with_bytes(
+        program_id,
+        &data,
+        vec![
+            AccountMeta::new(operator, true),
+            AccountMeta::new_readonly(operator_record, false),
+            AccountMeta::new_readonly(transition8, false),
+            AccountMeta::new(window_state_13, false),
+            AccountMeta::new(holder_record_1, false),
+            AccountMeta::new(exit_schedule_1, false),
+        ],
+    );
+    let (next, cu) = run(&mollusk, "execute_whale_tranche", &ix, &accounts);
+    accounts = next;
+    let gate = if (3_500..=14_000).contains(&cu) { "pass" } else { "DESIGN-FINDING" };
+    measured.push(serde_json::json!({
+        "instruction": "execute_whale_tranche",
+        "cu": cu,
+        "result": "Success",
+        "note": "slice-8 GATED measurement: operator-settled tranche 1 of 5 (2,000,000 raw) on Committed treasury.exit.v1 transition 8 (creation window 1, execution window 13 >= lock_until 13, execution window 13 snapshot 60,000,000 / FLAG 2,000,000, position 27,500,000, loan 0)",
+        "design_estimate_cu": "7000",
+        "gate_2x_band_cu": "3500-14000",
+        "gate": gate,
+    }));
+    let es1 = accounts.iter().find(|(k, _)| *k == exit_schedule_1).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(es1.data[72..80].try_into().unwrap()), 1u64, "schedule tranches_executed not 1 after execute_whale_tranche");
+    assert_eq!(i64::from_le_bytes(es1.data[96..104].try_into().unwrap()), 31_003_600i64, "schedule last_block_time not 31,003,600 after execute_whale_tranche");
+    assert_eq!(u64::from_le_bytes(es1.data[48..56].try_into().unwrap()), 10_000_000u64, "schedule total moved during execute_whale_tranche");
+    assert_eq!(u64::from_le_bytes(es1.data[64..72].try_into().unwrap()), 5u64, "schedule tranche count moved during execute_whale_tranche");
+    let hr1 = accounts.iter().find(|(k, _)| *k == holder_record_1).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(hr1.data[56..64].try_into().unwrap()), 25_500_000u64, "position not 25,500,000 after execute_whale_tranche");
+    let ws13 = accounts.iter().find(|(k, _)| *k == window_state_13).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(ws13.data[64..72].try_into().unwrap()), 8_000_000u64, "window 13 exit stock not 8,000,000 after execute_whale_tranche");
+    let ws1 = accounts.iter().find(|(k, _)| *k == window_state_1).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(ws1.data[64..72].try_into().unwrap()), 8_500_000u64, "window 1 exit stock moved during execute_whale_tranche (execution debits the execution window only)");
+
     let golden = serde_json::json!({
         "harness": "cu-golden-mollusk",
         "mollusk_svm": MOLLUSK_SVM_VERSION,
@@ -3005,8 +3139,8 @@ fn main() {
         "program_so_sha256": so_sha256,
         "token_program_id": TOKEN_PROGRAM_ID_STR,
         "token_program_so_sha256": token_elf_sha256,
-        "slice": 7,
-        "slice_note": "slices 1-6 as before (slice-5/6 refusal probes stand as the unfunded-chain record) + slice-7 FUNDED chain: real SPL Token deposit (vault create + InitializeAccount + TransferChecked, 60,000,000 raw, 6 decimals) credits TreasuryState, window 1 opens on the funded snapshot (total 60,000,000, exit stock L = 10,000,000, book cap 5,000,000, FLAG 2,000,000), holder enrolls window 1 (position 30,000,000), flow lifecycle stopped at commit, pay_tranche:1, and the FIRST success measurements borrow / exit (1,500,000 = 1,000,000 accrued + 500,000 excess at flat 13% = 65,000 penalty) / settle_default (at maturity 12,187,600) / schedule_whale_exit (10,000,000, tranche 2,000,000, count 5, lock_until 13), each gated §2.2 ~7K (2x band 3,500-14,000); execute_whale_tranche success still unmeasured — it needs an execution window >= lock_until (13), i.e. the next slice's 12-window walk; launch_stage2 unmeasured by design (ThresholdUnset, D-2)",
+        "slice": 8,
+        "slice_note": "slices 1-7 as before (slice-5/6 refusal probes stand as the unfunded-chain record; slice-7 FUNDED chain: real SPL Token deposit credits TreasuryState 60,000,000, window 1 opens on the funded snapshot, borrow / exit / settle_default / schedule_whale_exit FIRST successes) + slice-8 12-window walk: windows 2..13 each open on their own Settled treasury.window.v1 transition (transitions 9..20, parented in sequence), each on the funded snapshot (total 60,000,000, exit stock 10,000,000, FLAG 2,000,000), and the FIRST success measurement execute_whale_tranche (tranche 1 of 5, 2,000,000 raw, on Committed treasury.exit.v1 transition 8, creation window 1, execution window 13 >= lock_until 13), gated §2.2 ~7K (2x band 3,500-14,000); tranche 2's weekly cadence (last_block_time + WEEK_SECS) is not measured here; launch_stage2 unmeasured by design (ThresholdUnset, D-2)",
         "clock": {"phase_a_unix_timestamp": NOW0, "planning_window_s": PLANNING_WINDOW, "phase_b_unix_timestamp": NOW1},
         "instructions": measured,
     });

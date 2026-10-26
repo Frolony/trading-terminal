@@ -682,13 +682,814 @@
       "instruction": "schedule_whale_exit",
       "note": "slice-7 GATED measurement: holder-signed 10,000,000 raw schedule on Committed treasury.exit.v1 transition 8 (funded window 1: FLAG 2,000,000, tranche 2,000,000, count 5, entry window 1, lock_until 13; execution rides the next slice's window walk)",
       "result": "Success"
+    },
+    {
+      "cu": 15124,
+      "instruction": "post_observation:9",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 13308,
+      "instruction": "register_transition:9",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 10556,
+      "instruction": "open_planning:9",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 24045,
+      "instruction": "submit_plan:9",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 15821,
+      "instruction": "submit_signal:9",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 7921,
+      "instruction": "submit_constraint_report:9",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 8978,
+      "instruction": "reconcile:9",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 17959,
+      "instruction": "commit:9",
+      "note": "slice-7 setup (repeat of the gated instruction)",
+      "result": "Success"
+    },
+    {
+      "cu": 11659,
+      "instruction": "record_evidence:9",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 12965,
+      "instruction": "settle:9",
+      "note": "slice-7 setup (repeat of the gated instruction)",
+      "result": "Success"
+    },
+    {
+      "cu": 16484,
+      "instruction": "open_window:2",
+      "note": "slice-8 setup: window 2 opens on Settled transition 9 (funded snapshot total 60,000,000, exit stock 10,000,000)",
+      "result": "Success"
+    },
+    {
+      "cu": 12124,
+      "instruction": "post_observation:10",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 14808,
+      "instruction": "register_transition:10",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 10556,
+      "instruction": "open_planning:10",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 24045,
+      "instruction": "submit_plan:10",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 15821,
+      "instruction": "submit_signal:10",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 7921,
+      "instruction": "submit_constraint_report:10",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 8978,
+      "instruction": "reconcile:10",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 17959,
+      "instruction": "commit:10",
+      "note": "slice-7 setup (repeat of the gated instruction)",
+      "result": "Success"
+    },
+    {
+      "cu": 16159,
+      "instruction": "record_evidence:10",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 12965,
+      "instruction": "settle:10",
+      "note": "slice-7 setup (repeat of the gated instruction)",
+      "result": "Success"
+    },
+    {
+      "cu": 14984,
+      "instruction": "open_window:3",
+      "note": "slice-8 setup: window 3 opens on Settled transition 10 (funded snapshot total 60,000,000, exit stock 10,000,000)",
+      "result": "Success"
+    },
+    {
+      "cu": 10624,
+      "instruction": "post_observation:11",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 13308,
+      "instruction": "register_transition:11",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 10556,
+      "instruction": "open_planning:11",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 24045,
+      "instruction": "submit_plan:11",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 15821,
+      "instruction": "submit_signal:11",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 7921,
+      "instruction": "submit_constraint_report:11",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 8978,
+      "instruction": "reconcile:11",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 17959,
+      "instruction": "commit:11",
+      "note": "slice-7 setup (repeat of the gated instruction)",
+      "result": "Success"
+    },
+    {
+      "cu": 11659,
+      "instruction": "record_evidence:11",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 12965,
+      "instruction": "settle:11",
+      "note": "slice-7 setup (repeat of the gated instruction)",
+      "result": "Success"
+    },
+    {
+      "cu": 14984,
+      "instruction": "open_window:4",
+      "note": "slice-8 setup: window 4 opens on Settled transition 11 (funded snapshot total 60,000,000, exit stock 10,000,000)",
+      "result": "Success"
+    },
+    {
+      "cu": 13624,
+      "instruction": "post_observation:12",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 14808,
+      "instruction": "register_transition:12",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 10556,
+      "instruction": "open_planning:12",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 24045,
+      "instruction": "submit_plan:12",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 15821,
+      "instruction": "submit_signal:12",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 7921,
+      "instruction": "submit_constraint_report:12",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 8978,
+      "instruction": "reconcile:12",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 17959,
+      "instruction": "commit:12",
+      "note": "slice-7 setup (repeat of the gated instruction)",
+      "result": "Success"
+    },
+    {
+      "cu": 11659,
+      "instruction": "record_evidence:12",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 12965,
+      "instruction": "settle:12",
+      "note": "slice-7 setup (repeat of the gated instruction)",
+      "result": "Success"
+    },
+    {
+      "cu": 16484,
+      "instruction": "open_window:5",
+      "note": "slice-8 setup: window 5 opens on Settled transition 12 (funded snapshot total 60,000,000, exit stock 10,000,000)",
+      "result": "Success"
+    },
+    {
+      "cu": 13624,
+      "instruction": "post_observation:13",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 14808,
+      "instruction": "register_transition:13",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 10556,
+      "instruction": "open_planning:13",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 24045,
+      "instruction": "submit_plan:13",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 15821,
+      "instruction": "submit_signal:13",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 7921,
+      "instruction": "submit_constraint_report:13",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 8978,
+      "instruction": "reconcile:13",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 17959,
+      "instruction": "commit:13",
+      "note": "slice-7 setup (repeat of the gated instruction)",
+      "result": "Success"
+    },
+    {
+      "cu": 11659,
+      "instruction": "record_evidence:13",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 12965,
+      "instruction": "settle:13",
+      "note": "slice-7 setup (repeat of the gated instruction)",
+      "result": "Success"
+    },
+    {
+      "cu": 19484,
+      "instruction": "open_window:6",
+      "note": "slice-8 setup: window 6 opens on Settled transition 13 (funded snapshot total 60,000,000, exit stock 10,000,000)",
+      "result": "Success"
+    },
+    {
+      "cu": 10624,
+      "instruction": "post_observation:14",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 13308,
+      "instruction": "register_transition:14",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 10556,
+      "instruction": "open_planning:14",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 24045,
+      "instruction": "submit_plan:14",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 15821,
+      "instruction": "submit_signal:14",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 7921,
+      "instruction": "submit_constraint_report:14",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 8978,
+      "instruction": "reconcile:14",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 17959,
+      "instruction": "commit:14",
+      "note": "slice-7 setup (repeat of the gated instruction)",
+      "result": "Success"
+    },
+    {
+      "cu": 16159,
+      "instruction": "record_evidence:14",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 12965,
+      "instruction": "settle:14",
+      "note": "slice-7 setup (repeat of the gated instruction)",
+      "result": "Success"
+    },
+    {
+      "cu": 14984,
+      "instruction": "open_window:7",
+      "note": "slice-8 setup: window 7 opens on Settled transition 14 (funded snapshot total 60,000,000, exit stock 10,000,000)",
+      "result": "Success"
+    },
+    {
+      "cu": 12124,
+      "instruction": "post_observation:15",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 13308,
+      "instruction": "register_transition:15",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 10556,
+      "instruction": "open_planning:15",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 24045,
+      "instruction": "submit_plan:15",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 15821,
+      "instruction": "submit_signal:15",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 7921,
+      "instruction": "submit_constraint_report:15",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 8978,
+      "instruction": "reconcile:15",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 17959,
+      "instruction": "commit:15",
+      "note": "slice-7 setup (repeat of the gated instruction)",
+      "result": "Success"
+    },
+    {
+      "cu": 13159,
+      "instruction": "record_evidence:15",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 12965,
+      "instruction": "settle:15",
+      "note": "slice-7 setup (repeat of the gated instruction)",
+      "result": "Success"
+    },
+    {
+      "cu": 17984,
+      "instruction": "open_window:8",
+      "note": "slice-8 setup: window 8 opens on Settled transition 15 (funded snapshot total 60,000,000, exit stock 10,000,000)",
+      "result": "Success"
+    },
+    {
+      "cu": 12124,
+      "instruction": "post_observation:16",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 14808,
+      "instruction": "register_transition:16",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 10556,
+      "instruction": "open_planning:16",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 27045,
+      "instruction": "submit_plan:16",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 15821,
+      "instruction": "submit_signal:16",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 7921,
+      "instruction": "submit_constraint_report:16",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 8978,
+      "instruction": "reconcile:16",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 17959,
+      "instruction": "commit:16",
+      "note": "slice-7 setup (repeat of the gated instruction)",
+      "result": "Success"
+    },
+    {
+      "cu": 13159,
+      "instruction": "record_evidence:16",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 12965,
+      "instruction": "settle:16",
+      "note": "slice-7 setup (repeat of the gated instruction)",
+      "result": "Success"
+    },
+    {
+      "cu": 17984,
+      "instruction": "open_window:9",
+      "note": "slice-8 setup: window 9 opens on Settled transition 16 (funded snapshot total 60,000,000, exit stock 10,000,000)",
+      "result": "Success"
+    },
+    {
+      "cu": 10624,
+      "instruction": "post_observation:17",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 13308,
+      "instruction": "register_transition:17",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 10556,
+      "instruction": "open_planning:17",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 24045,
+      "instruction": "submit_plan:17",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 15821,
+      "instruction": "submit_signal:17",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 7921,
+      "instruction": "submit_constraint_report:17",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 8978,
+      "instruction": "reconcile:17",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 17959,
+      "instruction": "commit:17",
+      "note": "slice-7 setup (repeat of the gated instruction)",
+      "result": "Success"
+    },
+    {
+      "cu": 11659,
+      "instruction": "record_evidence:17",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 12965,
+      "instruction": "settle:17",
+      "note": "slice-7 setup (repeat of the gated instruction)",
+      "result": "Success"
+    },
+    {
+      "cu": 14984,
+      "instruction": "open_window:10",
+      "note": "slice-8 setup: window 10 opens on Settled transition 17 (funded snapshot total 60,000,000, exit stock 10,000,000)",
+      "result": "Success"
+    },
+    {
+      "cu": 12124,
+      "instruction": "post_observation:18",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 16308,
+      "instruction": "register_transition:18",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 10556,
+      "instruction": "open_planning:18",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 24045,
+      "instruction": "submit_plan:18",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 15821,
+      "instruction": "submit_signal:18",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 7921,
+      "instruction": "submit_constraint_report:18",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 8978,
+      "instruction": "reconcile:18",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 17959,
+      "instruction": "commit:18",
+      "note": "slice-7 setup (repeat of the gated instruction)",
+      "result": "Success"
+    },
+    {
+      "cu": 11659,
+      "instruction": "record_evidence:18",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 12965,
+      "instruction": "settle:18",
+      "note": "slice-7 setup (repeat of the gated instruction)",
+      "result": "Success"
+    },
+    {
+      "cu": 14984,
+      "instruction": "open_window:11",
+      "note": "slice-8 setup: window 11 opens on Settled transition 18 (funded snapshot total 60,000,000, exit stock 10,000,000)",
+      "result": "Success"
+    },
+    {
+      "cu": 10624,
+      "instruction": "post_observation:19",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 14808,
+      "instruction": "register_transition:19",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 10556,
+      "instruction": "open_planning:19",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 28545,
+      "instruction": "submit_plan:19",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 15821,
+      "instruction": "submit_signal:19",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 7921,
+      "instruction": "submit_constraint_report:19",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 8978,
+      "instruction": "reconcile:19",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 17959,
+      "instruction": "commit:19",
+      "note": "slice-7 setup (repeat of the gated instruction)",
+      "result": "Success"
+    },
+    {
+      "cu": 17659,
+      "instruction": "record_evidence:19",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 12965,
+      "instruction": "settle:19",
+      "note": "slice-7 setup (repeat of the gated instruction)",
+      "result": "Success"
+    },
+    {
+      "cu": 14984,
+      "instruction": "open_window:12",
+      "note": "slice-8 setup: window 12 opens on Settled transition 19 (funded snapshot total 60,000,000, exit stock 10,000,000)",
+      "result": "Success"
+    },
+    {
+      "cu": 10624,
+      "instruction": "post_observation:20",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 14808,
+      "instruction": "register_transition:20",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 10556,
+      "instruction": "open_planning:20",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 27045,
+      "instruction": "submit_plan:20",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 15821,
+      "instruction": "submit_signal:20",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 7921,
+      "instruction": "submit_constraint_report:20",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 8978,
+      "instruction": "reconcile:20",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 17959,
+      "instruction": "commit:20",
+      "note": "slice-7 setup (repeat of the gated instruction)",
+      "result": "Success"
+    },
+    {
+      "cu": 11659,
+      "instruction": "record_evidence:20",
+      "note": "slice-7 setup",
+      "result": "Success"
+    },
+    {
+      "cu": 12965,
+      "instruction": "settle:20",
+      "note": "slice-7 setup (repeat of the gated instruction)",
+      "result": "Success"
+    },
+    {
+      "cu": 14984,
+      "instruction": "open_window:13",
+      "note": "slice-8 setup: window 13 opens on Settled transition 20 (funded snapshot total 60,000,000, exit stock 10,000,000)",
+      "result": "Success"
+    },
+    {
+      "cu": 16360,
+      "design_estimate_cu": "7000",
+      "gate": "DESIGN-FINDING",
+      "gate_2x_band_cu": "3500-14000",
+      "instruction": "execute_whale_tranche",
+      "note": "slice-8 GATED measurement: operator-settled tranche 1 of 5 (2,000,000 raw) on Committed treasury.exit.v1 transition 8 (creation window 1, execution window 13 >= lock_until 13, execution window 13 snapshot 60,000,000 / FLAG 2,000,000, position 27,500,000, loan 0)",
+      "result": "Success"
     }
   ],
   "mollusk_svm": "0.16.2",
   "program_id": "FPGSeLBWEiFKdTuqDbJeKhjXeah5H4c3rqsW4Tzn3RAS",
   "program_so_sha256": "82759c510ee6a94ad58a023fe82cb060095f3b4188978e7b54ed563cee22efac",
-  "slice": 7,
-  "slice_note": "slices 1-6 as before (slice-5/6 refusal probes stand as the unfunded-chain record) + slice-7 FUNDED chain: real SPL Token deposit (vault create + InitializeAccount + TransferChecked, 60,000,000 raw, 6 decimals) credits TreasuryState, window 1 opens on the funded snapshot (total 60,000,000, exit stock L = 10,000,000, book cap 5,000,000, FLAG 2,000,000), holder enrolls window 1 (position 30,000,000), flow lifecycle stopped at commit, pay_tranche:1, and the FIRST success measurements borrow / exit (1,500,000 = 1,000,000 accrued + 500,000 excess at flat 13% = 65,000 penalty) / settle_default (at maturity 12,187,600) / schedule_whale_exit (10,000,000, tranche 2,000,000, count 5, lock_until 13), each gated §2.2 ~7K (2x band 3,500-14,000); execute_whale_tranche success still unmeasured — it needs an execution window >= lock_until (13), i.e. the next slice's 12-window walk; launch_stage2 unmeasured by design (ThresholdUnset, D-2)",
+  "slice": 8,
+  "slice_note": "slices 1-7 as before (slice-5/6 refusal probes stand as the unfunded-chain record; slice-7 FUNDED chain: real SPL Token deposit credits TreasuryState 60,000,000, window 1 opens on the funded snapshot, borrow / exit / settle_default / schedule_whale_exit FIRST successes) + slice-8 12-window walk: windows 2..13 each open on their own Settled treasury.window.v1 transition (transitions 9..20, parented in sequence), each on the funded snapshot (total 60,000,000, exit stock 10,000,000, FLAG 2,000,000), and the FIRST success measurement execute_whale_tranche (tranche 1 of 5, 2,000,000 raw, on Committed treasury.exit.v1 transition 8, creation window 1, execution window 13 >= lock_until 13), gated §2.2 ~7K (2x band 3,500-14,000); tranche 2's weekly cadence (last_block_time + WEEK_SECS) is not measured here; launch_stage2 unmeasured by design (ThresholdUnset, D-2)",
   "token_program_id": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
   "token_program_so_sha256": "8190d3f7ceb6cb7a7a8d8924bff89f9f611e15ce1f806f2b6237f3311a98f697"
 }

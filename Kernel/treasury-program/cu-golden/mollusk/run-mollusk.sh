@@ -1,13 +1,11 @@
 #!/usr/bin/env bash
-# W4.3 CU golden-test harness (mollusk path). Executes the slice-7
-# chain (slices 1-6 as before, plus the funded chain: a real SPL
-# Token deposit — the ../spl-token.so fixture, public deployed
-# program bytes dumped from devnet, loaded under the Token program
-# id — credits TreasuryState, window 1 opens on the funded
-# snapshot, and borrow / exit / settle_default /
-# schedule_whale_exit are measured as SUCCESSES, each gated
-# against design §2.2 ~7K CU, 2x band 3,500-14,000)
-# against the
+# W4.3 CU golden-test harness (mollusk path). Executes the slice-8
+# chain (slices 1-7 as before, plus the 12-window walk: windows
+# 2..13 each open on their own Settled treasury.window.v1
+# transition (transitions 9..20), and execute_whale_tranche is
+# measured as a SUCCESS (tranche 1 of 5, 2,000,000 raw, execution
+# window 13 >= lock_until 13), gated against design §2.2 ~7K CU,
+# 2x band 3,500-14,000) against the
 # already-built program .so (build it first: `anchor build` from
 # Kernel/treasury-program/) and writes ../cu-golden-mollusk.json. No validator, no network, no real funds.
 # The keys below are throwaway local-test keys, never real secrets.
