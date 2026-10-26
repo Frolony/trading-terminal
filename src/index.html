@@ -235,8 +235,10 @@ the brief outline flash marks the landing panel without touching its copy.*/
 .howlink{background:transparent;border:0;color:var(--muted);font-size:11px;letter-spacing:.4px;text-decoration:underline;text-underline-offset:3px;padding:6px 2px;white-space:nowrap}
 .howlink:hover{color:var(--text)}
 #execPathPanel.execflash{outline:2px solid var(--green);outline-offset:3px;border-radius:14px;animation:execflash 1.6s ease-out}
+.plcard.plflash{outline:2px solid var(--green);outline-offset:3px;border-radius:14px;animation:execflash 1.6s ease-out}
 @keyframes execflash{0%{box-shadow:0 0 0 4px rgba(66,214,160,.35)}100%{box-shadow:0 0 0 0 transparent}}
 @media(prefers-reduced-motion:reduce){#execPathPanel.execflash{animation:none}}
+@media(prefers-reduced-motion:reduce){.plcard.plflash{animation:none}}
 /* N2.6 (A55) Manage-Wallets card pattern (2026-10-24): the wallet menu is a
    finished surface, not a debug panel. Cards carry air + hierarchy; every
    button inside the menu is app-styled (the old roster buttons had no CSS
@@ -2731,6 +2733,7 @@ async function btRun(){
   btLastCfg={scheme:c.scheme.id,params:Object.fromEntries(Object.keys(c.params).map(k=>[k,String(c.params[k])])),pair:c.pair,from:c.from,to:c.to,fee_bps:String(c.fee_bps),deploy_pct:String(c.deploy_pct),range:btRange};
   btLastCfg.runId=j.run_id||null;btLastCfg.runAt=j.run_at||null; /* N7.5 */
   btSaveReenable(); /* N7.10: a completed run re-enables Save */
+  btPaintDeployBtn(); /* N7.11: a completed run repaints Deploy state */
   await btRenderResults(j);
   $('btStatus').textContent='Done · '+(j.cached?'cached result':'fresh result');
  }catch(e){console.error('backtest failed',e);$('btResults').innerHTML='<div class="empty">Backtest failed: '+esc(e.message||e)+'</div>';$('btStatus').textContent='Failed';}
@@ -2940,8 +2943,9 @@ function btRenderConfigs(){
   const armed=btDeleteArmKey===btCfgKey(c);
   const delLabel=armed?(linked?'Confirm delete — deployments stay':'Confirm delete'):'Delete';
   const sub='<div class="sub">'+esc(c.scheme)+' · '+esc(c.pair)+' · fee '+esc(c.fee_bps)+'bps · deploy '+esc(c.deploy_pct)+'%'+(c.runId?' · run <span style="user-select:all">'+esc(String(c.runId))+'</span>':'')+'</div>';
+  const nc711=plNormalizeCfg(c),depDup711=nc711?plFindDeployDup(nc711):null; /* N7.11: a saved row whose configuration is already deployed shows its state */
   if(btRenameIdx===i)return '<div class="btcfg"><div><input class="wrename-input" data-btrename-input="'+i+'" value="'+esc(c.name)+'" maxlength="60" aria-label="New name for this configuration">'+sub+'</div><div style="display:flex;gap:6px"><button type="button" class="action" data-btrename-save="'+i+'">Save</button><button type="button" class="action" data-btrename-cancel="'+i+'">Cancel</button></div></div>';
-  return '<div class="btcfg"><div><strong>'+esc(c.name)+'</strong>'+sub+'</div><div style="display:flex;gap:6px"><button type="button" class="action" data-btdeploy="'+i+'">Deploy</button><button type="button" class="action" data-btload="'+i+'">Load</button><button type="button" class="action" data-btrename="'+i+'">Rename</button><button type="button" class="action sell" data-btdel="'+i+'">'+delLabel+'</button></div></div>';
+  return '<div class="btcfg"><div><strong>'+esc(c.name)+'</strong>'+sub+'</div><div style="display:flex;gap:6px"><button type="button" class="action" data-btdeploy="'+i+'"'+(depDup711?' disabled':'')+'>'+(depDup711?'Already deployed':'Deploy')+'</button><button type="button" class="action" data-btload="'+i+'">Load</button><button type="button" class="action" data-btrename="'+i+'">Rename</button><button type="button" class="action sell" data-btdel="'+i+'">'+delLabel+'</button></div></div>';
  }).join('');
  box.querySelectorAll('[data-btdeploy]').forEach(b=>b.onclick=()=>plDeploySaved(Number(b.dataset.btdeploy)));
  box.querySelectorAll('[data-btload]').forEach(b=>b.onclick=()=>btLoadConfig(Number(b.dataset.btload)));
@@ -3043,6 +3047,7 @@ function btLoadConfig(i){
  if(c.from)$('btFrom').value=new Date(c.from*1000).toISOString().slice(0,10);
  if(c.to)$('btTo').value=new Date(c.to*1000).toISOString().slice(0,10);
  btSaveReenable(); /* N7.10: a loaded configuration re-enables Save */
+ btPaintDeployBtn(); /* N7.11: a loaded configuration repaints Deploy state */
  toast('Loaded "'+c.name+'". Press Run backtest.');
 }
 function btInit(){
@@ -3108,9 +3113,74 @@ function plNormalizeCfg(raw){
  return {scheme:s.id,params:params,pair:pair,fee_bps:fee,deploy_pct:dep,
   runId:raw.runId?String(raw.runId).slice(0,64):null,runAt:raw.runAt?String(raw.runAt).slice(0,32):null}; /* N7.5 */
 }
+/*__N711_DUP_DEPLOY_START__*/
+/* === N7.11 (A67, 2026-10-25): no duplicate paper-tracked deployments ===
+   Carlos's live report: five identical paper-tracked deployments stacked in
+   the Strategy Lab — he kept deploying and the app kept minting cards.
+   Root cause: plDeployCfg unconditionally unshifted a new deployment on
+   every call from both entry points, and the 25-entry cap's silent pop()
+   was the only ceiling. This is the deployment-side twin of A64's
+   duplicate saves (fixed for saved configurations by N7.10; deployments
+   were never covered) — each duplicate card also issued its own
+   /api/paperlive tracking fetch.
+   (1) Refusal at the single choke point: plDeployCfg refuses a deployment
+   whose configuration matches an existing deployment in the same identity
+   bucket — runId when both sides carry one, else the normalized
+   configuration (scheme + params + pair + fee + deploy, string-normalized
+   like btCfgSame's params branch) — toasts naming the existing deployment
+   and scrolls its card into view with a flash, instead of minting a new one.
+   (2) Button honesty, mirroring N7.10's Save pattern: the panel Deploy
+   button and each saved row's Deploy button show an "Already deployed"
+   disabled state while their configuration has an active deployment, and
+   re-enable on undeploy, on a new run, or on loading a different
+   configuration (a dirty form paints the plain enabled label — the click
+   still refuses with the dirty toast, exactly like Save/Deploy today).
+   (3) The deployments 25-cap eviction is named in the toast, matching
+   N7.10's saved-cap fix. Re-deploying after an undeploy works normally:
+   the refused deployment is gone from the bucket, so the match finds
+   nothing. */
+function plDeploySame(a,b){
+ if(!a||!b)return false;
+ if(a.runId&&b.runId)return String(a.runId)===String(b.runId);
+ if(a.scheme!==b.scheme||a.pair!==b.pair)return false;
+ if(String(a.fee_bps)!==String(b.fee_bps)||String(a.deploy_pct)!==String(b.deploy_pct))return false;
+ const pa=a.params||{},pb=b.params||{};
+ const ka=Object.keys(pa),kb=Object.keys(pb);
+ if(ka.length!==kb.length)return false;
+ return ka.every(k=>Object.prototype.hasOwnProperty.call(pb,k)&&String(pa[k])===String(pb[k]));
+}
+function plFindDeployDup(cfg){
+ const list=(plLoadStore().deployments[btIdentity()]||[]);
+ return list.find(d=>plDeploySame(d,cfg))||null;
+}
+function plHighlightDeploy(id){
+ let card=null;
+ try{card=document.querySelector('[data-plid="'+String(id).replace(/"/g,'')+'"]');}catch(_){}
+ if(!card)return;
+ try{card.scrollIntoView({behavior:'smooth',block:'center'});}catch(_){}
+ try{card.classList.remove('plflash');void card.offsetWidth;card.classList.add('plflash');
+  setTimeout(function(){try{card.classList.remove('plflash');}catch(_){}},1700);}catch(_){}
+}
+function btPaintDeployBtn(){
+ const b=$('btDeploy');if(!b)return;
+ let dup=null;
+ if(btLastCfg&&!btFormDirty()){
+  const cfg=plNormalizeCfg(btLastCfg);
+  if(cfg)dup=plFindDeployDup(cfg);
+ }
+ if(dup){b.disabled=true;b.textContent='Already deployed';}
+ else{b.disabled=false;b.textContent='Deploy to paper-tracked';}
+}
+/*__N711_DUP_DEPLOY_END__*/
 function plDeployCfg(cfg,name){
  const store=plLoadStore(),id=btIdentity();
  const list=store.deployments[id]||(store.deployments[id]=[]);
+ const dup=plFindDeployDup(cfg);
+ if(dup){
+  toast('Already deployed as "'+dup.name+'" — no second deployment was created.');
+  plHighlightDeploy(dup.id);
+  return false;
+ }
  const nowS=Math.floor(Date.now()/1000);
  const dep={id:'pl'+nowS.toString(36)+Math.floor(Math.random()*46656).toString(36),
   name:String(name||'Paper-tracked deployment').slice(0,80),
@@ -3119,9 +3189,12 @@ function plDeployCfg(cfg,name){
   runId:cfg.runId||null,runAt:cfg.runAt||null, /* N7.5: the backtest run this deployment was deployed from */
   deployed_at:nowS,createdAt:new Date().toISOString()};
  list.unshift(dep);
+ let evicted=null;
+ if(list.length>25)evicted=list[list.length-1].name;
  while(list.length>25)list.pop();
  plSaveStore(store);plRenderDeploys();
- toast('Deployed to paper-tracked. Simulated — no real funds.');
+ toast('Deployed to paper-tracked. Simulated — no real funds.'+(evicted?' The oldest paper-tracked deployment ("'+evicted+'") was removed (25-entry limit).':''));
+ return true;
 }
 /* Main panel button: deploys the last RUN config (same semantics as Save —
    the panel's own "run it, name it, save it" flow; unsaved form edits are
@@ -3133,7 +3206,7 @@ function plDeployCurrent(){
  if(!cfg){toast('Could not deploy: unknown scheme.');return;}
  const s=BT_SCHEMES.find(x=>x.id===cfg.scheme);
  const depName=(s?s.label:cfg.scheme)+' · '+new Date().toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'});
- plDeployCfg(cfg,depName);
+ if(!plDeployCfg(cfg,depName))return; /* N7.11: a refused duplicate deploys nothing and ensures nothing */
  btEnsureSavedCfg(btLastCfg,depName); /* N7.9: a deployed config is always in Saved Configurations */
 }
 /* Per saved-config row button. */
@@ -3142,7 +3215,7 @@ function plDeploySaved(i){
  if(!c)return;
  const cfg=plNormalizeCfg(c);
  if(!cfg){toast('Could not deploy: unknown scheme.');return;}
- plDeployCfg(cfg,c.name||('Saved configuration · '+new Date().toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'})));
+ if(!plDeployCfg(cfg,c.name||('Saved configuration · '+new Date().toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'}))))return; /* N7.11: a refused duplicate deploys nothing and ensures nothing */
  btEnsureSavedCfg(c,c.name||('Saved configuration · '+new Date().toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'}))); /* N7.9: no-op when the entry already exists; keeps the invariant at both deploy entry points */
 }
 /* N7.9: restore a deployment into the form AND the saved list. Deployments
@@ -3166,6 +3239,7 @@ function plLoadDeploy(d){
  btLastCfg={scheme:d.scheme,params:Object.fromEntries(Object.keys(d.params||{}).map(k=>[k,String(d.params[k])])),pair:d.pair,from:null,to:null,fee_bps:String(d.fee_bps),deploy_pct:String(d.deploy_pct),range:'full',runId:d.runId||null,runAt:d.runAt||null};
  btEnsureSavedCfg(btLastCfg,name);
  btSaveReenable(); /* N7.10: a loaded deployment re-enables Save */
+ btPaintDeployBtn(); /* N7.11: a loaded deployment repaints Deploy state */
  toast('Loaded "'+name+'" into the form and saved it. Press Run backtest.');
 }
 function plPairLabel(id){const p=BT_PAIRS.find(x=>x.id===id);return p?p.label:String(id);}
@@ -3270,9 +3344,13 @@ function plRenderDeploys(){
  if(!box)return;
  const store=plLoadStore();
  const list=(store.deployments&&store.deployments[btIdentity()])||[];
- if(!list.length){box.innerHTML='<div class="empty">No paper-tracked deployments yet. Run a backtest, then deploy it — the scheme is tracked against new daily bars. Simulated, no real funds.</div>';return;}
- box.innerHTML=list.map(function(d,i){return plCardShell(d,i);}).join('');
- list.forEach(function(d,i){plWireCard(i,d);plFetchDeploy(d,i);});
+ if(!list.length){box.innerHTML='<div class="empty">No paper-tracked deployments yet. Run a backtest, then deploy it — the scheme is tracked against new daily bars. Simulated, no real funds.</div>';}
+ else{
+  box.innerHTML=list.map(function(d,i){return plCardShell(d,i);}).join('');
+  list.forEach(function(d,i){plWireCard(i,d);plFetchDeploy(d,i);});
+ }
+ btPaintDeployBtn(); /* N7.11: deployment-dependent button states refresh with the list */
+ btRenderConfigs(); /* N7.11: saved-row Deploy buttons reflect the same state */
 }
 /*__N74_PAPERLIVE_END__*/
 /* === N4.6 history UI (DOM) ===
