@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# W4.3 CU golden-test harness (mollusk path). Executes the slice-9
-# chain (slices 1-8 as before, plus the W3.2 re-expression part 1:
-# tranche-2 weekly cadence — TrancheTooSoon refusals at the tranche-1
-# clock and at last_block_time + WEEK_SECS - 1, then tranche 2 of 5
-# (2,000,000 raw) SUCCESS at exactly last_block_time + WEEK_SECS,
+# W4.3 CU golden-test harness (mollusk path). Executes the slice-10
+# chain (slices 1-9 as before, plus the W3.2 re-expression part 2:
+# blind-ape bulk exit — whole-position order refused by the D-10
+# hard bound (ExitExceedsLiquidity), largest executable bulk exit
+# (8,500,000 raw) SUCCESS with the flat 13% penalty on the full
+# excess, then a further window-1 exit refused (ExitStockExhausted),
 # gated against design §2.2 ~7K CU, 2x band 3,500-14,000) against the
 # already-built program .so (build it first: `anchor build` from
 # Kernel/treasury-program/) and writes ../cu-golden-mollusk.json. No validator, no network, no real funds.

@@ -1508,13 +1508,38 @@
       "instruction": "execute_whale_tranche:tranche2",
       "note": "slice-9 GATED measurement (W3.2 re-expression): tranche 2 of 5 (2,000,000 raw) at exactly last_block_time + WEEK_SECS (31,608,400), on Committed treasury.exit.v1 transition 8, creation window 1, execution window 13 >= lock_until 13, execution window 13 snapshot 60,000,000 / FLAG 2,000,000, position 25,500,000, loan 0",
       "result": "Success"
+    },
+    {
+      "cu": 10463,
+      "error": "ExitExceedsLiquidity",
+      "error_code": 6060,
+      "instruction": "exit:bulk_over_L",
+      "note": "slice-10 W3.2 re-expression (T11): the blind ape's whole-position order (23,500,000 raw) on Committed window flow transition 7, funded window 1 (snapshot 60,000,000, L = 10,000,000) — the D-10 hard bound refuses the order itself, before any position or stock check, NOT a success CU",
+      "result": "Refused"
+    },
+    {
+      "cu": 10606,
+      "design_estimate_cu": "7000",
+      "gate": "pass",
+      "gate_2x_band_cu": "3500-14000",
+      "instruction": "exit:bulk_max",
+      "note": "slice-10 GATED measurement (W3.2 re-expression, T11): largest executable bulk exit (8,500,000 raw = entire remaining window-1 stock, below L = 10,000,000) on Committed window flow transition 7, funded window 1 — accrued 0, so the full amount is excess at the flat 13% door: penalty 1,105,000, paid 7,395,000, position 23,500,000 -> 15,000,000",
+      "result": "Success"
+    },
+    {
+      "cu": 10472,
+      "error": "ExitStockExhausted",
+      "error_code": 6063,
+      "instruction": "exit:stock_exhausted",
+      "note": "slice-10 W3.2 re-expression: a further 1,000,000 raw exit on window 1 after the bulk exit — window-1 aggregate exits now total exactly L (slice-7 1,500,000 + slice-10 8,500,000 = 10,000,000), so the stock bound refuses, NOT a success CU",
+      "result": "Refused"
     }
   ],
   "mollusk_svm": "0.16.2",
   "program_id": "FPGSeLBWEiFKdTuqDbJeKhjXeah5H4c3rqsW4Tzn3RAS",
   "program_so_sha256": "82759c510ee6a94ad58a023fe82cb060095f3b4188978e7b54ed563cee22efac",
-  "slice": 9,
-  "slice_note": "slices 1-8 as before (slice-5/6 refusal probes stand as the unfunded-chain record; slice-7 FUNDED chain: real SPL Token deposit credits TreasuryState 60,000,000, window 1 opens on the funded snapshot, borrow / exit / settle_default / schedule_whale_exit FIRST successes; slice-8 12-window walk: windows 2..13 each open on their own Settled treasury.window.v1 transition (transitions 9..20, parented in sequence), each on the funded snapshot (total 60,000,000, exit stock 10,000,000, FLAG 2,000,000), and the FIRST success measurement execute_whale_tranche (tranche 1 of 5, 2,000,000 raw, on Committed treasury.exit.v1 transition 8, creation window 1, execution window 13 >= lock_until 13), gated §2.2 ~7K (2x band 3,500-14,000)) + slice-9 W3.2 re-expression part 1: tranche-2 weekly cadence on the slice-8 chain — TrancheTooSoon refusals at the tranche-1 clock and at last_block_time + WEEK_SECS - 1, then tranche 2 of 5 (2,000,000 raw) SUCCESS at exactly last_block_time + WEEK_SECS (31,608,400), gated §2.2 ~7K; launch_stage2 unmeasured by design (ThresholdUnset, D-2)",
+  "slice": 10,
+  "slice_note": "slices 1-8 as before (slice-5/6 refusal probes stand as the unfunded-chain record; slice-7 FUNDED chain: real SPL Token deposit credits TreasuryState 60,000,000, window 1 opens on the funded snapshot, borrow / exit / settle_default / schedule_whale_exit FIRST successes; slice-8 12-window walk: windows 2..13 each open on their own Settled treasury.window.v1 transition (transitions 9..20, parented in sequence), each on the funded snapshot (total 60,000,000, exit stock 10,000,000, FLAG 2,000,000), and the FIRST success measurement execute_whale_tranche (tranche 1 of 5, 2,000,000 raw, on Committed treasury.exit.v1 transition 8, creation window 1, execution window 13 >= lock_until 13), gated §2.2 ~7K (2x band 3,500-14,000)) + slice-9 W3.2 re-expression part 1: tranche-2 weekly cadence on the slice-8 chain — TrancheTooSoon refusals at the tranche-1 clock and at last_block_time + WEEK_SECS - 1, then tranche 2 of 5 (2,000,000 raw) SUCCESS at exactly last_block_time + WEEK_SECS (31,608,400), gated §2.2 ~7K; launch_stage2 unmeasured by design (ThresholdUnset, D-2) + slice-10 W3.2 re-expression part 2: blind-ape bulk exit (T11) on the funded chain — the whole-position order (23,500,000 raw) refuses ExitExceedsLiquidity under the D-10 hard bound (L = 10,000,000), the largest executable bulk exit (8,500,000 raw, the remaining window-1 stock) succeeds with the flat 13% penalty on the full excess (1,105,000 penalty, 7,395,000 paid), and a further window-1 exit refuses ExitStockExhausted with aggregate window-1 exits exactly at L",
   "token_program_id": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
   "token_program_so_sha256": "8190d3f7ceb6cb7a7a8d8924bff89f9f611e15ce1f806f2b6237f3311a98f697"
 }

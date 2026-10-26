@@ -568,15 +568,60 @@ and like them it does not move the batch arithmetic: one tranche
 execution is not per-payout batched. Golden file 243 entries: all 240
 slice-8 entries reproduce exactly (program .so sha unchanged).
 
+## Slice 10: W3.2 re-expression, part 2 — blind-ape bulk exit vs the flat 13% door (2026-10-26)
+
+Engine-sim T11 extracts the whole position in one go above the
+per-period allowance and prices the flat 13% penalty on the excess.
+On the program that whole-position order cannot even be placed: the
+D-10 hard bound (no single order above one period's movable
+liquidity L = T/6, judged on the window's period-start snapshot)
+refuses it before any position or stock check. Three measurements
+on the slice-9 chain (funded window 1: snapshot 60,000,000,
+L = 10,000,000; holder window 1: position 23,500,000 after tranche 2,
+accrued dividend 0, loan 0; window-1 exit stock 8,500,000 after the
+slice-7 exit; Committed window-flow transition 7 still authorizes
+exits; clock 31,608,400, which no exit gate reads):
+
+| instruction | CU | result |
+|---|---|---|
+| `exit:bulk_over_L` (23,500,000 raw, the ape's whole-position order) | 10,463 | Refused, `ExitExceedsLiquidity` (6060) |
+| `exit:bulk_max` (8,500,000 raw, the entire remaining window-1 stock, below L) | 10,606 | Success, gate PASS (1.51x the ~7K EST point; inside the 2x band) |
+| `exit:stock_exhausted` (a further 1,000,000 raw on window 1) | 10,472 | Refused, `ExitStockExhausted` (6063) |
+
+Post-refusal state asserted unchanged in both refusal cases; after
+the success: accrued still 0, position 23,500,000 -> 15,000,000,
+window-1 stock 8,500,000 -> 0, window-13 stock untouched at
+6,000,000, schedule untouched (2 blocks executed, last_block_time
+31,608,400). The bulk exit's arithmetic, stated plainly: accrued 0,
+so the full 8,500,000 is excess at the flat 13% door — penalty
+1,105,000, paid 7,395,000. The ape's ledger on this record after the
+bulk exit is position 15,000,000 + paid 7,395,000 = 22,395,000
+against 23,500,000 before it: 1,105,000 worse at once, before any
+future penalty-free allowances abandoned by rushing. The window's
+aggregate exits now total exactly L (slice-7 1,500,000 + slice-10
+8,500,000 = 10,000,000): repeated sub-L exits sum against the stock,
+so no further exit in window 1 is possible on this chain, and the
+schedule's remaining tranches (3 x 2,000,000) still fit the
+15,000,000 position. Gate reading: `exit:bulk_max` at 10,606 CU
+repeats the slice-7 exit's gate PASS at 10,607 CU (1 CU apart, same
+instruction, same account set, different holder state — accrued 0
+here vs 1,000,000 there, loan 0 vs 2,000,000; the 1 CU delta is
+recorded, not explained away, and it moves no gate). No §2.2
+revision: the exit family already carries the 10,607 figure, and
+10,606 confirms it rather than changing it. As in every slice,
+`exit` here is bookkeeping, not token movement. Golden file 246
+entries: all 243 slice-9 entries reproduce exactly (program .so
+sha unchanged).
+
 ## Next slices
 
 Queue head, continued: the W3.2 adversarial suite re-expressed against
 the program's interface with measured CU per instruction — next parts
-are the engine-sim adversarial classes on the funded chain (blind-ape
-bulk exit vs the flat 13% penalty door, default-as-exit vs scheduled
-exit, cohort-timing at window boundaries, fee-flow edge cases under the
-single 73 bps stream), then the remaining §4.2 rows (reinvest,
-collect_fees) and the carried Part B4 items in roadmap order.
+are the engine-sim adversarial classes on the funded chain
+(default-as-exit vs scheduled exit, cohort-timing at window
+boundaries, fee-flow edge cases under the single 73 bps stream),
+then the remaining §4.2 rows (reinvest, collect_fees) and the
+carried Part B4 items in roadmap order.
 
 Optimization pass step 2 (ATTEMPTED 2026-10-25, BLOCKED, REVERTED —
 NOT blocked by the funding decision, blocked by the toolchain):

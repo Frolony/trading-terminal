@@ -3230,6 +3230,135 @@ fn main() {
     let ws1_9 = accounts.iter().find(|(k, _)| *k == window_state_1).map(|(_, a)| a.clone()).unwrap();
     assert_eq!(u64::from_le_bytes(ws1_9.data[64..72].try_into().unwrap()), 8_500_000u64, "window 1 exit stock moved during execute_whale_tranche:tranche2 (execution debits the execution window only)");
 
+    // ---- Slice 10: W3.2 re-expression, part 2 — blind-ape bulk exit vs the flat 13% door ----
+    // Engine-sim T11 extracts the whole position in one go above the
+    // per-period allowance and prices the flat 13% penalty on the
+    // excess. On the program that whole-position order cannot even
+    // be placed: the D-10 hard bound (no single order above one
+    // period's movable liquidity L = T/6, judged on the window's
+    // period-start snapshot) refuses it before any position or
+    // stock check. This slice measures, on the slice-9 chain
+    // (funded window 1: snapshot 60,000,000, L = 10,000,000;
+    // holder window 1: position 23,500,000 after tranche 2,
+    // accrued dividend 0, loan 0; window-1 exit stock 8,500,000
+    // after the slice-7 exit of 1,500,000; Committed window-flow
+    // transition 7 still authorizes exits):
+    // (a) the ape's whole-position order (23,500,000) MUST refuse
+    // ExitExceedsLiquidity (6060) — 23,500,000 > L = 10,000,000;
+    // (b) the largest executable bulk exit — the entire remaining
+    // window-1 stock, 8,500,000, below L — SUCCEEDS, gated §2.2
+    // ~7K (2x band 3,500–14,000) like the slice-7 exit: accrued 0,
+    // so the whole amount is excess at the flat 13% door, penalty
+    // 1,105,000, paid 7,395,000, position 23,500,000 -> 15,000,000,
+    // window-1 stock 8,500,000 -> 0;
+    // (c) any further window-1 exit MUST refuse ExitStockExhausted
+    // (6063) — the window's aggregate exits now total exactly L
+    // (slice-7 1,500,000 + this 8,500,000 = 10,000,000), so
+    // repeated sub-L exits cannot drain more than one period's
+    // capacity in total. The ape's ledger on this record:
+    // position 15,000,000 + paid 7,395,000 = 22,395,000 against
+    // 23,500,000 before the bulk exit — 1,105,000 worse at once,
+    // before any future penalty-free allowances abandoned by
+    // rushing. As in every slice, `exit` here is bookkeeping
+    // (accrued consumed, position reduced, stock debited); it
+    // does NOT move tokens — the disbursement step is separate.
+    // (a) whole-position order: refused by the hard bound.
+    let mut data10 = disc("exit");
+    data10.extend_from_slice(&7u64.to_le_bytes());
+    data10.extend_from_slice(&1u64.to_le_bytes());
+    data10.extend_from_slice(&23_500_000u64.to_le_bytes());
+    let ix10a = Instruction::new_with_bytes(
+        program_id,
+        &data10,
+        vec![
+            AccountMeta::new(holder, true),
+            AccountMeta::new_readonly(transition7, false),
+            AccountMeta::new(window_state_1, false),
+            AccountMeta::new(holder_record_1, false),
+        ],
+    );
+    let cu = run_expect_err(&mollusk, "exit:bulk_over_L", &ix10a, &accounts, 6060);
+    measured.push(serde_json::json!({
+        "instruction": "exit:bulk_over_L",
+        "cu": cu,
+        "result": "Refused",
+        "error": "ExitExceedsLiquidity",
+        "error_code": 6060,
+        "note": "slice-10 W3.2 re-expression (T11): the blind ape's whole-position order (23,500,000 raw) on Committed window flow transition 7, funded window 1 (snapshot 60,000,000, L = 10,000,000) — the D-10 hard bound refuses the order itself, before any position or stock check, NOT a success CU",
+    }));
+    let hr10r = accounts.iter().find(|(k, _)| *k == holder_record_1).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(hr10r.data[56..64].try_into().unwrap()), 23_500_000u64, "position moved during exit:bulk_over_L refusal");
+    assert_eq!(u64::from_le_bytes(hr10r.data[64..72].try_into().unwrap()), 0u64, "accrued dividend moved during exit:bulk_over_L refusal");
+    let ws1_10r = accounts.iter().find(|(k, _)| *k == window_state_1).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(ws1_10r.data[64..72].try_into().unwrap()), 8_500_000u64, "window 1 exit stock moved during exit:bulk_over_L refusal");
+    // (b) largest executable bulk exit: the remaining stock, all excess.
+    let mut data10b = disc("exit");
+    data10b.extend_from_slice(&7u64.to_le_bytes());
+    data10b.extend_from_slice(&1u64.to_le_bytes());
+    data10b.extend_from_slice(&8_500_000u64.to_le_bytes());
+    let ix10b = Instruction::new_with_bytes(
+        program_id,
+        &data10b,
+        vec![
+            AccountMeta::new(holder, true),
+            AccountMeta::new_readonly(transition7, false),
+            AccountMeta::new(window_state_1, false),
+            AccountMeta::new(holder_record_1, false),
+        ],
+    );
+    let (next, cu) = run(&mollusk, "exit:bulk_max", &ix10b, &accounts);
+    accounts = next;
+    let gate10 = if (3_500..=14_000).contains(&cu) { "pass" } else { "DESIGN-FINDING" };
+    measured.push(serde_json::json!({
+        "instruction": "exit:bulk_max",
+        "cu": cu,
+        "result": "Success",
+        "note": "slice-10 GATED measurement (W3.2 re-expression, T11): largest executable bulk exit (8,500,000 raw = entire remaining window-1 stock, below L = 10,000,000) on Committed window flow transition 7, funded window 1 — accrued 0, so the full amount is excess at the flat 13% door: penalty 1,105,000, paid 7,395,000, position 23,500,000 -> 15,000,000",
+        "design_estimate_cu": "7000",
+        "gate_2x_band_cu": "3500-14000",
+        "gate": gate10,
+    }));
+    let hr10 = accounts.iter().find(|(k, _)| *k == holder_record_1).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(hr10.data[64..72].try_into().unwrap()), 0u64, "accrued dividend not 0 after exit:bulk_max");
+    assert_eq!(u64::from_le_bytes(hr10.data[56..64].try_into().unwrap()), 15_000_000u64, "position not 15,000,000 after exit:bulk_max");
+    assert_eq!(u64::from_le_bytes(hr10.data[72..80].try_into().unwrap()), 0u64, "loan moved during exit:bulk_max");
+    let ws1_10 = accounts.iter().find(|(k, _)| *k == window_state_1).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(ws1_10.data[64..72].try_into().unwrap()), 0u64, "window 1 exit stock not 0 after exit:bulk_max");
+    assert_eq!(u64::from_le_bytes(ws1_10.data[16..24].try_into().unwrap()), 60_000_000u64, "window 1 snapshot moved during exit:bulk_max");
+    let ws13_10 = accounts.iter().find(|(k, _)| *k == window_state_13).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(ws13_10.data[64..72].try_into().unwrap()), 6_000_000u64, "window 13 exit stock moved during exit:bulk_max (the bulk exit debits its own window only)");
+    let es10 = accounts.iter().find(|(k, _)| *k == exit_schedule_1).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(es10.data[72..80].try_into().unwrap()), 2u64, "schedule tranches_executed moved during exit:bulk_max");
+    assert_eq!(i64::from_le_bytes(es10.data[96..104].try_into().unwrap()), 31_608_400i64, "schedule last_block_time moved during exit:bulk_max");
+    // (c) window-1 stock exhausted: no further exit in this window.
+    let mut data10c = disc("exit");
+    data10c.extend_from_slice(&7u64.to_le_bytes());
+    data10c.extend_from_slice(&1u64.to_le_bytes());
+    data10c.extend_from_slice(&1_000_000u64.to_le_bytes());
+    let ix10c = Instruction::new_with_bytes(
+        program_id,
+        &data10c,
+        vec![
+            AccountMeta::new(holder, true),
+            AccountMeta::new_readonly(transition7, false),
+            AccountMeta::new(window_state_1, false),
+            AccountMeta::new(holder_record_1, false),
+        ],
+    );
+    let cu = run_expect_err(&mollusk, "exit:stock_exhausted", &ix10c, &accounts, 6063);
+    measured.push(serde_json::json!({
+        "instruction": "exit:stock_exhausted",
+        "cu": cu,
+        "result": "Refused",
+        "error": "ExitStockExhausted",
+        "error_code": 6063,
+        "note": "slice-10 W3.2 re-expression: a further 1,000,000 raw exit on window 1 after the bulk exit — window-1 aggregate exits now total exactly L (slice-7 1,500,000 + slice-10 8,500,000 = 10,000,000), so the stock bound refuses, NOT a success CU",
+    }));
+    let hr10c = accounts.iter().find(|(k, _)| *k == holder_record_1).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(hr10c.data[56..64].try_into().unwrap()), 15_000_000u64, "position moved during exit:stock_exhausted refusal");
+    let ws1_10c = accounts.iter().find(|(k, _)| *k == window_state_1).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(ws1_10c.data[64..72].try_into().unwrap()), 0u64, "window 1 exit stock moved during exit:stock_exhausted refusal");
+
     let golden = serde_json::json!({
         "harness": "cu-golden-mollusk",
         "mollusk_svm": MOLLUSK_SVM_VERSION,
@@ -3237,8 +3366,8 @@ fn main() {
         "program_so_sha256": so_sha256,
         "token_program_id": TOKEN_PROGRAM_ID_STR,
         "token_program_so_sha256": token_elf_sha256,
-        "slice": 9,
-        "slice_note": "slices 1-8 as before (slice-5/6 refusal probes stand as the unfunded-chain record; slice-7 FUNDED chain: real SPL Token deposit credits TreasuryState 60,000,000, window 1 opens on the funded snapshot, borrow / exit / settle_default / schedule_whale_exit FIRST successes; slice-8 12-window walk: windows 2..13 each open on their own Settled treasury.window.v1 transition (transitions 9..20, parented in sequence), each on the funded snapshot (total 60,000,000, exit stock 10,000,000, FLAG 2,000,000), and the FIRST success measurement execute_whale_tranche (tranche 1 of 5, 2,000,000 raw, on Committed treasury.exit.v1 transition 8, creation window 1, execution window 13 >= lock_until 13), gated §2.2 ~7K (2x band 3,500-14,000)) + slice-9 W3.2 re-expression part 1: tranche-2 weekly cadence on the slice-8 chain — TrancheTooSoon refusals at the tranche-1 clock and at last_block_time + WEEK_SECS - 1, then tranche 2 of 5 (2,000,000 raw) SUCCESS at exactly last_block_time + WEEK_SECS (31,608,400), gated §2.2 ~7K; launch_stage2 unmeasured by design (ThresholdUnset, D-2)",
+        "slice": 10,
+        "slice_note": "slices 1-8 as before (slice-5/6 refusal probes stand as the unfunded-chain record; slice-7 FUNDED chain: real SPL Token deposit credits TreasuryState 60,000,000, window 1 opens on the funded snapshot, borrow / exit / settle_default / schedule_whale_exit FIRST successes; slice-8 12-window walk: windows 2..13 each open on their own Settled treasury.window.v1 transition (transitions 9..20, parented in sequence), each on the funded snapshot (total 60,000,000, exit stock 10,000,000, FLAG 2,000,000), and the FIRST success measurement execute_whale_tranche (tranche 1 of 5, 2,000,000 raw, on Committed treasury.exit.v1 transition 8, creation window 1, execution window 13 >= lock_until 13), gated §2.2 ~7K (2x band 3,500-14,000)) + slice-9 W3.2 re-expression part 1: tranche-2 weekly cadence on the slice-8 chain — TrancheTooSoon refusals at the tranche-1 clock and at last_block_time + WEEK_SECS - 1, then tranche 2 of 5 (2,000,000 raw) SUCCESS at exactly last_block_time + WEEK_SECS (31,608,400), gated §2.2 ~7K; launch_stage2 unmeasured by design (ThresholdUnset, D-2) + slice-10 W3.2 re-expression part 2: blind-ape bulk exit (T11) on the funded chain — the whole-position order (23,500,000 raw) refuses ExitExceedsLiquidity under the D-10 hard bound (L = 10,000,000), the largest executable bulk exit (8,500,000 raw, the remaining window-1 stock) succeeds with the flat 13% penalty on the full excess (1,105,000 penalty, 7,395,000 paid), and a further window-1 exit refuses ExitStockExhausted with aggregate window-1 exits exactly at L",
         "clock": {"phase_a_unix_timestamp": NOW0, "planning_window_s": PLANNING_WINDOW, "phase_b_unix_timestamp": NOW1},
         "instructions": measured,
     });
