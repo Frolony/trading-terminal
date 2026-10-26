@@ -155,8 +155,11 @@ a.wrow{text-decoration:none}
 .resetuibtn{border:0;border-radius:8px;padding:8px 12px;font-size:12px;font-weight:800;letter-spacing:.3px;color:#06130d;background:linear-gradient(135deg,#42d6a0,#7ee0ff);box-shadow:0 0 14px rgba(66,214,160,.55);cursor:pointer;white-space:nowrap}
 .resetuibtn:hover{box-shadow:0 0 20px rgba(66,214,160,.85)}.swapheadbtn{border:1px solid #3b625c;background:#13251f;color:#b8f36b;border-radius:8px;padding:8px 12px;font-size:12px;font-weight:800;letter-spacing:.3px;text-decoration:none;white-space:nowrap}.swapheadbtn:hover{border-color:#4cdda3;color:#d8ffa8}
 /* N5.4 personal dashboard (2026-10-22): header view tabs + dashboard sections. */
-.viewtabs{width:196px;flex:none}
-.viewtabs button{padding:7px 6px;font-size:11px;letter-spacing:.6px;text-transform:uppercase}
+.pagebtns{display:flex;gap:6px;flex:none}
+.pagebtns button{padding:7px 10px;font-size:11px;letter-spacing:.6px;text-transform:uppercase;border:1px solid var(--line);background:var(--panel);color:var(--muted);border-radius:8px;font-weight:650}
+.pagebtns button.active{background:#1b2635;color:var(--blue);border-color:var(--hoverline)}
+[data-theme="light"] .pagebtns button.active{background:#e2e9fa;color:#2f5fd0}
+.lppage{color:var(--muted);font-size:10px;margin-left:6px}
 .dashsec{margin-bottom:20px}
 .dashsec:last-child{margin-bottom:0}
 .dashgrid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-bottom:12px}
@@ -168,7 +171,7 @@ a.wrow{text-decoration:none}
 .mchip{font-size:10px;padding:2px 7px;border:1px solid var(--line);border-radius:6px;color:var(--pilltext);background:var(--panel);white-space:nowrap}
 tr.dashmover{cursor:pointer}
 .staleb{font-size:10px;color:var(--amber);border:1px solid var(--warnline);border-radius:5px;padding:1px 6px;margin-left:6px;white-space:nowrap}
-@media(max-width:640px){.dashgrid{grid-template-columns:1fr 1fr}.viewtabs{width:160px}}
+@media(max-width:640px){.dashgrid{grid-template-columns:1fr 1fr}.pagebtns{flex-wrap:wrap}}
 .drawer{position:fixed;inset:0;background:var(--modalbg);z-index:70;display:flex;justify-content:flex-end}
 .drawer[hidden]{display:none}
 .drawer-card{width:min(390px,94vw);height:100%;background:linear-gradient(145deg,var(--panelA),var(--panelB));border-left:1px solid var(--line);display:flex;flex-direction:column;box-shadow:-24px 0 70px #000c}
@@ -296,7 +299,7 @@ the brief outline flash marks the landing panel without touching its copy.*/
 .wrename-input{flex:1;min-width:0;background:var(--input);border:1px solid var(--inputline);border-radius:6px;color:var(--text);padding:4px 6px;font-size:12px}
 .wrename-save{padding:4px 8px;font-size:11px}
 </style></head><body><div class="app">
-<header class="top"><div class="brand"><div class="mark">T</div><div><h1>TURNPOOL</h1><small>Solana market intelligence</small></div></div><div class="topright"><div class="switchrow viewtabs" role="tablist" aria-label="Terminal views"><button type="button" id="tabTerminal" class="active mode" role="tab" aria-selected="true">Terminal</button><button type="button" id="tabDashboard" class="mode" role="tab" aria-selected="false">Dashboard</button></div><span class="pill">NETWORK&nbsp; / &nbsp;SOLANA</span><span class="status"><i class="dot"></i><span id="feedStatus" data-testid="feed-badge">CONNECTING DATA</span></span><span class="wwrap"><button id="walletBtn" class="walletbtn" type="button">Connect Wallet</button><span id="syncDot" style="display:none;width:8px;height:8px;border-radius:50%;background:#888;vertical-align:middle;margin-left:2px" title="Sync"></span><div class="wdd" id="walletDd" hidden><div class="wactive-card"><div class="wcard-top"><span class="wavatar" id="walletDdAvatar">W</span><div class="wcard-meta"><div class="wcard-name" id="walletDdName">Wallet</div><button type="button" class="waddr" id="walletDdAddr" title="Copy address"></button></div><span class="wchip chip-off" id="walletSyncChip">Sync off</span></div><div class="wsyncrow"><span class="wsync-label">Sync</span><span class="wsync-value" id="walletSyncLine">Sync off</span></div><button type="button" class="wfull" id="walletSyncTapBtn" hidden>Sign in to sync</button></div><div class="wbal-card"><div class="walletrow"><span>SOL balance</span><strong id="walletSol">—</strong></div><div class="walletrow"><span>USDC balance</span><strong id="walletUsdc">—</strong></div><div class="walletrow"><span>USDT balance</span><strong id="walletUsdt">—</strong></div><div class="wrowbtn"><button type="button" id="walletCopy">Copy address</button><button type="button" id="walletRetryBal">Retry balances</button></div></div><div id="walletRoster"></div><div class="wrowbtn wbottom"><button type="button" class="wfull" id="walletAddBtn">+ Add New Wallet</button><button type="button" id="walletDisconnect" class="danger">Disconnect active wallet</button></div></div></span><!-- N2.7 amendment 2026-10-24 (Carlos 17:47 CST): sign-in moves into the banner; the signed-out header carries no sign-in control, Log out lives in the header only when signed in. --><span class="wwrap"><button id="acctBtn" class="walletbtn" type="button" title="Email account — optional sign-in" style="display:none">Log out</button><span id="acctEmail" style="display:none;font-size:11px;color:var(--muted);max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="Signed-in email account"></span></span><span class="pill">PAPER MODE</span><button id="howItWorksLink" class="howlink" type="button" data-testid="how-it-works-link" title="How the terminal handles orders — simulated paper trading and wallet-signed swaps">How this works</button><span class="wwrap"><button id="layoutBtn" class="iconbtn" type="button" aria-label="Open layout" title="Layout">▦</button><div class="lpop" id="layoutPop" hidden role="dialog" aria-label="Layout"><div class="lpop-head"><strong>Layout</strong><button class="wclose" id="layoutPopClose" type="button" aria-label="Close layout">×</button></div><div class="lpop-note">Layouts apply to the trading desk (main page). Drag any panel by its header to move it anywhere — the arrows reorder panels within each column.</div><div id="layoutPanelList"></div><div class="lpop-hidden" id="layoutHiddenNote" hidden></div><div class="lpop-sec">Workspaces</div><div id="layoutWsList"></div><div class="searchrow" style="margin-top:8px"><input id="layoutWsName" maxlength="40" placeholder="Name this layout" aria-label="Workspace name" autocomplete="off" spellcheck="false"><button id="layoutWsSave" type="button">Save</button></div></div></span><button id="resetUiBtn" class="resetuibtn" type="button" data-testid="reset-ui-btn" aria-label="Reset UI layout" title="Reset UI layout — restore every panel to its home position">↺ Reset UI</button><!-- N5.13 2026-10-24 (A58): the swap door lives in the header now — the floating pill is gone (see scripts/preserve-gecko.mjs). --><a id="swapHeaderBtn" class="swapheadbtn" href="/raydium/" data-testid="swap-header-btn" title="Open the Raydium swap page">Swap on Raydium</a><button id="settingsBtn" class="iconbtn" type="button" aria-label="Open settings" title="Settings">⚙</button></div></header>
+<header class="top"><div class="brand"><div class="mark">T</div><div><h1>TURNPOOL</h1><small>Solana market intelligence</small></div></div><div class="topright"><div class="pagebtns" role="tablist" aria-label="Pages"><button type="button" id="tabTerminal" class="active" role="tab" aria-selected="true">Terminal</button><button type="button" id="tabDashboard" role="tab" aria-selected="false">Dashboard</button><button type="button" id="tabLab" role="tab" aria-selected="false">Strategy Lab</button></div><span class="pill">NETWORK&nbsp; / &nbsp;SOLANA</span><span class="status"><i class="dot"></i><span id="feedStatus" data-testid="feed-badge">CONNECTING DATA</span></span><span class="wwrap"><button id="walletBtn" class="walletbtn" type="button">Connect Wallet</button><span id="syncDot" style="display:none;width:8px;height:8px;border-radius:50%;background:#888;vertical-align:middle;margin-left:2px" title="Sync"></span><div class="wdd" id="walletDd" hidden><div class="wactive-card"><div class="wcard-top"><span class="wavatar" id="walletDdAvatar">W</span><div class="wcard-meta"><div class="wcard-name" id="walletDdName">Wallet</div><button type="button" class="waddr" id="walletDdAddr" title="Copy address"></button></div><span class="wchip chip-off" id="walletSyncChip">Sync off</span></div><div class="wsyncrow"><span class="wsync-label">Sync</span><span class="wsync-value" id="walletSyncLine">Sync off</span></div><button type="button" class="wfull" id="walletSyncTapBtn" hidden>Sign in to sync</button></div><div class="wbal-card"><div class="walletrow"><span>SOL balance</span><strong id="walletSol">—</strong></div><div class="walletrow"><span>USDC balance</span><strong id="walletUsdc">—</strong></div><div class="walletrow"><span>USDT balance</span><strong id="walletUsdt">—</strong></div><div class="wrowbtn"><button type="button" id="walletCopy">Copy address</button><button type="button" id="walletRetryBal">Retry balances</button></div></div><div id="walletRoster"></div><div class="wrowbtn wbottom"><button type="button" class="wfull" id="walletAddBtn">+ Add New Wallet</button><button type="button" id="walletDisconnect" class="danger">Disconnect active wallet</button></div></div></span><!-- N2.7 amendment 2026-10-24 (Carlos 17:47 CST): sign-in moves into the banner; the signed-out header carries no sign-in control, Log out lives in the header only when signed in. --><span class="wwrap"><button id="acctBtn" class="walletbtn" type="button" title="Email account — optional sign-in" style="display:none">Log out</button><span id="acctEmail" style="display:none;font-size:11px;color:var(--muted);max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="Signed-in email account"></span></span><span class="pill">PAPER MODE</span><button id="howItWorksLink" class="howlink" type="button" data-testid="how-it-works-link" title="How the terminal handles orders — simulated paper trading and wallet-signed swaps">How this works</button><span class="wwrap"><button id="layoutBtn" class="iconbtn" type="button" aria-label="Open layout" title="Layout">▦</button><div class="lpop" id="layoutPop" hidden role="dialog" aria-label="Layout"><div class="lpop-head"><strong>Layout</strong><button class="wclose" id="layoutPopClose" type="button" aria-label="Close layout">×</button></div><div class="lpop-note">Three pages — Terminal, Dashboard, Strategy Lab — share one layout. Drag any panel by its header to move it anywhere — the arrows reorder panels within each column; each panel's page is shown beside its name.</div><div id="layoutPanelList"></div><div class="lpop-hidden" id="layoutHiddenNote" hidden></div><div class="lpop-sec">Workspaces</div><div id="layoutWsList"></div><div class="searchrow" style="margin-top:8px"><input id="layoutWsName" maxlength="40" placeholder="Name this layout" aria-label="Workspace name" autocomplete="off" spellcheck="false"><button id="layoutWsSave" type="button">Save</button></div></div></span><button id="resetUiBtn" class="resetuibtn" type="button" data-testid="reset-ui-btn" aria-label="Reset UI layout" title="Reset UI layout — restore every panel to its home position">↺ Reset UI</button><!-- N5.13 2026-10-24 (A58): the swap door lives in the header now — the floating pill is gone (see scripts/preserve-gecko.mjs). --><a id="swapHeaderBtn" class="swapheadbtn" href="/raydium/" data-testid="swap-header-btn" title="Open the Raydium swap page">Swap on Raydium</a><button id="settingsBtn" class="iconbtn" type="button" aria-label="Open settings" title="Settings">⚙</button></div></header>
 <div id="acctBanner" class="acctbanner" hidden><span class="acctbanner-text"><strong>Create a free account or sign in</strong> — your paper trading follows you across devices. <span class="acctbanner-never">We never sell your email.</span></span><span class="acctbanner-form"><input id="acctBannerEmail" type="email" inputmode="email" autocomplete="email" maxlength="254" placeholder="you@example.com" aria-label="Email for a free account"><button id="acctBannerSubmit" type="button">Create free account</button><button id="acctBannerSignin" type="button">Sign in</button><button id="acctBannerDismiss" type="button" aria-label="Dismiss sign-up banner">×</button></span></div>
 <div class="stats" data-layout-root data-root-key="stats">
 <div class="stat" data-panel="solstat" data-drag-handle><div class="eyebrow">SOL / USD</div><div class="big" id="statPrice">$—</div><div class="sub" id="statPriceSub">Live market feed</div></div>
@@ -962,20 +965,50 @@ function paintDashboard(force){
   const pill=$('dashModePill');if(pill)pill.textContent=dashMode==='live'?'LIVE':'PAPER';
   try{body.innerHTML=dashMode==='live'?dashLiveHtml():dashPaperHtml();}catch(e){body.innerHTML='<div class="empty">Dashboard unavailable — '+esc(String((e&&e.message)||e))+'</div>';}
 }
-function setViewTab(dash){
-  const dt=$('tabDashboard'),tt=$('tabTerminal');
-  if(dt){dt.classList.toggle('active',dash);dt.setAttribute('aria-selected',dash?'true':'false');}
-  if(tt){tt.classList.toggle('active',!dash);tt.setAttribute('aria-selected',!dash?'true':'false');}
+/* N5.14 three real pages (2026-10-25, A65): Terminal / Dashboard / Strategy Lab.
+   A panel's page is fixed by PANEL_PAGE — pages are a visibility layer over the
+   N5.6 placement engine, NOT a second layout: renderPanelPlacement still moves
+   panels between roots, applyPanelVisibility hides by (hidden OR off-page), and
+   panels are never destroyed, so a running backtest result, saved configs, paper
+   positions and a half-filled ticket survive a page round-trip untouched. The
+   header control is three standalone buttons (tab semantics kept); the chosen
+   page persists in its own key (N2.1 local persistence) and is restored at boot
+   before applyLayoutBoot paints visibility. Cross-links that used to scroll now
+   switch page first: dashboard movers and dashboard empty states land on the
+   ticket's page (Strategy Lab, the N5.14 default — a Carlos ticket-home ruling,
+   if it comes, amends PANEL_PAGE.ticket only). */
+const PAGE_KEY='gecko-terminal:page-v1';
+const PANEL_PAGE={pairs:'terminal',watchlist:'terminal',execpath:'terminal',solstat:'terminal',chgstat:'terminal',dashboard:'dashboard',discovery:'dashboard',chart:'dashboard',history:'dashboard',lab:'lab',portfolio:'lab',orders:'lab',limits:'lab',equitystat:'lab',ticket:'lab'};
+const PAGE_LABEL={terminal:'Terminal',dashboard:'Dashboard',lab:'Strategy Lab'};
+const PAGE_IDS=['terminal','dashboard','lab'];
+function pageLoad(){try{const p=localStorage.getItem(PAGE_KEY);if(PAGE_IDS.includes(p))return p;}catch(_){}return 'terminal';}
+let currentPage=pageLoad();
+function pageOf(id){return PANEL_PAGE[id]||'terminal';}
+function setPage(page){
+  if(!PAGE_IDS.includes(page))page='terminal';
+  currentPage=page;
+  try{localStorage.setItem(PAGE_KEY,page);}catch(_){}
+  const btns={terminal:$('tabTerminal'),dashboard:$('tabDashboard'),lab:$('tabLab')};
+  Object.keys(btns).forEach(k=>{const b=btns[k];if(!b)return;b.classList.toggle('active',k===page);b.setAttribute('aria-selected',k===page?'true':'false');});
+  const ws=layout?activeWorkspace():null;
+  if(ws)applyPanelVisibility(ws.hidden);
+  if(page==='dashboard'){try{if(typeof paintDashboard==='function')paintDashboard(true);}catch(_){}try{if(typeof renderCandles==='function')renderCandles();}catch(_){}}
+  return page;
 }
+function setViewTab(dash){setPage(dash?'dashboard':'terminal');}
 function showDashboardView(){
-  setViewTab(true);
+  setPage('dashboard');
   try{if(layout&&wsHidden('dashboard'))togglePanelVisibility('dashboard');}catch(_){}
   const el=panelEl('dashboard');
   if(el)setTimeout(()=>{try{el.scrollIntoView({behavior:'smooth',block:'start'});}catch(_){}},40);
 }
 function wsHidden(id){const ws=activeWorkspace();return ws&&ws.hidden.includes(id);}
 function showTerminalView(){
-  setViewTab(false);
+  setPage('terminal');
+  try{window.scrollTo({top:0,behavior:'smooth'});}catch(_){}
+}
+function showLabView(){
+  setPage('lab');
   try{window.scrollTo({top:0,behavior:'smooth'});}catch(_){}
 }
 function dashMoverSelect(mint){
@@ -983,7 +1016,7 @@ function dashMoverSelect(mint){
   const tok=(l.tokens||[]).find(x=>x.mint===mint);if(!tok)return;
   const e=wlEnrich(tok);
   selectTicketPair({baseToken:{address:tok.mint,symbol:tok.symbol,name:tok.name},quoteToken:{symbol:'USDC'},priceUsd:e.priceUsd,priceChange:{h24:e.change24h},dexId:'watchlist'});
-  showTerminalView();
+  setPage('lab'); /* N5.14: the ticket lives on the Strategy Lab page */
   const p=panelEl('ticket');
   if(p)setTimeout(()=>{try{p.scrollIntoView({behavior:'smooth',block:'center'});}catch(_){}},80);
 }
@@ -993,7 +1026,7 @@ function dashContentClick(ev){
   const mv=q('[data-mover]');
   if(mv){dashMoverSelect(mv.getAttribute('data-mover'));return;}
   if(q('[data-dash-empty-ticket]')){
-    showTerminalView();
+    setPage('lab'); /* N5.14: the ticket lives on the Strategy Lab page */
     const p=panelEl('ticket');if(p)p.scrollIntoView({behavior:'smooth',block:'center'});
     const amt=$('orderAmount');if(amt)setTimeout(()=>{try{amt.focus();}catch(_){}},380);
     return;
@@ -1001,9 +1034,10 @@ function dashContentClick(ev){
   if(q('[data-dash-connect]')){const wb=$('walletBtn');if(wb)wb.click();}
 }
 function wireDashboard(){
-  const dt=$('tabDashboard'),tt=$('tabTerminal');
+  const dt=$('tabDashboard'),tt=$('tabTerminal'),lb=$('tabLab');
   if(dt)dt.onclick=showDashboardView;
   if(tt)tt.onclick=showTerminalView;
+  if(lb)lb.onclick=showLabView;
   document.querySelectorAll('#dashModeChips button').forEach(b=>b.onclick=()=>{
     dashMode=b.dataset.dm==='live'?'live':'paper';
     document.querySelectorAll('#dashModeChips button').forEach(x=>x.classList.toggle('on',x===b));
@@ -1562,7 +1596,11 @@ function renderPanelPlacement(ws){
   });
 }
 function applyPanelVisibility(hidden){
-  PANEL_IDS.forEach(id=>{const el=panelEl(id);if(el)el.style.display=hidden.includes(id)?'none':'';});
+  /* N5.14: a panel shows only on its own page AND when not hidden by the
+     workspace — the page dimension composes with hide/show, never replaces it.
+     currentPage is set at script-eval time (pageLoad) before any caller below
+     runs, so this is safe from every call site (boot, workspace switch, sync). */
+  PANEL_IDS.forEach(id=>{const el=panelEl(id);if(el)el.style.display=(hidden.includes(id)||pageOf(id)!==currentPage)?'none':'';});
 }
 function setActiveWorkspace(id){
   const ws=layout.workspaces.find(w=>w.id===id);if(!ws)return false;
@@ -1652,7 +1690,7 @@ function paintLayoutPop(){
     const hidden=ws.hidden.includes(id);
     return '<div class="lprow'+(hidden?' is-hidden':'')+'">'+
       '<button type="button" class="iconbtn leyebtn'+(hidden?' off':'')+'" data-lvis="'+id+'" aria-pressed="'+(!hidden)+'" aria-label="'+(hidden?'Show ':'Hide ')+esc(PANEL_LABELS[id])+' panel" title="'+(hidden?'Show':'Hide')+'">'+(hidden?'⊘':'👁')+'</button>'+
-      '<span class="lpname">'+esc(PANEL_LABELS[id])+'</span>'+
+      '<span class="lpname">'+esc(PANEL_LABELS[id])+'</span><span class="lppage">'+esc(PAGE_LABEL[pageOf(id)])+'</span>'+
       '<span class="lparrows"><button type="button" data-lup="'+id+'" aria-label="Move '+esc(PANEL_LABELS[id])+' up"'+(i===0?' disabled':'')+'>▲</button>'+
       '<button type="button" data-ldn="'+id+'" aria-label="Move '+esc(PANEL_LABELS[id])+' down"'+(i===ws.order.length-1?' disabled':'')+'>▼</button></span></div>';
   }).join('');
@@ -1752,6 +1790,10 @@ function applyLayoutBoot(){
 /* N5.12: the shipped default order starts with the dashboard (the pin's home). */
 const SHIPPED_LAYOUT_ORDER=['dashboard','chart','lab','pairs','discovery','ticket','portfolio','orders','limits','history','execpath','solstat','chgstat','equitystat','watchlist'];
 let resetUiArmUntil=0,resetUiLabel=null;
+/* N5.14: Reset restores place+order+visibility; the panel→page assignment lives
+   in PANEL_PAGE (code, not workspace state), so a reset can never move a panel
+   to another page — and because setActiveWorkspace repaints visibility through
+   the page-aware applyPanelVisibility, Reset works on whichever page is open. */
 function resetUiToDefault(){
   const f=forkActiveWorkspace();const ws=f.ws;
   ws.place=Object.assign({},PANEL_HOME);
@@ -1767,7 +1809,7 @@ function wireResetUi(){
     if(Date.now()>resetUiArmUntil){
       resetUiArmUntil=Date.now()+5000;
       b.textContent='Confirm reset?';
-      toast('Reset UI restores the shipped layout and shows every panel. Click again within 5 s to confirm.');
+      toast('Reset UI restores the shipped layout and shows every panel on this page. Click again within 5 s to confirm.');
       setTimeout(()=>{if(Date.now()>=resetUiArmUntil)b.textContent=resetUiLabel;},5100);
       return;
     }
