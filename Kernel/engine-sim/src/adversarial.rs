@@ -16,8 +16,8 @@
 //!   door; it never changes the cash flow).
 //! * **Blind-ape bulk exit** ([`bulk_exit_attack`]): the attacker forces the
 //!   exit door in one go, extracting the whole position above the per-period
-//!   allowance, and pays the 12% penalty on the excess (Carlos's deterrent,
-//!   not a revenue line). Theorem: the penalty destroys exactly 12% of the
+//!   allowance, and pays the flat 13% penalty on the excess (Carlos's deterrent,
+//!   not a revenue line). Theorem: the penalty destroys exactly 13% of the
 //!   extracted excess vs the patient rotation path, which pays zero penalty;
 //!   the penalty is a transfer to the remaining holders, not destruction.
 //! * **Cohort-timing games** ([`LockLedger`], [`window_camper_attack`]):
@@ -29,7 +29,7 @@
 //!   the window-camper attack (enter just before each window, capture the
 //!   dividend, exit just after) is measured against the honest scheduled
 //!   path. The unique-pool rule forces the camper to round-trip through the
-//!   exit door, and the 12% penalty door makes every round-trip lossy — the
+//!   exit door, and the 13% penalty door makes every round-trip lossy — the
 //!   two rulings compose into the defense.
 //! * **Whale exit contract** ([`movable_liquidity_micro`], [`is_whale`],
 //!   [`admit_entry`], [`exit_contract`], [`whale_bulk_exit_attack`]): LANDED
@@ -153,7 +153,7 @@ pub struct BulkExitOutcome {
 }
 
 /// The attacker forces the exit door in one go — extracting the whole
-/// position above the per-period allowance — and pays the 12% penalty on the
+/// position above the per-period allowance — and pays the flat 13% penalty on the
 /// excess. The patient baseline extracts the penalty-free allowance each
 /// year and keeps the position.
 pub fn bulk_exit_attack(cfg: &Config, position_micro: i128, years: u32) -> BulkExitOutcome {

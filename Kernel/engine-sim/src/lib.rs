@@ -88,7 +88,7 @@ pub struct Config {
     pub loan_rate_ppm: i128,
     /// Assumed delinquency (~12%).
     pub delinquency_ppm: i128,
-    /// Penalty on extraction above the per-period allowance (12% floor).
+    /// Penalty on extraction above the per-period allowance (flat 13%, D-4 CLOSED 2026-10-26).
     pub penalty_ppm: i128,
     pub term_months: u32,
     pub forfeiture_base: ForfeitureBase,
@@ -117,7 +117,7 @@ impl Config {
             lambda_ppm: 500_000,
             loan_rate_ppm: 120_000,
             delinquency_ppm: 120_000,
-            penalty_ppm: 120_000,
+            penalty_ppm: 130_000,
             term_months: 2,
             forfeiture_base: ForfeitureBase::PreDefault,
             dividend_rate_override_ppm: None,
@@ -416,7 +416,7 @@ impl Engine {
 }
 
 /// Cost of extracting `amount` above the per-period allowance: the penalty
-/// door. Carlos's ruling: extreme by design, 12% floor, a deterrent.
+/// door. Carlos's ruling: extreme by design, flat 13% (D-4 CLOSED 2026-10-26), a deterrent.
 pub fn excess_extraction_cost_micro(cfg: &Config, amount_micro: i128) -> i128 {
     mul_ppm(amount_micro, cfg.penalty_ppm)
 }

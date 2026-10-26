@@ -429,8 +429,8 @@
 //! * `FEE_PPM = 7_300`: the 60 bps transaction fee and the 13 bps IDL fee
 //!   ride the SAME flow (D-5 CLOSED 2026-10-23 ~16:00 CST; engine-sim T14).
 //! * `LOAN_RATE_PPM = 120_000`: 12%, final (Carlos, 2026-10-22).
-//! * `PENALTY_FLOOR_PPM = 120_000`: 12% extraction-penalty floor — a
-//!   deterrent, not a revenue line (D-4 curve shape above the floor is open).
+//! * `PENALTY_PPM = 130_000`: flat 13% extraction penalty — a
+//!   deterrent, not a revenue line (D-4 CLOSED flat 13%, Carlos 2026-10-26).
 //! * `CASH_SLEEVE_PPM = 250_000`: 25% cash sleeve (50/25/25 portfolio,
 //!   Carlos's 2026-10-22 revision). The lending book's maximum draw is
 //!   exactly 1/3 of the sleeve at 60-day terms (math doc §4), so the max
@@ -481,8 +481,8 @@ pub const FEE_PPM: u64 = 7_300;
 /// Loan rate, 12% — Carlos, final 2026-10-22.
 pub const LOAN_RATE_PPM: u64 = 120_000;
 
-/// Extraction-penalty floor, 12% — deterrent, not a revenue line.
-pub const PENALTY_FLOOR_PPM: u64 = 120_000;
+/// Extraction penalty, flat 13% — deterrent, not a revenue line.
+pub const PENALTY_PPM: u64 = 130_000;
 
 /// Cash sleeve, 25% of T (50/25/25 portfolio).
 pub const CASH_SLEEVE_PPM: u64 = 250_000;
@@ -3077,8 +3077,8 @@ pub mod treasury_program {
     /// recorded here. An exit at or below the accrued dividend
     /// pays at par and touches no principal. Above it, the
     /// excess comes out of the locked position and pays the
-    /// 12% penalty floor on the excess only (D-4 curve shape
-    /// above the floor is open; the floor is what this slice
+    /// flat 13% penalty on the excess only (D-4 CLOSED
+    /// 2026-10-26; the flat rate is what this slice
     /// prices). The penalty is withheld from the payout — it
     /// is not an extra position reduction — so the event
     /// carries `penalty_raw` and the net `paid_raw`.
@@ -3294,7 +3294,7 @@ pub mod treasury_program {
     /// prices no penalty — the tranche reduces the
     /// position by the gross tranche amount, and the
     /// event carries no penalty field. Whether scheduled
-    /// tranches should pay the 12% door on any part of
+    /// tranches should pay the 13% door on any part of
     /// the tranche is a design question for the §4.2 row,
     /// not a pricing decision this slice invents. Second,
     /// window scope: CROSS-WINDOW execution (this slice,
@@ -4794,7 +4794,7 @@ pub fn can_settle_default(
 /// `(penalty_raw, paid_raw)`: the penalty-free allowance is
 /// the accrued unpaid dividend — an exit at or below it pays
 /// at par, the excess comes out of the locked position and
-/// pays the 12% floor on the excess only, withheld from the
+/// pays the flat 13% penalty on the excess only, withheld from the
 /// payout. Order mirrors `can_borrow`: the transition
 /// binding first, the per-order D-10 bound (amount ≤ L from
 /// the period-start snapshot total) next, the holder-local
@@ -4803,8 +4803,8 @@ pub fn can_settle_default(
 /// refuses when the window's remaining stock cannot cover
 /// it, and repeated sub-L exits sum against that stock.
 /// Penalty math is u128, floored, so no u64 amount can
-/// overflow the intermediate and the floor is exact (an
-/// excess of 10,001 prices at 1,200, not 1,201).
+/// overflow the intermediate and the penalty is exact (an
+/// excess of 10,001 prices at 1,300, not 1,301).
 pub fn can_exit(
     state: u8,
     transition_type: [u8; 32],
@@ -4842,7 +4842,7 @@ pub fn can_exit(
         TreasuryError::ExitStockExhausted
     );
     let penalty_raw =
-        (excess as u128 * PENALTY_FLOOR_PPM as u128 / PPM) as u64;
+        (excess as u128 * PENALTY_PPM as u128 / PPM) as u64;
     let paid_raw = amount_raw - penalty_raw;
     Ok((penalty_raw, paid_raw))
 }
@@ -5400,7 +5400,7 @@ pub struct DefaultSettled {
 
 /// Event for [`treasury_program::exit`] (design §4.2, §6, D-10,
 /// D-4): the window, the holder, the gross amount requested,
-/// the 12%-floor penalty withheld on the excess over the
+/// the flat 13% penalty withheld on the excess over the
 /// accrued dividend, the net paid amount, and the position
 /// remaining after the exit — plus the authorization context,
 /// the Committed window flow transition's id, commit index,
@@ -9949,35 +9949,35 @@ mod tests {
             (0, 500)
         );
         // Happy path, excess: 5,000 against a 1,000 dividend
-        // takes 4,000 from the position and pays 12% on the
-        // excess only: penalty 480, net 4,520.
+        // takes 4,000 from the position and pays 13% on the
+        // excess only: penalty 520, net 4,480.
         assert_eq!(
             can_exit(
                 STATE_COMMITTED, TREASURY_WINDOW_TYPE, 13, 13, 5_000, 1_000, 10_000, 0,
                 600_000, 100_000
             )
             .expect("an excess exit passes"),
-            (480, 4_520)
+            (520, 4_480)
         );
         // Full extraction: dividend plus the whole position,
-        // penalty on the position only: 10,000 excess -> 1,200.
+        // penalty on the position only: 10,000 excess -> 1,300.
         assert_eq!(
             can_exit(
                 STATE_COMMITTED, TREASURY_WINDOW_TYPE, 13, 13, 11_000, 1_000, 10_000, 0,
                 600_000, 100_000
             )
             .expect("a full-position exit passes"),
-            (1_200, 9_800)
+            (1_300, 9_700)
         );
-        // Penalty floor is exact, not rounded up: excess
-        // 10,001 prices at 1,200 (1,200.12 floored), net 8,801.
+        // Penalty is exact, not rounded up: excess
+        // 10,001 prices at 1,300 (1,300.13 floored), net 8,701.
         assert_eq!(
             can_exit(
                 STATE_COMMITTED, TREASURY_WINDOW_TYPE, 13, 13, 10_001, 0, 10_001, 0,
                 600_000, 100_000
             )
-            .expect("the penalty floor is exact"),
-            (1_200, 8_801)
+            .expect("the penalty is exact"),
+            (1_300, 8_701)
         );
         // Pre-commit and post-commit states refuse: exits ride
         // commit, before settle.

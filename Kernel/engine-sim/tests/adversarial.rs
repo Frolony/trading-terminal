@@ -66,7 +66,7 @@ fn t10_default_as_exit_strictly_worse_than_scheduled_exit() {
 
 /// T11 — Blind-ape bulk exit vs the penalty door. The attacker forces the
 /// entire $100K position out in one go above the per-period allowance and
-/// pays the 12% penalty on the excess. The penalty must destroy value vs the
+/// pays the flat 13% penalty on the excess. The penalty must destroy value vs the
 /// patient path — and it is a transfer to the remaining holders (the
 /// deterrent's design intent), not destruction.
 #[test]
@@ -80,13 +80,13 @@ fn t11_bulk_exit_penalty_door_deters() {
     let allowance = pos * rate / PPM; // $6,258 — the penalty-free allowance
     let excess = pos - allowance;
     assert_eq!(o.allowance_micro, allowance);
-    // The penalty is exactly 12% of the excess (Carlos's deterrent, 12% floor).
+    // The penalty is exactly 13% of the excess (Carlos's deterrent, flat 13%, D-4 CLOSED 2026-10-26).
     assert_eq!(
         o.penalty_paid_micro,
         excess_extraction_cost_micro(&cfg, excess),
         "penalty must be the door's own price"
     );
-    assert_eq!(o.penalty_paid_micro, excess * 12 / 100);
+    assert_eq!(o.penalty_paid_micro, excess * 13 / 100);
     // Attacker + penalty == the full position: the penalty is a transfer to
     // the remaining holders, not value destruction.
     assert_eq!(o.attacker_total_micro + o.penalty_paid_micro, pos);
@@ -113,7 +113,7 @@ fn t11_bulk_exit_penalty_door_deters() {
 /// (d) The window-camper attack — enter just before each window, capture the
 ///     dividend, exit just after, 12 round-trips — ends poorer than the
 ///     honest scheduled path. The unique-pool rule forces the round-trip
-///     (the same funds cannot sit in two cohorts), and the 12% penalty door
+///     (the same funds cannot sit in two cohorts), and the 13% penalty door
 ///     makes every round-trip lossy: the two rulings compose into the defense.
 #[test]
 fn t12_cohort_timing_games_fail_at_window_boundaries() {
@@ -274,12 +274,12 @@ fn t13_whale_threshold_is_relative_and_sets_the_exit_contract() {
     }
 
     // (f) Breaking the schedule: the $30M whale forces it all out in one
-    // window against $15M tranches. The $15M excess pays the 12% door; the
+    // window against $15M tranches. The $15M excess pays the 13% door; the
     // scheduled path stays whole. The attack does not pencil out.
     let o = whale_bulk_exit_attack(dollars(30_000_000), 2, cfg.penalty_ppm);
     assert!(!o.pencils_out, "breaking the schedule must not beat it");
     assert_eq!(o.tranche_micro, dollars(15_000_000));
-    assert_eq!(o.penalty_paid_micro, dollars(15_000_000) * 12 / 100);
+    assert_eq!(o.penalty_paid_micro, dollars(15_000_000) * 13 / 100);
     // Attacker + penalty == the full position: a transfer, not destruction.
     assert_eq!(o.attacker_total_micro + o.penalty_paid_micro, dollars(30_000_000));
     assert_eq!(o.scheduled_total_micro, dollars(30_000_000));

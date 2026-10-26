@@ -86,10 +86,10 @@ fn t3_guarantee_runway_at_both_documented_rates() {
 
 /// T4 — Door calibration (logic doc §4): the two early-exit doors must price
 /// alike or traffic arbitrages to the cheaper one. Excess extraction of $50
-/// costs 12% = $6.00. Borrow-and-default costs the forfeited next dividend:
+/// costs flat 13% = $6.50. Borrow-and-default costs the forfeited next dividend:
 /// $6.26 on the pre-default base (doors aligned, within $0.30) but only
 /// $3.13 on the post-default base (default becomes the discount door).
-/// D-3 — which base — remains Carlos's open decision; this test prices both
+/// D-3 CLOSED 2026-10-23 (pre-default base); this test prices both
 /// so the decision's stakes stay executable, not rhetorical.
 #[test]
 fn t4_door_calibration_prices_both_forfeiture_bases() {
@@ -97,7 +97,7 @@ fn t4_door_calibration_prices_both_forfeiture_bases() {
     let t = cfg.initial_treasury_micro();
     let rate = cfg.annual_distributable_micro(t) * PPM / t;
     let penalty = usd(excess_extraction_cost_micro(&cfg, dollars(50)));
-    assert_eq!(penalty, 6.00);
+    assert_eq!(penalty, 6.50);
     cfg.forfeiture_base = ForfeitureBase::PreDefault;
     let pre = usd(default_door_cost_micro(&cfg, dollars(100), rate));
     assert!((pre - 6.26).abs() < 0.01);
