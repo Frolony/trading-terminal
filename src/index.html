@@ -593,7 +593,7 @@ function wlLists(){return watchlists&&Array.isArray(watchlists.lists)?watchlists
 function wlGetList(id){return wlLists().find(l=>l.id===id)||null;}
 function wlActiveId(){const l=wlGetList(watchlists&&watchlists.activeListId);return l?l.id:((wlLists()[0]||{}).id||null);}
 function wlActiveList(){return wlGetList(wlActiveId())||wlLists()[0]||null;}
-function wlSetActive(id){if(!wlGetList(id))return;watchlists.activeListId=id;saveState();renderWatchlist();paintWlDrawer();refreshWatchButtons();}
+function wlSetActive(id){if(!wlGetList(id))return;watchlists.activeListId=id;saveState();renderWatchlist();paintDashboard(true);paintWlDrawer();refreshWatchButtons();} // N5.17: switching the active list repaints the dashboard surfaces (activity + movers) even if renderWatchlist's digest-guarded paint would skip them
 function wlIsIn(listId,mint){const l=wlGetList(listId);return!!l&&l.tokens.some(t=>t.mint===mint);}
 function wlPairToken(address,p){return{mint:address,symbol:(p&&p.baseToken&&p.baseToken.symbol)||'TOKEN',name:(p&&p.baseToken&&p.baseToken.name)||'Saved token',priceUsd:p?Number(p.priceUsd)||0:0,change24h:!p||p.priceChange?.h24==null?null:Number(p.priceChange.h24),pairAddress:p&&isPlausiblePoolAddress(p.pairAddress)?p.pairAddress:null,dexUrl:p&&typeof p.url==='string'&&p.url.indexOf('https://dexscreener.com/')===0?p.url:null};}
 function wlToggle(listId,token){
@@ -868,9 +868,10 @@ function dashActivity(){
     if(dashMode==='live'&&pk&&h.live&&Array.isArray(h.live[pk]))
       for(const e of h.live[pk].slice(0,60))evs.push({ts:Number(e.ts)||0,mode:'live',label:dashHistLabel(e)});
   }catch(_){}
-  try{
-    for(const l of wlLists())for(const t of (l.tokens||[]))
-      evs.push({ts:Number(t.addedAt)||0,mode:'list',label:'Watched '+t.symbol+' → '+l.name});
+  try{ // N5.17: watch events scope to the ACTIVE list only — other lists' tokens no longer flood the feed or crowd fills out of the visible slots; the label still names the list the token belongs to (the active one)
+    const act=wlActiveList();
+    if(act)for(const t of (act.tokens||[]))
+      evs.push({ts:Number(t.addedAt)||0,mode:'list',label:'Watched '+t.symbol+' → '+act.name});
   }catch(_){}
   evs.sort((a,b)=>b.ts-a.ts);
   return evs.slice(0,20);
@@ -897,11 +898,11 @@ function dashPaperModel(){
   for(const r of rows)r.weight=equity>0?r.value/equity:0;
   return{rows:rows,cash:cash,posValue:posValue,equity:equity,totalRealized:totalRealized,totalUnreal:totalUnreal,total:equity-PAPER_START_CASH,stale:stale,hasFills:Object.keys(fifo).length>0};
 }
-function dashMovers(){
-  const l=wlDefaultList();
-  if(!l||!(l.tokens||[]).length)return{tokens:[],empty:true};
-  const rows=(l.tokens||[]).map(t=>{const e=wlEnrich(t);return{mint:t.mint,symbol:t.symbol,name:t.name,priceUsd:e.priceUsd,change24h:e.change24h,stale:e.stale};});
-  return{tokens:dbSortMovers(rows),empty:false};
+function dashMovers(){ // N5.17: movers follow the ACTIVE list (not the Default list) and carry the stored pool identity through instead of dropping it
+  const l=wlActiveList();
+  if(!l||!(l.tokens||[]).length)return{tokens:[],empty:true,listName:l?l.name:null};
+  const rows=(l.tokens||[]).map(t=>{const e=wlEnrich(t);return{mint:t.mint,symbol:t.symbol,name:t.name,priceUsd:e.priceUsd,change24h:e.change24h,stale:e.stale,pairAddress:t.pairAddress||null,dexUrl:t.dexUrl||null};});
+  return{tokens:dbSortMovers(rows),empty:false,listName:l.name};
 }
 function dashDigestNow(){
   const parts=[dashMode,dashQC(),String(cash),String(feedFailures>0),'solpx:'+price];
@@ -909,7 +910,7 @@ function dashDigestNow(){
   for(const m of mints){const h=holdings[m];parts.push(m+':'+h.qty+':'+h.lastPrice+':'+h.avgCost);}
   const ot=orders.length&&orders[0]?orders[0].time:null;
   parts.push('orders:'+orders.length+':'+(ot?(ot instanceof Date?ot.getTime():String(ot)):'-'));
-  try{const l=wlDefaultList();parts.push('wl:'+(l?l.tokens.map(t=>{const e=wlEnrich(t);return t.mint+':'+e.priceUsd+':'+e.change24h+':'+(e.stale?1:0);}).join(','):'none'));}catch(_){parts.push('wl:?');}
+  try{const l=wlActiveList();parts.push('wl:'+(l?l.id+':'+l.tokens.map(t=>{const e=wlEnrich(t);return t.mint+':'+e.priceUsd+':'+e.change24h+':'+(e.stale?1:0);}).join(','):'none'));}catch(_){parts.push('wl:?');} // N5.17: digest tracks the ACTIVE list — switching lists (or editing it) repaints the dashboard; other lists' edits correctly do not
   const w=dashWallet();parts.push('w:'+(w.connected?1:0)+':'+(w.publicKey||'')+':'+JSON.stringify(w.balances||null));
   try{parts.push('h:'+histLoad().paper.length);}catch(_){parts.push('h:?');}
   return parts.join('|');
@@ -930,11 +931,11 @@ function dashPaperHtml(){
   }
   h+='</div><div class="dashsec"><div class="sectiontitle"><h3>Recent activity</h3><span class="sub">latest '+acts.length+'</span></div>';
   h+=acts.length?'<div class="dashact">'+acts.map(a=>'<div class="arow"><span>'+esc(a.label)+'</span><span style="display:flex;align-items:center;gap:8px"><span class="mchip">'+(a.mode==='paper'?'PAPER':a.mode==='live'?'LIVE':'WATCHLIST')+'</span><span class="t">'+esc(dashActTime(a.ts))+'</span></span></div>').join('')+'</div>':'<div class="empty">No activity yet — fills and watchlist adds land here.</div>';
-  h+='</div><div class="dashsec"><div class="sectiontitle"><h3>Watchlist movers</h3><span class="sub">Default list · |24h change|'+(m.stale?' · '+dashStaleB():'')+'</span></div>';
+  h+='</div><div class="dashsec"><div class="sectiontitle"><h3>Watchlist movers</h3><span class="sub">'+esc(mv.listName||'Watchlist')+' · |24h change|'+(m.stale?' · '+dashStaleB():'')+'</span></div>'; // N5.17: sub-label names the actual (active) list, not a hardcoded Default
   if(mv.empty){
     h+='<div class="empty">Watch tokens from Token discovery to track movers here.</div>';
   }else{
-    h+='<div class="tablewrap"><table><thead><tr><th>Token</th><th>Price</th><th>24h</th></tr></thead><tbody>'+mv.tokens.map(t=>'<tr class="dashmover" data-mover="'+esc(t.mint)+'" title="Select '+esc(t.symbol)+' in the order ticket"><td><strong>'+esc(t.symbol)+'</strong> <span class="sub">'+esc(t.name||'')+'</span></td><td>'+formatPriceUsd(t.priceUsd)+(t.stale?dashStaleB():'')+'</td><td class="'+(t.change24h===null?'':t.change24h>=0?'positive':'negative')+'">'+(t.change24h===null?'—':(t.change24h>=0?'+':'')+fmt(t.change24h,2)+'%')+'</td></tr>').join('')+'</tbody></table></div><div class="sub" style="margin-top:6px">Click a mover to select it in the order ticket.</div>';
+    h+='<div class="tablewrap"><table><thead><tr><th>Token</th><th>Price</th><th>24h</th></tr></thead><tbody>'+mv.tokens.map(t=>{const ident=isPlausiblePoolAddress(t.pairAddress)?poolIdentityHtml({pairAddress:t.pairAddress,url:t.dexUrl}):'<div class="poolident"><span class="poolnone">Pool address not saved — re-watch this token from a pair to attach it.</span></div>';return '<tr class="dashmover" data-mover="'+esc(t.mint)+'" title="Select '+esc(t.symbol)+' in the order ticket"><td><strong>'+esc(t.symbol)+'</strong> <span class="sub">'+esc(t.name||'')+'</span>'+ident+'</td><td>'+formatPriceUsd(t.priceUsd)+(t.stale?dashStaleB():'')+'</td><td class="'+(t.change24h===null?'':t.change24h>=0?'positive':'negative')+'">'+(t.change24h===null?'—':(t.change24h>=0?'+':'')+fmt(t.change24h,2)+'%')+'</td></tr>';}).join('')+'</tbody></table></div><div class="sub" style="margin-top:6px">Click a mover to select it in the order ticket.</div>'; // N5.17: movers rows carry the N3.3 identity block (copyable pool address + DEX links), with the drawer's honest not-saved fallback
   }
   return h+'</div>';
 }
@@ -1022,9 +1023,11 @@ function showLabView(){
   setPage('lab');
   try{window.scrollTo({top:0,behavior:'smooth'});}catch(_){}
 }
-function dashMoverSelect(mint){
-  const l=wlDefaultList();if(!l)return;
-  const tok=(l.tokens||[]).find(x=>x.mint===mint);if(!tok)return;
+function dashMoverSelect(mint){ // N5.17: movers now render the active list, so select from it first (any-list fallback keeps a click working if the list switched between render and click)
+  const l=wlActiveList();if(!l)return;
+  let tok=(l.tokens||[]).find(x=>x.mint===mint);
+  if(!tok)for(const o of wlLists()){tok=(o.tokens||[]).find(x=>x.mint===mint);if(tok)break;}
+  if(!tok)return;
   const e=wlEnrich(tok);
   selectTicketPair({baseToken:{address:tok.mint,symbol:tok.symbol,name:tok.name},quoteToken:{symbol:'USDC'},priceUsd:e.priceUsd,priceChange:{h24:e.change24h},dexId:'watchlist'});
   setPage('lab'); /* N5.14: the paper ticket lives on the Strategy Lab page (N5.15: the Live instance is on Terminal) */
@@ -1034,6 +1037,7 @@ function dashMoverSelect(mint){
 function dashContentClick(ev){
   const t=ev.target;
   const q=sel=>t&&t.closest?t.closest(sel):null;
+  if(q('a, [data-copy-addr]'))return; // N5.17: a mover row's pool links / copy button act on their own — they are not a ticket select (the document copy handler still runs)
   const mv=q('[data-mover]');
   if(mv){dashMoverSelect(mv.getAttribute('data-mover'));return;}
   if(q('[data-dash-empty-ticket]')){
