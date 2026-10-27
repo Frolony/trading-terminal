@@ -68,8 +68,9 @@
 //! that does not exist yet). `advance_round` now snapshots the previous
 //! round's weighted mean onto the TransitionRecord; the remaining
 //! wiring — the agent's own previous-round support, read from that
-//! round's SignalRecord — is a follow-up signal-side increment, and
-//! until then commit replay enforces the check. The TransitionRecord
+//! round's SignalRecord — landed as slice 28 (signal-time enforcement
+//! with a snapshot bitmap, so omission cannot dodge it), and commit
+//! replay remains the backstop. The TransitionRecord
 //! gains `round_count` (SPACE 110 → 114), starting at 1 — the kernel
 //! starts every transition with one empty round.
 //! This increment adds `submit_constraint_report` (design §4.1) and the
@@ -112,13 +113,12 @@
 //! (`prev_round_mean`) and resets the current-round aggregates, so
 //! the monotone-revision check can read its mean. The TransitionRecord
 //! gains `current_round_total`, `current_round_weighted`, and
-//! `prev_round_mean` (SPACE 383 → 407). One gap stays open, stated
-//! plainly: the monotone check also needs the agent's own previous-round
-//! support, which lives on that round's SignalRecord — `submit_signal`
-//! does not yet take it as an account, so the check is enforced at
-//! commit replay (the kernel's `submit_signal` during replay refuses
-//! a violating sequence), not at signal time. That wiring is the next
-//! signal-side increment, not this one.
+//! `prev_round_mean` (SPACE 383 → 407). The other half of the check —
+//! the agent's own previous-round support, which lives on that round's
+//! SignalRecord — was the gap this increment left open; slice 28 closes
+//! it (`submit_signal` takes the previous record, `advance_round`
+//! snapshots the previous round's signalled set), and commit replay
+//! remains the backstop, not the only enforcement.
 //! This increment adds `reconcile` (design §4.1): permissionless, like
 //! the kernel's (the kernel ignores its caller) — Planning state only,
 //! and only once the planning deadline has passed (`PlanningStillOpen`
@@ -1057,6 +1057,7 @@ pub mod treasury_program {
         record.signalled_bitmap = [0u8; 64];
         record.window_open_applied = false;
         record.relevant_groups = relevant_groups;
+        record.prev_signalled_bitmap = [0u8; 64];
         Ok(())
     }
 
@@ -1211,19 +1212,22 @@ pub mod treasury_program {
     /// commit — the program never trusts a client-computed total.
     /// Monotone revision, stated plainly: the kernel refuses a
     /// re-signal that moves farther from the previous round's weighted
-    /// mean than the agent's previous signal did. The mean half of
-    /// that check now exists on-chain: `advance_round` snapshots the
-    /// previous round's weighted mean onto the TransitionRecord
-    /// (`prev_round_mean`). The other half — the agent's own
-    /// previous-round support, which lives on that round's
-    /// SignalRecord — is not yet wired: this instruction does not take
-    /// the previous SignalRecord as an account, so the check is
-    /// enforced at commit replay (the kernel's `submit_signal` during
-    /// replay refuses a violating sequence), not at signal time. The
-    /// pure check is written and tested (see
-    /// [`check_monotone_revision`]); its signal-time wiring is the
-    /// follow-up signal-side increment. In round 0 the kernel's
-    /// monotone branch is vacuous, as it has no previous round.
+    /// mean than the agent's previous signal did. Both halves now
+    /// exist on-chain (slice 28 closes the carried signal-side gap):
+    /// `advance_round` snapshots the previous round's weighted mean
+    /// onto the TransitionRecord (`prev_round_mean`) and the
+    /// previous round's signalled set (`prev_signalled_bitmap`), and
+    /// this instruction takes the caller's previous-round
+    /// SignalRecord (`prev_signal_record`) and enforces the check
+    /// here, in the kernel's order (eligible, AlreadySignalled,
+    /// monotone), before any creation or aggregate fold. A caller
+    /// who signalled last round must pass that record — the program
+    /// id as "absent" refuses `PrevSignalRequired` — and a caller
+    /// who did not signal last round skips the check, as the kernel
+    /// does. Commit replay still enforces the same rule as the
+    /// backstop; signal time is now the first enforcement, not a
+    /// deferred one. In round 0 the kernel's monotone branch is
+    /// vacuous, as it has no previous round.
     pub fn submit_signal(
         ctx: Context<SubmitSignal>,
         transition_id: u64,
@@ -1256,6 +1260,73 @@ pub mod treasury_program {
         // is keyed by the authority-assigned agent_index on the
         // caller's AgentRecord, never by a caller argument.
         check_signal_gate(&transition.signalled_bitmap, record.agent_index)?;
+        // Slice 28 — signal-time monotone-revision wiring, in the
+        // kernel's check order (eligible, AlreadySignalled, then
+        // monotone), before any creation or aggregate fold, so a
+        // refused re-signal changes no state at all. Round 0 is
+        // vacuous (no previous round). In later rounds the check
+        // applies exactly when the caller signalled the previous
+        // round — the snapshot bitmap says whether they did, so the
+        // record cannot be dodged by omission: a set bit with the
+        // program id passed as "absent" refuses PrevSignalRequired.
+        // A clear bit skips the check, as the kernel does (its
+        // `if let Some(ps)` has nothing to compare against).
+        // The record is verified, never trusted: it must deserialize
+        // as a program-owned SignalRecord, its stored bump must
+        // re-derive its address from the previous-round seeds, and
+        // its fields must name this transition, the previous round,
+        // and the caller — otherwise PrevSignalMismatch. Only then
+        // does the pure check run, against the snapshotted mean.
+        if round > 0 {
+            let prev_signalled =
+                prev_round_signalled(&transition.prev_signalled_bitmap, record.agent_index)?;
+            if prev_signalled {
+                let prev_info = ctx.accounts.prev_signal_record.to_account_info();
+                require!(
+                    prev_info.key != &crate::ID,
+                    TreasuryError::PrevSignalRequired
+                );
+                // Owned deserialization, not `Account::try_from`:
+                // the try_from borrow does not survive this
+                // handler's Context borrow, and the check needs only
+                // the record's fields, never a live account handle.
+                // Owner first (a foreign account can carry any
+                // bytes), then discriminator-checked deserialization.
+                require!(
+                    prev_info.owner == &crate::ID,
+                    TreasuryError::PrevSignalMismatch
+                );
+                let prev_data = prev_info
+                    .try_borrow_data()
+                    .map_err(|_| TreasuryError::PrevSignalMismatch)?;
+                let mut prev_slice: &[u8] = &prev_data;
+                let prev = SignalRecord::try_deserialize(&mut prev_slice)
+                    .map_err(|_| TreasuryError::PrevSignalMismatch)?;
+                let prev_round = round - 1;
+                let tid_bytes = transition_id.to_le_bytes();
+                let prev_round_bytes = prev_round.to_le_bytes();
+                let bump_seed = [prev.bump];
+                let derived = Pubkey::create_program_address(
+                    &[
+                        b"signal",
+                        &tid_bytes,
+                        &prev_round_bytes,
+                        caller_key.as_ref(),
+                        &bump_seed,
+                    ],
+                    &crate::ID,
+                )
+                .map_err(|_| TreasuryError::PrevSignalMismatch)?;
+                require!(
+                    derived == *prev_info.key
+                        && prev.transition_id == transition_id
+                        && prev.round == prev_round
+                        && prev.agent == caller_key,
+                    TreasuryError::PrevSignalMismatch
+                );
+                check_monotone_revision(prev.support, transition.prev_round_mean, support)?;
+            }
+        }
         // Step-2 fork, Attempt 2 — hand-rolled creation, replicating
         // the `init` checklist item by item. (1) Existing-account
         // failure, explicit: the target must be system-owned, empty,
@@ -1474,6 +1545,12 @@ pub mod treasury_program {
         transition.current_round_weighted = 0;
         // Step-2 fork, Attempt 2: the bitmap gate belongs to the
         // round, so it clears with the aggregates it guards.
+        // Slice 28: snapshot it first — the previous round's
+        // signalled set is what `submit_signal` reads to decide
+        // whether a caller's previous-round SignalRecord is required
+        // for the monotone check, so the snapshot must be taken
+        // before the clear, never after.
+        transition.prev_signalled_bitmap = transition.signalled_bitmap;
         transition.signalled_bitmap = [0u8; 64];
         transition.round_count = transition
             .round_count
@@ -4562,6 +4639,28 @@ pub fn check_signal_gate(signalled_bitmap: &[u8; 64], agent_index: u16) -> Resul
         TreasuryError::AlreadySignalled
     );
     Ok(())
+}
+
+/// Slice 28 — the previous-round signalled test, factored out of
+/// the `submit_signal` handler so host tests can prove it without a
+/// chain: the caller's bit in the snapshot bitmap `advance_round`
+/// took when it closed the previous round. A set bit means the
+/// caller signalled that round, so their previous SignalRecord is
+/// required at signal time and the monotone check applies; a clear
+/// bit means they did not, and the kernel's branch is vacuous
+/// (`if let Some(ps)`), whatever account they pass. The index is
+/// validated exactly as the gate validates it, so a caller cannot
+/// smuggle an out-of-space index past this test.
+pub fn prev_round_signalled(
+    prev_signalled_bitmap: &[u8; 64],
+    agent_index: u16,
+) -> Result<bool> {
+    let index = agent_index as usize;
+    require!(
+        index < MAX_BITMAP_AGENTS,
+        TreasuryError::AgentIndexSpaceExhausted
+    );
+    Ok(prev_signalled_bitmap[index / 8] & (1u8 << (index % 8)) != 0)
 }
 
 /// Step-2 fork, Attempt 2 — set the caller's bit after a successful
@@ -7752,6 +7851,18 @@ pub struct TransitionRecord {
     /// fail-closed for planners and signallers alike, never
     /// silently open to all.
     pub relevant_groups: Vec<u16>,
+    /// Slice 28 — the previous round's signalled bitmap, snapshotted
+    /// by `advance_round` from `signalled_bitmap` at the moment it
+    /// closes a round, before clearing it for the new round. This is
+    /// what makes the signal-time monotone check dodge-proof:
+    /// `submit_signal` reads the caller's bit here to decide whether
+    /// their previous-round SignalRecord is required — a caller who
+    /// signalled last round cannot omit it and thereby skip the
+    /// check, and a caller who did not signal skips the check, as
+    /// the kernel does. Appended after `relevant_groups`
+    /// deliberately so every pre-existing field keeps its byte
+    /// offset; at most MAX_BITMAP_AGENTS bits, all in these 64 bytes.
+    pub prev_signalled_bitmap: [u8; 64],
 }
 
 /// Step-2 fork, Attempt 2 — bitmap gate geometry: 64 fixed bytes
@@ -7767,12 +7878,13 @@ pub const MAX_BITMAP_AGENTS: usize = SIGNALLED_BITMAP_LEN * 8;
 impl TransitionRecord {
     /// 8 (discriminator) + 8 + 32 + 1 + 32 + 8 + 8 + 8 + 4 + 4
     /// + 8 + 8 + 8 + (4 + 8 × 33) + 1 + 1 + 32 + 8 + 32 + 8 + 32
-    /// + (4 + 8 × 34) + 4 + 1 + 1 + 64 + 1 + (4 + 2 × 8) = 886.
+    /// + (4 + 8 × 34) + 4 + 1 + 1 + 64 + 1 + (4 + 2 × 8) + 64 = 950.
     /// The 64 term is the step-2 bitmap gate (Attempt 2); the
     /// final 1 is the window-open consumption flag; the last term
     /// is the slice-27 relevant-groups list (length prefix + at most
-    /// MAX_GROUPS u16 values), appended after the flag.
-    pub const SPACE: usize = 8 + 8 + 32 + 1 + 32 + 8 + 8 + 8 + 4 + 4 + 8 + 8 + 8 + 268 + 1 + 1 + 32 + 8 + 32 + 8 + 32 + 276 + 4 + 1 + 1 + 64 + 1 + 20;
+    /// MAX_GROUPS u16 values), appended after the flag; the trailing
+    /// 64 is the slice-28 previous-round signalled bitmap.
+    pub const SPACE: usize = 8 + 8 + 32 + 1 + 32 + 8 + 8 + 8 + 4 + 4 + 8 + 8 + 8 + 268 + 1 + 1 + 32 + 8 + 32 + 8 + 32 + 276 + 4 + 1 + 1 + 64 + 1 + 20 + 64;
 }
 
 /// One transition type's policy (design §3 `PolicyRecord`, §4.1
@@ -8426,6 +8538,21 @@ pub struct SubmitSignal<'info> {
         bump = signal_bump
     )]
     pub signal_record: UncheckedAccount<'info>,
+    /// Slice 28 — the caller's previous-round SignalRecord, for the
+    /// signal-time monotone-revision check. CHECK: unchecked by type
+    /// deliberately, and carrying NO seeds constraint: the previous
+    /// record's bump is first-come definitional (step-2 fork), so no
+    /// framework derivation can re-derive it — the handler verifies
+    /// it by hand (program-owned SignalRecord, stored bump
+    /// re-derives this address from the previous-round seeds, fields
+    /// name this transition, the previous round, and the caller).
+    /// The record is required exactly when the caller signalled the
+    /// previous round (the snapshot bitmap says so); callers pass
+    /// the program id here to mean absent, and a required-but-absent
+    /// record refuses `PrevSignalRequired` — omission cannot dodge
+    /// the check. Callers who did not signal last round skip the
+    /// check, as the kernel does, whatever they pass here.
+    pub prev_signal_record: UncheckedAccount<'info>,
     /// The signalling agent (signer; pays rent for the signal record).
     #[account(mut)]
     pub caller: Signer<'info>,
@@ -10154,6 +10281,19 @@ pub enum TreasuryError {
     /// (slice 26).
     #[msg("Published rule registry is full: at most 16 rule versions.")]
     RuleRegistryFull,
+    /// The caller signalled the previous round (the snapshot
+    /// bitmap says so) but passed the program id as "absent" for
+    /// their previous-round SignalRecord: the record is required,
+    /// and omission cannot dodge the monotone check (slice 28).
+    #[msg("Previous-round SignalRecord required: the caller signalled the previous round.")]
+    PrevSignalRequired,
+    /// The passed previous-round SignalRecord fails verification:
+    /// it does not deserialize as a program-owned SignalRecord, its
+    /// stored bump does not re-derive its address from the
+    /// previous-round seeds, or its fields do not name this
+    /// transition, the previous round, and the caller (slice 28).
+    #[msg("Previous-round SignalRecord mismatch: not the caller's record for the previous round.")]
+    PrevSignalMismatch,
 }
 
 #[cfg(test)]
@@ -10321,7 +10461,7 @@ mod tests {
         // apply_policy_amendment, and the one-time window-open
         // consumption flag (1) with open_window, and the
         // relevant-groups list (4 + 2 x 8) with register_transition.
-        assert_eq!(TransitionRecord::SPACE, 886);
+        assert_eq!(TransitionRecord::SPACE, 950);
         assert_eq!(DeclaredChain::SPACE, 49);
         assert_eq!(MAX_CONSTRAINTS, 8);
         assert_eq!(MAX_EXCEPTIONS, 8);
@@ -10594,6 +10734,23 @@ mod tests {
     }
 
     #[test]
+    fn prev_round_signalled_matrix() {
+        // Slice 28: the snapshot bitmap decides whether the previous
+        // record is required. Bit layout is the gate's (byte index/8,
+        // bit index%8); index 511 is the last valid bit, 512 refuses.
+        let mut bitmap = [0u8; 64];
+        bitmap[0] = 0b0000_0010; // index 1 set
+        bitmap[63] = 0b1000_0000; // index 511 set
+        assert!(prev_round_signalled(&bitmap, 1).unwrap());
+        assert!(prev_round_signalled(&bitmap, 511).unwrap());
+        assert!(!prev_round_signalled(&bitmap, 0).unwrap());
+        assert!(!prev_round_signalled(&bitmap, 2).unwrap());
+        assert!(!prev_round_signalled(&bitmap, 510).unwrap());
+        assert!(prev_round_signalled(&bitmap, 512).is_err());
+        assert!(!prev_round_signalled(&[0u8; 64], 1).unwrap());
+    }
+
+    #[test]
     fn advance_round_gate_matrix() {
         // Caller binding is permissionless (the kernel ignores its
         // advance_round caller), so the helper takes no caller
@@ -10738,6 +10895,7 @@ mod tests {
             signalled_bitmap: [0u8; 64],
             window_open_applied: false,
             relevant_groups: vec![1],
+            prev_signalled_bitmap: [0u8; 64],
         };
         assert_eq!(record.state, STATE_REGISTERED);
         assert_eq!(record.relevant_groups, vec![1]);
