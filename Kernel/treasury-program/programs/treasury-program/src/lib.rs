@@ -3207,6 +3207,8 @@ pub mod treasury_program {
         record.authorization_window = window_id;
         record.tranche_paid = false;
         record.bump = ctx.bumps.holder_record;
+        // Slice 23: no loan-funded increment exists at enroll.
+        record.loan_funded_raw = 0;
         window.enrolled_total_raw = window
             .enrolled_total_raw
             .checked_add(position_raw)
@@ -3418,6 +3420,108 @@ pub mod treasury_program {
         Ok(())
     }
 
+    /// Borrowed-amount reinvestment (design §4.2, slice 23 — the
+    /// borrowed-amount ruling, decided 2026-10-26 ~23:58 CST on
+    /// Carlos's instruction and generalized 2026-10-27 ~00:01 CST
+    /// under the decision-delegation rule): permitted, as its OWN
+    /// instruction, never folded into `reinvest`. Carlos's own
+    /// window option (c) from 2026-10-22 — at their window a
+    /// holder may withdraw their dividend, borrow against their
+    /// position, or reinvest their dividend and/or their borrowed
+    /// amount, growing their position instead of extracting.
+    ///
+    /// Atomic with the borrow, in the same instruction: the loan
+    /// is recorded in the lending book (principal + 60-day
+    /// maturity, 12% rate, same caps as `borrow`) AND the locked
+    /// position grows by exactly the borrowed amount. No cash is
+    /// disbursed and TreasuryState asset totals are NOT credited
+    /// — no deposit fiction; the offsetting asset is the loan
+    /// receivable, exactly as a normal borrow. The funded
+    /// increment is tracked separately on the record
+    /// (`loan_funded_raw`), and borrowing capacity is judged on
+    /// the OWNED position (position minus unrepaid loan-funded
+    /// increments): nobody borrows against the treasury's own
+    /// lent money, so the leverage spiral — borrow, reinvest,
+    /// borrow against the enlarged position, repeat — is
+    /// impossible by construction, not by policy. One active
+    /// loan per holder per window, as in `borrow`: a second
+    /// concurrent loan would tangle `settle_default`'s single
+    /// principal/maturity settlement, so it refuses here too,
+    /// which means the owned-cap is currently shadowed on-chain
+    /// by the active-loan rule and becomes load-bearing when a
+    /// future (partial-)repayment path clears principal without
+    /// clearing the funded increment in full.
+    ///
+    /// Maturity and default unchanged: repay (a future
+    /// instruction — none exists yet) and the increment is owned
+    /// outright; default settles principal against the position
+    /// per D-3, which returns a defaulted reinvested position to
+    /// exactly its pre-loan size, interest not collected, next
+    /// dividend skipped on the pre-default base. Exit while
+    /// indebted behaves exactly as the plain-borrow path (the
+    /// `exit` floor is untouched by this slice). The economics
+    /// are stated, not hidden: borrowing at 12% to earn the
+    /// 6.26% dividend on the increment is negative carry — this
+    /// was never a farming loop, and now it cannot even be
+    /// attempted mechanically.
+    ///
+    /// Bookkeeping only, as in `borrow`: no token movement yet;
+    /// the disbursement step lands separately and must not be
+    /// read into this instruction.
+    pub fn borrow_reinvest(
+        ctx: Context<BorrowReinvest>,
+        transition_id: u64,
+        window_id: u64,
+        amount_raw: u64,
+    ) -> Result<()> {
+        can_borrow_reinvest(
+            ctx.accounts.transition_record.state,
+            ctx.accounts.transition_record.transition_type,
+            ctx.accounts.holder_record.window_id,
+            window_id,
+            ctx.accounts.holder_record.loan_principal_raw,
+            ctx.accounts.holder_record.position_raw,
+            ctx.accounts.holder_record.loan_funded_raw,
+            amount_raw,
+            ctx.accounts.lending_book.outstanding_raw,
+            ctx.accounts.window_state.snapshot_total_raw,
+        )?;
+        let maturity = Clock::get()?
+            .unix_timestamp
+            .checked_add((LOAN_TERM_DAYS as i64) * 86_400)
+            .ok_or(TreasuryError::Overflow)?;
+        let record = &mut ctx.accounts.holder_record;
+        record.position_raw = record
+            .position_raw
+            .checked_add(amount_raw)
+            .ok_or(TreasuryError::Overflow)?;
+        record.loan_principal_raw = amount_raw;
+        record.loan_maturity = maturity;
+        record.loan_funded_raw = amount_raw;
+        let book = &mut ctx.accounts.lending_book;
+        book.outstanding_raw = book
+            .outstanding_raw
+            .checked_add(amount_raw)
+            .ok_or(TreasuryError::Overflow)?;
+        book.active_loans = book
+            .active_loans
+            .checked_add(1)
+            .ok_or(TreasuryError::Overflow)?;
+        emit!(BorrowReinvested {
+            window_id,
+            holder: ctx.accounts.holder.key(),
+            amount_raw,
+            rate_ppm: LOAN_RATE_PPM,
+            maturity,
+            position_after_raw: record.position_raw,
+            loan_funded_after_raw: record.loan_funded_raw,
+            transition_id,
+            commit_index: ctx.accounts.transition_record.commit_index,
+            declared_hash: ctx.accounts.transition_record.declared_hash,
+        });
+        Ok(())
+    }
+
     /// Default settlement (design §4.2, D-3): the window protocol's
     /// maturing-loan step, after the tranche and before new borrow /
     /// exit / reinvest in the pinned protocol order. It settles the
@@ -3459,7 +3563,8 @@ pub mod treasury_program {
     ///
     /// Honest scope, as in `pay_tranche` / `borrow`: this slice
     /// records the settlement as bookkeeping — position reduced by
-    /// principal, loan cleared, book outstanding and count reduced,
+    /// principal, loan cleared, loan-funded increment extinguished
+    /// (slice 23), book outstanding and count reduced,
     /// skip flag set, one forfeited slot queued on the holder's
     /// forfeiture record (slice 22) — and does NOT move tokens
     /// (the program holds no token accounts yet). Both gaps the
@@ -3498,6 +3603,15 @@ pub mod treasury_program {
             .ok_or(TreasuryError::Overflow)?;
         record.loan_principal_raw = 0;
         record.loan_maturity = 0;
+        // Slice 23: the loan-funded increment is extinguished
+        // with the settlement — for a reinvest loan the position
+        // reduction above removes exactly the funded increment,
+        // returning the position to its pre-loan size, so the
+        // funded figure must clear with the loan (for a plain
+        // borrow it was already zero). A stale funded figure
+        // would understate the owned position on every later
+        // capacity check.
+        record.loan_funded_raw = 0;
         record.skip_next_dividend = true;
         let book = &mut ctx.accounts.lending_book;
         book.outstanding_raw = book
@@ -3687,12 +3801,14 @@ pub mod treasury_program {
     /// reinvestment of engine-sim T8. Reinvesting a
     /// BORROWED amount (Carlos's 2026-10-22 window-rule
     /// phrasing, "reinvest their dividend and/or their
-    /// borrowed $50") is NOT this instruction: a loan's
-    /// principal is cash disbursed from the sleeve, and
-    /// folding it back into the locked position would
-    /// tangle the loan's settlement against that same
-    /// position — that reading needs its own ruling and
-    /// its own instruction, and is not claimed here.
+    /// borrowed $50") is NOT this instruction — it is slice
+    /// 23's `borrow_reinvest`, decided 2026-10-26 ~23:58 CST:
+    /// atomic with the borrow, position and loan recorded in
+    /// the same instruction, capacity on the owned position.
+    /// Folding a borrowed amount through THIS instruction
+    /// would double-count it (accrued dividend is the only
+    /// source this gate reads), so the two instructions stay
+    /// separate by construction.
     /// Bookkeeping only, as in the sibling slices: no
     /// token movement yet.
     pub fn reinvest(
@@ -5720,6 +5836,59 @@ pub fn can_borrow(
     Ok(())
 }
 
+/// The `borrow_reinvest` gate, as a pure check (design §4.2,
+/// slice 23): `can_borrow` with the capacity base changed to
+/// the OWNED position — the locked position minus unrepaid
+/// loan-funded increments — and the same one-active-loan,
+/// positive-amount, and T/12 book-cap rules. The funded figure
+/// exceeding the position is a corrupted record, refused
+/// fail-closed, never clamped: clamping would silently invent
+/// owned capacity. Order mirrors [`can_borrow`]: the
+/// transition binding first, the active-loan rule next, the
+/// amount rules next, the book cap last — so an over-owned-cap
+/// request refuses LoanExceedsPosition even when the book is
+/// also full, and a request inside the owned cap but over the
+/// book refuses BookCapExceeded.
+pub fn can_borrow_reinvest(
+    state: u8,
+    transition_type: [u8; 32],
+    record_window_id: u64,
+    window_id: u64,
+    existing_loan_raw: u64,
+    position_raw: u64,
+    loan_funded_raw: u64,
+    amount_raw: u64,
+    book_outstanding_raw: u64,
+    snapshot_total_raw: u64,
+) -> Result<()> {
+    require!(state == STATE_COMMITTED, TreasuryError::BadState);
+    require!(
+        transition_type == TREASURY_WINDOW_TYPE && record_window_id == window_id,
+        TreasuryError::BorrowReinvestMismatch
+    );
+    require!(
+        existing_loan_raw == 0,
+        TreasuryError::LoanAlreadyActive
+    );
+    require!(amount_raw != 0, TreasuryError::InvalidLoanAmount);
+    require!(
+        loan_funded_raw <= position_raw,
+        TreasuryError::LoanExceedsPosition
+    );
+    let owned_raw = position_raw - loan_funded_raw;
+    let max_loan = (owned_raw as u128 * MAX_LOAN_TO_POSITION_PPM as u128 / PPM) as u64;
+    require!(
+        amount_raw <= max_loan,
+        TreasuryError::LoanExceedsPosition
+    );
+    require!(
+        book_outstanding_raw as u128 + amount_raw as u128
+            <= max_outstanding(snapshot_total_raw as u128),
+        TreasuryError::BookCapExceeded
+    );
+    Ok(())
+}
+
 /// The `settle_default` gate, as a pure check (design §4.2, D-3):
 /// the authorizing transition must be Committed and of the
 /// canonical window type (executions ride commit, before settle);
@@ -6532,6 +6701,30 @@ pub struct LoanIssued {
     pub amount_raw: u64,
     pub rate_ppm: u64,
     pub maturity: i64,
+    pub transition_id: u64,
+    pub commit_index: u64,
+    pub declared_hash: [u8; 32],
+}
+
+/// Event for [`treasury_program::borrow_reinvest`] (design §4.2,
+/// §6, slice 23): the window, the holder, the borrowed amount
+/// reinvested, the 12% rate and the 60-day maturity, the
+/// position and the loan-funded figure after the move — plus
+/// the authorization context, the Committed window flow
+/// transition's id, commit index, and declared hash. The amount
+/// here is a loan recorded and a position grown in the same
+/// instruction, not a token disbursement and not a TreasuryState
+/// credit: the program holds no token accounts yet, and the
+/// disbursement step lands separately.
+#[event]
+pub struct BorrowReinvested {
+    pub window_id: u64,
+    pub holder: Pubkey,
+    pub amount_raw: u64,
+    pub rate_ppm: u64,
+    pub maturity: i64,
+    pub position_after_raw: u64,
+    pub loan_funded_after_raw: u64,
     pub transition_id: u64,
     pub commit_index: u64,
     pub declared_hash: [u8; 32],
@@ -7767,11 +7960,22 @@ pub struct HolderRecord {
     pub tranche_paid: bool,
     /// PDA bump for the `["holder", window_id, holder]` seeds.
     pub bump: u8,
+    /// Loan-funded position (slice 23, borrowed-amount
+    /// reinvestment): the part of `position_raw` that arrived via
+    /// `borrow_reinvest` and is not yet owned outright. Zero at
+    /// enroll and after any loan clears; equal to the loan
+    /// principal while a reinvest loan is active, and zero for
+    /// a plain `borrow`. Borrowing capacity is judged on the
+    /// owned position (`position_raw` minus this field), never
+    /// on the loan-funded increment itself — the anti-spiral
+    /// term. Appended after `bump` so every pre-existing field
+    /// keeps its byte offset.
+    pub loan_funded_raw: u64,
 }
 
 impl HolderRecord {
-    /// 8 (discriminator) + 32 + 6 × 8 + 1 + 1 + 8 + 1 + 1.
-    pub const SPACE: usize = 8 + 32 + 8 + 8 + 8 + 8 + 8 + 8 + 1 + 1 + 8 + 1 + 1;
+    /// 8 (discriminator) + 32 + 6 × 8 + 1 + 1 + 8 + 1 + 1 + 8.
+    pub const SPACE: usize = 8 + 32 + 8 + 8 + 8 + 8 + 8 + 8 + 1 + 1 + 8 + 1 + 1 + 8;
 }
 
 /// Holder forfeiture record (slice 22, cross-record D-3 carry) —
@@ -8612,6 +8816,42 @@ pub struct Borrow<'info> {
     /// window and the signer. Mutated: principal + maturity live
     /// here, and a nonzero principal is what refuses a second
     /// concurrent loan.
+    #[account(mut, seeds = [b"holder", window_id.to_le_bytes().as_ref(), holder.key().as_ref()], bump = holder_record.bump)]
+    pub holder_record: Account<'info, HolderRecord>,
+    /// The lending book PDA — mutated: outstanding and active-loan
+    /// count move here, and nowhere else, so the T/12 cap is judged
+    /// against one aggregate, not per-holder sums.
+    #[account(mut, seeds = [b"lending-book"], bump = lending_book.bump)]
+    pub lending_book: Account<'info, LendingBook>,
+}
+
+/// Accounts for [`treasury_program::borrow_reinvest`] (slice
+/// 23): the `borrow` account set, unchanged — the funded
+/// increment lives on the holder record, so no new account is
+/// needed to track it.
+#[derive(Accounts)]
+#[instruction(transition_id: u64, window_id: u64, amount_raw: u64)]
+pub struct BorrowReinvest<'info> {
+    /// The borrowing-and-reinvesting holder (signer). Holder-signed
+    /// intent, not operator-settled: the record below is
+    /// seeds-bound to this signer, so a holder reinvests a
+    /// borrowed amount only against their own lock.
+    pub holder: Signer<'info>,
+    /// The window flow transition, seeds-bound to its id. Must be
+    /// Committed and of the canonical window type — the authority
+    /// for this loan, not the holder's discretion over the caps.
+    #[account(seeds = [b"transition", transition_id.to_le_bytes().as_ref()], bump = transition_record.bump)]
+    pub transition_record: Account<'info, TransitionRecord>,
+    /// The window being borrowed in, seeds-bound to its id.
+    /// Read-only here except as the cap basis: its period-start
+    /// snapshot total sizes the book cap.
+    #[account(seeds = [b"window", window_id.to_le_bytes().as_ref()], bump = window_state.bump)]
+    pub window_state: Account<'info, WindowState>,
+    /// The holder's record for this window, seeds-bound to the
+    /// window and the signer. Mutated: position grows by the
+    /// borrowed amount, principal + maturity + funded increment
+    /// live here, and a nonzero principal is what refuses a
+    /// second concurrent loan.
     #[account(mut, seeds = [b"holder", window_id.to_le_bytes().as_ref(), holder.key().as_ref()], bump = holder_record.bump)]
     pub holder_record: Account<'info, HolderRecord>,
     /// The lending book PDA — mutated: outstanding and active-loan
@@ -9574,6 +9814,12 @@ pub enum TreasuryError {
     /// empty registry accepts nothing (fail-closed).
     #[msg("Mint not accepted: the mint is not in the accepted-mints registry.")]
     MintNotAccepted,
+    /// A borrow-reinvest does not match its window: the
+    /// authorizing transition must be the canonical window
+    /// flow type and the holder's record must belong to the
+    /// window being borrowed in (slice 23).
+    #[msg("A borrow-reinvest does not match its window.")]
+    BorrowReinvestMismatch,
 }
 
 #[cfg(test)]
@@ -11570,7 +11816,7 @@ mod tests {
 
     #[test]
     fn holder_record_space_matches_fields() {
-        assert_eq!(HolderRecord::SPACE, 100);
+        assert_eq!(HolderRecord::SPACE, 108);
     }
 
     #[test]
@@ -11764,6 +12010,104 @@ mod tests {
             STATE_COMMITTED, TREASURY_WINDOW_TYPE, 13, 13, 0, 10_000, 100, 0, 1_200,
         )
         .expect("a loan at the small-snapshot book cap passes");
+    }
+
+    #[test]
+    fn borrow_reinvest_gate_matrix() {
+        // Happy path: Committed window transition, the holder's own
+        // window, no existing loan, no funded increment yet, amount
+        // exactly half the owned position ($50 per $100), book far
+        // below the T/12 cap (snapshot 100,000,000 -> 8,333,333).
+        can_borrow_reinvest(
+            STATE_COMMITTED, TREASURY_WINDOW_TYPE, 13, 13, 0, 10_000, 0, 5_000, 0,
+            100_000_000,
+        )
+        .expect("committed window borrow-reinvest at the owned cap passes");
+        // Pre-commit and post-commit states refuse: loans ride
+        // commit, before settle.
+        for state in [
+            STATE_COMMITTABLE,
+            STATE_SETTLED,
+            STATE_REJECTED,
+            STATE_EXPIRED,
+        ] {
+            assert!(can_borrow_reinvest(
+                state, TREASURY_WINDOW_TYPE, 13, 13, 0, 10_000, 0, 5_000, 0,
+                100_000_000
+            )
+            .is_err());
+        }
+        // Wrong transition type, and a record belonging to another
+        // window, both refuse as a mismatch (the new 6101 code).
+        assert!(can_borrow_reinvest(
+            STATE_COMMITTED, TREASURY_LAUNCH_TYPE, 13, 13, 0, 10_000, 0, 5_000, 0,
+            100_000_000
+        )
+        .is_err());
+        assert!(can_borrow_reinvest(
+            STATE_COMMITTED, TREASURY_WINDOW_TYPE, 12, 13, 0, 10_000, 0, 5_000, 0,
+            100_000_000
+        )
+        .is_err());
+        // A second concurrent loan refuses: one loan per holder per
+        // window, whatever the caps allow.
+        assert!(can_borrow_reinvest(
+            STATE_COMMITTED, TREASURY_WINDOW_TYPE, 13, 13, 1_000, 10_000, 0, 5_000, 0,
+            100_000_000
+        )
+        .is_err());
+        // A zero amount refuses: it would set a maturity and count
+        // an active loan while lending nothing.
+        assert!(can_borrow_reinvest(
+            STATE_COMMITTED, TREASURY_WINDOW_TYPE, 13, 13, 0, 10_000, 0, 0, 0,
+            100_000_000
+        )
+        .is_err());
+        // THE OWNED-CAP CASES — the slice-23 mechanism, proven at
+        // the gate because on-chain it is shadowed by the
+        // one-active-loan rule until a (partial-)repayment path
+        // exists: position 14,000 with a 4,000 funded increment
+        // owns 10,000, so the cap is 5,000, not 7,000.
+        assert!(can_borrow_reinvest(
+            STATE_COMMITTED, TREASURY_WINDOW_TYPE, 13, 13, 0, 14_000, 4_000, 5_001, 0,
+            100_000_000
+        )
+        .is_err());
+        can_borrow_reinvest(
+            STATE_COMMITTED, TREASURY_WINDOW_TYPE, 13, 13, 0, 14_000, 4_000, 5_000, 0,
+            100_000_000,
+        )
+        .expect("the owned cap is half the owned position, not half the position");
+        // A funded figure above the position is a corrupted record:
+        // refused fail-closed, never clamped into owned capacity.
+        assert!(can_borrow_reinvest(
+            STATE_COMMITTED, TREASURY_WINDOW_TYPE, 13, 13, 0, 10_000, 10_001, 1, 0,
+            100_000_000
+        )
+        .is_err());
+        // Book cap: outstanding at the cap refuses any further loan;
+        // one unit below the cap admits exactly one unit. The cap is
+        // the snapshot's T/12 (100,000,000 -> 8,333,333), and it is
+        // judged AFTER the owned cap — an over-owned-cap request
+        // refuses on the position code even with a full book.
+        assert!(can_borrow_reinvest(
+            STATE_COMMITTED, TREASURY_WINDOW_TYPE, 13, 13, 0, 10_000, 0, 1, 8_333_333,
+            100_000_000
+        )
+        .is_err());
+        can_borrow_reinvest(
+            STATE_COMMITTED, TREASURY_WINDOW_TYPE, 13, 13, 0, 10_000, 0, 1, 8_333_332,
+            100_000_000,
+        )
+        .expect("one unit of book headroom admits a one-unit borrow-reinvest");
+        assert!(can_borrow_reinvest(
+            STATE_COMMITTED, TREASURY_WINDOW_TYPE, 13, 13, 0, 10_000, 0, 101, 0, 1_200
+        )
+        .is_err());
+        can_borrow_reinvest(
+            STATE_COMMITTED, TREASURY_WINDOW_TYPE, 13, 13, 0, 10_000, 0, 100, 0, 1_200,
+        )
+        .expect("a borrow-reinvest at the small-snapshot book cap passes");
     }
 
     #[test]
