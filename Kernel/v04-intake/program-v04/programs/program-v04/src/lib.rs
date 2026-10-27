@@ -25,28 +25,46 @@
 //!   no_std-compatible API is used (consts / `from_raw`, never the
 //!   std-only `from_f64` convenience).
 //!
-//! Slice 6 (this slice): the §4.1 genesis instruction — `initialize_kernel`
+//! Slice 6: the §4.1 genesis instruction — `initialize_kernel`
 //! — and the first §3 account, `KernelState`. `KernelState` carries the
 //! design's `DeclaredChain` fields (`head_index`/`head_hash`) alongside
 //! `sealed`/`clock`; no standalone `DeclaredChain` account is split out
 //! in this slice. The instruction constructs the real probe-config kernel
 //! and persists its genesis state; it does not claim a seal.
 //!
-//! Deliberately NOT slice 6, and why: there is no `seal_kernel`
-//! instruction here. The kernel's `seal_genesis` refuses until the
-//! launch genesis is complete — a full council, the four governance
-//! policies, and the influence-share bound — and those genesis steps
-//! live in the step-2 launch crate, which is std-only (`std` collections,
-//! `vec!`) and cannot compile to SBF as-is. An account-only seal flag
-//! would claim a seal the kernel never granted, so no such flag is
-//! written: the seal instruction is slice 7's work, gated on a no_std
-//! port of the launch genesis steps (or the equivalent direct
-//! `genesis_apply` sequence in program code). The host test
-//! `probe_kernel_seal_refused_without_launch_genesis` pins this: the
-//! probe kernel's seal is refused `GenesisNotReady`, it is not faked.
+//! Slice 6 deliberately had NO `seal_kernel`, and why: the kernel's
+//! `seal_genesis` refuses until the launch genesis is complete — a full
+//! council, the four governance policies, and the influence-share bound
+//! — and those genesis steps lived in the step-2 launch crate, which is
+//! std-only (`std` collections, `vec!`) and cannot compile to SBF as-is.
+//! An account-only seal flag would claim a seal the kernel never granted,
+//! so no such flag was written.
+//!
+//! Slice 7 (this slice): the no_std port of the launch genesis steps,
+//! and the `seal_kernel` instruction. The port replays the step-2 launch
+//! profile exactly — same genesis authority, same policy values, same
+//! six agents at base 2.0, same operator roles, same three capacity
+//! stocks, same 3-seat council — but with `alloc` collections and
+//! `Amount::from_raw` only (the step-2 crate's `from_f64` convenience is
+//! std-only and is never used here), so the sequence compiles to SBF.
+//! `seal_kernel` runs that sequence through the real kernel, seals it,
+//! and persists the sealed flag, the kernel clock, and the declared head
+//! into `KernelState`. It does NOT persist the kernel object itself:
+//! the account records the seal outcome, and later slices' per-record
+//! accounts are what let instructions continue from a sealed kernel.
+//! Seal authority in this slice is the signing payer — the same gap
+//! slice 6 recorded for genesis authority (the design's multisig-signed
+//! `initialize_config` wiring is a later §4.1 slice, not claimed here).
 
+extern crate alloc;
+
+use alloc::collections::BTreeSet;
+use alloc::vec;
 use anchor_lang::prelude::*;
-use coordination_kernel::{Amount, Config, Kernel, KernelError, NoEnv, SystemState};
+use coordination_kernel::{
+    Amount, Config, GovAction, Kernel, KernelError, NoEnv, Policy, Role, SystemState,
+    T_GOV_ADJUSTABLE, T_GOV_CONSTITUTION, T_GOV_COUNCIL, T_GOV_REBOOT, SCALE,
+};
 
 declare_id!("FzxnCtig4asxnCxGhjcbCDY5zkfcpfTb5GcXNL9UaGg6");
 
@@ -87,6 +105,33 @@ pub mod program_v04 {
         emit!(KernelInitialized { sealed, head_index });
         Ok(())
     }
+
+    /// Seal (§4.1, second row, v0.4 form): run the full launch-genesis
+    /// sequence through the real kernel, seal it, and persist the sealed
+    /// flag, clock, and declared head into the `KernelState` PDA created
+    /// by `initialize_kernel`. Refused `AlreadySealed` if the account
+    /// already records a seal — a second seal never re-runs genesis.
+    /// The kernel object itself is not persisted (see module docs);
+    /// what the account records is the seal outcome, proven by a kernel
+    /// that actually sealed. Seal authority is the signing payer; the
+    /// multisig wiring is a later §4.1 slice.
+    pub fn seal_kernel(ctx: Context<SealKernel>) -> Result<()> {
+        let state = &mut ctx.accounts.kernel_state;
+        apply_seal_to_state(state)?;
+        emit!(KernelSealed { head_index: state.head_index, clock: state.clock });
+        Ok(())
+    }
+}
+
+#[derive(Accounts)]
+pub struct SealKernel<'info> {
+    #[account(
+        mut,
+        seeds = [b"kernel-state"],
+        bump = kernel_state.bump,
+    )]
+    pub kernel_state: Account<'info, KernelState>,
+    pub payer: Signer<'info>,
 }
 
 #[derive(Accounts)]
@@ -117,7 +162,7 @@ pub struct InitializeKernel<'info> {
 #[account]
 #[derive(Debug)]
 pub struct KernelState {
-    /// False until the slice-7 seal instruction lands (see module docs).
+    /// False until `seal_kernel` seals it (slice 7; see module docs).
     pub sealed: bool,
     /// Declared-chain head index (genesis: 0).
     pub head_index: u64,
@@ -148,12 +193,203 @@ pub struct KernelInitialized {
     pub head_index: u64,
 }
 
+#[event]
+pub struct KernelSealed {
+    pub head_index: u64,
+    pub clock: u64,
+}
+
 #[error_code]
 pub enum ProgramV04Error {
     #[msg("program-v04 probe: kernel construction failed")]
     KernelProbe,
     #[msg("program-v04 initialize: kernel genesis failed")]
     KernelInit,
+    #[msg("program-v04 seal: launch-genesis sequence or seal failed")]
+    KernelSeal,
+    #[msg("program-v04 seal: kernel state already sealed")]
+    AlreadySealed,
+}
+
+// ---------------------------------------------------------------- launch genesis
+// The step-2 launch profile, ported to no_std: `alloc` collections and
+// `Amount::from_raw` only. Values are pinned to the step-2 crate —
+// `launch_config_matches_step2_profile` asserts the config half — so a
+// drift between the host profile and the on-chain sequence fails a test
+// instead of silently forking the genesis.
+
+/// Genesis authority (retired by the seal).
+pub const GEN: [u8; 32] = [0xA0; 32];
+/// Observer (posts observations).
+pub const OBSERVER: [u8; 32] = [0xA1; 32];
+/// Executor (starts execution).
+pub const EXECUTOR: [u8; 32] = [0xB1; 32];
+/// Settlers (attest realized hashes; threshold 2).
+pub const SETTLER_A: [u8; 32] = [0xB2; 32];
+/// Settlers (attest realized hashes; threshold 2).
+pub const SETTLER_B: [u8; 32] = [0xB3; 32];
+/// Outcome recorder (records attribution after settlement).
+pub const RECORDER: [u8; 32] = [0xB4; 32];
+
+/// Ordinary transition type used by the launch profile.
+pub const TT: [u8; 32] = [9; 32];
+/// Required constraint id for TT.
+pub const C1: [u8; 32] = [5; 32];
+/// Required objective id for TT.
+pub const O1: [u8; 32] = [6; 32];
+
+/// Monthly distribution tranches (mirrors v0.2 `kernel-policy` id 0).
+pub const RES_TREASURY_TRANCHE: u16 = 0;
+/// The secured lending book (mirrors v0.2 `kernel-policy` id 1).
+pub const RES_LENDING_BOOK: u16 = 1;
+/// Rotational exit windows (mirrors v0.2 `kernel-policy` id 2).
+pub const RES_EXIT_WINDOW: u16 = 2;
+
+/// Agent ids 1..=6 for the seeded agent set.
+pub fn ag(n: u8) -> [u8; 32] {
+    [n; 32]
+}
+
+/// The step-2 launch configuration, in `from_raw` form: reputation
+/// 0..100, attribution capped at ±20, 1000-tick epochs, a 3-seat council,
+/// reputation recorded but zero influence (pin-OFF).
+pub fn launch_config() -> Config {
+    Config {
+        rep_min: Amount::from_raw(0),
+        rep_max: Amount::from_raw(100 * SCALE),
+        max_attribution: Amount::from_raw(20 * SCALE),
+        epoch_length: 1000,
+        council_seats: 3,
+        reputation_weighs: false,
+    }
+}
+
+/// Policy shared by every type in the launch profile (same shape as the
+/// step-2 crate's test policy).
+pub fn launch_policy() -> Policy {
+    Policy {
+        quorum_required: Amount::ONE,
+        confidence_threshold: Amount::from_raw(SCALE / 2),
+        min_obs_confidence: Amount::from_raw(SCALE / 2),
+        require_objectives: false,
+        consensus_window: 100,
+        planning_window: 100,
+        execution_window: 1000,
+        max_plans: 6,
+        settlement_threshold: 2,
+        max_rounds: 3,
+    }
+}
+
+/// The launch kernel type: the delivered crate under `NoEnv`. Genesis
+/// steps never consult the environment — the launch crate's env answers
+/// (C1 = Pass, O1 = true) are only needed once transitions are evaluated,
+/// not while rules are seeded — so `NoEnv` is exact here, not a shortcut.
+pub type LaunchKernelNoEnv = Kernel<NoEnv>;
+
+/// Fresh kernel at genesis time `t = 100`, genesis authority GEN.
+pub fn fresh_launch_kernel() -> core::result::Result<LaunchKernelNoEnv, KernelError> {
+    Kernel::new(
+        GEN,
+        SystemState { index: 0, hash: [0; 32], timestamp: 100 },
+        launch_config(),
+        NoEnv,
+    )
+}
+
+/// Genesis seeding: policies for TT and all four governance types, the
+/// required constraint/objective sets for TT, six agents at base 2.0,
+/// the operator roles, and the three capacity stocks. Deliberately NOT
+/// the council or the seal, so tests can assert the seal's readiness
+/// gates compositionally (see `seal_refused_without_council`).
+pub fn apply_launch_genesis(
+    k: &mut LaunchKernelNoEnv,
+) -> core::result::Result<(), KernelError> {
+    let policy = launch_policy();
+    k.genesis_apply(&GEN, GovAction::SetPolicy { ttype: TT, policy: policy.clone() }, 100)?;
+    for t in [T_GOV_ADJUSTABLE, T_GOV_CONSTITUTION, T_GOV_COUNCIL, T_GOV_REBOOT] {
+        k.genesis_apply(&GEN, GovAction::SetPolicy { ttype: t, policy: policy.clone() }, 100)?;
+    }
+    k.genesis_apply(
+        &GEN,
+        GovAction::SetRequiredConstraints { ttype: TT, set: BTreeSet::from([C1]) },
+        100,
+    )?;
+    k.genesis_apply(
+        &GEN,
+        GovAction::SetRequiredObjectives { ttype: TT, set: BTreeSet::from([O1]) },
+        100,
+    )?;
+    for n in 1..=6u8 {
+        k.genesis_apply(
+            &GEN,
+            GovAction::RegisterAgent {
+                agent: ag(n),
+                groups: BTreeSet::from([1u16]),
+                base_influence: Amount::from_raw(2 * SCALE),
+            },
+            100,
+        )?;
+    }
+    for (who, role) in [
+        (OBSERVER, Role::Observer),
+        (EXECUTOR, Role::Executor),
+        (SETTLER_A, Role::Settler),
+        (SETTLER_B, Role::Settler),
+        (RECORDER, Role::OutcomeRecorder),
+    ] {
+        k.genesis_apply(&GEN, GovAction::GrantRole { who, role }, 100)?;
+    }
+    for (resource, capacity) in [
+        (RES_TREASURY_TRANCHE, 1000 * SCALE),
+        (RES_LENDING_BOOK, 500 * SCALE),
+        (RES_EXIT_WINDOW, 250 * SCALE),
+    ] {
+        k.genesis_apply(
+            &GEN,
+            GovAction::SetCapacity { resource, capacity: Amount::from_raw(capacity) },
+            100,
+        )?;
+    }
+    Ok(())
+}
+
+/// Install the 3-seat launch council (seats 1, 2, 3).
+pub fn install_launch_council(
+    k: &mut LaunchKernelNoEnv,
+) -> core::result::Result<(), KernelError> {
+    k.genesis_apply(
+        &GEN,
+        GovAction::InstallCouncil { seats: vec![ag(1), ag(2), ag(3)] },
+        100,
+    )
+}
+
+/// The sealed launch kernel: fresh kernel, all genesis rules, council,
+/// seal. This is the sequence `seal_kernel` runs on-chain.
+pub fn sealed_launch_kernel() -> core::result::Result<LaunchKernelNoEnv, KernelError> {
+    let mut k = fresh_launch_kernel()?;
+    apply_launch_genesis(&mut k)?;
+    install_launch_council(&mut k)?;
+    k.seal_genesis(&GEN, 100)?;
+    Ok(k)
+}
+
+/// The instruction-level seal: refuse an already-sealed account, else
+/// run the sealed launch sequence and persist its outcome (sealed flag,
+/// kernel clock, declared head) into the account. The kernel object is
+/// not persisted — see the module docs.
+pub fn apply_seal_to_state(state: &mut KernelState) -> Result<()> {
+    if state.sealed {
+        return Err(error!(ProgramV04Error::AlreadySealed));
+    }
+    let k = sealed_launch_kernel().map_err(|_| error!(ProgramV04Error::KernelSeal))?;
+    state.sealed = true;
+    state.clock = k.now();
+    let declared = k.declared_state();
+    state.head_index = declared.index;
+    state.head_hash = declared.hash;
+    Ok(())
 }
 
 /// The launch-pinned probe config: reputation recorded but zero
@@ -259,6 +495,72 @@ mod tests {
         assert_eq!(back.head_hash, [0xAB; 32]);
         assert_eq!(back.clock, 100);
         assert_eq!(back.bump, 254);
+    }
+
+    #[test]
+    fn launch_config_matches_step2_profile() {
+        let cfg = launch_config();
+        assert_eq!(cfg.rep_min, Amount::from_raw(0));
+        assert_eq!(cfg.rep_max, Amount::from_raw(100 * SCALE));
+        assert_eq!(cfg.max_attribution, Amount::from_raw(20 * SCALE));
+        assert_eq!(cfg.epoch_length, 1000);
+        assert_eq!(cfg.council_seats, 3);
+        assert!(!cfg.reputation_weighs);
+    }
+
+    #[test]
+    fn sealed_launch_kernel_is_sealed_at_genesis_head() {
+        let k = sealed_launch_kernel().expect("launch sequence must seal");
+        assert!(k.is_sealed());
+        assert_eq!(k.now(), 100);
+        assert_eq!(k.declared_state().index, 0);
+        assert_eq!(k.declared_state().hash, [0; 32]);
+    }
+
+    #[test]
+    fn seal_refused_without_council() {
+        // Genesis rules without the council: the seal's COUNCIL gate
+        // must refuse, proving the instruction cannot seal a half-built
+        // genesis even if the caller skips the council step.
+        let mut k = fresh_launch_kernel().expect("fresh launch kernel must construct");
+        apply_launch_genesis(&mut k).expect("genesis rules must apply");
+        assert!(matches!(
+            k.seal_genesis(&GEN, 100),
+            Err(KernelError::GenesisNotReady("COUNCIL"))
+        ));
+        assert!(!k.is_sealed());
+    }
+
+    #[test]
+    fn sealed_kernel_reseal_refused() {
+        // After the seal the genesis authority is erased, so a second
+        // seal is refused as NotGenesis — the kernel itself, not just
+        // the account guard, bars a second seal.
+        let mut k = sealed_launch_kernel().expect("launch sequence must seal");
+        assert!(matches!(k.seal_genesis(&GEN, 100), Err(KernelError::NotGenesis)));
+        assert!(k.is_sealed());
+    }
+
+    #[test]
+    fn apply_seal_to_state_seals_genesis_state() {
+        let mut state = genesis_kernel_state().expect("genesis must construct");
+        assert!(!state.sealed);
+        apply_seal_to_state(&mut state).expect("seal must apply");
+        assert!(state.sealed);
+        assert_eq!(state.clock, 100);
+        assert_eq!(state.head_index, 0);
+        assert_eq!(state.head_hash, [0; 32]);
+    }
+
+    #[test]
+    fn apply_seal_to_state_refuses_when_sealed() {
+        let mut state = genesis_kernel_state().expect("genesis must construct");
+        state.sealed = true;
+        state.clock = 999;
+        let err = apply_seal_to_state(&mut state).expect_err("second seal must refuse");
+        assert_eq!(state.clock, 999, "a refused seal must not move the account");
+        // The error is the AlreadySealed program error, not a kernel failure.
+        assert!(format!("{:?}", err).contains("AlreadySealed"));
     }
 
     #[test]

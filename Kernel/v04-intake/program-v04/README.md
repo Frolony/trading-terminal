@@ -52,6 +52,36 @@ families, account inventory, and CU golden set are later step-5 slices.
   The host test pins the refusal (`GenesisNotReady` on the probe
   kernel), it is not faked.
 
+## Slice 7 — the `seal_kernel` instruction (the slice-6 gate, closed)
+
+- The no_std port of the step-2 launch genesis steps: same genesis
+  authority GEN, same policy values, same six agents at base 2.0, same
+  operator roles, same three capacity stocks, same 3-seat council —
+  but with `alloc` collections and `Amount::from_raw` only (the
+  step-2 crate's `from_f64` convenience is std-only and never used
+  here), so the sequence compiles to SBF. Genesis steps run under
+  `NoEnv`: they never consult the environment, so that is exact, not
+  a shortcut.
+- `seal_kernel`: runs the full sequence through the real kernel,
+  seals it, and persists the sealed flag, the kernel clock (100), and
+  the declared head (index 0, zero hash) into the `KernelState` PDA.
+  Refused `AlreadySealed` (6003) if the account already records a
+  seal. The kernel object itself is NOT persisted — the account
+  records the seal outcome, and later slices' per-record accounts are
+  what let instructions continue from a sealed kernel. Seal authority
+  is the signing payer; the multisig wiring is a later §4.1 slice.
+- Host tests 14/14 (8 prior + 6 slice-7: launch config pinned to the
+  step-2 profile, sealed kernel at genesis head, seal refused without
+  the council (`GenesisNotReady("COUNCIL")`), re-seal refused by the
+  kernel itself (`NotGenesis` — the genesis authority is erased),
+  account sealed by the instruction helper, second seal refused
+  without moving the account).
+- `anchor build` green under the pinned toolchain; IDL now 3
+  instructions (`initialize_kernel`, `probe_kernel`, `seal_kernel`),
+  1 account (`KernelState`), 4 errors (6000–6003), 2 events
+  (`KernelInitialized`, `KernelSealed`); `.so` 284,984 bytes
+  (sha256 `071ee2a6…`).
+
 ## Build
 
 ```sh
