@@ -377,9 +377,10 @@
 //! `fee_vault` at `initialize_config` — a wrong genesis value
 //! refuses init visibly (`VaultMismatch`) rather than running with
 //! two different "vaults", and there is no Config-update path to
-//! paper over it. Threshold B (D-2) starts unset (0): until a
-//! governed path sets it, `launch_stage2` can never commit, which
-//! is the design's intended state, not a gap.
+//! paper over it. Threshold B (D-2) is a genesis parameter of
+//! `initialize_treasury` (slice 25): a genesis that passes 0 leaves
+//! `launch_stage2` uncommittable, which is the design's intended
+//! state, not a gap.
 //! This increment adds `launch_stage2` (design §4.2), the second
 //! §4.2 instruction, in the same transition-executed form as the
 //! init: a Settled `treasury.launch.v1` transition authorizes the
@@ -392,10 +393,10 @@
 //! price on-chain to compute from; no other instruction checks B ad
 //! hoc. The handler's own gates are Settled + canonical type +
 //! stage still Stage 1 + threshold B set (nonzero) — the last is
-//! the D-2 intended state in executable form: B starts unset at
-//! init and no governed path sets it yet, so until that path lands
-//! a launch execution refuses with `ThresholdUnset` rather than
-//! reading an unset threshold as "any backing passes". No
+//! the D-2 intended state in executable form: B is pinned at
+//! genesis, so a genesis that passes 0 leaves a launch execution
+//! refusing with `ThresholdUnset` rather than reading an unset
+//! threshold as "any backing passes". No
 //! exact-settle requirement (the effect is a fixed flag flip) and no
 //! execution flag (the flip itself is the one-time guarantee: a
 //! second launch refuses because the stage is no longer Stage 1).
@@ -491,6 +492,11 @@ pub const CASH_SLEEVE_PPM: u64 = 250_000;
 
 /// Maximum loan per unit of position: $50 per $100.
 pub const MAX_LOAN_TO_POSITION_PPM: u64 = 500_000;
+
+/// Full backing in parts per million: the ceiling for the Stage 2
+/// backing threshold B (slice 25, D-2 writer path). B is a genesis
+/// parameter of `initialize_treasury`, never more than full backing.
+pub const FULL_BACKING_PPM: u64 = 1_000_000;
 
 /// Loan term at pilot, days. 60-day only (design §4.2).
 pub const LOAN_TERM_DAYS: u64 = 60;
@@ -2519,6 +2525,7 @@ pub mod treasury_program {
     pub fn initialize_treasury(
         ctx: Context<InitializeTreasury>,
         transition_id: u64,
+        backing_threshold_ppm: u64,
     ) -> Result<()> {
         let source = &ctx.accounts.transition_record;
         can_initialize_treasury(
@@ -2526,13 +2533,22 @@ pub mod treasury_program {
             source.transition_type,
             ctx.accounts.fee_vault.key() == ctx.accounts.config.fee_vault,
         )?;
+        // Slice 25, D-2 writer path: threshold B is a genesis
+        // parameter, pinned at initialize time — the initial-testing
+        // pin is 950_000 ppm (95%, relatively close to USDC-style
+        // full backing), passed by the genesis caller, not a
+        // program constant. Zero stays allowed and means unset:
+        // `launch_stage2` still refuses ThresholdUnset on it, so
+        // a genesis that defers B keeps the launch blocked
+        // fail-closed; above full backing refuses outright.
+        check_backing_threshold_ppm(backing_threshold_ppm)?;
         let state = &mut ctx.accounts.treasury_state;
         state.total_raw = 0;
         state.cash_raw = 0;
         state.bonds_raw = 0;
         state.arb_raw = 0;
         state.retained_float_raw = 0;
-        state.backing_threshold_ppm = 0;
+        state.backing_threshold_ppm = backing_threshold_ppm;
         state.window_count = 0;
         state.bump = ctx.bumps.treasury_state;
         state.accepted_mint_count = 0;
@@ -2962,13 +2978,14 @@ pub mod treasury_program {
     /// The gate [`can_launch_stage2`] enforces, in order: Settled
     /// state, the canonical launch type, the stage still being Stage
     /// 1, and threshold B set (nonzero). The threshold check is the
-    /// D-2 intended state made executable: B starts unset (0) at
-    /// `initialize_treasury`, and no governed path sets it yet — the
-    /// only writer of the field is the init's zero — so until that
-    /// path lands, a launch transition's execution refuses with
-    /// `ThresholdUnset` even though its lifecycle settled. That is
-    /// the design's intended state, not a gap in this instruction:
-    /// an unset threshold must never read as "any backing passes".
+    /// D-2 intended state made executable: B is a genesis
+    /// parameter of `initialize_treasury` (slice 25) — the only
+    /// writer of the field is the genesis call — so a genesis
+    /// that passes 0 still leaves the launch blocked: a launch
+    /// transition's execution refuses with `ThresholdUnset` even
+    /// though its lifecycle settled. That is the design's intended
+    /// state, not a gap in this instruction: an unset threshold
+    /// must never read as "any backing passes".
     /// Deliberately no exact-settle requirement, as with
     /// `initialize_treasury`: the launch's effect is fixed (one flag
     /// flip), so no declared payload exists for an inexact settle to
@@ -5386,10 +5403,10 @@ pub fn can_apply_policy_amendment(
 /// `Config.fee_vault`). Order mirrors
 /// [`can_apply_policy_amendment`]: the general failure first, the
 /// bindings last. Deliberately no exact-settle check: the init's
-/// effect is parameter-free, so no declared payload exists for an
-/// inexact settle to diverge from — the binding is Settled + type
-/// + vault, and re-execution is refused by the `init` constraints,
-/// not by a flag.
+/// effect is Settled + type + vault + the genesis threshold
+/// parameter, so no declared payload exists for an inexact settle
+/// to diverge from — the binding is Settled + type + vault, and
+/// re-execution is refused by the `init` constraints, not by a flag.
 pub fn can_initialize_treasury(
     state: u8,
     source_type: [u8; 32],
@@ -5401,6 +5418,20 @@ pub fn can_initialize_treasury(
         TreasuryError::InitMismatch
     );
     require!(vault_matches, TreasuryError::VaultMismatch);
+    Ok(())
+}
+
+/// The genesis threshold-B bound, as a pure check (slice 25, D-2):
+/// B may be zero (unset — the launch stays blocked fail-closed)
+/// or any value up to and including full backing, never above it.
+/// A threshold above 100% could never be met by definition, so it
+/// refuses at genesis rather than blocking the launch forever
+/// with a misleading cause.
+pub fn check_backing_threshold_ppm(backing_threshold_ppm: u64) -> Result<()> {
+    require!(
+        backing_threshold_ppm <= FULL_BACKING_PPM,
+        TreasuryError::ThresholdExceedsFullBacking
+    );
     Ok(())
 }
 
@@ -7749,7 +7780,9 @@ pub struct TreasuryState {
     /// year's remaining tranches, never free surplus.
     pub retained_float_raw: u64,
     /// Stage 2 backing threshold B in parts-per-million of
-    /// (supply × price); 0 means unset (D-2 open).
+    /// (supply × price); 0 means unset (slice 25: pinned by the
+    /// genesis parameter of `initialize_treasury`, never above
+    /// full backing).
     pub backing_threshold_ppm: u64,
     /// Windows opened so far. `open_window` requires the opened
     /// window's id to equal this counter, then advances it — the
@@ -9455,10 +9488,10 @@ pub enum TreasuryError {
     /// no state.
     #[msg("Stage 2 is already launched: the stage flag is no longer Stage 1.")]
     AlreadyLaunched,
-    /// The Stage 2 backing threshold B is unset (0, D-2 open): no
-    /// governed path has set it yet, so the launch cannot complete.
+    /// The Stage 2 backing threshold B is unset (0): the genesis
+    /// parameter pinned no threshold, so the launch cannot complete.
     /// An unset threshold must never read as "any backing passes".
-    #[msg("Stage 2 backing threshold B is unset (D-2 open): no governed path has set it yet.")]
+    #[msg("Stage 2 backing threshold B is unset: the genesis parameter pinned no threshold.")]
     ThresholdUnset,
     /// A window open does not match its authorizing transition:
     /// the source transition's type is not the canonical
@@ -9820,6 +9853,11 @@ pub enum TreasuryError {
     /// window being borrowed in (slice 23).
     #[msg("A borrow-reinvest does not match its window.")]
     BorrowReinvestMismatch,
+    /// The genesis backing threshold B exceeds full backing
+    /// (1,000,000 ppm): a threshold above 100% could never be
+    /// met, so it refuses at genesis (slice 25, D-2).
+    #[msg("Stage 2 backing threshold B exceeds full backing (1,000,000 ppm).")]
+    ThresholdExceedsFullBacking,
 }
 
 #[cfg(test)]
@@ -11651,6 +11689,24 @@ mod tests {
         assert!(can_launch_stage2(STATE_SETTLED, TREASURY_LAUNCH_TYPE, STAGE_2, 500_000).is_err());
         // An unset threshold (0, D-2 open) refuses: an unset B must
         // never read as "any backing passes".
+        assert!(can_launch_stage2(STATE_SETTLED, TREASURY_LAUNCH_TYPE, STAGE_1, 0).is_err());
+    }
+
+    #[test]
+    fn backing_threshold_genesis_parameter() {
+        // Slice 25, D-2 writer path: B is pinned at genesis, never
+        // above full backing. Zero stays legal (unset — the launch
+        // gate above still refuses it); the initial-testing pin
+        // 950_000 ppm (95%) and full backing itself pass; one unit
+        // over full backing refuses. The launch gate then reads
+        // the pinned value: 950_000 authorizes, 0 does not.
+        assert_eq!(FULL_BACKING_PPM, 1_000_000);
+        assert!(check_backing_threshold_ppm(0).is_ok());
+        assert!(check_backing_threshold_ppm(950_000).is_ok());
+        assert!(check_backing_threshold_ppm(FULL_BACKING_PPM).is_ok());
+        assert!(check_backing_threshold_ppm(FULL_BACKING_PPM + 1).is_err());
+        can_launch_stage2(STATE_SETTLED, TREASURY_LAUNCH_TYPE, STAGE_1, 950_000)
+            .expect("genesis-pinned 95% threshold authorizes launch");
         assert!(can_launch_stage2(STATE_SETTLED, TREASURY_LAUNCH_TYPE, STAGE_1, 0).is_err());
     }
 
