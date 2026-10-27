@@ -2959,6 +2959,67 @@ pub mod treasury_program {
         Ok(())
     }
 
+    /// Rule-version publication (design §4.3, slice 26): the
+    /// mirror of `register_mint`, same authority, but on the
+    /// standalone `RuleRegistry` PDA — a version enters the
+    /// published list exactly here, and `allocate` refuses
+    /// any version outside it. A duplicate refuses rather
+    /// than double-counting a slot, a full registry refuses
+    /// rather than overwriting, and version 0 refuses: 0 is
+    /// the unpinned sentinel in `can_allocate`, never a
+    /// published document.
+    pub fn register_rule_version(
+        ctx: Context<RuleRegistryRegister>,
+        version: u64,
+    ) -> Result<()> {
+        require!(
+            ctx.accounts.config.authority == ctx.accounts.authority.key(),
+            TreasuryError::Unauthorized
+        );
+        rule_registry_register(&mut ctx.accounts.rule_registry, version)?;
+        // The PDA bump must be stored explicitly (as every other
+        // `init` handler stores its bump): `init_if_needed`
+        // zero-initializes a fresh account, so without this
+        // write the stored bump stays 0 and every later
+        // seeds-bound instruction on the registry fails
+        // ConstraintSeeds — caught by the slice-26 mollusk
+        // probes before any push.
+        ctx.accounts.rule_registry.bump = ctx.bumps.rule_registry;
+        let count = ctx.accounts.rule_registry.count;
+        emit!(RuleVersionRegistered {
+            version,
+            authority: ctx.accounts.authority.key(),
+            registered_count: count,
+        });
+        Ok(())
+    }
+
+    /// Rule-version removal (design §4.3, slice 26): the
+    /// mirror of `unregister_mint`, same authority, same
+    /// account set. Removal is immediate for future
+    /// allocations — a version removed mid-flight refuses
+    /// the next `allocate` — but it does not claw back
+    /// allocations already executed under the version:
+    /// their `AllocationRecord`s stand, and the registry
+    /// gates execution, never retroactively un-executes it.
+    pub fn unregister_rule_version(
+        ctx: Context<RuleRegistryUnregister>,
+        version: u64,
+    ) -> Result<()> {
+        require!(
+            ctx.accounts.config.authority == ctx.accounts.authority.key(),
+            TreasuryError::Unauthorized
+        );
+        rule_registry_unregister(&mut ctx.accounts.rule_registry, version)?;
+        let count = ctx.accounts.rule_registry.count;
+        emit!(RuleVersionUnregistered {
+            version,
+            authority: ctx.accounts.authority.key(),
+            registered_count: count,
+        });
+        Ok(())
+    }
+
     /// Stage 2 launch (design §4.2): flip the stage flag on Config
     /// from Stage 1 to Stage 2, executed from a Settled
     /// `treasury.launch.v1` transition — never from a config check
@@ -4273,20 +4334,23 @@ pub mod treasury_program {
     /// and the retained dividend float) is a governance
     /// sizing rule at stock creation, not re-checked here.
     ///
-    /// Two gaps are stated, not buried. First, amount
-    /// authority: execution takes no plan accounts, so this
-    /// slice cannot verify the executed amount equals the
-    /// committed claim — the operator-supplied amount is
-    /// bounded only by the checks in [`can_allocate`], the
-    /// same honesty class as `pay_tranche`'s
-    /// operator-supplied amount. Binding execution to the
-    /// committed claim total is a future slice's job, and
-    /// until it lands this instruction must not be read as
-    /// proving the amount was the committed one. Second,
-    /// rule-version existence: the version is pinned
-    /// (nonzero) here, but no rule registry account exists
-    /// yet to prove the version names a published rule
-    /// document — that check lands with the registry.
+    /// Two gaps were stated, not buried; one is closed here.
+    /// First, amount authority (STILL OPEN): execution takes
+    /// no plan accounts, so this slice cannot verify the
+    /// executed amount equals the committed claim — the
+    /// operator-supplied amount is bounded only by the
+    /// checks in [`can_allocate`], the same honesty class as
+    /// `pay_tranche`'s operator-supplied amount. Binding
+    /// execution to the committed claim total is a future
+    /// slice's job, and until it lands this instruction must
+    /// not be read as proving the amount was the committed
+    /// one. Second, rule-version existence (CLOSED, slice 26):
+    /// the version must be a member of the standalone
+    /// `RuleRegistry` PDA's published list, checked last in
+    /// [`can_allocate`]; an unregistered version refuses
+    /// with `RuleVersionNotRegistered`, and an empty
+    /// registry accepts nothing (fail-closed, as the
+    /// accepted-mints registry does for deposits).
     ///
     /// One allocation per committed transition, enforced by
     /// the account, not by prose: the AllocationRecord PDA
@@ -4321,6 +4385,8 @@ pub mod treasury_program {
             rule_version,
             evidence_label,
             recipient,
+            &ctx.accounts.rule_registry.versions
+                [..ctx.accounts.rule_registry.count as usize],
         )?;
         let record = &mut ctx.accounts.allocation_record;
         record.transition_id = transition_id;
@@ -5543,6 +5609,56 @@ pub fn registry_unregister(
     Ok(())
 }
 
+/// Membership in a published rule-version list (slice 26):
+/// the `allocate` gate's existence proof — a version names
+/// a published rule document iff it is in the list. An
+/// empty list accepts nothing (fail-closed, as the
+/// accepted-mints registry does for deposits).
+pub fn rule_version_registered(versions: &[u64], version: u64) -> bool {
+    versions.iter().any(|v| *v == version)
+}
+
+/// Register `version` at the first free slot (slice 26),
+/// mirroring [`registry_register`]: a duplicate refuses
+/// rather than double-counting a slot, a full registry
+/// refuses rather than overwriting, and version 0 refuses
+/// (the unpinned sentinel, never a published document).
+pub fn rule_registry_register(registry: &mut RuleRegistry, version: u64) -> Result<()> {
+    require!(
+        version != 0,
+        TreasuryError::InvalidRuleVersion
+    );
+    if rule_version_registered(&registry.versions[..registry.count as usize], version) {
+        return Err(TreasuryError::RuleVersionAlreadyRegistered.into());
+    }
+    if registry.count as usize >= MAX_RULE_VERSIONS {
+        return Err(TreasuryError::RuleRegistryFull.into());
+    }
+    registry.versions[registry.count as usize] = version;
+    registry.count += 1;
+    Ok(())
+}
+
+/// Unregister `version` (slice 26), swap-removing it so the
+/// live slots stay compact, mirroring
+/// [`registry_unregister`]: order in the registry is not
+/// meaningful — membership is. Removing an absent version
+/// refuses rather than silently succeeding, so a caller
+/// cannot mistake a no-op for a revocation.
+pub fn rule_registry_unregister(registry: &mut RuleRegistry, version: u64) -> Result<()> {
+    let idx = registry
+        .versions
+        .iter()
+        .take(registry.count as usize)
+        .position(|v| *v == version)
+        .ok_or(TreasuryError::RuleVersionNotRegistered)?;
+    let last = registry.count as usize - 1;
+    registry.versions[idx] = registry.versions[last];
+    registry.versions[last] = 0;
+    registry.count -= 1;
+    Ok(())
+}
+
 /// SPL Token program id (TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA),
 /// as bytes: the base58 string is verified against
 /// spl-token-interface's `declare_id!`, and the byte array below
@@ -6343,9 +6459,12 @@ pub fn can_execute_whale_tranche(
 /// stocks, and an allocation drawn against one would be a
 /// category error wearing a stock id). The amount must be
 /// positive; the rule version must be pinned (nonzero —
-/// existence against a published rule document awaits the
-/// rule registry); the evidence label must be one of the
-/// three spec labels; the recipient must be a nonzero key.
+/// existence against a published rule document is proved
+/// against the rule registry (slice 26: the version must be
+/// a member of the registry's published list, checked last,
+/// as the deposit registry check is last); the evidence
+/// label must be one of the three spec labels; the
+/// recipient must be a nonzero key.
 /// Order mirrors the sibling gates: the transition binding
 /// first, the operator gate next, the shape rules last.
 /// Deliberately not checked here, and why: the four
@@ -6365,6 +6484,7 @@ pub fn can_allocate(
     rule_version: u64,
     evidence_label: u8,
     recipient: Pubkey,
+    registered_versions: &[u64],
 ) -> Result<()> {
     require!(state == STATE_COMMITTED, TreasuryError::BadState);
     require!(
@@ -6390,6 +6510,10 @@ pub fn can_allocate(
     require!(
         recipient != Pubkey::default(),
         TreasuryError::InvalidRecipient
+    );
+    require!(
+        rule_version_registered(registered_versions, rule_version),
+        TreasuryError::RuleVersionNotRegistered
     );
     Ok(())
 }
@@ -6649,6 +6773,26 @@ pub struct MintUnregistered {
     pub mint: Pubkey,
     pub authority: Pubkey,
     pub accepted_mint_count: u8,
+}
+
+/// Event for [`treasury_program::register_rule_version`]
+/// (design §4.3, §6, slice 26): the published version and
+/// the resulting registry size.
+#[event]
+pub struct RuleVersionRegistered {
+    pub version: u64,
+    pub authority: Pubkey,
+    pub registered_count: u8,
+}
+
+/// Event for [`treasury_program::unregister_rule_version`]
+/// (design §4.3, §6, slice 26): the removed version and the
+/// resulting registry size.
+#[event]
+pub struct RuleVersionUnregistered {
+    pub version: u64,
+    pub authority: Pubkey,
+    pub registered_count: u8,
 }
 
 /// Event for [`treasury_program::launch_stage2`] (design §4.2,
@@ -8143,9 +8287,9 @@ pub struct AllocationRecord {
     pub amount_raw: u64,
     /// The rule-document version the allocation was judged
     /// under (W5.1 spec §2: every proposal records the
-    /// version it was judged under). Nonzero; existence
-    /// against a published document awaits the rule
-    /// registry.
+    /// version it was judged under). Nonzero and, since
+    /// slice 26, a member of the `RuleRegistry`'s published
+    /// list at execution time.
     pub rule_version: u64,
     /// The evidence label at execution (0 = SELF-DECLARED,
     /// 1 = ATTESTED, 2 = AUDITED — W5.1 spec §4). A label
@@ -8161,6 +8305,37 @@ impl AllocationRecord {
     /// 8 (discriminator) + 8 + 2 + 8 + 8 + 1 + 32 + 1.
     pub const SPACE: usize = 8 + 8 + 2 + 8 + 8 + 1 + 32 + 1;
 }
+
+/// The published allocation rule versions (design §4.3,
+/// slice 26): a standalone PDA, seeds `["rule-registry"]`,
+/// so `allocate` reads a program-owned list, never an
+/// operator-supplied one. Membership is the existence proof
+/// the `allocate` handler previously lacked: a version
+/// names a published rule document iff it is in this list.
+/// Registration is genesis-authority-signed (Admin pattern,
+/// as `register_mint` — a future governance choice, not a
+/// governed transition yet); removal gates future
+/// allocations only and does not claw back allocations
+/// already executed under the version.
+#[account]
+pub struct RuleRegistry {
+    /// Live published versions, compact (swap-removed).
+    pub count: u8,
+    /// Published rule versions, at most [`MAX_RULE_VERSIONS`].
+    pub versions: [u64; MAX_RULE_VERSIONS],
+    /// PDA bump for the `["rule-registry"]` seeds.
+    pub bump: u8,
+}
+
+impl RuleRegistry {
+    /// 8 (discriminator) + 1 + 16 x 8 + 1.
+    pub const SPACE: usize = 8 + 1 + 128 + 1;
+}
+
+/// Published rule versions per registry (slice 26): 16
+/// carries headroom over the launch rule set, as
+/// [`MAX_ACCEPTED_MINTS`] does for mints.
+pub const MAX_RULE_VERSIONS: usize = 16;
 
 /// Accounts for [`treasury_program::submit_signal`].
 #[derive(Accounts)]
@@ -9208,6 +9383,12 @@ pub struct Allocate<'info> {
     /// allocation, not the operator's discretion.
     #[account(seeds = [b"transition", transition_id.to_le_bytes().as_ref()], bump = transition_record.bump)]
     pub transition_record: Account<'info, TransitionRecord>,
+    /// The rule registry PDA — read for the version check
+    /// (slice 26): the executed rule version must be a
+    /// member of its published list. Seeds-bound, so an
+    /// operator cannot substitute a private list.
+    #[account(seeds = [b"rule-registry"], bump = rule_registry.bump)]
+    pub rule_registry: Account<'info, RuleRegistry>,
     /// The allocation record PDA — created here, and nowhere
     /// else, so a second `allocate` under the same transition
     /// fails at account creation and the committed
@@ -9222,6 +9403,54 @@ pub struct Allocate<'info> {
     pub allocation_record: Account<'info, AllocationRecord>,
     /// System program for the allocation record's rent.
     pub system_program: Program<'info, System>,
+}
+
+/// Accounts for [`treasury_program::register_rule_version`].
+#[derive(Accounts)]
+#[instruction(version: u64)]
+pub struct RuleRegistryRegister<'info> {
+    /// Program configuration PDA — read for the authority
+    /// check (`authority` must equal `config.authority`).
+    #[account(seeds = [b"config"], bump = config.bump)]
+    pub config: Account<'info, Config>,
+    /// The rule registry PDA — created on first use
+    /// (`init_if_needed`, payer = authority) and mutated
+    /// thereafter, as the slice-22 forfeiture record is:
+    /// `init_if_needed` never re-initializes a matching
+    /// discriminator, and the register helper never zeroes
+    /// a live slot, so a later registration cannot wipe
+    /// the published list.
+    #[account(
+        init_if_needed,
+        payer = authority,
+        space = RuleRegistry::SPACE,
+        seeds = [b"rule-registry"],
+        bump
+    )]
+    pub rule_registry: Account<'info, RuleRegistry>,
+    /// Genesis authority (signer). Pays the registry rent
+    /// on first registration only.
+    #[account(mut)]
+    pub authority: Signer<'info>,
+    /// System program for the registry's rent.
+    pub system_program: Program<'info, System>,
+}
+
+/// Accounts for [`treasury_program::unregister_rule_version`].
+#[derive(Accounts)]
+#[instruction(version: u64)]
+pub struct RuleRegistryUnregister<'info> {
+    /// Program configuration PDA — read for the authority
+    /// check (`authority` must equal `config.authority`).
+    #[account(seeds = [b"config"], bump = config.bump)]
+    pub config: Account<'info, Config>,
+    /// The rule registry PDA — mutated: only the version
+    /// list moves here; executed allocations are untouched.
+    #[account(mut, seeds = [b"rule-registry"], bump = rule_registry.bump)]
+    pub rule_registry: Account<'info, RuleRegistry>,
+    /// Genesis authority (signer). Pays no rent — no account
+    /// is created here.
+    pub authority: Signer<'info>,
 }
 
 /// Accounts for [`treasury_program::set_capacity`].
@@ -9858,6 +10087,23 @@ pub enum TreasuryError {
     /// met, so it refuses at genesis (slice 25, D-2).
     #[msg("Stage 2 backing threshold B exceeds full backing (1,000,000 ppm).")]
     ThresholdExceedsFullBacking,
+    /// The rule version is not in the published rule
+    /// registry: only a published version may be executed
+    /// by `allocate`, and an empty registry accepts nothing
+    /// (slice 26). Also the unregister-absent refusal.
+    #[msg("Rule version not registered in the published rule registry.")]
+    RuleVersionNotRegistered,
+    /// The rule version is already in the published rule
+    /// registry: a duplicate registration refuses rather
+    /// than double-counting a slot (slice 26).
+    #[msg("Rule version already registered in the published rule registry.")]
+    RuleVersionAlreadyRegistered,
+    /// The published rule registry is full (16 versions):
+    /// a further registration refuses rather than
+    /// overwriting, so the caller removes a version first
+    /// (slice 26).
+    #[msg("Published rule registry is full: at most 16 rule versions.")]
+    RuleRegistryFull,
 }
 
 #[cfg(test)]
@@ -12962,40 +13208,40 @@ mod tests {
         let recipient = Pubkey::new_from_array([7u8; 32]);
         can_allocate(
             STATE_COMMITTED, TREASURY_ALLOC_TYPE, true, true, 3, 10_000, 3,
-            EVIDENCE_ATTESTED, recipient,
+            EVIDENCE_ATTESTED, recipient, &[1, 2, 3],
         )
         .expect("an attested class-3 allocation passes");
         can_allocate(
             STATE_COMMITTED, TREASURY_ALLOC_TYPE, true, true, 5, 10_000, 1,
-            EVIDENCE_SELF_DECLARED, recipient,
+            EVIDENCE_SELF_DECLARED, recipient, &[1, 2, 3],
         )
         .expect("a self-declared allocation passes where class rules allow");
         can_allocate(
             STATE_COMMITTED, TREASURY_ALLOC_TYPE, true, true, 4, 10_000, 2,
-            EVIDENCE_AUDITED, recipient,
+            EVIDENCE_AUDITED, recipient, &[1, 2, 3],
         )
         .expect("an audited allocation passes");
         // Gate failures: non-committed state, wrong type.
         assert!(can_allocate(
             STATE_PLANNING, TREASURY_ALLOC_TYPE, true, true, 3, 10_000, 3,
-            EVIDENCE_ATTESTED, recipient
+            EVIDENCE_ATTESTED, recipient, &[1, 2, 3]
         )
         .is_err());
         assert!(can_allocate(
             STATE_COMMITTED, TREASURY_WINDOW_TYPE, true, true, 3, 10_000, 3,
-            EVIDENCE_ATTESTED, recipient
+            EVIDENCE_ATTESTED, recipient, &[1, 2, 3]
         )
         .is_err());
         // Authorization failures: inactive operator, operator
         // without the settle capability.
         assert!(can_allocate(
             STATE_COMMITTED, TREASURY_ALLOC_TYPE, false, true, 3, 10_000, 3,
-            EVIDENCE_ATTESTED, recipient
+            EVIDENCE_ATTESTED, recipient, &[1, 2, 3]
         )
         .is_err());
         assert!(can_allocate(
             STATE_COMMITTED, TREASURY_ALLOC_TYPE, true, false, 3, 10_000, 3,
-            EVIDENCE_ATTESTED, recipient
+            EVIDENCE_ATTESTED, recipient, &[1, 2, 3]
         )
         .is_err());
         // Shape failures: every launch stock id (0, 1, 2) is a
@@ -13005,34 +13251,100 @@ mod tests {
         for class_stock_id in [0u16, 1, 2] {
             assert!(can_allocate(
                 STATE_COMMITTED, TREASURY_ALLOC_TYPE, true, true, class_stock_id,
-                10_000, 3, EVIDENCE_ATTESTED, recipient
+                10_000, 3, EVIDENCE_ATTESTED, recipient, &[1, 2, 3]
             )
             .is_err());
         }
         assert!(can_allocate(
             STATE_COMMITTED, TREASURY_ALLOC_TYPE, true, true, 3, 0, 3,
-            EVIDENCE_ATTESTED, recipient
+            EVIDENCE_ATTESTED, recipient, &[1, 2, 3]
         )
         .is_err());
         assert!(can_allocate(
             STATE_COMMITTED, TREASURY_ALLOC_TYPE, true, true, 3, 10_000, 0,
-            EVIDENCE_ATTESTED, recipient
+            EVIDENCE_ATTESTED, recipient, &[1, 2, 3]
         )
         .is_err());
         assert!(can_allocate(
             STATE_COMMITTED, TREASURY_ALLOC_TYPE, true, true, 3, 10_000, 3, 3,
-            recipient
+            recipient, &[1, 2, 3]
         )
         .is_err());
         assert!(can_allocate(
             STATE_COMMITTED, TREASURY_ALLOC_TYPE, true, true, 3, 10_000, 3,
-            EVIDENCE_ATTESTED, Pubkey::default()
+            EVIDENCE_ATTESTED, Pubkey::default(), &[1, 2, 3]
         )
         .is_err());
+        // Registry failure (slice 26): a pinned but
+        // unregistered version refuses, and an empty
+        // registry accepts nothing.
+        assert!(can_allocate(
+            STATE_COMMITTED, TREASURY_ALLOC_TYPE, true, true, 3, 10_000, 9,
+            EVIDENCE_ATTESTED, recipient, &[1, 2, 3]
+        )
+        .is_err());
+        assert!(can_allocate(
+            STATE_COMMITTED, TREASURY_ALLOC_TYPE, true, true, 3, 10_000, 3,
+            EVIDENCE_ATTESTED, recipient, &[]
+        )
+        .is_err());
+
     }
 
     #[test]
     fn allocation_record_space_matches_fields() {
         assert_eq!(AllocationRecord::SPACE, 68);
+    }
+
+    #[test]
+    fn rule_registry_matrix() {
+        let mut registry = RuleRegistry {
+            count: 0,
+            versions: [0u64; MAX_RULE_VERSIONS],
+            bump: 0,
+        };
+        assert!(!rule_version_registered(
+            &registry.versions[..registry.count as usize],
+            3
+        ));
+        // Zero is the unpinned sentinel, never published.
+        assert!(rule_registry_register(&mut registry, 0).is_err());
+        assert_eq!(registry.count, 0);
+        rule_registry_register(&mut registry, 3).expect("first version lands");
+        rule_registry_register(&mut registry, 1).expect("second version lands");
+        assert_eq!(registry.count, 2);
+        assert!(rule_version_registered(
+            &registry.versions[..registry.count as usize],
+            3
+        ));
+        assert!(!rule_version_registered(
+            &registry.versions[..registry.count as usize],
+            9
+        ));
+        // Duplicate refuses rather than double-counting.
+        assert!(rule_registry_register(&mut registry, 3).is_err());
+        assert_eq!(registry.count, 2);
+        // Removal swap-compacts and gates the next check.
+        rule_registry_unregister(&mut registry, 3).expect("removal lands");
+        assert_eq!(registry.count, 1);
+        assert!(!rule_version_registered(
+            &registry.versions[..registry.count as usize],
+            3
+        ));
+        // Absent removal refuses rather than no-op succeeding.
+        assert!(rule_registry_unregister(&mut registry, 3).is_err());
+        // Fill to capacity, then refuse rather than overwrite.
+        for v in 2..=16u64 {
+            rule_registry_register(&mut registry, v).expect("fill lands");
+        }
+        assert_eq!(registry.count, 16);
+        assert!(rule_registry_register(&mut registry, 99).is_err());
+        assert_eq!(registry.count, 16);
+    }
+
+    #[test]
+    fn rule_registry_space_matches_fields() {
+        assert_eq!(RuleRegistry::SPACE, 138);
+        assert_eq!(MAX_RULE_VERSIONS, 16);
     }
 }
