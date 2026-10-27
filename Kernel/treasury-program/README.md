@@ -611,8 +611,9 @@ penalty-free amount is the holder's share of period income,
 and the accrued dividend is that share as recorded here.
 At or below it, the exit pays at par and touches no
 principal; above it, the excess comes out of the position
-and pays the 12% penalty floor on the excess only (D-4
-curve shape above the floor is open), withheld from the
+and pays the flat 13% penalty on the excess only (D-4
+RULED 2026-10-26: flat 13%, no escalation curve above it),
+withheld from the
 payout — the `Exited` event carries `penalty_raw` and net
 `paid_raw`, and the penalty is not an extra position
 reduction. The D-10 hard bound is enforced twice: no
@@ -702,7 +703,7 @@ floor: a tranche must not drop the position below an outstanding loan.
 Two readings stated plainly: (a) penalty — the design row names only
 the L bound and the schedule total is a position amount, so this slice
 prices no penalty and the event carries no penalty field; whether
-scheduled tranches should pay the 12% door on any part is a design
+scheduled tranches should pay the 13% door on any part is a design
 question for the §4.2 row, not invented here; (b) window scope — this
 slice executes tranches against the schedule's own window (schedule
 PDA, holder record, and debited WindowState share that window id), so
