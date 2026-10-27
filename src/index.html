@@ -398,7 +398,8 @@ the brief outline flash marks the landing panel without touching its copy.*/
 <section class="panel" data-panel="lab"><div class="panelhead" data-drag-handle><h2>Strategy Lab</h2><span class="eyebrow">BACKTEST BEFORE YOU DEPLOY</span></div><div class="panelbody">
 <p class="labintro">Run one of the Playbook's top-10 schemes over real historical daily bars with the same house-rule accounting the Playbook used (fill-at-close, long-only, 0.26%/side fees, 95% deploy). <strong style="color:var(--text)">Playbook edges are historical measurements — never promises.</strong> Every scheme is a fresh experiment on the data you select.</p>
 <div class="bthead">Scheme</div>
-<div class="field"><select id="btScheme" aria-label="Backtest scheme"></select></div>
+<div class="amounts" id="btSchemeFam" role="group" aria-label="Scheme family filter"><button type="button" data-btfam="all" class="on" aria-pressed="true">All</button><button type="button" data-btfam="Trend" aria-pressed="false">Trend</button><button type="button" data-btfam="Strength" aria-pressed="false">Strength</button><button type="button" data-btfam="Mean-reversion" aria-pressed="false">Mean-reversion</button></div>
+<div style="display:flex;gap:8px;margin-top:8px"><select id="btScheme" aria-label="Backtest scheme" style="flex:1;min-width:0;border:1px solid var(--inputline);border-radius:8px;background:var(--input);color:var(--text);padding:12px"></select><button type="button" id="btSchemePin" class="action" title="Pin or unpin the selected scheme — pinned schemes list first" aria-pressed="false" style="font-size:16px;padding:6px 12px">☆</button></div>
 <div class="btscheme" id="btSchemeCtx"></div>
 <div class="bthead">Parameters</div>
 <div class="btparams" id="btParams"></div>
@@ -1382,7 +1383,7 @@ function slipSave(bps){if(!Number.isInteger(bps)||bps<SLIP_MIN||bps>SLIP_MAX)ret
    (written before the shared store existed) describes. */
 const SETTINGS_KEY='gecko-terminal:settings-v1';
 const SETTINGS_VERSION=2;
-const DEFAULT_SETTINGS=Object.freeze({version:SETTINGS_VERSION,theme:'dark',density:'comfortable',defaultPair:'SOL',defaultOrderSize:100,defaultOrderSizeCurrency:'USD',defaultSlippageBps:50,quoteCurrency:'USD',quickBuyPresets:[0.025,0.1,0.5],quickBuyActive:0,discManualSort:null,discFilters:null,pairsManualSort:null});
+const DEFAULT_SETTINGS=Object.freeze({version:SETTINGS_VERSION,theme:'dark',density:'comfortable',defaultPair:'SOL',defaultOrderSize:100,defaultOrderSizeCurrency:'USD',defaultSlippageBps:50,quoteCurrency:'USD',quickBuyPresets:[0.025,0.1,0.5],quickBuyActive:0,discManualSort:null,discFilters:null,pairsManualSort:null,btSchemeFam:'all',btSchemePins:[],btCfgPins:[]});
 function loadSettings(){
   let parsed={};
   try{parsed=JSON.parse(localStorage.getItem(SETTINGS_KEY)||'{}')||{};}catch(_){parsed={};}
@@ -1440,6 +1441,17 @@ function loadSettings(){
      Age/market-cap bands are closed lists; anything else normalizes to All. */
   const _df312=(s.discFilters&&typeof s.discFilters==='object')?s.discFilters:null;
   s.discFilters={quote:(_df312&&typeof _df312.quote==='string'&&_df312.quote)?_df312.quote:'ALL',dex:(_df312&&typeof _df312.dex==='string'&&_df312.dex)?_df312.dex:'ALL',age:(_df312&&['all','1h','24h','7d','7dplus'].indexOf(_df312.age)>=0)?_df312.age:'all',mcap:(_df312&&['all','lt1','1to10','gt10'].indexOf(_df312.mcap)>=0)?_df312.mcap:'all'};
+  /* N7.15 (2026-10-26, A95): scheme family filter + pins live in the settings
+     object, next to the manual sorts, so they ride the existing settings sync
+     namespace with no new namespace. Validation is inline here, not via the
+     lab-block helper, because loadSettings runs before that block's consts
+     exist (TDZ) — same reason as the manual-sort validations above. Family is
+     a closed list; pin lists are generic string arrays (scheme ids / config
+     pin keys), deduped and capped — unknown ids are ignored at use time, so
+     a pin for a removed scheme or config is inert, never an error. */
+  s.btSchemeFam=(s.btSchemeFam==='all'||['Trend','Strength','Mean-reversion'].indexOf(s.btSchemeFam)>=0)?s.btSchemeFam:'all';
+  const _pins715=a=>Array.isArray(a)?a.filter(x=>typeof x==='string'&&x).filter((x,j,arr)=>arr.indexOf(x)===j).slice(0,50):[];
+  s.btSchemePins=_pins715(s.btSchemePins);s.btCfgPins=_pins715(s.btCfgPins);
   s.defaultPair=(typeof s.defaultPair==='string'&&/^[A-Za-z0-9]{1,20}$/.test(s.defaultPair.trim()))?s.defaultPair.trim().toUpperCase():'SOL';
   return s;
 }
@@ -1513,6 +1525,7 @@ function applySettingsVisual(){ // re-render every price surface; never touches 
   if($('heroPrice'))$('heroPrice').textContent=hp;
   if($('statPrice'))$('statPrice').textContent=hp;
   renderPairs();refreshTicket();try{paintDiscovery();}catch(_){} // N3.8: QC switch re-renders both discovery price cells (formatPrice is QC-aware)
+  try{btPaintSchemeFam();btPaintSchemeOptions();btRenderConfigs();}catch(_){} // N7.15: a synced family/pin change repaints the lab lists
 }
 function commitSetting(key,val,opts){
   opts=opts||{};
@@ -3266,22 +3279,22 @@ function confirmLimitReview(){
 // only where the engine stamps them (playbook_edge_pp); everything else is
 // shown as Playbook top-10 context, never as a promise.
 const BT_SCHEMES=[
- {id:'supertrend-10-3-25',label:'Supertrend (10, 3) + 25-day time-stop',no:1,asset:'XRP',edge:87.8,
+ {id:'supertrend-10-3-25',family:'Trend',label:'Supertrend (10, 3) + 25-day time-stop',no:1,asset:'XRP',edge:87.8,
   params:[{k:'atr_period',label:'ATR period',min:2,max:50,step:1,def:10},{k:'mult',label:'Multiplier',min:0.5,max:10,step:0.1,def:3},{k:'max_hold',label:'Time-stop (days)',min:1,max:10000,step:1,def:25}]},
- {id:'aroon-25-10',label:'Aroon (25) + 10-day time-stop',no:2,asset:'SOL',edge:83.1,
+ {id:'aroon-25-10',family:'Strength',label:'Aroon (25) + 10-day time-stop',no:2,asset:'SOL',edge:83.1,
   params:[{k:'period',label:'Aroon period',min:2,max:200,step:1,def:25},{k:'max_hold',label:'Time-stop (days)',min:1,max:10000,step:1,def:10}]},
- {id:'supertrend-7-2',label:'Supertrend (7, 2)',no:3,asset:'SOL',edge:null,
+ {id:'supertrend-7-2',family:'Trend',label:'Supertrend (7, 2)',no:3,asset:'SOL',edge:null,
   params:[{k:'atr_period',label:'ATR period',min:2,max:50,step:1,def:7},{k:'mult',label:'Multiplier',min:0.5,max:10,step:0.1,def:2},{k:'max_hold',label:'Max hold (days)',min:1,max:10000,step:1,def:10000}]},
- {id:'bollinger-drift-20-2',label:'Bollinger (20, 2) + drift gate',no:4,asset:'SOL',edge:null,fixed:'Fixed Playbook parameters: 20, 2, ±25% SMA200 drift gate'},
- {id:'aroon-25-40',label:'Aroon (25) + 40-day time-stop',no:5,asset:'ETH',edge:null,
+ {id:'bollinger-drift-20-2',family:'Mean-reversion',label:'Bollinger (20, 2) + drift gate',no:4,asset:'SOL',edge:null,fixed:'Fixed Playbook parameters: 20, 2, ±25% SMA200 drift gate'},
+ {id:'aroon-25-40',family:'Strength',label:'Aroon (25) + 40-day time-stop',no:5,asset:'ETH',edge:null,
   params:[{k:'period',label:'Aroon period',min:2,max:200,step:1,def:25},{k:'max_hold',label:'Time-stop (days)',min:1,max:10000,step:1,def:40}]},
- {id:'aroon-25',label:'Aroon (25) trend-state',no:6,asset:'ETH',edge:null,
+ {id:'aroon-25',family:'Strength',label:'Aroon (25) trend-state',no:6,asset:'ETH',edge:null,
   params:[{k:'period',label:'Aroon period',min:2,max:200,step:1,def:25}]},
- {id:'ema-20-50',label:'EMA 20/50 cross',no:7,asset:'ETH',edge:null,fixed:'Fixed Playbook parameters: 20/50'},
- {id:'aroon-40',label:'Aroon (40) trend-state',no:8,asset:'ETH',edge:null,
+ {id:'ema-20-50',family:'Trend',label:'EMA 20/50 cross',no:7,asset:'ETH',edge:null,fixed:'Fixed Playbook parameters: 20/50'},
+ {id:'aroon-40',family:'Strength',label:'Aroon (40) trend-state',no:8,asset:'ETH',edge:null,
   params:[{k:'period',label:'Aroon period',min:2,max:200,step:1,def:40}]},
- {id:'kama-10-2-30',label:'KAMA (10, 2, 30) cross',no:9,asset:'SOL',edge:null,fixed:'Fixed Playbook parameters: 10, 2, 30'},
- {id:'supertrend-7-2-xrp',label:'Supertrend (7, 2)',no:10,asset:'XRP',edge:null,
+ {id:'kama-10-2-30',family:'Trend',label:'KAMA (10, 2, 30) cross',no:9,asset:'SOL',edge:null,fixed:'Fixed Playbook parameters: 10, 2, 30'},
+ {id:'supertrend-7-2-xrp',family:'Trend',label:'Supertrend (7, 2)',no:10,asset:'XRP',edge:null,
   params:[{k:'atr_period',label:'ATR period',min:2,max:50,step:1,def:7},{k:'mult',label:'Multiplier',min:0.5,max:10,step:0.1,def:2},{k:'max_hold',label:'Max hold (days)',min:1,max:10000,step:1,def:10000}]},
 ];
 const BT_PAIRS=[
@@ -3651,7 +3664,8 @@ function btRenderConfigs(){
   else box.innerHTML='<div class="empty">No saved configurations yet. Run a backtest, name it, and save it here.</div>';
   return;
  }
- box.innerHTML=list.map((c,i)=>{
+ const pins715=btCfgPins();const ordered715=list.map((c,i)=>({c:c,i:i})).sort((a,b)=>(pins715.indexOf(btCfgPinKey(b.c))>=0?1:0)-(pins715.indexOf(btCfgPinKey(a.c))>=0?1:0));
+ box.innerHTML=ordered715.map((o)=>{const c=o.c,i=o.i;const pinned715=pins715.indexOf(btCfgPinKey(c))>=0;
   const linked=btDeploymentsForCfg(c.name,c.runId).length;
   const armed=btDeleteArmKey===btCfgKey(c);
   const delLabel=armed?(linked?'Confirm delete — deployments stay':'Confirm delete'):'Delete';
@@ -3660,9 +3674,10 @@ function btRenderConfigs(){
   const nc711=plNormalizeCfg(c),depDup711=nc711?plFindDeployDup(nc711):null; /* N7.11: a saved row whose configuration is already deployed shows its state */
   const blocker712=depDup711?btDeployBlockerNote(c.name,depDup711):'';
   if(btRenameIdx===i)return '<div class="btcfg"><div><input class="wrename-input" data-btrename-input="'+i+'" value="'+esc(c.name)+'" maxlength="60" aria-label="New name for this configuration">'+sub+(blocker712?'<div class="sub">'+esc(blocker712)+'</div>':'')+'</div><div style="display:flex;gap:6px"><button type="button" class="action" data-btrename-save="'+i+'">Save</button><button type="button" class="action" data-btrename-cancel="'+i+'">Cancel</button></div></div>';
-  return '<div class="btcfg"><div><strong>'+esc(c.name)+'</strong>'+sub+(blocker712?'<div class="sub">'+esc(blocker712)+'</div>':'')+'</div><div style="display:flex;gap:6px"><button type="button" class="action" data-btdeploy="'+i+'"'+(depDup711?' disabled':'')+'>'+(depDup711?'Already deployed':'Deploy')+'</button><button type="button" class="action" data-btload="'+i+'">Load</button><button type="button" class="action" data-btrename="'+i+'">Rename</button><button type="button" class="action sell" data-btdel="'+i+'">'+delLabel+'</button></div></div>';
+  return '<div class="btcfg"><div><strong>'+esc(c.name)+'</strong>'+sub+(blocker712?'<div class="sub">'+esc(blocker712)+'</div>':'')+'</div><div style="display:flex;gap:6px"><button type="button" class="action" data-btpin="'+i+'" aria-pressed="'+(pinned715?'true':'false')+'" title="Pin or unpin this configuration — pinned configurations list first">'+(pinned715?'★':'☆')+'</button><button type="button" class="action" data-btdeploy="'+i+'"'+(depDup711?' disabled':'')+'>'+(depDup711?'Already deployed':'Deploy')+'</button><button type="button" class="action" data-btload="'+i+'">Load</button><button type="button" class="action" data-btrename="'+i+'">Rename</button><button type="button" class="action sell" data-btdel="'+i+'">'+delLabel+'</button></div></div>';
  }).join('');
  box.querySelectorAll('[data-btdeploy]').forEach(b=>b.onclick=()=>plDeploySaved(Number(b.dataset.btdeploy)));
+ box.querySelectorAll('[data-btpin]').forEach(b=>b.onclick=()=>btToggleCfgPin(Number(b.dataset.btpin)));
  box.querySelectorAll('[data-btload]').forEach(b=>b.onclick=()=>btLoadConfig(Number(b.dataset.btload)));
  box.querySelectorAll('[data-btrename]').forEach(b=>b.onclick=()=>{btRenameIdx=Number(b.dataset.btrename);btRenderConfigs();});
  box.querySelectorAll('[data-btrename-save]').forEach(b=>b.onclick=()=>{const inp=box.querySelector('[data-btrename-input]');btCommitRename(Number(b.dataset.btrenameSave),inp?inp.value:'');});
@@ -3675,7 +3690,7 @@ function btRenderConfigs(){
   if(!target)return;
   if(btDeleteArmKey!==btCfgKey(target)){btDeleteArmKey=btCfgKey(target);btRenderConfigs();setTimeout(function(){if(btDeleteArmKey===btCfgKey(target)){btDeleteArmKey=null;btRenderConfigs();}},8000);return;}
   const linked=btDeploymentsForCfg(target.name,target.runId).length;
-  const gone=l.splice(idx,1)[0];btDeleteArmKey=null;btSaveCfgStore(s2);btRenderConfigs();
+  const gone=l.splice(idx,1)[0];btDeleteArmKey=null;btSaveCfgStore(s2);if(settings){const pruned715=btCfgPins().filter(x=>x!==btCfgPinKey(target));if(pruned715.length!==btCfgPins().length){settings.btCfgPins=pruned715;saveSettings();}}btRenderConfigs();
   toast('Deleted '+(gone?gone.name:'configuration')+'.'+(linked?' '+linked+' paper-tracked deployment'+(linked>1?'s':'')+' from this configuration stay'+(linked>1?'':'s')+' deployed — deployments are independent copies, never cascade-deleted.':''));
  });
 }
@@ -3754,7 +3769,7 @@ function btCommitRename(i,name){
 function btLoadConfig(i){
  const list=(btLoadCfgStore().configs[btIdentity()]||[]),c=list[i];
  if(!c)return;
- $('btScheme').value=c.scheme;btRenderParams();
+ btShowScheme(c.scheme);btRenderParams();
  Object.keys(c.params||{}).forEach(k=>{const el=$('btp_'+k);if(el)el.value=c.params[k];});
  if($('btp_fee_bps'))$('btp_fee_bps').value=c.fee_bps;
  if($('btp_deploy_pct'))$('btp_deploy_pct').value=c.deploy_pct;
@@ -3778,13 +3793,54 @@ function btLoadConfig(i){
  btPaintDeployBtn(); /* N7.11: a loaded configuration repaints Deploy state */
  toast('Loaded "'+c.name+'". Press Run backtest.');
 }
+/*__N715_FAM_PIN_START__*/
+/* === N7.15 (A95, 2026-10-26): scheme library filters + pinning ===
+   (1) FAMILY CHIPS above the picker (All / Trend / Strength /
+   Mean-reversion). The family of every playbook scheme is assigned in its
+   BT_SCHEMES entry (supertrend variants, ema-20-50, kama-10-2-30 = Trend;
+   aroon variants = Strength; bollinger-drift-20-2 = Mean-reversion). A
+   future scheme that declares no family, or an unknown one, appears only
+   under All — never silently under a family it did not claim.
+   (2) PINNING: a star toggle beside the picker pins the selected scheme,
+   and a star button on each saved-config row pins that config. Pinned
+   entries float to the top of their lists; order within each group is the
+   original order (stable sort). Pins live in the settings object
+   (btSchemePins = scheme ids, btCfgPins = config pin keys), so they persist
+   and ride the settings sync namespace like other preferences.
+   (3) PRESENTATION ONLY: filtering/pinning never touches run, deploy, or
+   identity logic (N7.9-N7.13). A deployed scheme filtered out of view stays
+   deployed — the deployments list is never filtered. Load paths
+   (btLoadConfig, plLoadDeploy) switch the family to the loaded scheme's
+   family first via btShowScheme, so a load can never silently land on the
+   wrong scheme's parameters when its scheme is filtered out. A config pin
+   key is its runId when present (so a rename keeps the pin) and its name
+   otherwise (a renamed legacy config loses its pin — documented, not
+   silent: the key itself changes). Deleting a config prunes its pin. */
+const BT_SCHEME_FAMS=['Trend','Strength','Mean-reversion'];
+function btSchemeFamily(s){return s&&BT_SCHEME_FAMS.indexOf(s.family)>=0?s.family:null;}
+function btSchemeFamState(){try{const f=settings&&settings.btSchemeFam;return BT_SCHEME_FAMS.indexOf(f)>=0?f:'all';}catch(_){return 'all';}}
+function btSchemePins(){try{const p=settings&&settings.btSchemePins;return Array.isArray(p)?p.filter(x=>typeof x==='string'&&x):[];}catch(_){return [];}}
+function btSchemePinned(id){return btSchemePins().indexOf(id)>=0;}
+function btSchemeVisible(){const fam=btSchemeFamState();const base=BT_SCHEMES.filter(s=>fam==='all'||btSchemeFamily(s)===fam);return base.slice().sort((a,b)=>(btSchemePinned(b.id)?1:0)-(btSchemePinned(a.id)?1:0));}
+function btPaintSchemeFam(){const fam=btSchemeFamState();document.querySelectorAll('[data-btfam]').forEach(x=>{const on=x.dataset.btfam===fam;x.classList.toggle('on',on);x.setAttribute('aria-pressed',on?'true':'false');});}
+function btPaintSchemePin(){const b=$('btSchemePin');if(!b)return;const id=$('btScheme')&&$('btScheme').value;const pinned=!!id&&btSchemePinned(id);b.textContent=pinned?'★':'☆';b.title=pinned?'Unpin this scheme — it leaves the pinned group':'Pin this scheme — pinned schemes list first';b.setAttribute('aria-pressed',pinned?'true':'false');}
+function btPaintSchemeOptions(){const sv=$('btScheme');if(!sv)return;const vis=btSchemeVisible();const cur=sv.value;sv.innerHTML=vis.map(s=>'<option value="'+s.id+'">'+(btSchemePinned(s.id)?'★ ':'')+esc(s.label)+' · #'+s.no+' '+esc(s.asset)+'</option>').join('');if(vis.some(s=>s.id===cur))sv.value=cur;else if(vis.length)sv.value=vis[0].id;btPaintSchemePin();}
+function btApplySchemeFam(fam){if(!settings)return;settings.btSchemeFam=(fam==='all'||BT_SCHEME_FAMS.indexOf(fam)>=0)?fam:'all';saveSettings();btPaintSchemeFam();btPaintSchemeOptions();btRenderParams();}
+function btToggleSchemePin(){const id=$('btScheme')&&$('btScheme').value;if(!id||!settings)return;let pins=btSchemePins();pins=pins.indexOf(id)>=0?pins.filter(x=>x!==id):pins.concat([id]);settings.btSchemePins=pins;saveSettings();btPaintSchemeOptions();btRenderParams();}
+function btShowScheme(id){const s=BT_SCHEMES.find(x=>x.id===id);if(!s)return false;if(settings){const fam=btSchemeFamily(s)||'all';if(settings.btSchemeFam!==fam){settings.btSchemeFam=fam;saveSettings();}}btPaintSchemeFam();btPaintSchemeOptions();const sv=$('btScheme');if(sv)sv.value=id;btPaintSchemePin();return true;}
+function btCfgPinKey(c){return c.runId?('run:'+c.runId):('name:'+c.name);}
+function btCfgPins(){try{const p=settings&&settings.btCfgPins;return Array.isArray(p)?p.filter(x=>typeof x==='string'&&x):[];}catch(_){return [];}}
+function btToggleCfgPin(i){const list=(btLoadCfgStore().configs[btIdentity()]||[]),c=list[i];if(!c||!settings)return;let pins=btCfgPins();const k=btCfgPinKey(c);pins=pins.indexOf(k)>=0?pins.filter(x=>x!==k):pins.concat([k]);settings.btCfgPins=pins;saveSettings();btRenderConfigs();}
+/*__N715_FAM_PIN_END__*/
 function btInit(){
  if(!$('btScheme'))return;
- $('btScheme').innerHTML=BT_SCHEMES.map(s=>'<option value="'+s.id+'">'+esc(s.label)+' · #'+s.no+' '+esc(s.asset)+'</option>').join('');
+ btPaintSchemeFam();btPaintSchemeOptions();
  btPaintPairOptions(); /* N7.14: GT pairs carry the feed-down marking once probed */
  if($('btPair'))$('btPair').onchange=()=>{btPaintPairNote();btProbeGtFeed(false);}; /* N7.14: selecting a GT pair warns before Run, and re-probes when stale */
  btProbeGtFeed(true); /* N7.14: probe on lab init; markings paint when it resolves */
- $('btScheme').onchange=btRenderParams;btRenderParams();
+ $('btScheme').onchange=()=>{btPaintSchemePin();btRenderParams();};btRenderParams();
+ document.querySelectorAll('[data-btfam]').forEach(b=>b.onclick=()=>btApplySchemeFam(b.dataset.btfam));
+ if($('btSchemePin'))$('btSchemePin').onclick=btToggleSchemePin;
  document.querySelectorAll('[data-btrange]').forEach(b=>b.onclick=()=>{document.querySelectorAll('[data-btrange]').forEach(x=>{x.classList.remove('on');x.setAttribute('aria-pressed','false');});b.classList.add('on');b.setAttribute('aria-pressed','true');btRange=b.dataset.btrange;$('btCustomRange').style.display=btRange==='custom'?'grid':'none';});
  $('btRun').onclick=btRun;
  $('btSaveCfg').onclick=btSaveConfig;
@@ -3965,7 +4021,7 @@ function plDeploySaved(i){
 function plLoadDeploy(d){
  const s=BT_SCHEMES.find(x=>x.id===d.scheme);
  if(!s)return;
- $('btScheme').value=d.scheme;btRenderParams();
+ btShowScheme(d.scheme);btRenderParams();
  Object.keys(d.params||{}).forEach(k=>{const el=$('btp_'+k);if(el)el.value=d.params[k];});
  if($('btp_fee_bps'))$('btp_fee_bps').value=d.fee_bps;
  if($('btp_deploy_pct'))$('btp_deploy_pct').value=d.deploy_pct;
