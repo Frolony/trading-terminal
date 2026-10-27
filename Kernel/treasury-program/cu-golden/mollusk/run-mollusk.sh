@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# W4.3 CU golden-test harness (mollusk path). Executes the slice-16
-# chain (slices 1-15 as before, plus the D-3 skip-next-dividend
-# enforcement: the slice-11 probe tranche now refuses DividendSkipped
-# (6091) after settle_default sets the flag, and twin D's replacement
-# 1,000,000 exit comes from position at the flat 13% penalty;
+# W4.3 CU golden-test harness (mollusk path). Executes the slice-17
+# chain (slices 1-16 as before, plus the open_window source-transition
+# consumption fix: a Settled treasury.window.v1 transition opens
+# exactly one window, and reusing transition 21 for window 15
+# refuses SourceTransitionConsumed (6092);
 # gated against design §2.2 ~7K CU, 2x band 3,500-14,000 — the
 # 14,223 CU collect_fees success figure is a marginal design
 # finding, 223 CU over the band top, recorded not tuned away)

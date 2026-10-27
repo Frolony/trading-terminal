@@ -1044,6 +1044,7 @@ pub mod treasury_program {
         record.policy_amendment_applied = false;
         record.bump = ctx.bumps.transition_record;
         record.signalled_bitmap = [0u8; 64];
+        record.window_open_applied = false;
         Ok(())
     }
 
@@ -2856,6 +2857,17 @@ pub mod treasury_program {
     /// a repeat open of the same id fails at the counter gate and
     /// a gapped id fails there too (the Anchor `init` constraint
     /// on the WindowState PDA is the backstop, not the mechanism).
+    /// The counter alone does NOT stop transition reuse: a Settled
+    /// transition that opened window N would still pass the gate
+    /// for window N+1 once the counter advanced. So this slice
+    /// adds the one-time consumption the counter cannot give — the
+    /// source transition's `window_open_applied` flag, set in the
+    /// same instruction as the counter advance and the window
+    /// creation, so the write and the flag cannot diverge (the
+    /// `policy_amendment_applied` precedent). A second open on
+    /// the same transition refuses `SourceTransitionConsumed`,
+    /// whatever id it names: one Settled `treasury.window.v1`
+    /// transition authorizes exactly one window open.
     /// Deliberately no exact-settle requirement, as with the init
     /// and the launch: the effect is a fixed snapshot + counter
     /// advance, so no declared payload exists for an inexact settle
@@ -2868,12 +2880,21 @@ pub mod treasury_program {
         transition_id: u64,
         window_id: u64,
     ) -> Result<()> {
-        let source = &ctx.accounts.transition_record;
+        let (source_state, source_type, source_commit_index, source_applied) = {
+            let source = &ctx.accounts.transition_record;
+            (
+                source.state,
+                source.transition_type,
+                source.commit_index,
+                source.window_open_applied,
+            )
+        };
         can_open_window(
-            source.state,
-            source.transition_type,
+            source_state,
+            source_type,
             window_id,
             ctx.accounts.treasury_state.window_count,
+            source_applied,
         )?;
         let state = &mut ctx.accounts.treasury_state;
         let book = &ctx.accounts.lending_book;
@@ -2887,7 +2908,7 @@ pub mod treasury_program {
         window.snapshot_outstanding_raw = book.outstanding_raw;
         window.exit_stock_raw = window_exit_stock(state.total_raw);
         window.source_transition_id = transition_id;
-        window.source_commit_index = source.commit_index;
+        window.source_commit_index = source_commit_index;
         window.roster_hash = [0; 32];
         window.bump = ctx.bumps.window_state;
         window.fees_collected_raw = 0;
@@ -2895,10 +2916,11 @@ pub mod treasury_program {
             .window_count
             .checked_add(1)
             .ok_or(TreasuryError::Overflow)?;
+        ctx.accounts.transition_record.window_open_applied = true;
         emit!(WindowOpened {
             window_id,
             transition_id,
-            commit_index: source.commit_index,
+            commit_index: source_commit_index,
             exit_stock_raw: window.exit_stock_raw,
             executor: ctx.accounts.executor.key(),
         });
@@ -5144,19 +5166,24 @@ pub fn can_launch_stage2(
 /// The `open_window` gate, as a pure check (design §4.2):
 /// Settled state first, then the canonical `treasury.window.v1`
 /// type, then the sequence — the opened id must equal
-/// TreasuryState's window counter. Order mirrors
-/// [`can_launch_stage2`]: the general failure first, the bindings
-/// last. A repeat id (below the counter) and a gap (above it) both
-/// refuse here: the counter, not the PDA alone, is the sequence
-/// enforcement — the `init` constraint would stop a repeat but
-/// could not stop a gap. Deliberately no exact-settle check, as
-/// with the init and the launch: the open's effect is a fixed
-/// snapshot + counter advance.
+/// TreasuryState's window counter — then the consumption flag.
+/// Order mirrors [`can_launch_stage2`]: the general failure
+/// first, the bindings last. A repeat id (below the counter) and
+/// a gap (above it) both refuse here: the counter, not the PDA
+/// alone, is the sequence enforcement — the `init` constraint
+/// would stop a repeat but could not stop a gap. The flag check
+/// comes last deliberately so every previously-refused shape
+/// keeps its error: the flag refuses only the shape the counter
+/// cannot see, a consumed transition naming the next id.
+/// Deliberately no exact-settle check, as with the init and the
+/// launch: the open's effect is a fixed snapshot + counter
+/// advance.
 pub fn can_open_window(
     state: u8,
     source_type: [u8; 32],
     window_id: u64,
     window_count: u64,
+    window_open_applied: bool,
 ) -> Result<()> {
     require!(state == STATE_SETTLED, TreasuryError::BadState);
     require!(
@@ -5166,6 +5193,10 @@ pub fn can_open_window(
     require!(
         window_id == window_count,
         TreasuryError::WindowNotSequential
+    );
+    require!(
+        !window_open_applied,
+        TreasuryError::SourceTransitionConsumed
     );
     Ok(())
 }
@@ -6785,6 +6816,16 @@ pub struct TransitionRecord {
     /// bump deliberately so every pre-fork field keeps its byte
     /// offset; at most MAX_BITMAP_AGENTS bits, all in these 64 bytes.
     pub signalled_bitmap: [u8; 64],
+    /// Program-layer execution marker, not kernel state:
+    /// `open_window` sets this once it opens a window on this
+    /// Settled transition, and refuses a second open on it.
+    /// False at registration; meaningful only on a Settled
+    /// transition of the canonical window type, and never set on
+    /// any other transition. Appended after the bitmap
+    /// deliberately so every pre-existing field keeps its byte
+    /// offset; the `policy_amendment_applied` precedent, for
+    /// windows.
+    pub window_open_applied: bool,
 }
 
 /// Step-2 fork, Attempt 2 — bitmap gate geometry: 64 fixed bytes
@@ -6800,9 +6841,10 @@ pub const MAX_BITMAP_AGENTS: usize = SIGNALLED_BITMAP_LEN * 8;
 impl TransitionRecord {
     /// 8 (discriminator) + 8 + 32 + 1 + 32 + 8 + 8 + 8 + 4 + 4
     /// + 8 + 8 + 8 + (4 + 8 × 33) + 1 + 1 + 32 + 8 + 32 + 8 + 32
-    /// + (4 + 8 × 34) + 4 + 1 + 1 + 64 = 865.
-    /// The last term is the step-2 bitmap gate (Attempt 2).
-    pub const SPACE: usize = 8 + 8 + 32 + 1 + 32 + 8 + 8 + 8 + 4 + 4 + 8 + 8 + 8 + 268 + 1 + 1 + 32 + 8 + 32 + 8 + 32 + 276 + 4 + 1 + 1 + 64;
+    /// + (4 + 8 × 34) + 4 + 1 + 1 + 64 + 1 = 866.
+    /// The 64 term is the step-2 bitmap gate (Attempt 2); the
+    /// final 1 is the window-open consumption flag.
+    pub const SPACE: usize = 8 + 8 + 32 + 1 + 32 + 8 + 8 + 8 + 4 + 4 + 8 + 8 + 8 + 268 + 1 + 1 + 32 + 8 + 32 + 8 + 32 + 276 + 4 + 1 + 1 + 64 + 1;
 }
 
 /// One transition type's policy (design §3 `PolicyRecord`, §4.1
@@ -7779,10 +7821,12 @@ pub struct OpenWindow<'info> {
     #[account(seeds = [b"lending-book"], bump = lending_book.bump)]
     pub lending_book: Account<'info, LendingBook>,
     /// The Settled `treasury.window.v1` transition authorizing the
-    /// open (read-only: no flag is written — the counter advance
-    /// plus the `init` constraint below are the one-time guarantee
-    /// for this window id).
-    #[account(seeds = [b"transition", transition_id.to_le_bytes().as_ref()], bump = transition_record.bump)]
+    /// open (mutated: the `window_open_applied` flag is set here
+    /// and nowhere else — the one-time consumption guarantee for
+    /// this transition, since the counter advance plus the `init`
+    /// constraint below cover only repeats and gaps of ids, not
+    /// reuse of the transition itself).
+    #[account(mut, seeds = [b"transition", transition_id.to_le_bytes().as_ref()], bump = transition_record.bump)]
     pub transition_record: Account<'info, TransitionRecord>,
     /// Window state PDA, seeds `["window", window_id]`. One-time
     /// init: a second open of the same id fails at account
@@ -8757,6 +8801,16 @@ pub enum TreasuryError {
     /// file records codes verbatim).
     #[msg("Dividend skipped: this holder's dividend for this slot was forfeited by a default settlement.")]
     DividendSkipped,
+    /// A window source is consumed: this Settled
+    /// `treasury.window.v1` transition already opened a window,
+    /// and one transition authorizes exactly one open. The
+    /// counter stops repeat and gapped ids; it cannot stop a
+    /// consumed transition naming the next id, so the
+    /// `window_open_applied` flag refuses here. Appended at
+    /// the end of the enum, not inserted among earlier
+    /// errors, so no existing error code moves.
+    #[msg("Source transition consumed: this Settled treasury.window.v1 transition already opened a window.")]
+    SourceTransitionConsumed,
 }
 
 #[cfg(test)]
@@ -8921,8 +8975,9 @@ mod tests {
         // raise_exception / resolve_exception, and the transition
         // type (32) with policy_transition, and the one-time
         // policy-amendment execution flag (1) with
-        // apply_policy_amendment.
-        assert_eq!(TransitionRecord::SPACE, 865);
+        // apply_policy_amendment, and the one-time window-open
+        // consumption flag (1) with open_window.
+        assert_eq!(TransitionRecord::SPACE, 866);
         assert_eq!(DeclaredChain::SPACE, 49);
         assert_eq!(MAX_CONSTRAINTS, 8);
         assert_eq!(MAX_EXCEPTIONS, 8);
@@ -9326,9 +9381,11 @@ mod tests {
             policy_amendment_applied: false,
             bump: 255,
             signalled_bitmap: [0u8; 64],
+            window_open_applied: false,
         };
         assert_eq!(record.state, STATE_REGISTERED);
         assert!(!record.policy_amendment_applied);
+        assert!(!record.window_open_applied);
         assert_eq!(record.proposer, proposer);
         assert_eq!(record.planning_deadline, 0);
         assert_eq!(record.plan_count, 0);
@@ -10504,23 +10561,29 @@ mod tests {
 
     #[test]
     fn window_open_gate_matrix() {
-        // Settled + canonical type + next id: passes — first window
-        // (0 against a 0 counter) and a later window alike.
-        can_open_window(STATE_SETTLED, TREASURY_WINDOW_TYPE, 0, 0)
+        // Settled + canonical type + next id + unconsumed: passes —
+        // first window (0 against a 0 counter) and a later window
+        // alike.
+        can_open_window(STATE_SETTLED, TREASURY_WINDOW_TYPE, 0, 0, false)
             .expect("settled window transition authorizes the first open");
-        can_open_window(STATE_SETTLED, TREASURY_WINDOW_TYPE, 7, 7)
+        can_open_window(STATE_SETTLED, TREASURY_WINDOW_TYPE, 7, 7, false)
             .expect("settled window transition authorizes the next open");
         // Any non-Settled state refuses first, whatever the rest is.
-        assert!(can_open_window(STATE_COMMITTED, TREASURY_WINDOW_TYPE, 0, 0).is_err());
-        assert!(can_open_window(STATE_PLANNING, TREASURY_WINDOW_TYPE, 0, 0).is_err());
+        assert!(can_open_window(STATE_COMMITTED, TREASURY_WINDOW_TYPE, 0, 0, false).is_err());
+        assert!(can_open_window(STATE_PLANNING, TREASURY_WINDOW_TYPE, 0, 0, false).is_err());
         // A settled transition of another type is not a window source.
-        assert!(can_open_window(STATE_SETTLED, TREASURY_LAUNCH_TYPE, 0, 0).is_err());
-        assert!(can_open_window(STATE_SETTLED, TREASURY_INIT_TYPE, 0, 0).is_err());
-        assert!(can_open_window(STATE_SETTLED, [0; 32], 0, 0).is_err());
+        assert!(can_open_window(STATE_SETTLED, TREASURY_LAUNCH_TYPE, 0, 0, false).is_err());
+        assert!(can_open_window(STATE_SETTLED, TREASURY_INIT_TYPE, 0, 0, false).is_err());
+        assert!(can_open_window(STATE_SETTLED, [0; 32], 0, 0, false).is_err());
         // A repeat id (below the counter) refuses, and a gap (above
         // the counter) refuses: the counter is the sequence.
-        assert!(can_open_window(STATE_SETTLED, TREASURY_WINDOW_TYPE, 0, 1).is_err());
-        assert!(can_open_window(STATE_SETTLED, TREASURY_WINDOW_TYPE, 2, 1).is_err());
+        assert!(can_open_window(STATE_SETTLED, TREASURY_WINDOW_TYPE, 0, 1, false).is_err());
+        assert!(can_open_window(STATE_SETTLED, TREASURY_WINDOW_TYPE, 2, 1, false).is_err());
+        // A consumed transition refuses even naming the next id —
+        // the shape the counter cannot see: after window 7 opened
+        // on this transition, the counter is 8, so id 8 passes
+        // the sequence check and must still refuse on the flag.
+        assert!(can_open_window(STATE_SETTLED, TREASURY_WINDOW_TYPE, 8, 8, true).is_err());
     }
 
     #[test]

@@ -897,15 +897,66 @@ collected_raw 100,000, clock 37,003,600. Golden file 288 entries (the
 renamed `exit:11D` replaces `exit:11D_par`, net zero). As in every
 slice, the tranche and exit here are bookkeeping, not token movement.
 
+## Slice 17 — open_window source-transition consumption (2026-10-26)
+
+The carried Part B4 item lands: one Settled `treasury.window.v1`
+transition authorizes exactly one window open. The counter on
+TreasuryState stops repeat and gapped ids, but it cannot stop
+transition reuse — a transition that opened window N still passed
+the gate for window N+1 once the counter advanced. The fix mirrors
+the `policy_amendment_applied` precedent: TransitionRecord gains
+`window_open_applied` (SPACE 865 → 866, appended after the
+signalled bitmap, so no field moves), set by `open_window` in the
+same instruction as the counter advance and the window creation,
+so the write and the flag cannot diverge; a second open on the
+same transition refuses `SourceTransitionConsumed` (6092,
+appended at the enum end, no existing code moves).
+
+Measured: the slice-17 probe reuses Settled transition 21 — which
+opened window 14 — for window 15 and REFUSES at 15,822 CU
+(6092); window_count stays 15 and no window 15 is created. The
+interface consequence is real and is fixed in the harness, not
+hidden: every `open_window` caller must now pass the transition
+writable, since the handler writes the flag — the first mollusk
+run after the change panicked on the window-0 open at the
+account layer (read-only account where a writable one is
+required), and all four open_window call sites (windows 0, 1,
+2..13, 14) were updated before the golden was written.
+
+Re-baseline, stated not hidden: adding the flag re-measures
+slices 1–16 against the new .so (sha `7b051bd6…`, was
+`607b2284…`), and 237 of the 288 entries shift — +108 on
+lifecycle steps, +64 on transition-reading instructions, +109
+on registrations, +62/+66 on four refusal paths, and exactly
++1,844 on all 15 opens (open_window 15,043 → 16,887;
+open_window:14 16,543 → 18,387): the systematic cost of the
+transition account going from read-only to writable on a
+once-per-window setup instruction, not a per-payout cost, so
+the batch arithmetic stands. Positional comparison shows ZERO
+gate flips — the probe entry is the only addition. The §2.2
+canonical figures are updated to the slice-17 measurements in
+the same pass (commit 17,963 → 18,071, settle 12,965 → 13,073,
+pay_tranche 11,726 → 11,790, borrow 12,174 → 12,238, exit
+10,665 → 10,729, settle_default 14,524 → 14,588,
+schedule_whale_exit 15,851 → 15,915, execute_whale_tranche
+16,414 → 16,478, tranche 2 16,423 → 16,487, reinvest 9,322 →
+9,386, collect_fees 14,223 → 14,287), per Carlos's
+measured-figures directive. Final state unchanged from slice
+16: window 13 stock 4,000,000, window 14 stock 8,000,000,
+FeeVault collected_raw 100,000, clock 37,003,600. Golden file
+289 entries (288 + the reuse probe). As in every slice, the
+open here is bookkeeping, not token movement.
+
 ## Next slices
 
 Queue head, continued: the W3.2 adversarial suite re-expressed against
 the program's interface with measured CU per instruction is now complete
 for the §4.2 rows — next the carried Part B4 items in roadmap order
-(the skip-enforcement item is now LANDED slice 16 on the record that
-carries the flag, with the cross-record carry still open; then the
-open_window source-transition consumption fix, and the declared-fee-schedule
-reconciliation slice 15 carries), then the remaining queue items
+(the skip-enforcement item is LANDED slice 16 on the record that
+carries the flag, with the cross-record carry still open; the
+open_window source-transition consumption fix is LANDED slice 17;
+then the declared-fee-schedule reconciliation slice 15 carries),
+then the remaining queue items
 (deposit↔enroll binding, accepted-mints registry, native-SOL deposits).
 
 Optimization pass step 2 (ATTEMPTED 2026-10-25, BLOCKED, REVERTED —
