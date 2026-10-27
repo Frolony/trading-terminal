@@ -852,14 +852,60 @@ window 1 stock 0, whale schedule untouched (2 blocks,
 last_block_time 31,608,400), clock 37,003,600. Golden file 288 entries.
 As in every slice, `collect_fees` here is bookkeeping, not token movement.
 
+## Slice 16: skip-next-dividend enforcement (D-3, the carried item from slice 11) (2026-10-26)
+
+The slice-11 probe is closed on the record that carries the flag.
+`can_pay_tranche` takes the holder record's `skip_next_dividend` flag
+and refuses `DividendSkipped` (6091, appended at the end of the error
+enum, so no existing code moves — IDL 39 instructions / 92 errors /
+16 accounts, program host tests 84 with the `pay_tranche_gate_matrix`
+gaining the skip case, no new test fn). The refusal leaves the flag set
+and the slot unpaid, so a retry cannot pay a forfeited slot — a failed
+instruction rolls its state back, so consumption-by-refusal is the only
+durable reading on this record, and it is the reading implemented.
+
+Measured on the slice-11 chain (twin D, window 13, Committed window-flow
+transition 7):
+
+| instruction | CU | result |
+|---|---|---|
+| `pay_tranche:11skip_probe` (1,000,000, AFTER `settle_default` set the flag) | 12,412 | Refused `DividendSkipped` (6091), state unchanged — accrued 0, flag stays set, slot unpaid, NOT a success CU |
+| `exit:11D` (twin D's replacement 1,000,000 exit, accrued 0 so the whole amount is excess) | 10,665 | Success, gate PASS — flat 13% penalty (paid 870,000, penalty 130,000), position 5,000,000 → 4,000,000 |
+
+The one-cycle ledgers are now strictly worse for the defaulter:
+5,000,000 loan cash + 4,000,000 position + 870,000 net paid = 9,870,000
+against the scheduled path's 1,000,000 paid + 10,000,000 position =
+11,000,000 — a 1,130,000 gap (the forfeited 1,000,000 tranche plus the
+130,000 penalty on the replacement exit). T10 is claimed re-expressed
+on the program on the record that carries the flag. Carried, stated
+plainly: the flag is set on the loan window's record while a holder's
+next eligible slot lives on a fresh record in a later window, so
+carrying the forfeiture across records at enroll time is still owed
+before the D-3 forfeiture is re-expressed end to end.
+
+Re-baseline, stated not hidden: adding the gate re-measures slices 1–15
+against the new .so (sha `607b2284…`, was `e139e22a…`), and 14 of the
+288 entries shift — all small (±1…+4 CU code-layout jitter, except the
+probe itself, whose refusal path costs 12,412 CU against its old 11,721
+CU success) — with the probe flip as the ONLY result flip and ZERO
+other gate flips. The §2.2 canonical figures are updated to the
+slice-16 measurements in the same pass (pay_tranche 11,722 → 11,726; all
+other canonical figures unchanged), per Carlos's measured-figures
+directive. Final state: window 13 stock 4,000,000 (unchanged — twin D
+and twin S each debit 1,000,000), window 14 stock 8,000,000, FeeVault
+collected_raw 100,000, clock 37,003,600. Golden file 288 entries (the
+renamed `exit:11D` replaces `exit:11D_par`, net zero). As in every
+slice, the tranche and exit here are bookkeeping, not token movement.
+
 ## Next slices
 
 Queue head, continued: the W3.2 adversarial suite re-expressed against
 the program's interface with measured CU per instruction is now complete
 for the §4.2 rows — next the carried Part B4 items in roadmap order
-(including the skip-enforcement item slice 11 confirmed open, the
+(the skip-enforcement item is now LANDED slice 16 on the record that
+carries the flag, with the cross-record carry still open; then the
 open_window source-transition consumption fix, and the declared-fee-schedule
-reconciliation this slice carries), then the remaining queue items
+reconciliation slice 15 carries), then the remaining queue items
 (deposit↔enroll binding, accepted-mints registry, native-SOL deposits).
 
 Optimization pass step 2 (ATTEMPTED 2026-10-25, BLOCKED, REVERTED —

@@ -1,13 +1,11 @@
 #!/usr/bin/env bash
-# W4.3 CU golden-test harness (mollusk path). Executes the slice-15
-# chain (slices 1-14 as before, plus the last §4.2 row
-# `collect_fees`: the operator collects 73,000 (73 bps on a
-# 10,000,000 flow, operator-reported) in window 14 on Committed
-# window flow transition 7, a further 27,000 accumulates in the
-# same window (window and vault both 100,000), a zero collection
-# refuses InvalidCollectAmount and an agent without OPERATOR_SETTLE
-# refuses Unauthorized; gated against design §2.2 ~7K CU, 2x band
-# 3,500-14,000 — the 14,223 CU success figure is a marginal design
+# W4.3 CU golden-test harness (mollusk path). Executes the slice-16
+# chain (slices 1-15 as before, plus the D-3 skip-next-dividend
+# enforcement: the slice-11 probe tranche now refuses DividendSkipped
+# (6091) after settle_default sets the flag, and twin D's replacement
+# 1,000,000 exit comes from position at the flat 13% penalty;
+# gated against design §2.2 ~7K CU, 2x band 3,500-14,000 — the
+# 14,223 CU collect_fees success figure is a marginal design
 # finding, 223 CU over the band top, recorded not tuned away)
 # against the already-built program .so
 # (build it first: `anchor build` from Kernel/treasury-program/) and

@@ -3034,6 +3034,19 @@ pub mod treasury_program {
     /// is what prevents it. A zero amount refuses: a zero payout
     /// would mark the slot paid while paying nothing.
     ///
+    /// Skip enforcement (slice 16, D-3): a record whose
+    /// `skip_next_dividend` flag is set refuses here with
+    /// `DividendSkipped` and pays nothing — the slice-11 probe
+    /// (a tranche paid after a default set the flag) is closed
+    /// on the record that carries the flag. The refusal leaves
+    /// the flag set and the slot unpaid, so a retry cannot pay
+    /// a forfeited slot. Carried, stated plainly: the flag is
+    /// set on the loan window's record while the holder's next
+    /// eligible slot lives on a fresh record in a later window,
+    /// so carrying the forfeiture across records at enroll time
+    /// is still owed before the D-3 forfeiture can be called
+    /// re-expressed end to end.
+    ///
     /// Honest scope, stated plainly: this slice records the payout
     /// as accrual bookkeeping (`accrued_dividend_raw` += amount, the
     /// §3 "accrued unpaid dividend") and emits `TranchePaid` with
@@ -3071,6 +3084,7 @@ pub mod treasury_program {
                 .capabilities
                 .contains(&OPERATOR_SETTLE),
             ctx.accounts.holder_record.tranche_paid,
+            ctx.accounts.holder_record.skip_next_dividend,
             amount_raw,
         )?;
         let record = &mut ctx.accounts.holder_record;
@@ -5182,11 +5196,16 @@ pub fn can_enroll(window_id: u64, window_count: u64, position_raw: u64) -> Resul
 /// holder's cohort must be this window's rotation slot, the
 /// standing authorization must still hold, the operator must be an
 /// active agent holding `OPERATOR_SETTLE`, the slot must be unpaid,
-/// and the amount must be positive. Order mirrors
-/// [`can_open_window`]: the transition binding first, the
-/// amount rule last. A Settled transition refuses here: payouts
-/// execute before settle, and a payout after settle would pay
-/// outside the window's executed set that settle attests.
+/// the D-3 skip flag must be clear, and the amount must be
+/// positive. Order mirrors [`can_open_window`]: the transition
+/// binding first, the amount rule last. A Settled transition
+/// refuses here: payouts execute before settle, and a payout
+/// after settle would pay outside the window's executed set that
+/// settle attests. The skip rule, landed as slice 16, closes the
+/// slice-11 probe: a record whose `skip_next_dividend` flag is
+/// set refuses here with `DividendSkipped`, so a forfeited slot
+/// pays nothing — the refusal leaves the flag set and the slot
+/// unpaid, so a retry cannot pay it either.
 pub fn can_pay_tranche(
     state: u8,
     transition_type: [u8; 32],
@@ -5196,6 +5215,7 @@ pub fn can_pay_tranche(
     operator_active: bool,
     operator_has_settle: bool,
     tranche_paid: bool,
+    skip_next_dividend: bool,
     amount_raw: u64,
 ) -> Result<()> {
     require!(state == STATE_COMMITTED, TreasuryError::BadState);
@@ -5213,6 +5233,7 @@ pub fn can_pay_tranche(
         TreasuryError::Unauthorized
     );
     require!(!tranche_paid, TreasuryError::TrancheAlreadyPaid);
+    require!(!skip_next_dividend, TreasuryError::DividendSkipped);
     require!(amount_raw != 0, TreasuryError::InvalidAmount);
     Ok(())
 }
@@ -8723,6 +8744,19 @@ pub enum TreasuryError {
     /// nothing.
     #[msg("Collect fees amount must be positive: a zero collection accounts nothing.")]
     InvalidCollectAmount,
+    /// A dividend tranche is skipped: the holder's record
+    /// carries a D-3 forfeiture flag set by `settle_default`,
+    /// and a skipped slot pays nothing. The flag is NOT
+    /// cleared by the refusal — a retry must not pay a
+    /// forfeited slot — so the forfeiture is durable for
+    /// this record's slot; the next window's fresh record
+    /// is unaffected, and carrying the flag across records
+    /// at enroll time stays a carried item. Appended at
+    /// the end of the enum, not inserted among earlier
+    /// errors, so no existing error code moves (the golden
+    /// file records codes verbatim).
+    #[msg("Dividend skipped: this holder's dividend for this slot was forfeited by a default settlement.")]
+    DividendSkipped,
 }
 
 #[cfg(test)]
@@ -10625,6 +10659,7 @@ mod tests {
             true,
             true,
             false,
+            false,
             626,
         )
         .expect("committed window payout passes");
@@ -10637,46 +10672,48 @@ mod tests {
             STATE_EXPIRED,
         ] {
             assert!(can_pay_tranche(
-                state, TREASURY_WINDOW_TYPE, 1, 13, true, true, true, false, 626
-            )
+                state, TREASURY_WINDOW_TYPE, 1, 13, true, true, true, false, false, 626)
             .is_err());
         }
         // Wrong transition type, and a cohort that is not this
         // window's slot (13 mod 12 = 1), both refuse as a mismatch.
         assert!(can_pay_tranche(
-            STATE_COMMITTED, TREASURY_LAUNCH_TYPE, 1, 13, true, true, true, false, 626
-        )
+            STATE_COMMITTED, TREASURY_LAUNCH_TYPE, 1, 13, true, true, true, false, false, 626)
         .is_err());
         assert!(can_pay_tranche(
-            STATE_COMMITTED, TREASURY_WINDOW_TYPE, 2, 13, true, true, true, false, 626
-        )
+            STATE_COMMITTED, TREASURY_WINDOW_TYPE, 2, 13, true, true, true, false, false, 626)
         .is_err());
         // Revoked standing authorization refuses, even for a
         // Committed transition: §5 never pays against revocation.
         assert!(can_pay_tranche(
-            STATE_COMMITTED, TREASURY_WINDOW_TYPE, 1, 13, false, true, true, false, 626
-        )
+            STATE_COMMITTED, TREASURY_WINDOW_TYPE, 1, 13, false, true, true, false, false, 626)
         .is_err());
         // An inactive operator, and an active operator without the
         // capability, both refuse: the gate is capability + active.
         assert!(can_pay_tranche(
-            STATE_COMMITTED, TREASURY_WINDOW_TYPE, 1, 13, true, false, true, false, 626
-        )
+            STATE_COMMITTED, TREASURY_WINDOW_TYPE, 1, 13, true, false, true, false, false, 626)
         .is_err());
         assert!(can_pay_tranche(
-            STATE_COMMITTED, TREASURY_WINDOW_TYPE, 1, 13, true, true, false, false, 626
-        )
+            STATE_COMMITTED, TREASURY_WINDOW_TYPE, 1, 13, true, true, false, false, false, 626)
         .is_err());
         // A second payout for the same holder-window refuses: one
         // payout per holder per window, enforced by the flag.
         assert!(can_pay_tranche(
-            STATE_COMMITTED, TREASURY_WINDOW_TYPE, 1, 13, true, true, true, true, 626
+            STATE_COMMITTED, TREASURY_WINDOW_TYPE, 1, 13, true, true, true, true, false, 626
         )
         .is_err());
         // A zero amount refuses: it would mark the slot paid while
         // paying nothing.
         assert!(can_pay_tranche(
-            STATE_COMMITTED, TREASURY_WINDOW_TYPE, 1, 13, true, true, true, false, 0
+            STATE_COMMITTED, TREASURY_WINDOW_TYPE, 1, 13, true, true, true, false, false, 0
+        )
+        .is_err());
+        // A set skip flag refuses, even for an otherwise clean
+        // payout: slice 16, D-3 forfeiture — a skipped slot pays
+        // nothing, and the refusal leaves the flag set, so a
+        // retry cannot pay the forfeited slot either.
+        assert!(can_pay_tranche(
+            STATE_COMMITTED, TREASURY_WINDOW_TYPE, 1, 13, true, true, true, false, true, 626
         )
         .is_err());
     }
