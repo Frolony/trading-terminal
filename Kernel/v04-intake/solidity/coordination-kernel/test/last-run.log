@@ -92,6 +92,19 @@ exceptions: council majority resolves, raiser excluded, confirmed defection is r
   ok   two of three resolves it
   ok   confirmed defection recorded against the offender
 
+discard: a strict council majority frees the parent slot held by an abandoned BLOCKED transition
+  ok   the transition is BLOCKED
+  ok   while BLOCKED it holds the parent slot: the sibling cannot select
+  ok   only seats may discard
+  ok   one seat of three, even the proposer seat, cannot discard
+  ok   a seat votes once per blocking episode
+  ok   the slot is still held
+  ok   two of three seats discard it
+  ok   the freed slot lets the sibling select
+  ok   COMMITTABLE cannot be discarded
+  ok   COMMITTED cannot be discarded
+  ok   an already discarded transition cannot be discarded again
+
 governance: a rule changes only when a council-proposed transition passes the full predicate
   ok   no seat can change a rule directly
   ok   two of three seats approving is not unanimous: proposal refused
@@ -152,4 +165,4 @@ weight bound is enforced at seal (fresh deployment)
   ok   seal refused while one agent holds more than 1/6 of base influence
   ok   the cap cannot be tightened under an existing holder
 
-113 passed, 0 failed
+124 passed, 0 failed

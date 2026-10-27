@@ -62,6 +62,37 @@ module.exports = async (c) => {
   ok((await kA.lastDefectionEpoch1(a6.address)) > 0n, 'confirmed defection recorded against the offender');
   await tx(K(a7).withdraw(E1));
 
+  // ---------------------------------------------------------------- discarding an abandoned blocked transition
+  sec('discard: a strict council majority frees the parent slot held by an abandoned BLOCKED transition');
+  const Xa = b32('Xa'), Xb = b32('Xb'); const xp = await parent();
+  await register(a1, 'Xa', T1, { parent: xp }); await register(a5, 'Xb', T1, { parent: xp });
+  await toEligible(Xa); await toEligible(Xb);
+  for (const s of [a1, a2, a3, a6, a7]) { await sign(s, Xa, WAD, WAD); await sign(s, Xb, WAD, WAD); }
+  await mine(1001);
+  await tx(K(rando).selectCandidate(Xa));
+  await tx(K(rando).openPlanning(Xa));
+  await tx(K(a1).submitPlan(Xa, { resourceClaims: [], effects: [b32('E1')], prerequisites: [], conflicts: [], expiresAt: await FAR(), payloadHash: H('pl') }));
+  await tx(K(a5).submitExceptionSignal(Xa, 9, 3, ethers_zero()));
+  await mine(101); await tx(K(rando).reconcilePlans(Xa)); await tx(K(rando).validateTransition(Xa));
+  ok(await lc(Xa) === 17, 'the transition is BLOCKED');
+  ok(await rn(K(rando), 'selectCandidate', Xb) === 'ParentAlreadyHasASelectedTransition', 'while BLOCKED it holds the parent slot: the sibling cannot select');
+  ok(await rn(K(a4), 'discardBlocked', Xa) === 'NotCouncil', 'only seats may discard');
+  await tx(K(a1).discardBlocked(Xa));
+  ok(await lc(Xa) === 17, 'one seat of three, even the proposer seat, cannot discard');
+  ok(await rn(K(a1), 'discardBlocked', Xa) === 'AlreadyVoted', 'a seat votes once per blocking episode');
+  ok(await rn(K(rando), 'selectCandidate', Xb) === 'ParentAlreadyHasASelectedTransition', 'the slot is still held');
+  await tx(K(a2).discardBlocked(Xa));
+  ok(await lc(Xa) === 13, 'two of three seats discard it');
+  await tx(K(rando).selectCandidate(Xb));
+  ok(await lc(Xb) === 4, 'the freed slot lets the sibling select');
+  await tx(K(rando).openPlanning(Xb));
+  await tx(K(a5).submitPlan(Xb, { resourceClaims: [], effects: [b32('E1')], prerequisites: [], conflicts: [], expiresAt: await FAR(), payloadHash: H('pl') }));
+  await mine(101); await tx(K(rando).reconcilePlans(Xb)); await tx(K(rando).validateTransition(Xb)); await tx(K(rando).declareCommit(Xb));
+  ok(await lc(Xb) === 8 && await rn(K(a1), 'discardBlocked', Xb) === 'BadLifecycle', 'COMMITTABLE cannot be discarded');
+  await tx(K(rando).commit(Xb));
+  ok(await rn(K(a1), 'discardBlocked', Xb) === 'BadLifecycle', 'COMMITTED cannot be discarded');
+  ok(await rn(K(a1), 'discardBlocked', Xa) === 'BadLifecycle', 'an already discarded transition cannot be discarded again');
+
   // ---------------------------------------------------------------- governance
   sec('governance: a rule changes only when a council-proposed transition passes the full predicate');
   const gArgs = async (id, type, action, o = {}) => [b32(id), b32(id + 'S'), await mf(type, o.parent || await parent(), ethers.keccak256(action)), action];

@@ -228,4 +228,19 @@ contract ConsensusModule is KernelStorage {
         }
         emit ExceptionResolved(id, index, kind, evidenceHash);
     }
+
+    /// A BLOCKED transition holds its parent's selection slot, and only its proposer can withdraw it.
+    /// If the proposer walks away, a strict majority of ALL council seats may discard it, which frees
+    /// the slot. This adjudicates a fact (the transition is abandoned), not a rule. It works only from
+    /// BLOCKED, never from COMMITTABLE or later, and a seat votes once per blocking episode.
+    function discardBlocked(bytes32 id) external whenOperational(id) {
+        if (!isSeated[msg.sender]) revert NotCouncil();
+        _require(id, TransitionLifecycle.BLOCKED);
+        bytes32 key = keccak256(abi.encode(id, blockEpisode[id]));
+        if (discardVoted[key][msg.sender]) revert AlreadyVoted();
+        discardVoted[key][msg.sender] = true;
+        if (++discardVotes[key] * 2 <= _councilMembers.length) return;
+        _set(id, TransitionLifecycle.DISCARDED);
+        emit BlockedDiscarded(id, blockEpisode[id]);
+    }
 }

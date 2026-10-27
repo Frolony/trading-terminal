@@ -132,6 +132,7 @@ contract CoordinationKernel is KernelStorage {
         moduleOf[ConsensusModule.submitRoundSignal.selector] = c;
         moduleOf[ConsensusModule.submitExceptionSignal.selector] = c;
         moduleOf[ConsensusModule.resolveException.selector] = c;
+        moduleOf[ConsensusModule.discardBlocked.selector] = c;
 
         address p = m.planning;
         moduleOf[PlanningModule.evaluateTransition.selector] = p;

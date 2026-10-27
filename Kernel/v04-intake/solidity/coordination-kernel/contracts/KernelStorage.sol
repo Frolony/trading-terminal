@@ -533,6 +533,11 @@ abstract contract KernelStorage {
     mapping(bytes32 => mapping(address => uint256)) public blockingBy;        // transition -> raiser -> unresolved blocking count
     mapping(bytes32 => uint256) public resolutionVotes;
     mapping(bytes32 => mapping(address => bool)) public resolutionVoted;
+    // A blocked transition that nobody is working on holds its parent's selection slot. Seats may
+    // discard it by strict majority. Votes are per blocking episode: entering BLOCKED again starts a new tally.
+    mapping(bytes32 => uint256) public blockEpisode;
+    mapping(bytes32 => uint256) public discardVotes;                      // key = keccak(id, episode)
+    mapping(bytes32 => mapping(address => bool)) public discardVoted;     // key = keccak(id, episode)
 
     // plans
     mapping(bytes32 => Plan) public plans;
@@ -604,6 +609,7 @@ abstract contract KernelStorage {
     event SectorClassified(bytes32 indexed transitionId, address indexed agent, uint256 indexed round, Stance stance, Contribution contribution, Sector sector);
     event SectorReclassified(bytes32 indexed transitionId, address indexed agent, uint256 indexed round, Sector fromSector, Sector toSector);
     event ExceptionSignalSubmitted(bytes32 indexed transitionId, address indexed agent, uint256 index);
+    event BlockedDiscarded(bytes32 indexed transitionId, uint256 episode);
     event ExceptionResolved(bytes32 indexed transitionId, uint256 index, ResolutionKind kind, bytes32 evidenceHash);
     event EvaluatorFailed(bytes32 indexed transitionId, bytes32 indexed ruleId);
     event ModelProposalRecorded(bytes32 indexed outcomeId, bytes32 proposalId);
@@ -660,6 +666,7 @@ abstract contract KernelStorage {
         TransitionLifecycle cur = transitionLifecycle[id];
         if (!_allowed[cur][next]) revert IllegalMove(cur, next);
         transitionLifecycle[id] = next;
+        if (next == TransitionLifecycle.BLOCKED) blockEpisode[id] += 1;
         emit LifecycleChanged(id, cur, next);
     }
 
