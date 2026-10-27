@@ -145,16 +145,40 @@
 //! both ways (a later observation ingests; a window lapsed by the
 //! advance fails replay through the kernel). No CU measurement —
 //! that rides the cu-golden freeze.
+//!
+//! Slice 12 (this slice): the second replay instruction,
+//! `evaluate_transition`. It takes a `KERNEL_REGISTERED` record and
+//! runs kernel `evaluate_transition` on it — after replaying the
+//! slice-10 ingest + register sequence on a freshly rebuilt sealed
+//! launch kernel, because the kernel object itself is not persisted
+//! and evaluation needs a `Proposed` transition to judge. The kernel
+//! here runs under `ProgramEnv`, the program-side port of the step-2
+//! launch env (C1 = Pass, O1 = true): under the delivered crate's
+//! default `NoEnv`, C1 answers Unavailable and `evaluate_transition`
+//! leaves every transition `Proposed` — constraints recorded
+//! unsatisfied, life unmoved — so a NoEnv evaluate could never advance
+//! a stage and this slice would be a no-op (proven by test, not
+//! assumed). The env answers are the administrator's answers, baked
+//! into the program, never taken from an instruction argument: the
+//! kernel asks the env, callers never assert a verdict. Only
+//! `Life::Evaluated` advances the record's stage, to `EVALUATED` (2);
+//! a kernel refusal, and a non-Evaluated life (a `Rejected` verdict
+//! under a failing env, or a still-`Proposed` transition under an
+//! unavailable one), both map to `EvaluateFailed` and leave the stage
+//! untouched — the stage records only a proven evaluation, and a
+//! verdict-bearing `Rejected` stage is a later slice's work, not claimed
+//! here. Eligible/select/reconcile/validate/declare, commit replay
+//! moving the head, and CU measurement are later slices, not this one.
 
 extern crate alloc;
 
-use alloc::collections::BTreeSet;
+use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec;
 use anchor_lang::prelude::*;
 use coordination_kernel::{
-    Amount, Config, GovAction, Kernel, KernelError, Life, Manifest, NoEnv, Observation, Policy,
-    Role, SystemState, T_GOV_ADJUSTABLE, T_GOV_CONSTITUTION, T_GOV_COUNCIL, T_GOV_REBOOT,
-    SCALE,
+    Amount, Config, ConstraintStatus, Env, GovAction, Kernel, KernelError, Life, Manifest, NoEnv,
+    Observation, Policy, Role, SystemState, T_GOV_ADJUSTABLE, T_GOV_CONSTITUTION,
+    T_GOV_COUNCIL, T_GOV_REBOOT, SCALE,
 };
 
 declare_id!("FzxnCtig4asxnCxGhjcbCDY5zkfcpfTb5GcXNL9UaGg6");
@@ -329,6 +353,58 @@ pub mod program_v04 {
         emit!(ClockAdvanced { clock });
         Ok(())
     }
+
+    /// Evaluate (§4.1, second replay row, v0.4 form): run kernel
+    /// `evaluate_transition` on a `KERNEL_REGISTERED` record pair and
+    /// advance the transition record's stage to `EVALUATED`. The PDA
+    /// seeds bind the accounts to the instruction's ids, and the body
+    /// re-checks the stored ids against them; the helper enforces the
+    /// sealed state, the stage gate, the sealed-head parent, the
+    /// observation linkage, and the sealed-profile proposer/observer
+    /// gates, then drives the real kernel calls under `ProgramEnv`
+    /// (see module docs for why NoEnv cannot serve this step). The
+    /// payer is a fee payer only — evaluation executes steps the
+    /// stored records already authorized and creates no new authority.
+    pub fn evaluate_transition(
+        ctx: Context<EvaluateTransition>,
+        transition_id: [u8; 32],
+        observation_id: [u8; 32],
+    ) -> Result<()> {
+        if ctx.accounts.transition_record.transition_id != transition_id
+            || ctx.accounts.observation_record.observation_id != observation_id
+        {
+            return Err(error!(ProgramV04Error::RecordMismatch));
+        }
+        evaluate_transition_from_records(
+            &ctx.accounts.kernel_state,
+            &mut ctx.accounts.transition_record,
+            &ctx.accounts.observation_record,
+        )?;
+        emit!(TransitionEvaluated { transition_id, stage: TransitionRecord::EVALUATED });
+        Ok(())
+    }
+}
+
+#[derive(Accounts)]
+#[instruction(transition_id: [u8; 32], observation_id: [u8; 32])]
+pub struct EvaluateTransition<'info> {
+    #[account(
+        seeds = [b"kernel-state"],
+        bump = kernel_state.bump,
+    )]
+    pub kernel_state: Account<'info, KernelState>,
+    #[account(
+        mut,
+        seeds = [b"transition", transition_id.as_ref()],
+        bump = transition_record.bump,
+    )]
+    pub transition_record: Account<'info, TransitionRecord>,
+    #[account(
+        seeds = [b"observation", observation_id.as_ref()],
+        bump = observation_record.bump,
+    )]
+    pub observation_record: Account<'info, ObservationRecord>,
+    pub payer: Signer<'info>,
 }
 
 #[derive(Accounts)]
@@ -489,7 +565,8 @@ pub struct TransitionRecord {
     /// id — the pubkey-to-agent mapping is a later slice).
     pub proposer: Pubkey,
     /// Lifecycle stage: 0 = Registered, 1 = Kernel-registered (slice 10
-    /// advances it; no instruction moves it past 1 in this slice).
+    /// advances it), 2 = Evaluated (slice 12 advances it; no instruction
+    /// moves it past 2 in this slice).
     pub stage: u8,
     /// PDA bump for the `["transition", transition_id]` seeds.
     pub bump: u8,
@@ -500,6 +577,8 @@ impl TransitionRecord {
     pub const REGISTERED: u8 = 0;
     /// Stage value written by `replay_transition` (slice 10).
     pub const KERNEL_REGISTERED: u8 = 1;
+    /// Stage value written by `evaluate_transition` (slice 12).
+    pub const EVALUATED: u8 = 2;
     /// 8 (discriminator) + 32 + 32 + 8 + 32 + 32 + 32 + 8 + 32 + 1 + 1.
     pub const SPACE: usize = 218;
 }
@@ -709,6 +788,89 @@ pub fn replay_transition_from_records(
     Ok(life)
 }
 
+/// Evaluate a stored transition pair through the real kernel (slice 12).
+/// Pure except for the record's stage, which advances to `EVALUATED`
+/// only on success — every refusal leaves the record untouched. Gates,
+/// in order: sealed state; stage exactly `KERNEL_REGISTERED` (a
+/// merely-registered record has no kernel registration to evaluate,
+/// and an already-evaluated record evaluates once only); parent
+/// exactly the sealed head; observation linkage; proposer resolved
+/// against the sealed profile; observer holding the Observer role
+/// there. The kernel calls run at `KernelState.clock` against a freshly
+/// rebuilt sealed launch kernel under `ProgramEnv`: ingest +
+/// register (the slice-10 sequence, because evaluation needs a
+/// `Proposed` transition and the kernel object is not persisted),
+/// then `evaluate_transition`. Only `Life::Evaluated` advances the
+/// stage — a kernel refusal maps to `EvaluateFailed`, and so does a
+/// non-Evaluated life (a `Rejected` verdict under a failing env, or a
+/// still-`Proposed` transition under an unavailable one), because the
+/// stage records only a proven evaluation. The relevant-groups
+/// derivation is slice 10's rule, reused here, not a kernel rule.
+pub fn evaluate_transition_from_records(
+    kernel_state: &KernelState,
+    transition_record: &mut TransitionRecord,
+    observation_record: &ObservationRecord,
+) -> Result<Life> {
+    if !kernel_state.sealed {
+        return Err(error!(ProgramV04Error::NotSealed));
+    }
+    if transition_record.stage != TransitionRecord::KERNEL_REGISTERED {
+        return Err(error!(ProgramV04Error::WrongStage));
+    }
+    if transition_record.parent_index != kernel_state.head_index
+        || transition_record.parent_hash != kernel_state.head_hash
+    {
+        return Err(error!(ProgramV04Error::ParentMismatch));
+    }
+    if transition_record.observation_id != observation_record.observation_id {
+        return Err(error!(ProgramV04Error::RecordMismatch));
+    }
+    let proposer = resolve_proposer(kernel_state, transition_record.proposer)?;
+    let observer_id = resolve_agent_id(observation_record.observer);
+    let mut k = sealed_launch_kernel_env().map_err(|_| error!(ProgramV04Error::KernelSeal))?;
+    if !k.has_role(&observer_id, Role::Observer) {
+        return Err(error!(ProgramV04Error::NotObserver));
+    }
+    let relevant_groups = match k.agent(&proposer) {
+        Some(profile) => profile.groups.clone(),
+        None => return Err(error!(ProgramV04Error::UnknownProposer)),
+    };
+    let observation = Observation {
+        id: observation_record.observation_id,
+        timestamp: observation_record.timestamp,
+        expiry: observation_record.expiry,
+        confidence: Amount::from_raw(observation_record.confidence_raw),
+    };
+    k.ingest_observation(&observer_id, observation, kernel_state.clock)
+        .map_err(|_| error!(ProgramV04Error::EvaluateFailed))?;
+    let manifest = Manifest {
+        transition_type: transition_record.transition_type,
+        parent_index: transition_record.parent_index,
+        parent_hash: transition_record.parent_hash,
+        declared_next_hash: transition_record.declared_next_hash,
+        observation_id: transition_record.observation_id,
+        expires_at: transition_record.expires_at,
+        relevant_groups,
+        action: None,
+    };
+    k.register_transition(
+        &proposer,
+        transition_record.transition_id,
+        manifest,
+        BTreeSet::new(),
+        kernel_state.clock,
+    )
+    .map_err(|_| error!(ProgramV04Error::EvaluateFailed))?;
+    k.evaluate_transition(&transition_record.transition_id, kernel_state.clock)
+        .map_err(|_| error!(ProgramV04Error::EvaluateFailed))?;
+    let life = match k.life_of(&transition_record.transition_id) {
+        Some(Life::Evaluated) => Life::Evaluated,
+        _ => return Err(error!(ProgramV04Error::EvaluateFailed)),
+    };
+    transition_record.stage = TransitionRecord::EVALUATED;
+    Ok(life)
+}
+
 /// Advance a `KernelState`'s clock (slice 11). Pure except for the
 /// clock itself, which moves only on success — every refusal leaves
 /// the state untouched. Gates, in order: sealed state; forward-only
@@ -775,6 +937,12 @@ pub struct ClockAdvanced {
     pub clock: u64,
 }
 
+#[event]
+pub struct TransitionEvaluated {
+    pub transition_id: [u8; 32],
+    pub stage: u8,
+}
+
 #[error_code]
 pub enum ProgramV04Error {
     #[msg("program-v04 probe: kernel construction failed")]
@@ -805,6 +973,8 @@ pub enum ProgramV04Error {
     ReplayFailed,
     #[msg("program-v04 clock: new clock is before the current kernel clock")]
     ClockRegression,
+    #[msg("program-v04 evaluate: kernel evaluation refused or did not reach Evaluated")]
+    EvaluateFailed,
 }
 
 // ---------------------------------------------------------------- launch genesis
@@ -878,10 +1048,50 @@ pub fn launch_policy() -> Policy {
 }
 
 /// The launch kernel type: the delivered crate under `NoEnv`. Genesis
-/// steps never consult the environment — the launch crate's env answers
-/// (C1 = Pass, O1 = true) are only needed once transitions are evaluated,
-/// not while rules are seeded — so `NoEnv` is exact here, not a shortcut.
+/// steps never consult the environment, so `NoEnv` is exact for the
+/// genesis/seal sequence — not a shortcut. Evaluation steps, which do
+/// consult the environment, build the same sequence under `ProgramEnv`
+/// (slice 12) instead of reusing this type.
 pub type LaunchKernelNoEnv = Kernel<NoEnv>;
+
+/// The administrator's environment answers, ported to no_std (slice 12):
+/// the step-2 launch env's answers — required constraint C1 passes,
+/// required objective O1 holds — over `alloc` maps. Everything else
+/// keeps the trait defaults (unavailable constraints, no objective
+/// answer, relevance ONE, no position source), so an unlisted constraint
+/// still answers Unavailable and can never pass by omission. The
+/// program never takes a constraint or objective verdict from an
+/// instruction argument: these answers are baked in here.
+#[derive(Debug, Default)]
+pub struct ProgramEnv {
+    constraints: BTreeMap<[u8; 32], ConstraintStatus>,
+    objectives: BTreeMap<[u8; 32], bool>,
+}
+
+impl Env for ProgramEnv {
+    fn constraint(
+        &self,
+        c: &[u8; 32],
+        _m: &Manifest,
+    ) -> ConstraintStatus {
+        self.constraints.get(c).copied().unwrap_or(ConstraintStatus::Unavailable)
+    }
+
+    fn objective(&self, o: &[u8; 32], _m: &Manifest) -> Option<bool> {
+        self.objectives.get(o).copied()
+    }
+}
+
+/// The program environment: C1 = Pass, O1 = true, nothing else answered.
+pub fn program_env() -> ProgramEnv {
+    let mut env = ProgramEnv::default();
+    env.constraints.insert(C1, ConstraintStatus::Pass);
+    env.objectives.insert(O1, true);
+    env
+}
+
+/// The launch kernel type under the program environment (slice 12).
+pub type LaunchKernelProgramEnv = Kernel<ProgramEnv>;
 
 /// Fresh kernel at genesis time `t = 100`, genesis authority GEN.
 pub fn fresh_launch_kernel() -> core::result::Result<LaunchKernelNoEnv, KernelError> {
@@ -893,13 +1103,29 @@ pub fn fresh_launch_kernel() -> core::result::Result<LaunchKernelNoEnv, KernelEr
     )
 }
 
+/// Fresh kernel at genesis time `t = 100` under a caller-supplied
+/// environment (slice 12: `program_env()`). Genesis steps never consult
+/// the environment, so the sealed state this builds is the same sealed
+/// state `fresh_launch_kernel` builds — only the answers later steps
+/// receive differ.
+pub fn fresh_launch_kernel_with_env<E: Env>(
+    env: E,
+) -> core::result::Result<Kernel<E>, KernelError> {
+    Kernel::new(
+        GEN,
+        SystemState { index: 0, hash: [0; 32], timestamp: 100 },
+        launch_config(),
+        env,
+    )
+}
+
 /// Genesis seeding: policies for TT and all four governance types, the
 /// required constraint/objective sets for TT, six agents at base 2.0,
 /// the operator roles, and the three capacity stocks. Deliberately NOT
 /// the council or the seal, so tests can assert the seal's readiness
 /// gates compositionally (see `seal_refused_without_council`).
-pub fn apply_launch_genesis(
-    k: &mut LaunchKernelNoEnv,
+pub fn apply_launch_genesis<E: Env>(
+    k: &mut Kernel<E>,
 ) -> core::result::Result<(), KernelError> {
     let policy = launch_policy();
     k.genesis_apply(&GEN, GovAction::SetPolicy { ttype: TT, policy: policy.clone() }, 100)?;
@@ -951,8 +1177,8 @@ pub fn apply_launch_genesis(
 }
 
 /// Install the 3-seat launch council (seats 1, 2, 3).
-pub fn install_launch_council(
-    k: &mut LaunchKernelNoEnv,
+pub fn install_launch_council<E: Env>(
+    k: &mut Kernel<E>,
 ) -> core::result::Result<(), KernelError> {
     k.genesis_apply(
         &GEN,
@@ -965,6 +1191,20 @@ pub fn install_launch_council(
 /// seal. This is the sequence `seal_kernel` runs on-chain.
 pub fn sealed_launch_kernel() -> core::result::Result<LaunchKernelNoEnv, KernelError> {
     let mut k = fresh_launch_kernel()?;
+    apply_launch_genesis(&mut k)?;
+    install_launch_council(&mut k)?;
+    k.seal_genesis(&GEN, 100)?;
+    Ok(k)
+}
+
+/// The sealed launch kernel under the program environment (slice 12):
+/// the same genesis sequence, the same sealed state, but later steps
+/// receive the administrator's env answers instead of NoEnv's
+/// all-unavailable defaults. Evaluation replays build from this, never
+/// from a caller-supplied environment.
+pub fn sealed_launch_kernel_env(
+) -> core::result::Result<LaunchKernelProgramEnv, KernelError> {
+    let mut k = fresh_launch_kernel_with_env(program_env())?;
     apply_launch_genesis(&mut k)?;
     install_launch_council(&mut k)?;
     k.seal_genesis(&GEN, 100)?;
@@ -1728,5 +1968,158 @@ mod tests {
             .expect("pair must replay after chained advances");
         assert_eq!(life, Life::Proposed);
         assert_eq!(record.stage, TransitionRecord::KERNEL_REGISTERED);
+    }
+
+    fn evaluated_pair() -> (KernelState, TransitionRecord, ObservationRecord) {
+        let (state, mut record, obs) = replay_pair();
+        replay_transition_from_records(&state, &mut record, &obs)
+            .expect("pair must replay before evaluate");
+        assert_eq!(record.stage, TransitionRecord::KERNEL_REGISTERED);
+        (state, record, obs)
+    }
+
+    #[test]
+    fn evaluate_advances_kernel_registered_to_evaluated() {
+        let (state, mut record, obs) = evaluated_pair();
+        let life = evaluate_transition_from_records(&state, &mut record, &obs)
+            .expect("kernel-registered pair must evaluate");
+        assert_eq!(life, Life::Evaluated);
+        assert_eq!(record.stage, TransitionRecord::EVALUATED);
+        assert_eq!(record.stage, 2);
+        // The record's other fields are untouched by the stage advance,
+        // and it still serializes at exactly SPACE bytes.
+        assert_eq!(record.transition_type, TT);
+        assert_eq!(record.declared_next_hash, [0xE1; 32]);
+        use anchor_lang::AccountSerialize;
+        let mut bytes = Vec::new();
+        record.try_serialize(&mut bytes).expect("serialize must succeed");
+        assert_eq!(bytes.len(), TransitionRecord::SPACE);
+    }
+
+    #[test]
+    fn evaluate_refuses_registered_stage() {
+        let (state, mut record, obs) = replay_pair();
+        let err = evaluate_transition_from_records(&state, &mut record, &obs)
+            .expect_err("a merely-registered record has nothing to evaluate");
+        assert!(format!("{:?}", err).contains("WrongStage"));
+        assert_eq!(record.stage, TransitionRecord::REGISTERED);
+    }
+
+    #[test]
+    fn evaluate_is_once_only() {
+        let (state, mut record, obs) = evaluated_pair();
+        evaluate_transition_from_records(&state, &mut record, &obs)
+            .expect("first evaluate must succeed");
+        let err = evaluate_transition_from_records(&state, &mut record, &obs)
+            .expect_err("second evaluate must refuse");
+        assert!(format!("{:?}", err).contains("WrongStage"));
+        assert_eq!(record.stage, TransitionRecord::EVALUATED);
+    }
+
+    #[test]
+    fn evaluate_refuses_unsealed() {
+        let (mut state, mut record, obs) = evaluated_pair();
+        state.sealed = false;
+        let err = evaluate_transition_from_records(&state, &mut record, &obs)
+            .expect_err("unsealed evaluate must refuse");
+        assert!(format!("{:?}", err).contains("NotSealed"));
+        assert_eq!(record.stage, TransitionRecord::KERNEL_REGISTERED);
+    }
+
+    #[test]
+    fn evaluate_refuses_parent_mismatch() {
+        let (state, mut record, obs) = evaluated_pair();
+        record.parent_index = 1;
+        let err = evaluate_transition_from_records(&state, &mut record, &obs)
+            .expect_err("parent off the sealed head must refuse");
+        assert!(format!("{:?}", err).contains("ParentMismatch"));
+        assert_eq!(record.stage, TransitionRecord::KERNEL_REGISTERED);
+    }
+
+    #[test]
+    fn evaluate_refuses_observation_mismatch() {
+        let (state, mut record, _) = evaluated_pair();
+        let other = build_observation_record(
+            &state, [0xC1; 32], 100, 9100, 900_000, observer_pubkey(), 7,
+        )
+        .expect("second observation must build");
+        let err = evaluate_transition_from_records(&state, &mut record, &other)
+            .expect_err("observation id mismatch must refuse");
+        assert!(format!("{:?}", err).contains("RecordMismatch"));
+        assert_eq!(record.stage, TransitionRecord::KERNEL_REGISTERED);
+    }
+
+    #[test]
+    fn evaluate_refuses_unknown_proposer() {
+        let (state, mut record, obs) = evaluated_pair();
+        record.proposer = Pubkey::new_from_array([0x99; 32]);
+        let err = evaluate_transition_from_records(&state, &mut record, &obs)
+            .expect_err("unknown proposer must refuse");
+        assert!(format!("{:?}", err).contains("UnknownProposer"));
+        assert_eq!(record.stage, TransitionRecord::KERNEL_REGISTERED);
+    }
+
+    #[test]
+    fn evaluate_at_advanced_clock() {
+        let (state, mut record, obs) = evaluated_pair();
+        let mut advanced = state;
+        advance_clock_on_state(&mut advanced, 200).expect("advance must succeed");
+        let life = evaluate_transition_from_records(&advanced, &mut record, &obs)
+            .expect("pair must evaluate at the advanced clock");
+        assert_eq!(life, Life::Evaluated);
+        assert_eq!(record.stage, TransitionRecord::EVALUATED);
+    }
+
+    #[test]
+    fn program_env_answers_c1_pass_o1_true_and_nothing_else() {
+        let env = program_env();
+        let manifest = Manifest {
+            transition_type: TT,
+            parent_index: 0,
+            parent_hash: [0; 32],
+            declared_next_hash: [0xE1; 32],
+            observation_id: [0xC0; 32],
+            expires_at: 10_100,
+            relevant_groups: BTreeSet::from([1u16]),
+            action: None,
+        };
+        assert_eq!(env.constraint(&C1, &manifest), ConstraintStatus::Pass);
+        assert_eq!(env.objective(&O1, &manifest), Some(true));
+        assert_eq!(env.constraint(&[0x77; 32], &manifest), ConstraintStatus::Unavailable);
+        assert_eq!(env.objective(&[0x78; 32], &manifest), None);
+    }
+
+    #[test]
+    fn evaluate_under_noenv_stays_proposed() {
+        // The premise slice 12 is built on, proven rather than assumed:
+        // under the delivered crate's default NoEnv, C1 answers
+        // Unavailable, so evaluate records unsatisfied constraints and
+        // returns Ok without moving the life — a NoEnv evaluate could
+        // never advance a stage, which is why the program runs this
+        // step under ProgramEnv.
+        let mut k = sealed_launch_kernel().expect("sealed NoEnv kernel must build");
+        let observation = Observation {
+            id: [0xC0; 32],
+            timestamp: 100,
+            expiry: 9100,
+            confidence: Amount::from_raw(900_000),
+        };
+        k.ingest_observation(&OBSERVER, observation, 100)
+            .expect("observer must ingest at the genesis clock");
+        let manifest = Manifest {
+            transition_type: TT,
+            parent_index: 0,
+            parent_hash: [0; 32],
+            declared_next_hash: [0xE1; 32],
+            observation_id: [0xC0; 32],
+            expires_at: 10_100,
+            relevant_groups: BTreeSet::from([1u16]),
+            action: None,
+        };
+        k.register_transition(&ag(1), [0xD1; 32], manifest, BTreeSet::new(), 100)
+            .expect("proposer must register at the genesis head");
+        k.evaluate_transition(&[0xD1; 32], 100)
+            .expect("evaluate under NoEnv returns Ok even when it cannot evaluate");
+        assert_eq!(k.life_of(&[0xD1; 32]), Some(Life::Proposed));
     }
 }

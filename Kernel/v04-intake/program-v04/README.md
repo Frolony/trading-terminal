@@ -221,11 +221,55 @@ families, account inventory, and CU golden set are later step-5 slices.
   instructions (adds `advance_clock`), 3 accounts (unchanged),
   14 errors (6000–6013), 6 events (adds `ClockAdvanced`).
 
+## Slice 12 — the evaluate replay instruction, `evaluate_transition`
+
+- `evaluate_transition`: takes a `KERNEL_REGISTERED` record pair and
+  runs kernel `evaluate_transition` on it — after replaying the
+  slice-10 ingest + register sequence on a freshly rebuilt sealed
+  launch kernel, because the kernel object is not persisted and
+  evaluation needs a `Proposed` transition to judge. Only
+  `Life::Evaluated` advances the stage, to `EVALUATED` (2); a kernel
+  refusal, and a non-Evaluated life, both map to `EvaluateFailed`
+  (6014) with the stage untouched — the stage records only a proven
+  evaluation, and a verdict-bearing `Rejected` stage is a later
+  slice's work, not claimed here.
+- The kernel here runs under `ProgramEnv`, the program-side port of
+  the step-2 launch env (C1 = Pass, O1 = true, everything else the
+  trait defaults, so an unlisted constraint still answers
+  Unavailable). This is the slice's load-bearing point, proven by
+  test rather than assumed: under the delivered crate's default
+  `NoEnv`, C1 answers Unavailable and `evaluate_transition` returns
+  Ok without moving the life — a NoEnv evaluate could never advance
+  a stage. The env answers are the administrator's answers baked
+  into the program, never taken from an instruction argument.
+- Gates, in order: sealed state (`NotSealed`); stage exactly
+  `KERNEL_REGISTERED` (`WrongStage` — a merely-registered record has
+  nothing to evaluate, an evaluated record evaluates once only);
+  parent exactly the sealed head (`ParentMismatch`); observation
+  linkage (`RecordMismatch`); proposer/observer gates against the
+  sealed profile (`UnknownProposer`/`NotObserver`); the relevant
+  groups are slice 10's proposer-groups derivation, reused here.
+- Host tests 59/59 (49 prior + 10 slice-12: evaluate acceptance with
+  stage advance and SPACE preserved, registered-stage and
+  once-only refusals, unsealed / parent-mismatch /
+  observation-mismatch / unknown-proposer refusals, evaluation at an
+  advanced clock (200), the `ProgramEnv` answer table, and the NoEnv
+  stays-`Proposed` premise test — every refusal leaves the stage
+  untouched).
+- `anchor build` green under the pinned toolchain; IDL now 8
+  instructions (adds `evaluate_transition`), 3 accounts (unchanged),
+  15 errors (6000–6014), 7 events (adds `TransitionEvaluated`); `.so`
+  440,328 bytes (sha256 `f7840903…`).
+- Honesty bounds, stated not smoothed: eligible/select/reconcile/
+  validate/declare, commit replay moving the head, and CU measurement
+  are later slices. Authority is the signing payer, the same recorded
+  gap as slices 6/7.
+
 ## Build
 
 ```sh
 export RUSTUP_HOME=~/workspace/toolchains/rustup CARGO_HOME=~/workspace/toolchains/cargo
 export PATH=~/workspace/toolchains/cargo/bin:~/workspace/toolchains/solana/bin:$PATH
 ~/workspace/toolchains/anchor/bin/anchor build   # from this directory
-cargo test                                        # host tests, 49/49
+cargo test                                        # host tests, 59/59
 ```
