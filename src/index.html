@@ -4725,7 +4725,7 @@ function histExportCsv(){
   if(!evs.length){toast('Nothing to export with the current filters.');return;}
   const wa=histWalletAddr();
   const scope=(histFilter.mode==='live'&&wa)?wa.slice(0,4)+wa.slice(-4):'paper';
-  const name='gecko-terminal-history-'+scope+'-'+new Date().toISOString().slice(0,10)+'.csv';
+  const name='turnpool-history-'+scope+'-'+new Date().toISOString().slice(0,10)+'.csv';
   const blob=new Blob([histCsv(evs)],{type:'text/csv'});
   const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=name;
   document.body.appendChild(a);a.click();
