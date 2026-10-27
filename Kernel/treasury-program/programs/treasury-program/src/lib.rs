@@ -2617,14 +2617,19 @@ pub mod treasury_program {
     /// deposit of a mint (the `init_if_needed` payer); later
     /// deposits into the same vault pay no rent.
     ///
-    /// Honest gap, carried not hidden: deposit and enroll are
-    /// not yet bound — a HolderRecord's `position_raw` is still
-    /// an unenforced claim against deposits, not a check
-    /// against them. Binding enrolled positions to deposited
-    /// balances (and the enrollment-opted-out-of-contract rule
-    /// until funded T reaches the Treasury Target) is the next
-    /// funding-path item, not something this instruction
-    /// pretends to enforce.
+    /// Honest scope, carried not hidden (slice 19): deposit and
+    /// enroll are now bound at the window level — `enroll`
+    /// refuses when the window's cumulative enrolled total
+    /// plus the new position would exceed the window's funded
+    /// snapshot total, and unfunded windows enroll uncapped
+    /// under the opted-out-of-contract rule — but NOT at the
+    /// per-holder level: no per-depositor ledger exists, so
+    /// this instruction cannot check one holder's position
+    /// against that holder's own deposits. A holder's position
+    /// is bounded by the window's funded total in aggregate,
+    /// not by their individual deposits; per-holder deposit
+    /// backing remains a future item, not something this
+    /// instruction pretends to enforce.
     pub fn deposit(ctx: Context<Deposit>, amount_raw: u64) -> Result<()> {
         let depositor_key = ctx.accounts.depositor.key();
         let mint_key = *ctx.accounts.mint.key;
@@ -2914,6 +2919,7 @@ pub mod treasury_program {
         window.fees_collected_raw = 0;
         window.declared_fees_raw = 0;
         window.fee_schedule_declared = false;
+        window.enrolled_total_raw = 0;
         state.window_count = state
             .window_count
             .checked_add(1)
@@ -2975,6 +2981,21 @@ pub mod treasury_program {
     /// Accrued dividend, loan principal, and maturity all start at
     /// zero; the skip-next-dividend flag starts clear — those are
     /// written by the window's execution family, never at enroll.
+    /// The deposit↔enroll binding (slice 19): in a funded window
+    /// the enrollment is bounded by the window's period-start
+    /// snapshot total — the cumulative enrolled total plus this
+    /// position must not exceed it, so a position is a claim
+    /// against deposits the window opened on, not an unenforced
+    /// claim against deposits in general. In an unfunded window
+    /// (snapshot total zero) the cap does not apply: pre-funding
+    /// enrollments are opted out of contract under the
+    /// funding-path ruling, permitted and tracked on the window
+    /// (the enrolled total still advances), never refused for
+    /// exceeding a zero bound. The snapshot, not the live
+    /// treasury total, is the bound, so a mid-window deposit
+    /// cannot inflate the current window's enrollment budget
+    /// (design §7: cap increases never inflate current
+    /// snapshots).
     /// The roster-hash writer promised by `open_window` lands here:
     /// the WindowState's roster hash advances by chaining the new
     /// holder and position onto the previous hash, so the roster
@@ -2993,6 +3014,8 @@ pub mod treasury_program {
             window_id,
             ctx.accounts.treasury_state.window_count,
             position_raw,
+            ctx.accounts.window_state.snapshot_total_raw,
+            ctx.accounts.window_state.enrolled_total_raw,
         )?;
         let window = &mut ctx.accounts.window_state;
         let record = &mut ctx.accounts.holder_record;
@@ -3008,6 +3031,10 @@ pub mod treasury_program {
         record.authorization_window = window_id;
         record.tranche_paid = false;
         record.bump = ctx.bumps.holder_record;
+        window.enrolled_total_raw = window
+            .enrolled_total_raw
+            .checked_add(position_raw)
+            .ok_or(TreasuryError::Overflow)?;
         window.roster_hash = roster_hash_update(
             window.roster_hash,
             ctx.accounts.holder.key(),
@@ -5273,16 +5300,42 @@ pub fn can_open_window(
 /// (at or above the counter) both refuse, and with no window open
 /// at all (`window_count == 0`) every enroll refuses: there is no
 /// pool to join. Order mirrors [`can_open_window`]: the window
-/// binding first, the position rule last. A zero position is not
-/// an entry — the engine-sim lock rule, that only positive locks
-/// are entries — so it refuses with `InvalidPosition`, never with
-/// a record that locks nothing.
-pub fn can_enroll(window_id: u64, window_count: u64, position_raw: u64) -> Result<()> {
+/// binding first, the position rule next, the funded-snapshot
+/// cap last, so every previously-refused shape keeps its error.
+/// A zero position is not an entry — the engine-sim lock rule,
+/// that only positive locks are entries — so it refuses with
+/// `InvalidPosition`, never with a record that locks nothing.
+/// The cap, landed as slice 19 (the deposit↔enroll binding):
+/// in a funded window the cumulative enrolled total plus the
+/// new position must not exceed the window's period-start
+/// snapshot total — enrolled positions are claims against
+/// deposits actually held at open, and the snapshot (never a
+/// mid-window balance move, design §7) is the bound. In an
+/// unfunded window (snapshot total zero) the cap does not
+/// apply: pre-funding enrollments are opted out of contract
+/// under the funding-path ruling, so they are permitted and
+/// tracked, not refused for exceeding a zero bound.
+pub fn can_enroll(
+    window_id: u64,
+    window_count: u64,
+    position_raw: u64,
+    snapshot_total_raw: u64,
+    enrolled_total_raw: u64,
+) -> Result<()> {
     require!(
         window_count > 0 && window_id == window_count - 1,
         TreasuryError::NotCurrentWindow
     );
     require!(position_raw != 0, TreasuryError::InvalidPosition);
+    if snapshot_total_raw > 0 {
+        let remaining = snapshot_total_raw
+            .checked_sub(enrolled_total_raw)
+            .ok_or(TreasuryError::EnrollExceedsFundedSnapshot)?;
+        require!(
+            position_raw <= remaining,
+            TreasuryError::EnrollExceedsFundedSnapshot
+        );
+    }
     Ok(())
 }
 
@@ -7294,11 +7347,26 @@ pub struct WindowState {
     /// an undeclared window — so the flag, not a zero
     /// total, distinguishes the two states.
     pub fee_schedule_declared: bool,
+    /// Cumulative enrolled positions in this window, kernel
+    /// fixed-point raw. Appended after `fee_schedule_declared`
+    /// deliberately so every pre-existing field keeps its byte
+    /// offset; the deposit↔enroll binding (slice 19): in a
+    /// funded window (snapshot total nonzero) the enrolled
+    /// total plus a new position must not exceed the
+    /// window's period-start snapshot total, so enrolled
+    /// positions are bounded by deposits actually held at
+    /// open, not by each enrollment's own claim. In an
+    /// unfunded window (snapshot total zero) the cap does
+    /// not apply — pre-funding enrollments are opted out
+    /// of contract (the funding-path ruling) — but the
+    /// total is still tracked, so the unfunded enrollment
+    /// figure is visible on the window, never hidden.
+    pub enrolled_total_raw: u64,
 }
 
 impl WindowState {
-    /// 8 (discriminator) + 12 × 8 + 32 + 1 + 1.
-    pub const SPACE: usize = 8 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 32 + 1 + 1;
+    /// 8 (discriminator) + 13 × 8 + 32 + 1 + 1.
+    pub const SPACE: usize = 8 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 32 + 1 + 1;
 }
 
 /// Holder record (design §3, §4.2) — one per holder per window, the
@@ -8012,8 +8080,10 @@ pub struct Enroll<'info> {
     #[account(seeds = [b"treasury"], bump = treasury_state.bump)]
     pub treasury_state: Account<'info, TreasuryState>,
     /// Window state PDA — mutated: the roster hash advances here
-    /// and nowhere else. Seeds-bound to the enrolled window, so an
-    /// enroll names the window it joins by address, not by claim.
+    /// and nowhere else, and the enrolled total advances here
+    /// and nowhere else (slice 19, the deposit↔enroll binding).
+    /// Seeds-bound to the enrolled window, so an enroll names
+    /// the window it joins by address, not by claim.
     #[account(mut, seeds = [b"window", window_id.to_le_bytes().as_ref()], bump = window_state.bump)]
     pub window_state: Account<'info, WindowState>,
     /// Holder record PDA, seeds `["holder", window_id, holder]`.
@@ -9006,6 +9076,12 @@ pub enum TreasuryError {
     /// total past its declared fee total.
     #[msg("Collection exceeds the window's declared fee total.")]
     CollectExceedsDeclaredSchedule,
+    /// This enrollment would push the window's cumulative
+    /// enrolled positions past its funded snapshot total:
+    /// enrolled claims may not exceed the deposits the
+    /// window opened on.
+    #[msg("Enrollment exceeds the window's funded snapshot total.")]
+    EnrollExceedsFundedSnapshot,
 }
 
 #[cfg(test)]
@@ -10817,7 +10893,7 @@ mod tests {
         assert_eq!(TreasuryState::SPACE, 65);
         assert_eq!(LendingBook::SPACE, 21);
         assert_eq!(FeeVault::SPACE, 17);
-        assert_eq!(WindowState::SPACE, 138);
+        assert_eq!(WindowState::SPACE, 146);
     }
 
     #[test]
@@ -10834,18 +10910,29 @@ mod tests {
     #[test]
     fn enroll_gate_matrix() {
         // No window open yet: every enroll refuses.
-        assert!(can_enroll(0, 0, 100).is_err());
+        assert!(can_enroll(0, 0, 100, 0, 0).is_err());
         // The currently open window passes — first window (counter
         // 1, current 0) and a later window alike.
-        can_enroll(0, 1, 100).expect("first open window accepts enroll");
-        can_enroll(1, 2, 100).expect("current window accepts enroll");
+        can_enroll(0, 1, 100, 1000, 0).expect("first open window accepts enroll");
+        can_enroll(1, 2, 100, 1000, 0).expect("current window accepts enroll");
         // A past window refuses (its pool has closed) and a future
         // window refuses (its pool has not opened).
-        assert!(can_enroll(0, 2, 100).is_err());
-        assert!(can_enroll(2, 2, 100).is_err());
-        assert!(can_enroll(5, 2, 100).is_err());
+        assert!(can_enroll(0, 2, 100, 1000, 0).is_err());
+        assert!(can_enroll(2, 2, 100, 1000, 0).is_err());
+        assert!(can_enroll(5, 2, 100, 1000, 0).is_err());
         // A zero position is not an entry, even in the open window.
-        assert!(can_enroll(1, 2, 0).is_err());
+        assert!(can_enroll(1, 2, 0, 1000, 0).is_err());
+        // Slice 19, the deposit↔enroll binding: a funded window
+        // accepts up to its snapshot total, exactly, and refuses
+        // one past it — cumulative, not per-call.
+        can_enroll(1, 2, 10, 100, 90).expect("exact-boundary enroll accepts");
+        assert!(can_enroll(1, 2, 11, 100, 90).is_err());
+        assert!(can_enroll(1, 2, 1, 100, 100).is_err());
+        // An unfunded window (snapshot total zero) imposes no cap:
+        // pre-funding enrollments are opted out of contract, so a
+        // large position in a zero-snapshot window still passes.
+        can_enroll(0, 1, 10_000_000, 0, 10_000_000)
+            .expect("unfunded window enroll is uncapped");
     }
 
     #[test]
