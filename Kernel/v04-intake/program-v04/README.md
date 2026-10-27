@@ -18,11 +18,39 @@ families, account inventory, and CU golden set are later step-5 slices.
 
 ## What it does not prove (later slices)
 
-- No transition replay on-chain, no accounts, no CU figures — the
-  bridge crate (`program-bridge-v04`, slices 1–4) proves the replay
-  shapes on the host; cu-golden measures them once instructions exist.
+- No transition replay on-chain, no CU figures — the bridge crate
+  (`program-bridge-v04`, slices 1–4) proves the replay shapes on the
+  host; cu-golden measures them once instructions exist.
 - No deployment: the program id in `Anchor.toml` is staging-only (the
   generating keypair was deleted after the pubkey was taken).
+
+## Slice 6 — the §4.1 genesis instruction + the first §3 account
+
+- `initialize_kernel`: constructs the real probe-config kernel and
+  persists its genesis state (unsealed, head 0, zero hash, clock 0)
+  into the `KernelState` PDA (seeds `["kernel-state"]`, SPACE 58).
+  One-time via the `init` constraint. The design's genesis row is a
+  multisig-signed `initialize_config`; this slice's genesis authority
+  is the initializing payer, and the multisig wiring is a later §4.1
+  slice, not claimed here.
+- `KernelState` carries the design's `DeclaredChain` fields
+  (`head_index`/`head_hash`) alongside `sealed`/`clock`; no standalone
+  `DeclaredChain` account is split out in this slice.
+- Host tests 8/8 (4 probe + 4 slice-6: genesis state, SPACE accounting,
+  Borsh round-trip at exactly SPACE bytes, and the seal refusal below).
+- `anchor build` green under the pinned toolchain; IDL now 2
+  instructions (`initialize_kernel`, `probe_kernel`), 1 account
+  (`KernelState`), 2 errors (`KernelProbe` 6000, `KernelInit` 6001),
+  1 event (`KernelInitialized`); `.so` 157,000 bytes.
+- **No `seal_kernel` in this slice, by design:** the kernel's
+  `seal_genesis` refuses until the launch genesis is complete (full
+  council, four governance policies, influence-share bound), and those
+  steps live in the std-only step-2 launch crate, which cannot compile
+  to SBF as-is. An account-only seal flag would claim a seal the
+  kernel never granted, so none is written; the seal instruction is
+  slice 7's work, gated on a no_std port of the launch genesis steps.
+  The host test pins the refusal (`GenesisNotReady` on the probe
+  kernel), it is not faked.
 
 ## Build
 

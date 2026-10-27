@@ -2,7 +2,7 @@
 name = "program-v04"
 version = "0.1.0"
 edition = "2021"
-description = "Migration step 5, slice 5: the v0.4 program scaffold — the delivered v0.4.1 kernel crate compiled into an Anchor program under the pinned toolchain (Anchor 1.2.1 / Solana 4.1.2 / platform-tools v1.54). One probe instruction only; the instruction families, account inventory, and CU golden set are later step-5 slices, not this one. Consumes the delivered v0.4 crate by path; modifies neither it nor Kernel/ in the repo."
+description = "Migration step 5, slices 5-6: the v0.4 program scaffold (slice 5) plus the §4.1 genesis instruction initialize_kernel and the first §3 account KernelState (slice 6). The delivered v0.4.1 kernel crate compiled into an Anchor program under the pinned toolchain (Anchor 1.2.1 / Solana 4.1.2 / platform-tools v1.54). No seal instruction yet (see lib.rs slice-6 docs: seal_genesis readiness gates need a no_std port of the launch genesis steps); the transition-replay families and CU golden set are later step-5 slices, not this one. Consumes the delivered v0.4 crate by path; modifies neither it nor Kernel/ in the repo."
 license = "MIT OR Apache-2.0"
 
 [lib]
