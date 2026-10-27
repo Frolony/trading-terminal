@@ -54,13 +54,9 @@
 //! lists Plan separately from the TransitionRecord, unlike constraint
 //! reports which live on it), and the TransitionRecord gains a
 //! `plan_count` so the kernel's `TooManyPlans` rule (max 4 at launch)
-//! is enforceable on-chain — SPACE 106 → 110. Honest gap, stated in
-//! the handler docs: the kernel's eligibility rule also requires the
-//! agent's groups to overlap the manifest's `relevant_groups`, but the
-//! record does not carry `relevant_groups` yet (manifest completion
-//! lands with its owning increment), so this slice enforces the
-//! active half of eligibility and defers the group-overlap half — the
-//! gap is documented, not papered over.
+//! is enforceable on-chain — SPACE 106 → 110. (Slice 27 later
+//! closes the eligibility gap this slice left open: the record now
+//! carries `relevant_groups` and both gates enforce the overlap.)
 //! This increment adds `submit_signal` (design §4.1): Registered-or-
 //! Planning state, support in range, eligible (active) agent, one signal
 //! per agent per round (the SignalRecord PDA seeds enforce the duplicate
@@ -1000,6 +996,10 @@ pub mod treasury_program {
     /// mandatory constraints ∪ the proposer's additions, deduped — the
     /// merged set must still fit [`MAX_CONSTRAINTS`], or registration
     /// refuses rather than silently dropping a mandatory gate.
+    /// Slice 27: the manifest's `relevant_groups` are supplied here
+    /// (at most [`MAX_GROUPS`], else `InvalidGroups`) and frozen on
+    /// the record — they are the group-overlap half of kernel
+    /// eligibility for this transition's planners and signallers.
     pub fn register_transition(
         ctx: Context<RegisterTransition>,
         transition_id: u64,
@@ -1010,9 +1010,14 @@ pub mod treasury_program {
         parent_index: u64,
         parent_hash: [u8; 32],
         constraint_ids: Vec<[u8; 32]>,
+        relevant_groups: Vec<u16>,
     ) -> Result<()> {
         let now = ctx.accounts.clock.unix_timestamp;
         validate_transition_expiry(expires_at, now)?;
+        require!(
+            relevant_groups.len() <= MAX_GROUPS,
+            TreasuryError::InvalidGroups
+        );
         let frozen = merge_constraint_sets(
             &ctx.accounts.policy_record.mandatory_constraints,
             &constraint_ids,
@@ -1051,6 +1056,7 @@ pub mod treasury_program {
         record.bump = ctx.bumps.transition_record;
         record.signalled_bitmap = [0u8; 64];
         record.window_open_applied = false;
+        record.relevant_groups = relevant_groups;
         Ok(())
     }
 
@@ -1121,13 +1127,11 @@ pub mod treasury_program {
     /// silent double-count at reconcile). The event carries the
     /// claims hash (SHA-256 over the little-endian
     /// resource/amount encoding, see [`claims_hash`]), not the claims
-    /// themselves. Eligibility gap, stated plainly: the kernel's
-    /// `eligible` also requires the agent's groups to overlap the
-    /// manifest's `relevant_groups`, but the TransitionRecord does not
-    /// carry `relevant_groups` yet — that field lands with the manifest
-    /// completion, and the group-overlap check lands with it. This
-    /// slice enforces the active half of eligibility; it does not claim
-    /// the full kernel rule.
+    /// themselves. Eligibility, slice 27: the kernel's `eligible`
+    /// requires the agent's groups to overlap the manifest's
+    /// `relevant_groups`, and this handler now enforces the full
+    /// rule — active AND overlapping, via [`can_submit_plan`] —
+    /// against the record's frozen `relevant_groups` list.
     pub fn submit_plan(
         ctx: Context<SubmitPlan>,
         transition_id: u64,
@@ -1146,6 +1150,8 @@ pub mod treasury_program {
         let transition = &mut ctx.accounts.transition_record;
         can_submit_plan(
             record.active,
+            &record.groups,
+            &transition.relevant_groups,
             transition.state,
             now,
             transition.planning_deadline,
@@ -1183,9 +1189,9 @@ pub mod treasury_program {
     /// round index under the transition type's PolicyRecord `max_rounds`
     /// (`RoundsExhausted`), the round matching the transition's
     /// current round (`BadState` — a stale round index names a PDA
-    /// that is not the live round), and the agent active (`NotEligible`;
-    /// the group-overlap half of kernel eligibility awaits
-    /// `relevant_groups` on the record, the same carried gap as plans).
+    /// that is not the live round), and the agent eligible
+    /// (`NotEligible` — active AND group-overlapping with the
+    /// record's `relevant_groups`, slice 27, as with plans).
     /// The signal agent == caller rule is structural: the
     /// `SignalRecord` PDA seeds bind the signal to the signer, and the
     /// AgentRecord must match the signer (`AgentMismatch` otherwise).
@@ -1235,6 +1241,8 @@ pub mod treasury_program {
         let transition = &mut ctx.accounts.transition_record;
         can_submit_signal(
             record.active,
+            &record.groups,
+            &transition.relevant_groups,
             transition.state,
             support,
             round,
@@ -4436,22 +4444,39 @@ pub fn planning_deadline(now: i64, planning_window: u64) -> Result<i64> {
         .ok_or(TreasuryError::Overflow.into())
 }
 
+/// The group-overlap half of kernel eligibility (kernel `eligible`):
+/// an agent is group-eligible for a transition iff at least one of
+/// the agent's groups appears in the manifest's `relevant_groups`.
+/// An empty relevant list overlaps nothing — see the
+/// `relevant_groups` field doc — so it admits nobody. Slice 27.
+pub fn groups_overlap(agent_groups: &[u16], relevant_groups: &[u16]) -> bool {
+    agent_groups
+        .iter()
+        .any(|g| relevant_groups.contains(g))
+}
+
 /// Who may submit a plan, as a pure check (design §4.1, kernel
 /// `submit_plan`, in the kernel's check order minus the caller
 /// binding): the transition must be Planning and `now` must precede
 /// the deadline (both failures are `PlanningClosed` in the kernel);
-/// the agent must be active (the active half of the kernel's
-/// eligibility — the group-overlap half awaits `relevant_groups` on
-/// the record, see the handler docs); room must remain under
-/// `max_plans`; the plan's expiry must be in the future. The
-/// plan-agent == caller rule is NOT re-checked here: it is structural
-/// — the `PlanRecord` PDA seeds bind the plan to the signer, and the
-/// handler requires the AgentRecord to match the signer
-/// (`AgentMismatch` otherwise) — so a seven-argument helper stays
-/// within clippy's argument-count lint without duplicating a check
-/// the account constraints already enforce.
+/// the agent must be eligible — active AND group-overlapping with
+/// the manifest's `relevant_groups`, exactly as the kernel's
+/// `eligible` judges it (slice 27 closes the carried gap here);
+/// room must remain under `max_plans`; the plan's expiry must be
+/// in the future. The plan-agent == caller rule is NOT re-checked
+/// here: it is structural — the `PlanRecord` PDA seeds bind the
+/// plan to the signer, and the handler requires the AgentRecord to
+/// match the signer (`AgentMismatch` otherwise). The argument
+/// count exceeds clippy's default lint threshold, as the
+/// `#[allow]`-annotated helpers elsewhere in this file do; the
+/// alternative (splitting eligibility out of the gate) would
+/// reorder the kernel's check sequence, which this slice refuses
+/// to do silently.
+#[allow(clippy::too_many_arguments)]
 pub fn can_submit_plan(
     agent_active: bool,
+    agent_groups: &[u16],
+    relevant_groups: &[u16],
     state: u8,
     now: i64,
     planning_deadline: i64,
@@ -4463,7 +4488,10 @@ pub fn can_submit_plan(
         state == STATE_PLANNING && now < planning_deadline,
         TreasuryError::PlanningClosed
     );
-    require!(agent_active, TreasuryError::NotEligible);
+    require!(
+        agent_active && groups_overlap(agent_groups, relevant_groups),
+        TreasuryError::NotEligible
+    );
     require!(plan_count < max_plans, TreasuryError::TooManyPlans);
     require!(plan_expires_at > now, TreasuryError::BadWindow);
     Ok(())
@@ -4481,11 +4509,15 @@ pub const SUPPORT_ONE_RAW: u64 = 1_000_000;
 /// agent)): support in range first, then Registered-or-Planning state,
 /// then the round index under `max_rounds` and equal to the
 /// transition's current round (a stale round is a bad state, not a
-/// signal for a round that is not live), then the agent active (the
-/// active half of kernel eligibility — the group-overlap half awaits
-/// `relevant_groups`, as with plans).
+/// signal for a round that is not live), then the agent eligible —
+/// active AND group-overlapping with the manifest's
+/// `relevant_groups`, exactly as the kernel's `eligible` judges it
+/// (slice 27 closes the carried gap here, as with plans).
+#[allow(clippy::too_many_arguments)]
 pub fn can_submit_signal(
     agent_active: bool,
+    agent_groups: &[u16],
+    relevant_groups: &[u16],
     state: u8,
     support: u64,
     round: u32,
@@ -4502,7 +4534,10 @@ pub fn can_submit_signal(
     );
     require!(round < max_rounds, TreasuryError::RoundsExhausted);
     require!(round == current_round, TreasuryError::BadState);
-    require!(agent_active, TreasuryError::NotEligible);
+    require!(
+        agent_active && groups_overlap(agent_groups, relevant_groups),
+        TreasuryError::NotEligible
+    );
     Ok(())
 }
 
@@ -7704,6 +7739,19 @@ pub struct TransitionRecord {
     /// offset; the `policy_amendment_applied` precedent, for
     /// windows.
     pub window_open_applied: bool,
+    /// The manifest's relevant groups (kernel `Manifest.relevant_groups`,
+    /// `GroupId` u16 values, at most [`MAX_GROUPS`] — the same bound as
+    /// an agent's groups, an account-size bound, not a kernel rule).
+    /// Slice 27 closes the carried eligibility gap: `submit_plan` and
+    /// `submit_signal` now require the caller's groups to overlap this
+    /// list, exactly as the kernel's `eligible` does (active AND
+    /// non-disjoint). Appended after `window_open_applied` deliberately
+    /// so every pre-existing field keeps its byte offset. An empty
+    /// list admits nobody — it is disjoint with every agent's groups,
+    /// so a transition registered with no relevant groups is
+    /// fail-closed for planners and signallers alike, never
+    /// silently open to all.
+    pub relevant_groups: Vec<u16>,
 }
 
 /// Step-2 fork, Attempt 2 — bitmap gate geometry: 64 fixed bytes
@@ -7719,10 +7767,12 @@ pub const MAX_BITMAP_AGENTS: usize = SIGNALLED_BITMAP_LEN * 8;
 impl TransitionRecord {
     /// 8 (discriminator) + 8 + 32 + 1 + 32 + 8 + 8 + 8 + 4 + 4
     /// + 8 + 8 + 8 + (4 + 8 × 33) + 1 + 1 + 32 + 8 + 32 + 8 + 32
-    /// + (4 + 8 × 34) + 4 + 1 + 1 + 64 + 1 = 866.
+    /// + (4 + 8 × 34) + 4 + 1 + 1 + 64 + 1 + (4 + 2 × 8) = 886.
     /// The 64 term is the step-2 bitmap gate (Attempt 2); the
-    /// final 1 is the window-open consumption flag.
-    pub const SPACE: usize = 8 + 8 + 32 + 1 + 32 + 8 + 8 + 8 + 4 + 4 + 8 + 8 + 8 + 268 + 1 + 1 + 32 + 8 + 32 + 8 + 32 + 276 + 4 + 1 + 1 + 64 + 1;
+    /// final 1 is the window-open consumption flag; the last term
+    /// is the slice-27 relevant-groups list (length prefix + at most
+    /// MAX_GROUPS u16 values), appended after the flag.
+    pub const SPACE: usize = 8 + 8 + 32 + 1 + 32 + 8 + 8 + 8 + 4 + 4 + 8 + 8 + 8 + 268 + 1 + 1 + 32 + 8 + 32 + 8 + 32 + 276 + 4 + 1 + 1 + 64 + 1 + 20;
 }
 
 /// One transition type's policy (design §3 `PolicyRecord`, §4.1
@@ -9562,9 +9612,9 @@ pub enum TreasuryError {
     /// has reached the planning deadline (kernel `PlanningClosed`).
     #[msg("Planning is closed: transition not Planning or deadline reached.")]
     PlanningClosed,
-    /// The agent is not eligible to plan (e.g. inactive). The
-    /// group-overlap half of kernel eligibility awaits `relevant_groups`
-    /// on the record (see `submit_plan` docs).
+    /// The agent is not eligible to plan or signal (inactive, or no
+    /// group overlap with the transition's `relevant_groups` —
+    /// slice 27, see `submit_plan` docs).
     #[msg("Agent is not eligible to submit a plan.")]
     NotEligible,
     /// The transition already holds `max_plans` plans (4 at launch).
@@ -10269,8 +10319,9 @@ mod tests {
         // type (32) with policy_transition, and the one-time
         // policy-amendment execution flag (1) with
         // apply_policy_amendment, and the one-time window-open
-        // consumption flag (1) with open_window.
-        assert_eq!(TransitionRecord::SPACE, 866);
+        // consumption flag (1) with open_window, and the
+        // relevant-groups list (4 + 2 x 8) with register_transition.
+        assert_eq!(TransitionRecord::SPACE, 886);
         assert_eq!(DeclaredChain::SPACE, 49);
         assert_eq!(MAX_CONSTRAINTS, 8);
         assert_eq!(MAX_EXCEPTIONS, 8);
@@ -10460,13 +10511,24 @@ mod tests {
         // match), so the helper takes no caller argument. The
         // duplicate rule is NOT structural anymore (step-2 fork): it
         // is the signalled-bitmap gate, tested separately below.
-        // max_rounds 3, current round 0 at launch.
+        // max_rounds 3, current round 0 at launch. The base case
+        // carries overlapping groups (agent [1] against relevant
+        // [1]); the slice-27 disjoint cases follow it directly.
         let base = |state: u8, support: u64, round: u32, active: bool| {
-            can_submit_signal(active, state, support, round, 3, 0)
+            can_submit_signal(active, &[1], &[1], state, support, round, 3, 0)
         };
         // The clean cases pass: Registered or Planning, round 0.
         assert!(base(STATE_REGISTERED, 500_000, 0, true).is_ok());
         assert!(base(STATE_PLANNING, 1_000_000, 0, true).is_ok());
+        // Slice 27: disjoint groups refuse even when active — agent
+        // [2] against relevant [1], and an agent with no groups at
+        // all; an empty relevant list admits nobody either.
+        assert!(can_submit_signal(true, &[2], &[1], STATE_PLANNING, 500_000, 0, 3, 0).is_err());
+        assert!(can_submit_signal(true, &[], &[1], STATE_PLANNING, 500_000, 0, 3, 0).is_err());
+        assert!(can_submit_signal(true, &[1], &[], STATE_PLANNING, 500_000, 0, 3, 0).is_err());
+        // A second overlapping group admits, as the kernel's
+        // set-disjoint test requires only one shared group.
+        assert!(can_submit_signal(true, &[2, 3], &[3], STATE_PLANNING, 500_000, 0, 3, 0).is_ok());
         // Support above 1.0 is out of range, checked first.
         assert!(base(STATE_REGISTERED, 1_000_001, 0, true).is_err());
         // Wrong state refuses (Committed, Settled, Rejected, Expired).
@@ -10675,8 +10737,10 @@ mod tests {
             bump: 255,
             signalled_bitmap: [0u8; 64],
             window_open_applied: false,
+            relevant_groups: vec![1],
         };
         assert_eq!(record.state, STATE_REGISTERED);
+        assert_eq!(record.relevant_groups, vec![1]);
         assert!(!record.policy_amendment_applied);
         assert!(!record.window_open_applied);
         assert_eq!(record.proposer, proposer);
@@ -10722,10 +10786,15 @@ mod tests {
                     active: bool,
                     count: u32,
                     expires: i64| {
-            can_submit_plan(active, state, now, deadline, count, 4, expires)
+            can_submit_plan(active, &[1], &[1], state, now, deadline, count, 4, expires)
         };
         // The clean case passes.
         assert!(base(STATE_PLANNING, 100, 200, true, 0, 300).is_ok());
+        // Slice 27: disjoint groups refuse even when active, and an
+        // empty relevant list admits nobody — same rule as signals.
+        assert!(can_submit_plan(true, &[2], &[1], STATE_PLANNING, 100, 200, 0, 4, 300).is_err());
+        assert!(can_submit_plan(true, &[1], &[], STATE_PLANNING, 100, 200, 0, 4, 300).is_err());
+        assert!(can_submit_plan(true, &[2, 3], &[3], STATE_PLANNING, 100, 200, 0, 4, 300).is_ok());
         // Room under the cap passes; at the cap it does not.
         assert!(base(STATE_PLANNING, 100, 200, true, 3, 300).is_ok());
         assert!(base(STATE_PLANNING, 100, 200, true, 4, 300).is_err());
@@ -11561,6 +11630,8 @@ mod tests {
         // admits at the launch max 4.
         assert!(can_submit_plan(
             true,
+            &[1],
+            &[1],
             STATE_PLANNING,
             1_000,
             1_999,
@@ -11571,6 +11642,8 @@ mod tests {
         .is_err());
         assert!(can_submit_plan(
             true,
+            &[1],
+            &[1],
             STATE_PLANNING,
             1_000,
             1_999,
@@ -11582,6 +11655,8 @@ mod tests {
         // Round cap: round 1 is exhausted at max 1, live at max 3.
         assert!(can_submit_signal(
             true,
+            &[1],
+            &[1],
             STATE_PLANNING,
             500_000,
             1,
@@ -11591,6 +11666,8 @@ mod tests {
         .is_err());
         assert!(can_submit_signal(
             true,
+            &[1],
+            &[1],
             STATE_PLANNING,
             500_000,
             1,
