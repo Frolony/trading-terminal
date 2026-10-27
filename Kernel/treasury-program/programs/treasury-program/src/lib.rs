@@ -3141,8 +3141,12 @@ pub mod treasury_program {
     /// (design §2.3). The position must be positive: a zero lock
     /// is not an entry (the engine-sim lock rule, same principle).
     /// Accrued dividend, loan principal, and maturity all start at
-    /// zero; the skip-next-dividend flag starts clear — those are
-    /// written by the window's execution family, never at enroll.
+    /// zero. The skip-next-dividend flag starts from the holder's
+    /// forfeiture record (slice 22, cross-record D-3 carry): a
+    /// pending forfeited slot makes the new record skip its
+    /// dividend and is consumed here, exactly one per enrollment,
+    /// so a default forfeits the next enrolled window's slot and
+    /// no later one; a holder with nothing pending starts clear.
     /// The deposit↔enroll binding (slice 19): in a funded window
     /// the enrollment is bounded by the window's period-start
     /// snapshot total — the cumulative enrolled total plus this
@@ -3188,7 +3192,17 @@ pub mod treasury_program {
         record.accrued_dividend_raw = 0;
         record.loan_principal_raw = 0;
         record.loan_maturity = 0;
-        record.skip_next_dividend = false;
+        // Slice 22, cross-record D-3 carry: the forfeiture record
+        // is created on first use (init_if_needed) with zero
+        // pending slots, so a first-time holder starts clear; a
+        // defaulter's pending slot is consumed here, exactly one.
+        let forfeiture = &mut ctx.accounts.forfeiture_record;
+        forfeiture.holder = ctx.accounts.holder.key();
+        forfeiture.bump = ctx.bumps.forfeiture_record;
+        let (skip_next_dividend, remaining) =
+            forfeiture_carry(forfeiture.pending_slots);
+        forfeiture.pending_slots = remaining;
+        record.skip_next_dividend = skip_next_dividend;
         record.standing_authorization = true;
         record.authorization_window = window_id;
         record.tranche_paid = false;
@@ -3253,12 +3267,11 @@ pub mod treasury_program {
     /// (a tranche paid after a default set the flag) is closed
     /// on the record that carries the flag. The refusal leaves
     /// the flag set and the slot unpaid, so a retry cannot pay
-    /// a forfeited slot. Carried, stated plainly: the flag is
-    /// set on the loan window's record while the holder's next
-    /// eligible slot lives on a fresh record in a later window,
-    /// so carrying the forfeiture across records at enroll time
-    /// is still owed before the D-3 forfeiture can be called
-    /// re-expressed end to end.
+    /// a forfeited slot. Slice 22 closes the cross-record half:
+    /// a default queues a slot on the holder's forfeiture record
+    /// and the next enrollment inherits the skip, so a fresh
+    /// record in a later window refuses here too — the D-3
+    /// forfeiture is re-expressed end to end.
     ///
     /// Honest scope, stated plainly: this slice records the payout
     /// as accrual bookkeeping (`accrued_dividend_raw` += amount, the
@@ -3447,14 +3460,15 @@ pub mod treasury_program {
     /// Honest scope, as in `pay_tranche` / `borrow`: this slice
     /// records the settlement as bookkeeping — position reduced by
     /// principal, loan cleared, book outstanding and count reduced,
-    /// skip flag set — and does NOT move tokens (the program holds
-    /// no token accounts yet). Two gaps are carried, named here so
-    /// no later slice inherits them silently: (a) the skipped slot
-    /// is a FUTURE window's separate HolderRecord, so honoring the
-    /// skip at that window's `pay_tranche` is still owed; (b) the
-    /// `exit` slice must not let a position drop below its
-    /// outstanding loan, or a legitimate settlement would refuse
-    /// here on `DefaultExceedsPosition` instead of settling.
+    /// skip flag set, one forfeited slot queued on the holder's
+    /// forfeiture record (slice 22) — and does NOT move tokens
+    /// (the program holds no token accounts yet). Both gaps the
+    /// original slice named are now closed: (a) slice 22 — the
+    /// skipped slot's future window record inherits the skip at
+    /// enroll time, so that window's `pay_tranche` refuses it;
+    /// (b) the `exit` slice — an exit may not drop the position
+    /// below an outstanding loan, so a legitimate settlement
+    /// never meets `DefaultExceedsPosition` instead of settling.
     pub fn settle_default(
         ctx: Context<SettleDefault>,
         transition_id: u64,
@@ -3494,6 +3508,22 @@ pub mod treasury_program {
             .active_loans
             .checked_sub(1)
             .ok_or(TreasuryError::Overflow)?;
+        // Slice 22, cross-record D-3 carry: queue one forfeited
+        // slot on the holder's forfeiture record, so the next
+        // enrollment — a fresh record in a later window — inherits
+        // the skip. The loan window's own flag above stays set:
+        // in pinned protocol order that window's slot is already
+        // settled by maturity, so the carried slot is the single
+        // forfeited slot in practice, and the same-record gate is
+        // defense-in-depth for out-of-order calls.
+        let forfeiture = &mut ctx.accounts.forfeiture_record;
+        forfeiture.holder = holder;
+        forfeiture.bump = ctx.bumps.forfeiture_record;
+        forfeiture.pending_slots = forfeiture
+            .pending_slots
+            .checked_add(1)
+            .ok_or(TreasuryError::Overflow)?;
+        forfeiture.source_window_id = window_id;
         emit!(DefaultSettled {
             window_id,
             holder,
@@ -5578,6 +5608,20 @@ pub fn can_enroll(
         );
     }
     Ok(())
+}
+
+/// The cross-record D-3 carry, as a pure function (slice 22):
+/// a pending slot makes the new record skip its dividend and
+/// is consumed (count − 1); no pending slot leaves the record
+/// clear and the count at zero. The count, not a bool, so two
+/// defaults before the next enrollment forfeit two slots, not
+/// one — and one enrollment never consumes more than one.
+pub fn forfeiture_carry(pending_slots: u64) -> (bool, u64) {
+    if pending_slots > 0 {
+        (true, pending_slots - 1)
+    } else {
+        (false, 0)
+    }
 }
 
 /// The `pay_tranche` gate, as a pure check (design §4.2, §5): the
@@ -7707,8 +7751,9 @@ pub struct HolderRecord {
     /// loan; a loan's maturity is set by `borrow`.
     pub loan_maturity: i64,
     /// Skip-next-dividend flag (D-3 forfeiture): set by
-    /// `settle_default`, cleared when the skipped slot passes.
-    /// Clear at enroll.
+    /// `settle_default`, and set at enroll from the holder's
+    /// pending forfeiture (slice 22) — clear at enroll only when
+    /// no slot is pending.
     pub skip_next_dividend: bool,
     /// Standing settlement authorization (§5): true from enroll
     /// until a revocation takes effect at a window boundary.
@@ -7727,6 +7772,39 @@ pub struct HolderRecord {
 impl HolderRecord {
     /// 8 (discriminator) + 32 + 6 × 8 + 1 + 1 + 8 + 1 + 1.
     pub const SPACE: usize = 8 + 32 + 8 + 8 + 8 + 8 + 8 + 8 + 1 + 1 + 8 + 1 + 1;
+}
+
+/// Holder forfeiture record (slice 22, cross-record D-3 carry) —
+/// one per holder, not per window: the program cannot enumerate
+/// a holder's prior window records on-chain, so a default's
+/// forfeiture must live somewhere the next enrollment can find
+/// it without a scan. `settle_default` increments `pending_slots`
+/// (one per default; multiple defaults queue multiple forfeited
+/// slots); `enroll` consumes exactly one, setting the new
+/// record's skip flag iff one was pending. The loan window's own
+/// record keeps its own skip flag (slice 16) — in pinned protocol
+/// order that window's slot is already settled by maturity, so
+/// the carried slot is the single forfeited slot in practice,
+/// and the same-record gate is defense-in-depth for out-of-order
+/// calls, not a second forfeiture.
+#[account]
+pub struct ForfeitureRecord {
+    /// The holder this record belongs to (PDA seed component).
+    pub holder: Pubkey,
+    /// Forfeited slots queued: incremented by `settle_default`,
+    /// decremented by one at each `enroll` that consumes one.
+    pub pending_slots: u64,
+    /// The loan window of the most recent default that queued a
+    /// slot (evidence, not a gate input — enroll consumes by
+    /// count, never by window identity).
+    pub source_window_id: u64,
+    /// PDA bump for the `["forfeiture", holder]` seeds.
+    pub bump: u8,
+}
+
+impl ForfeitureRecord {
+    /// 8 (discriminator) + 32 + 8 + 8 + 1.
+    pub const SPACE: usize = 8 + 32 + 8 + 8 + 1;
 }
 
 /// Whale exit schedule (design §3, §4.2) — one per holder per
@@ -8454,6 +8532,24 @@ pub struct Enroll<'info> {
         bump
     )]
     pub holder_record: Account<'info, HolderRecord>,
+    /// Holder forfeiture record PDA, seeds `["forfeiture", holder]`
+    /// (slice 22, cross-record D-3 carry). Created on first use
+    /// (`init_if_needed`, payer = holder): a first-time holder
+    /// has no pending forfeiture, so the account starts empty
+    /// and the new record starts clear; a defaulter's pending
+    /// slots are consumed here, exactly one per enrollment, and
+    /// the new record inherits the skip. The PDA seeds bind the
+    /// account to the signer, so a holder cannot present another
+    /// holder's forfeiture record — and cannot omit their own,
+    /// because the instruction always touches this PDA.
+    #[account(
+        init_if_needed,
+        payer = holder,
+        space = ForfeitureRecord::SPACE,
+        seeds = [b"forfeiture", holder.key().as_ref()],
+        bump
+    )]
+    pub forfeiture_record: Account<'info, ForfeitureRecord>,
     /// The enrolling holder (signer; pays rent for the holder
     /// record — disclosed up front, design §2.3). The authority
     /// is the holder's own signature, not a transition.
@@ -8534,7 +8630,10 @@ pub struct SettleDefault<'info> {
     /// reads. The defaulter signs nothing, and the holder's
     /// standing authorization is deliberately NOT checked — a
     /// defaulter must not veto their own default settlement by
-    /// revoking it (see the handler docs).
+    /// revoking it (see the handler docs). Mutable: the operator
+    /// pays rent when a first default creates the forfeiture
+    /// record below (slice 22).
+    #[account(mut)]
     pub operator: Signer<'info>,
     /// The operator's agent record, seeds-bound to the signer.
     /// Must be active and hold `OPERATOR_SETTLE` (design §5).
@@ -8562,6 +8661,23 @@ pub struct SettleDefault<'info> {
     /// here and nowhere else.
     #[account(mut, seeds = [b"lending-book"], bump = lending_book.bump)]
     pub lending_book: Account<'info, LendingBook>,
+    /// Holder forfeiture record PDA, seeds `["forfeiture", holder]`
+    /// (slice 22). Created on first use (`init_if_needed`, payer
+    /// = operator): `settle_default` increments its pending slots
+    /// by one and records this loan's window as the source, so
+    /// the forfeiture survives the loan window's record and is
+    /// consumed by the holder's next enrollment.
+    #[account(
+        init_if_needed,
+        payer = operator,
+        space = ForfeitureRecord::SPACE,
+        seeds = [b"forfeiture", holder.as_ref()],
+        bump
+    )]
+    pub forfeiture_record: Account<'info, ForfeitureRecord>,
+    /// System program, required by the `init_if_needed` creation
+    /// of the forfeiture record on a first default.
+    pub system_program: Program<'info, System>,
 }
 
 /// Accounts for [`treasury_program::exit`].
@@ -11455,6 +11571,21 @@ mod tests {
     #[test]
     fn holder_record_space_matches_fields() {
         assert_eq!(HolderRecord::SPACE, 100);
+    }
+
+    #[test]
+    fn forfeiture_record_space_matches_fields() {
+        assert_eq!(ForfeitureRecord::SPACE, 57);
+    }
+
+    #[test]
+    fn forfeiture_carry_matrix() {
+        // No pending slot: clear record, count stays zero.
+        assert_eq!(forfeiture_carry(0), (false, 0));
+        // One pending slot: the new record skips, count consumed.
+        assert_eq!(forfeiture_carry(1), (true, 0));
+        // Queued defaults: one enrollment consumes exactly one.
+        assert_eq!(forfeiture_carry(3), (true, 2));
     }
 
     #[test]

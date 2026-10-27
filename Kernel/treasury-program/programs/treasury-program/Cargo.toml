@@ -16,7 +16,16 @@ default = []
 idl-build = ["anchor-lang/idl-build"]
 
 [dependencies]
-anchor-lang = "=1.2.1"
+# Slice 22: `init_if_needed` for the holder forfeiture record
+# (created on first enroll or first default, consumed/queued
+# thereafter). Re-initialization protection, stated: the account
+# is PDA seeds-bound to ["forfeiture", holder], so only a
+# program-signed CPI can create a program-owned account at that
+# address; init_if_needed re-initializes nothing with a matching
+# discriminator, and neither handler zeroes a live field — enroll
+# only decrements pending_slots, settle_default only increments
+# it — so a second entry can never wipe a queued forfeiture.
+anchor-lang = { version = "=1.2.1", features = ["init-if-needed"] }
 
 # Funding path (deposit, 2026-10-26): NO anchor-spl dependency, by
 # finding, not by taste. anchor-spl 1.2.1's token_2022 /
