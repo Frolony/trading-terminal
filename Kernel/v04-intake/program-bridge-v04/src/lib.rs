@@ -66,6 +66,7 @@ use kernel_launch_v04::*;
 use std::collections::{BTreeMap, BTreeSet};
 
 pub mod discard;
+pub mod settle;
 pub mod treasury;
 
 /// Proposer of every replayed flow (launch-profile agent 1, a council seat).

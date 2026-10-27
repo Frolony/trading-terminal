@@ -94,6 +94,35 @@ contrast: step 5 does not skip the steps v0.4 added.
   rides the program rewrite, and branch entry onto `kernel-v04` is the
   next queue item, not this slice.
 
+## Slice 4 — settlement replay (`src/settle.rs`, tests `tests/settle_v04.rs`, 7/7)
+
+- **The settle tail, replayed:** a slice-1-committed kernel executes
+  (`start_execution` by the launch Executor), settles through the
+  step-2 `SettlerGate` (threshold 2, both settlers on the same recorded
+  evidence hash), and records the outcome (launch OutcomeRecorder,
+  empty attribution list) — Committed → Executing → Settled →
+  EvaluatedOutcome, with the tranche stock still exactly debited from
+  commit (900) and a `Settled { exact: true }` event on the record.
+- **Tests S1–S7:** exact settle on the declared hash; gate refusals
+  (NoEvidence, HashMismatch) consume no vote, so the refused settler
+  still settles afterwards; non-settler `Unauthorized` and duplicate
+  vote `Duplicate`; settle before commit refused at both doors
+  (Blocked cannot execute, Committed cannot attest); disagreeing
+  settlers never settle (per-hash vote counting, no realized hash,
+  no vote changes); the same tail settles a governance replay
+  (SetCapacity 250 → 400 survives settlement); a settled transition
+  cannot execute or attest again (forward-time calls, so the
+  refusals are lifecycle refusals, not clock refusals — the first
+  draft of S7 tripped `TimeRegression` instead, and the test was
+  corrected to isolate the lifecycle check).
+- **Honest limits, stated in the module docs:** on-chain CU for the
+  settle tail rides the program rewrite (cu-golden); attribution
+  deltas are not proven here (empty list — the kernel's outcome math
+  is the author's tested surface, and the launch profile pins
+  reputation influence OFF anyway); the gate is a composition around
+  the kernel, not a kernel-enforced property, until the author adds
+  an `Env` evidence method.
+
 ## Also in this increment
 
 Doc-only fix in `engine-adapter-v04/src/lib.rs`: the stale pre-v0.4.1 F1
