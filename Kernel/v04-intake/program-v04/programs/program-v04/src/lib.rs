@@ -55,6 +55,21 @@
 //! Seal authority in this slice is the signing payer — the same gap
 //! slice 6 recorded for genesis authority (the design's multisig-signed
 //! `initialize_config` wiring is a later §4.1 slice, not claimed here).
+//!
+//! Slice 8 (this slice): the second §3 account, `TransitionRecord`,
+//! and the first transition-lifecycle instruction, `register_transition`.
+//! The record stores the manifest fields a later replay needs — id, type,
+//! parent index/hash, declared next hash, observation id, expiry, proposer
+//! — plus a `stage` byte (0 = Registered) that later slices advance.
+//! The instruction gates on the sealed head: it refuses an unsealed
+//! `KernelState` (`NotSealed`) and refuses any parent that is not exactly
+//! the sealed head (`ParentMismatch`, index AND hash) — the bridge's
+//! registration-time lineage refusal, against the account head rather
+//! than a publisher's say-so. It does NOT claim kernel registration:
+//! kernel `register_transition` additionally needs an ingested observation
+//! and a registered-agent proposer, and the pubkey-to-agent mapping for
+//! both is a later slice — so no kernel call is made here, and the record
+//! is a stored manifest awaiting that replay, not a registered transition.
 
 extern crate alloc;
 
@@ -121,6 +136,64 @@ pub mod program_v04 {
         emit!(KernelSealed { head_index: state.head_index, clock: state.clock });
         Ok(())
     }
+
+    /// Register (§4.1, first lifecycle row, v0.4 form): store a transition
+    /// manifest as a `TransitionRecord` PDA, gated on the sealed head.
+    /// Refuses an unsealed kernel and any parent that is not exactly the
+    /// sealed head; a second record for the same id is refused by the
+    /// `init` constraint. This stores the manifest — it does not run
+    /// kernel `register_transition` (see module docs: observation
+    /// ingestion and the pubkey-to-agent proposer mapping are later
+    /// slices, so a kernel call here would fake authority it does not
+    /// have). Later slices advance `stage` from this record.
+    #[allow(clippy::too_many_arguments)]
+    pub fn register_transition(
+        ctx: Context<RegisterTransition>,
+        transition_id: [u8; 32],
+        transition_type: [u8; 32],
+        parent_index: u64,
+        parent_hash: [u8; 32],
+        declared_next_hash: [u8; 32],
+        observation_id: [u8; 32],
+        expires_at: u64,
+    ) -> Result<()> {
+        let record = build_transition_record(
+            &ctx.accounts.kernel_state,
+            transition_id,
+            transition_type,
+            parent_index,
+            parent_hash,
+            declared_next_hash,
+            observation_id,
+            expires_at,
+            ctx.accounts.payer.key(),
+            ctx.bumps.transition_record,
+        )?;
+        *ctx.accounts.transition_record = record;
+        emit!(TransitionRegistered { transition_id, parent_index });
+        Ok(())
+    }
+}
+
+#[derive(Accounts)]
+#[instruction(transition_id: [u8; 32])]
+pub struct RegisterTransition<'info> {
+    #[account(
+        seeds = [b"kernel-state"],
+        bump = kernel_state.bump,
+    )]
+    pub kernel_state: Account<'info, KernelState>,
+    #[account(
+        init,
+        payer = payer,
+        space = TransitionRecord::SPACE,
+        seeds = [b"transition", transition_id.as_ref()],
+        bump,
+    )]
+    pub transition_record: Account<'info, TransitionRecord>,
+    #[account(mut)]
+    pub payer: Signer<'info>,
+    pub system_program: Program<'info, System>,
 }
 
 #[derive(Accounts)]
@@ -179,6 +252,81 @@ impl KernelState {
     pub const SPACE: usize = 58;
 }
 
+/// The second §3 account: one stored transition manifest. This is the
+/// per-record account slice 7 deferred to: later replay slices rebuild
+/// the sealed kernel and drive this record's lifecycle from these fields,
+/// instead of trusting a publisher's summary. `stage` starts at
+/// `REGISTERED` (0); later instructions advance it — no instruction in
+/// this slice moves it past registration.
+#[account]
+#[derive(Debug)]
+pub struct TransitionRecord {
+    /// Transition id (the PDA seed after `"transition"`).
+    pub transition_id: [u8; 32],
+    /// Transition type (must have a policy in the sealed profile).
+    pub transition_type: [u8; 32],
+    /// Parent declared-chain index — must equal `KernelState.head_index`.
+    pub parent_index: u64,
+    /// Parent declared-chain hash — must equal `KernelState.head_hash`.
+    pub parent_hash: [u8; 32],
+    /// Declared next hash this transition proposes.
+    pub declared_next_hash: [u8; 32],
+    /// Observation this transition's manifest points at.
+    pub observation_id: [u8; 32],
+    /// Manifest expiry (kernel `BadWindow` backstop is a later slice).
+    pub expires_at: u64,
+    /// Signing payer that registered the record (not yet a kernel agent
+    /// id — the pubkey-to-agent mapping is a later slice).
+    pub proposer: Pubkey,
+    /// Lifecycle stage: 0 = Registered (this slice's only stage).
+    pub stage: u8,
+    /// PDA bump for the `["transition", transition_id]` seeds.
+    pub bump: u8,
+}
+
+impl TransitionRecord {
+    /// Stage value written by `register_transition`.
+    pub const REGISTERED: u8 = 0;
+    /// 8 (discriminator) + 32 + 32 + 8 + 32 + 32 + 32 + 8 + 32 + 1 + 1.
+    pub const SPACE: usize = 218;
+}
+
+/// Build a `TransitionRecord` against a `KernelState`, enforcing the
+/// sealed-head lineage gate. Pure: a refused record leaves the state
+/// untouched, and the caller (instruction or test) owns persistence.
+#[allow(clippy::too_many_arguments)]
+pub fn build_transition_record(
+    kernel_state: &KernelState,
+    transition_id: [u8; 32],
+    transition_type: [u8; 32],
+    parent_index: u64,
+    parent_hash: [u8; 32],
+    declared_next_hash: [u8; 32],
+    observation_id: [u8; 32],
+    expires_at: u64,
+    proposer: Pubkey,
+    bump: u8,
+) -> Result<TransitionRecord> {
+    if !kernel_state.sealed {
+        return Err(error!(ProgramV04Error::NotSealed));
+    }
+    if parent_index != kernel_state.head_index || parent_hash != kernel_state.head_hash {
+        return Err(error!(ProgramV04Error::ParentMismatch));
+    }
+    Ok(TransitionRecord {
+        transition_id,
+        transition_type,
+        parent_index,
+        parent_hash,
+        declared_next_hash,
+        observation_id,
+        expires_at,
+        proposer,
+        stage: TransitionRecord::REGISTERED,
+        bump,
+    })
+}
+
 /// The genesis `KernelState`: the probe-config kernel's genesis values
 /// (unsealed, head 0, zero hash, clock 0), with a zero bump — the
 /// instruction overwrites the bump with the PDA bump.
@@ -199,6 +347,12 @@ pub struct KernelSealed {
     pub clock: u64,
 }
 
+#[event]
+pub struct TransitionRegistered {
+    pub transition_id: [u8; 32],
+    pub parent_index: u64,
+}
+
 #[error_code]
 pub enum ProgramV04Error {
     #[msg("program-v04 probe: kernel construction failed")]
@@ -209,6 +363,10 @@ pub enum ProgramV04Error {
     KernelSeal,
     #[msg("program-v04 seal: kernel state already sealed")]
     AlreadySealed,
+    #[msg("program-v04 register: kernel state is not sealed")]
+    NotSealed,
+    #[msg("program-v04 register: parent is not the sealed head")]
+    ParentMismatch,
 }
 
 // ---------------------------------------------------------------- launch genesis
@@ -581,5 +739,110 @@ mod tests {
             Err(KernelError::GenesisNotReady(_))
         ));
         assert!(!k.is_sealed());
+    }
+
+    fn sealed_state() -> KernelState {
+        let mut state = genesis_kernel_state().expect("genesis must construct");
+        apply_seal_to_state(&mut state).expect("seal must apply");
+        state
+    }
+
+    fn record_args() -> ([u8; 32], [u8; 32], u64, [u8; 32], [u8; 32], [u8; 32], u64) {
+        ([0xD1; 32], TT, 0, [0; 32], [0xE1; 32], [0xC0; 32], 10_100)
+    }
+
+    #[test]
+    fn transition_record_space_accounts_for_every_field() {
+        // Discriminator 8 + id 32 + type 32 + parent_index 8 +
+        // parent_hash 32 + declared 32 + observation 32 + expires 8 +
+        // proposer 32 + stage 1 + bump 1.
+        assert_eq!(
+            TransitionRecord::SPACE,
+            8 + 32 + 32 + 8 + 32 + 32 + 32 + 8 + 32 + 1 + 1
+        );
+    }
+
+    #[test]
+    fn transition_record_borsh_round_trips() {
+        use anchor_lang::{AccountDeserialize, AccountSerialize};
+        let record = TransitionRecord {
+            transition_id: [0xD1; 32],
+            transition_type: TT,
+            parent_index: 3,
+            parent_hash: [0xAA; 32],
+            declared_next_hash: [0xE1; 32],
+            observation_id: [0xC0; 32],
+            expires_at: 10_100,
+            proposer: Pubkey::new_from_array([0x99; 32]),
+            stage: TransitionRecord::REGISTERED,
+            bump: 254,
+        };
+        let mut bytes = Vec::new();
+        record.try_serialize(&mut bytes).expect("serialize must succeed");
+        assert_eq!(bytes.len(), TransitionRecord::SPACE);
+        let back = <TransitionRecord as AccountDeserialize>::try_deserialize(&mut &bytes[..])
+            .expect("deserialize must succeed");
+        assert_eq!(back.transition_id, [0xD1; 32]);
+        assert_eq!(back.parent_index, 3);
+        assert_eq!(back.parent_hash, [0xAA; 32]);
+        assert_eq!(back.stage, 0);
+        assert_eq!(back.bump, 254);
+    }
+
+    #[test]
+    fn build_transition_record_refuses_unsealed() {
+        let state = genesis_kernel_state().expect("genesis must construct");
+        let (id, ttype, parent_index, parent_hash, declared, obs, expires) = record_args();
+        let err = build_transition_record(
+            &state, id, ttype, parent_index, parent_hash, declared, obs, expires,
+            Pubkey::new_from_array([0x99; 32]), 1,
+        )
+        .expect_err("unsealed register must refuse");
+        assert!(format!("{:?}", err).contains("NotSealed"));
+    }
+
+    #[test]
+    fn build_transition_record_refuses_index_mismatch() {
+        let state = sealed_state();
+        let (id, ttype, _, parent_hash, declared, obs, expires) = record_args();
+        let err = build_transition_record(
+            &state, id, ttype, 1, parent_hash, declared, obs, expires,
+            Pubkey::new_from_array([0x99; 32]), 1,
+        )
+        .expect_err("index mismatch must refuse");
+        assert!(format!("{:?}", err).contains("ParentMismatch"));
+    }
+
+    #[test]
+    fn build_transition_record_refuses_hash_mismatch() {
+        let state = sealed_state();
+        let (id, ttype, parent_index, _, declared, obs, expires) = record_args();
+        let err = build_transition_record(
+            &state, id, ttype, parent_index, [0xAB; 32], declared, obs, expires,
+            Pubkey::new_from_array([0x99; 32]), 1,
+        )
+        .expect_err("hash mismatch must refuse");
+        assert!(format!("{:?}", err).contains("ParentMismatch"));
+    }
+
+    #[test]
+    fn build_transition_record_accepts_sealed_genesis_head() {
+        let state = sealed_state();
+        assert!(state.sealed);
+        assert_eq!(state.head_index, 0);
+        assert_eq!(state.head_hash, [0; 32]);
+        let (id, ttype, parent_index, parent_hash, declared, obs, expires) = record_args();
+        let record = build_transition_record(
+            &state, id, ttype, parent_index, parent_hash, declared, obs, expires,
+            Pubkey::new_from_array([0x99; 32]), 7,
+        )
+        .expect("sealed-head register must build");
+        assert_eq!(record.transition_id, [0xD1; 32]);
+        assert_eq!(record.transition_type, TT);
+        assert_eq!(record.parent_index, 0);
+        assert_eq!(record.declared_next_hash, [0xE1; 32]);
+        assert_eq!(record.stage, TransitionRecord::REGISTERED);
+        assert_eq!(record.stage, 0);
+        assert_eq!(record.bump, 7);
     }
 }

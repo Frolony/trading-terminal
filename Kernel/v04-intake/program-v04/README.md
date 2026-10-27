@@ -82,11 +82,36 @@ families, account inventory, and CU golden set are later step-5 slices.
   (`KernelInitialized`, `KernelSealed`); `.so` 284,984 bytes
   (sha256 `071ee2a6…`).
 
+## Slice 8 — the `TransitionRecord` account + `register_transition`
+
+- `TransitionRecord` (SPACE 218): the stored manifest — id, type,
+  parent index/hash, declared next hash, observation id, expiry,
+  proposer (signing payer), `stage` (0 = Registered), bump. PDA
+  seeds `["transition", transition_id]`; a second record for the same
+  id is refused by the `init` constraint.
+- `register_transition`: gates on the sealed head — refuses an
+  unsealed `KernelState` (`NotSealed` 6004) and any parent that is not
+  exactly the sealed head (`ParentMismatch` 6005, index AND hash).
+  It does NOT run kernel `register_transition`: that call additionally
+  needs an ingested observation and a registered-agent proposer, and
+  the pubkey-to-agent mapping for both is a later slice — so the record
+  is a stored manifest awaiting replay, not a registered transition,
+  and later slices advance `stage` from it.
+- Host tests 20/20 (14 prior + 6 slice-8: SPACE accounting, Borsh
+  round-trip at exactly SPACE bytes, unsealed refusal, index-mismatch
+  refusal, hash-mismatch refusal, sealed-genesis-head acceptance with
+  all fields pinned).
+- `anchor build` green under the pinned toolchain; IDL now 4
+  instructions (adds `register_transition`), 2 accounts (adds
+  `TransitionRecord`), 6 errors (6000–6005), 3 events (adds
+  `TransitionRegistered`); `.so` 304,704 bytes
+  (sha256 `f28ca7ca…`).
+
 ## Build
 
 ```sh
 export RUSTUP_HOME=~/workspace/toolchains/rustup CARGO_HOME=~/workspace/toolchains/cargo
 export PATH=~/workspace/toolchains/cargo/bin:~/workspace/toolchains/solana/bin:$PATH
 ~/workspace/toolchains/anchor/bin/anchor build   # from this directory
-cargo test                                        # host tests, 4/4
+cargo test                                        # host tests, 20/20
 ```
