@@ -186,11 +186,46 @@ families, account inventory, and CU golden set are later step-5 slices.
   13 errors (6000–6012), 5 events (adds `TransitionReplayed`); `.so`
   386,784 bytes (sha256 `ee10d4c7…`).
 
+## Slice 11 — the clock instruction, `advance_clock`
+
+- `advance_clock`: moves `KernelState.clock` forward to `new_clock`
+  via the pure helper `advance_clock_on_state`. Gates, in order:
+  sealed state (`NotSealed`); forward-only movement
+  (`ClockRegression` 6013 on a strictly lower value — an equal value
+  is an accepted no-op, mirroring the kernel's own private `tick`).
+  The head (`head_index`/`head_hash`) and the seal flag are never
+  touched: clock advancement is not chain advancement, and only a
+  later commit replay moves the head.
+- This closes the slice-9/10 limitation: `KernelState.clock` is the
+  `now` later instructions pass to the freshly rebuilt kernel, so a
+  clock at 200 admits observations timestamped after genesis (150
+  ingests, 250 replays after chained advances), and a clock advanced
+  past a window lapses it — a pair whose observation expired at 9100
+  fails replay through the kernel (`ReplayFailed`) once the clock
+  reaches 9100, with the stage untouched.
+- Honesty bounds, stated not smoothed: authority in this slice is
+  the signing payer, the same explicitly recorded gap as slices 6/7
+  (multisig/role wiring is a later §4.1 slice, not claimed here).
+  Advancing the clock by itself moves no money and expires nothing
+  on-chain — expiry bites only when a later instruction replays
+  against the new clock. No CU measurement; that rides the
+  cu-golden freeze. The further transition-replay families
+  (evaluate/eligible/select/reconcile/validate/declare, then commit
+  replay moving the head) are later slices.
+- Host tests 49/49 (41 prior + 8 slice-11: forward advance with head
+  preserved, unsealed / regression refusals with the clock untouched,
+  equal-value no-op, later-observation unblocked, post-genesis replay
+  unblocked, expiry-lapsed replay refused through the kernel, chained
+  advances then replay — every refusal leaves the clock untouched).
+- `anchor build` green under the pinned toolchain; IDL now 7
+  instructions (adds `advance_clock`), 3 accounts (unchanged),
+  14 errors (6000–6013), 6 events (adds `ClockAdvanced`).
+
 ## Build
 
 ```sh
 export RUSTUP_HOME=~/workspace/toolchains/rustup CARGO_HOME=~/workspace/toolchains/cargo
 export PATH=~/workspace/toolchains/cargo/bin:~/workspace/toolchains/solana/bin:$PATH
 ~/workspace/toolchains/anchor/bin/anchor build   # from this directory
-cargo test                                        # host tests, 32/32
+cargo test                                        # host tests, 49/49
 ```

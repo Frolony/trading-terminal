@@ -126,6 +126,25 @@
 //! advancement is still a later slice: replay runs at
 //! `KernelState.clock` (100 at genesis), so only genesis-clock pairs
 //! replay.
+//!
+//! Slice 11 (this slice): the clock instruction, `advance_clock`,
+//! closing the slice-9/10 limitation that only genesis-clock pairs
+//! could ingest or replay. `KernelState.clock` is the `now` later
+//! instructions pass to the freshly rebuilt kernel (the kernel's own
+//! `tick` is private, so the program's clock is the advancement
+//! surface, not a kernel call). The helper enforces sealed state and
+//! forward-only movement — a regression is refused as
+//! `ClockRegression`, an equal value is an accepted no-op mirroring
+//! `tick` — and never touches the head or the seal flag: clock
+//! advancement is not chain advancement, and only a later commit
+//! replay moves the head. Authority is the signing payer, the same
+//! explicitly recorded gap as slices 6/7 (multisig/role wiring is a
+//! later §4.1 slice); advancing the clock by itself moves no money
+//! and expires nothing on-chain — expiry bites only when a later
+//! instruction replays against the new clock, which the tests prove
+//! both ways (a later observation ingests; a window lapsed by the
+//! advance fails replay through the kernel). No CU measurement —
+//! that rides the cu-golden freeze.
 
 extern crate alloc;
 
@@ -294,6 +313,33 @@ pub mod program_v04 {
         });
         Ok(())
     }
+
+    /// Advance (§4.1, clock row, v0.4 form): move `KernelState.clock`
+    /// forward to `new_clock`. Sealed-state and forward-only gates
+    /// live in `advance_clock_on_state`; the instruction only persists
+    /// the result and emits the event. Authority in this slice is the
+    /// signing payer — the same gap slices 6/7 record for genesis and
+    /// seal authority (multisig/role wiring is a later §4.1 slice, not
+    /// claimed here). Advancing the clock moves no money and advances
+    /// no head: it changes the `now` later instructions pass to the
+    /// rebuilt kernel, which is what unblocks post-genesis observations
+    /// and what lets windows expire.
+    pub fn advance_clock(ctx: Context<AdvanceClock>, new_clock: u64) -> Result<()> {
+        let clock = advance_clock_on_state(&mut ctx.accounts.kernel_state, new_clock)?;
+        emit!(ClockAdvanced { clock });
+        Ok(())
+    }
+}
+
+#[derive(Accounts)]
+pub struct AdvanceClock<'info> {
+    #[account(
+        mut,
+        seeds = [b"kernel-state"],
+        bump = kernel_state.bump,
+    )]
+    pub kernel_state: Account<'info, KernelState>,
+    pub payer: Signer<'info>,
 }
 
 #[derive(Accounts)]
@@ -663,6 +709,28 @@ pub fn replay_transition_from_records(
     Ok(life)
 }
 
+/// Advance a `KernelState`'s clock (slice 11). Pure except for the
+/// clock itself, which moves only on success — every refusal leaves
+/// the state untouched. Gates, in order: sealed state; forward-only
+/// movement, mirroring the kernel's own `tick` (a regression, strictly
+/// less than the current clock, is refused; an equal value is an
+/// accepted no-op, exactly as `tick` accepts it). The head
+/// (`head_index`/`head_hash`) and the seal flag are never touched:
+/// clock advancement is not chain advancement, and a later commit
+/// replay is what moves the head. Authority is the instruction's
+/// signing payer (see the instruction docs) — this helper judges
+/// time, not authority.
+pub fn advance_clock_on_state(state: &mut KernelState, new_clock: u64) -> Result<u64> {
+    if !state.sealed {
+        return Err(error!(ProgramV04Error::NotSealed));
+    }
+    if new_clock < state.clock {
+        return Err(error!(ProgramV04Error::ClockRegression));
+    }
+    state.clock = new_clock;
+    Ok(state.clock)
+}
+
 /// The genesis `KernelState`: the probe-config kernel's genesis values
 /// (unsealed, head 0, zero hash, clock 0), with a zero bump — the
 /// instruction overwrites the bump with the PDA bump.
@@ -702,6 +770,11 @@ pub struct TransitionReplayed {
     pub stage: u8,
 }
 
+#[event]
+pub struct ClockAdvanced {
+    pub clock: u64,
+}
+
 #[error_code]
 pub enum ProgramV04Error {
     #[msg("program-v04 probe: kernel construction failed")]
@@ -730,6 +803,8 @@ pub enum ProgramV04Error {
     WrongStage,
     #[msg("program-v04 replay: kernel ingest or registration refused")]
     ReplayFailed,
+    #[msg("program-v04 clock: new clock is before the current kernel clock")]
+    ClockRegression,
 }
 
 // ---------------------------------------------------------------- launch genesis
@@ -1539,5 +1614,119 @@ mod tests {
             .expect_err("type without a policy must refuse in the kernel");
         assert!(format!("{:?}", err).contains("ReplayFailed"));
         assert_eq!(record.stage, TransitionRecord::REGISTERED);
+    }
+
+    fn advanced_state_to(new_clock: u64) -> KernelState {
+        let mut state = sealed_state();
+        advance_clock_on_state(&mut state, new_clock).expect("advance must succeed");
+        state
+    }
+
+    #[test]
+    fn advance_clock_moves_sealed_clock_forward_and_keeps_head() {
+        let mut state = sealed_state();
+        assert_eq!(state.clock, 100);
+        let clock = advance_clock_on_state(&mut state, 200).expect("forward advance must succeed");
+        assert_eq!(clock, 200);
+        assert_eq!(state.clock, 200);
+        assert!(state.sealed);
+        assert_eq!(state.head_index, 0);
+        assert_eq!(state.head_hash, [0; 32]);
+    }
+
+    #[test]
+    fn advance_clock_refuses_unsealed() {
+        let mut state = genesis_kernel_state().expect("genesis must construct");
+        assert_eq!(state.clock, 0);
+        let err = advance_clock_on_state(&mut state, 200).expect_err("unsealed advance must refuse");
+        assert!(format!("{:?}", err).contains("NotSealed"));
+        assert_eq!(state.clock, 0, "a refused advance must not move the clock");
+    }
+
+    #[test]
+    fn advance_clock_refuses_regression() {
+        let mut state = sealed_state();
+        let err = advance_clock_on_state(&mut state, 99).expect_err("regression must refuse");
+        assert!(format!("{:?}", err).contains("ClockRegression"));
+        assert_eq!(state.clock, 100);
+        advance_clock_on_state(&mut state, 200).expect("forward advance must succeed");
+        let err = advance_clock_on_state(&mut state, 150)
+            .expect_err("backwards after advance must refuse");
+        assert!(format!("{:?}", err).contains("ClockRegression"));
+        assert_eq!(state.clock, 200);
+    }
+
+    #[test]
+    fn advance_clock_equal_is_accepted_noop() {
+        let mut state = sealed_state();
+        let clock = advance_clock_on_state(&mut state, 100).expect("equal advance must succeed");
+        assert_eq!(clock, 100);
+        assert_eq!(state.clock, 100);
+    }
+
+    #[test]
+    fn advanced_clock_unblocks_later_observation() {
+        let mut state = sealed_state();
+        let refused = build_observation_record(
+            &state, [0xC0; 32], 150, 9100, 900_000, observer_pubkey(), 7,
+        )
+        .expect_err("timestamp after the genesis clock must refuse");
+        assert!(format!("{:?}", refused).contains("ObservationFromFuture"));
+        advance_clock_on_state(&mut state, 200).expect("advance must succeed");
+        let record = build_observation_record(
+            &state, [0xC0; 32], 150, 9100, 900_000, observer_pubkey(), 7,
+        )
+        .expect("timestamp at or before the advanced clock must ingest");
+        assert_eq!(record.timestamp, 150);
+    }
+
+    #[test]
+    fn advanced_clock_unblocks_post_genesis_replay() {
+        let state = advanced_state_to(200);
+        let mut record = build_transition_record(
+            &state, [0xD1; 32], TT, 0, [0; 32], [0xE1; 32], [0xC0; 32], 10_100,
+            Pubkey::new_from_array(ag(1)), 7,
+        )
+        .expect("sealed-head register must build at the advanced clock");
+        let obs = build_observation_record(
+            &state, [0xC0; 32], 150, 9100, 900_000, observer_pubkey(), 7,
+        )
+        .expect("post-genesis observation must build");
+        let life = replay_transition_from_records(&state, &mut record, &obs)
+            .expect("post-genesis pair must replay at the advanced clock");
+        assert_eq!(life, Life::Proposed);
+        assert_eq!(record.stage, TransitionRecord::KERNEL_REGISTERED);
+    }
+
+    #[test]
+    fn advance_past_expiry_kills_replay_through_the_kernel() {
+        let (state, mut record, obs) = replay_pair();
+        let mut advanced = state;
+        advance_clock_on_state(&mut advanced, 9100).expect("advance must succeed");
+        let err = replay_transition_from_records(&advanced, &mut record, &obs)
+            .expect_err("observation lapsed by the advance must refuse in the kernel");
+        assert!(format!("{:?}", err).contains("ReplayFailed"));
+        assert_eq!(record.stage, TransitionRecord::REGISTERED);
+    }
+
+    #[test]
+    fn chained_advances_then_post_genesis_replay() {
+        let mut state = sealed_state();
+        advance_clock_on_state(&mut state, 150).expect("first advance must succeed");
+        advance_clock_on_state(&mut state, 300).expect("second advance must succeed");
+        assert_eq!(state.clock, 300);
+        let mut record = build_transition_record(
+            &state, [0xD1; 32], TT, 0, [0; 32], [0xE1; 32], [0xC0; 32], 10_100,
+            Pubkey::new_from_array(ag(1)), 7,
+        )
+        .expect("sealed-head register must build");
+        let obs = build_observation_record(
+            &state, [0xC0; 32], 250, 9100, 900_000, observer_pubkey(), 7,
+        )
+        .expect("observation inside the advanced window must build");
+        let life = replay_transition_from_records(&state, &mut record, &obs)
+            .expect("pair must replay after chained advances");
+        assert_eq!(life, Life::Proposed);
+        assert_eq!(record.stage, TransitionRecord::KERNEL_REGISTERED);
     }
 }
