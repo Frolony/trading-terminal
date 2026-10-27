@@ -420,7 +420,7 @@ the brief outline flash marks the landing panel without touching its copy.*/
 <div id="btDeployList" style="margin-top:10px"></div>
 </div></section>
 <section class="panel" data-panel="pairs"><div class="panelhead" data-drag-handle><h2>Solana market pairs</h2><div style="display:flex;align-items:center;gap:8px"><button type="button" class="action" id="retryFeed" data-testid="retry-btn">Retry feed</button><span class="pill" id="pairCount">DISCOVERING</span></div></div><div class="tablewrap"><table><thead><tr><th data-pairs-col="pair" aria-sort="none" title="Sort by Pair">Pair / DEX</th><th id="pairsPriceHead" data-pairs-col="price" aria-sort="none" title="Sort by Price">Price USD</th><th data-pairs-col="chg24" aria-sort="none" title="Sort by 24H %">24H</th><th data-pairs-col="liq" aria-sort="none" title="Sort by Liquidity">Liquidity</th><th data-pairs-col="volume" aria-sort="none" title="Sort by 24H volume">24H volume</th><th>Trade</th></tr></thead><tbody id="pairs" data-testid="pairs-table"><tr><td colspan="6" class="empty">Loading live pairs from DexScreener…</td></tr></tbody></table></div><div class="sub" id="pairsSortNote" hidden style="padding:8px 16px 0"></div><div class="sub" style="padding:8px 16px 12px">DS = DexScreener (the live feed) · GT = GeckoTerminal (comparison only — hero, watchlist values and the ticket still use DexScreener prices).</div></section>
-<section class="panel" data-panel="dashboard" id="dashboardPanel"><div class="panelhead" data-drag-handle><h2>Dashboard</h2><span class="pill" id="dashModePill">PAPER</span></div><div class="panelbody"><div class="amounts" id="dashModeChips" role="group" aria-label="Dashboard mode"><button type="button" data-dm="paper" class="on">Paper</button><button type="button" data-dm="live">Live</button></div><div id="dashContent" style="margin-top:12px"><div class="empty">Loading dashboard…</div></div><div class="sub" style="margin-top:10px">P&amp;L uses FIFO cost basis from your paper fills. Paper figures are simulated — no blockchain transaction is ever sent. The dashboard is a read view: it is derived, never stored.</div></div></section>
+<section class="panel" data-panel="dashboard" id="dashboardPanel"><div class="panelhead" data-drag-handle><h2>Dashboard</h2><span class="pill pill-simulated" id="dashModePill">SIMULATED</span></div><div class="panelbody"><div class="amounts" id="dashModeChips" role="group" aria-label="Dashboard mode"><button type="button" data-dm="paper" class="on">Paper</button><button type="button" data-dm="live">Live</button></div><div id="dashContent" style="margin-top:12px"><div class="empty">Loading dashboard…</div></div><div class="sub" style="margin-top:10px">P&amp;L uses FIFO cost basis from your paper fills. Paper figures are simulated — no blockchain transaction is ever sent. The dashboard is a read view: it is derived, never stored.</div></div></section>
 <section class="panel" data-panel="mktcond"><div class="panelhead" data-drag-handle><h2>Solana market conditions</h2><span class="eyebrow">TRENDING SAMPLE · NOT A PREDICTION</span></div><div class="panelbody"><div id="mktCondBody"><div class="empty">Loading market conditions…</div></div><div class="sub" style="margin-top:10px">Computed from public feed data — context, not a prediction. The breadth sample is the trending table's rows, never "the market" as a whole.</div></div></section>
 <section class="panel" data-panel="discovery"><div class="panelhead" data-drag-handle><h2>Token discovery</h2><span class="eyebrow">LIVE DISCOVERY</span></div><div class="panelbody"><div class="searchrow"><input id="tokenSearch" placeholder="Search token, ticker or mint address" value="SOL"><button id="searchBtn">Search</button></div><div id="searchResults" class="results" data-testid="search-results"><div class="empty">Search live Solana pairs and add candidates to your watchlist.</div></div></div></section>
 <section class="panel" data-panel="discoveryLab"><div class="panelhead" data-drag-handle><h2>Token discovery</h2><span class="eyebrow">LIVE DISCOVERY · STRATEGY LAB</span></div><div class="panelbody"><div class="searchrow"><input id="tokenSearchLab" placeholder="Search token, ticker or mint address" value="SOL"><button id="searchBtnLab">Search</button></div><div id="searchResultsLab" class="results"><div class="empty">Search live Solana pairs and add candidates to your watchlist.</div></div></div></section>
@@ -1094,13 +1094,14 @@ function dashLiveHtml(){
   h+=acts.length?'<div class="dashact">'+acts.map(a=>'<div class="arow"><div><span>'+esc(a.label)+'</span>'+dashActivityIdent(a)+'</div><span style="display:flex;align-items:center;gap:8px"><span class="mchip">LIVE</span><span class="t">'+esc(dashActTime(a.ts))+'</span></span></div>').join('')+'</div>':'<div class="empty">No live trade events for this wallet yet.</div>';
   return h+'</div>';
 }
+function paintDashModePill(){const pill=$('dashModePill');if(!pill)return;const live=dashMode==='live';pill.textContent=live?'LIVE':'SIMULATED';pill.className=live?'pill':'pill pill-simulated';} // N5.26 (A96): dashboard mode pill reuses the ticket's embossed .pill-simulated class as-is — text AND class set together, so no render path can leave the words and the style disagreeing; Live carries only plain .pill, never the simulated treatment
 function paintDashboard(force){
   const body=$('dashContent');if(!body)return;
   let d='';
   try{d=dashDigestNow();}catch(_){return;} // state not ready — never throw from a render hook
   if(!force&&d===dashDigest)return; // pack §2.6: dirty-flag, not timer-driven
   dashDigest=d;
-  const pill=$('dashModePill');if(pill)pill.textContent=dashMode==='live'?'LIVE':'PAPER';
+  paintDashModePill(); // N5.26: text + class together, never text alone
   try{body.innerHTML=dashMode==='live'?dashLiveHtml():dashPaperHtml();}catch(e){body.innerHTML='<div class="empty">Dashboard unavailable — '+esc(String((e&&e.message)||e))+'</div>';}
 }
 /* N5.14 three real pages (2026-10-25, A65): Terminal / Dashboard / Strategy Lab.
@@ -1188,7 +1189,7 @@ function wireDashboard(){
   document.querySelectorAll('#dashModeChips button').forEach(b=>b.onclick=()=>{
     dashMode=b.dataset.dm==='live'?'live':'paper';
     document.querySelectorAll('#dashModeChips button').forEach(x=>x.classList.toggle('on',x===b));
-    const pill=$('dashModePill');if(pill)pill.textContent=dashMode==='live'?'LIVE':'PAPER';
+    paintDashModePill(); // N5.26: chips handler sets text + class together too, before the repaint
     paintDashboard(true);
   });
   const dc=$('dashContent');
