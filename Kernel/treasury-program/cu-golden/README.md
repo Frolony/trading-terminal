@@ -787,14 +787,80 @@ still 0 (collect_fees still unbuilt; reinvest touches no fees). Golden
 file 284 entries. As in every slice, `reinvest` here is bookkeeping,
 not token movement.
 
+## Slice 15: the last §4.2 row `collect_fees` (design §4.2, D-5) (2026-10-26)
+
+The §4.2 table is now complete: every row has an instruction. `collect_fees`
+lands as an operator-settled instruction gated by a Committed
+`treasury.window.v1` transition with the `OPERATOR_SETTLE` capability
+(IDL 38 → 39 instructions, 88 → 91 errors — the three new errors appended
+at the end of the enum, 6088 `CollectMismatch` / 6089
+`CollectVaultMismatch` / 6090 `InvalidCollectAmount`, so no existing error
+code moves — accounts 16, program host tests 83 → 84 with the new
+`collect_fees_gate_matrix`, new `FeesCollected` event). The reading
+implemented, stated plainly because the design row is one paragraph with
+a gap in it: the operator reports the window's collected 73 bps total, the
+FeeVault key must equal `Config.fee_vault`, and the amount accrues twice
+— once on the window's new `fees_collected_raw` field (WindowState SPACE
+121 → 129, appended after `bump` so every pre-existing field keeps its byte
+offset) and once on the vault's `collected_raw` (the sum over windows). A
+zero collection refuses; repeated collections in one window accumulate
+(fees arrive through a window, not once); an agent without
+`OPERATOR_SETTLE` refuses. The vault-mismatch case cannot be probed in
+the harness — the vault account is PDA-bound, so a foreign vault fails at
+the account layer — and is covered by the host gate matrix instead.
+
+Measured on the slice-14 chain (window 14, Committed window-flow
+transition 7, operator [7;32]):
+
+| instruction | CU | result |
+|---|---|---|
+| `collect_fees:15first` (73,000 — 73 bps on a 10,000,000 flow, operator-reported) | 14,223 | Success, DESIGN FINDING — 2.03× the ~7K family EST point, 223 CU over the 14,000 band top: the instruction touches six accounts (operator, operator record, transition, config, window, vault) plus an authorization-context event, more than the thin shape the EST modeled; in the settle_default class, not a new shape. Window fees 0 → 73,000, vault 0 → 73,000, window 14 exit stock UNCHANGED at 8,000,000, TreasuryState UNCHANGED at 70,000,000 |
+| `collect_fees:15second` (27,000 more in the same window) | 14,223 | Success, same finding — window and vault both 100,000, so the vault total is the sum over windows and the window figure is its own accounting |
+| `collect_fees:15zero` (0) | 14,655 | Refused `InvalidCollectAmount` (6090), state unchanged, NOT a success CU |
+| `collect_fees:15unauthorized` (agent [3;32], no `OPERATOR_SETTLE`) | 14,605 | Refused `Unauthorized` (6000), state unchanged, NOT a success CU |
+
+Stated, not passed off: this is the accounting half, bookkeeping not token
+movement, as in the sibling slices — and the design row's "reconciles the
+vault against the declared total" is NOT implemented, because the
+TransitionRecord carries only a `declared_hash`, not a declared fee total
+to reconcile against. The event carries the transition id, commit index,
+and declared hash — the authorization context settle's `exact` check
+attests — but a caller-supplied amount that disagrees with the off-chain
+declared schedule is not refused by this instruction. That numeric
+reconciliation is a carried item (a declared fee schedule on the
+transition, or an evidence record binding the reported total), not a
+claim made here. The fee flow now has its positive half as on-chain
+accounting; the 73 bps income identity's realization is the ledger total,
+not yet a token settlement.
+
+Re-baseline, stated not hidden: adding an instruction re-measures slices
+1–14 against the new .so (sha `e139e22a…`, was `e0f40adf…`), and 123 of
+the 284 prior entries shift — all small (mostly +2…+14 CU code-layout
+jitter, up to +59 CU on window-touching instructions: `open_window`,
+`enroll`, and `exit` each gain ~56–59 CU from the 8-byte larger
+WindowState) — with ZERO gate flips and no design-finding status change
+except the new collect_fees finding itself. The §2.2 canonical figures
+are updated to the slice-15 measurements in the same pass (pay_tranche
+11,712 → 11,722, borrow 12,162 → 12,174, exit 10,607 → 10,665,
+settle_default 14,512 → 14,524, schedule_whale_exit 15,839 → 15,851,
+execute_whale_tranche 16,360 → 16,414, tranche 2 16,369 → 16,423,
+reinvest 9,310 → 9,322; commit 17,963 and settle 12,965 unchanged),
+per Carlos's measured-figures directive. Final state: T and cash
+70,000,000, window_count 15, window 14 stock 8,000,000 and window 14 fees
+100,000, FeeVault collected_raw 100,000, window 13 stock 4,000,000,
+window 1 stock 0, whale schedule untouched (2 blocks,
+last_block_time 31,608,400), clock 37,003,600. Golden file 288 entries.
+As in every slice, `collect_fees` here is bookkeeping, not token movement.
+
 ## Next slices
 
 Queue head, continued: the W3.2 adversarial suite re-expressed against
-the program's interface with measured CU per instruction — next the
-remaining §4.2 row (`collect_fees` — it completes the fee-flow class
-slice 13 half-proved) and the carried Part B4 items in roadmap order
-(including the skip-enforcement item slice 11 confirmed open, and the
-open_window source-transition consumption fix).
+the program's interface with measured CU per instruction is now complete
+for the §4.2 rows — next the carried Part B4 items in roadmap order
+(including the skip-enforcement item slice 11 confirmed open, the
+open_window source-transition consumption fix, and the declared-fee-schedule
+reconciliation this slice carries), then the remaining queue items
+(deposit↔enroll binding, accepted-mints registry, native-SOL deposits).
 
 Optimization pass step 2 (ATTEMPTED 2026-10-25, BLOCKED, REVERTED —
 NOT blocked by the funding decision, blocked by the toolchain):

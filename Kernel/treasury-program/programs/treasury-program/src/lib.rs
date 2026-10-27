@@ -2890,6 +2890,7 @@ pub mod treasury_program {
         window.source_commit_index = source.commit_index;
         window.roster_hash = [0; 32];
         window.bump = ctx.bumps.window_state;
+        window.fees_collected_raw = 0;
         state.window_count = state
             .window_count
             .checked_add(1)
@@ -3468,6 +3469,90 @@ pub mod treasury_program {
             amount_raw,
             position_after_raw: position_after,
             accrued_after_raw: accrued_after,
+            transition_id,
+            commit_index: ctx.accounts.transition_record.commit_index,
+            declared_hash: ctx.accounts.transition_record.declared_hash,
+        });
+        Ok(())
+    }
+
+    /// Collect fees (design §4.2, D-5): the positive half of
+    /// the fee flow, completing the slice-13 proof. The 73 bps
+    /// single flow rides token transfers and venue flows in
+    /// the compose layer — this program does not mint fees
+    /// from nothing and does not skim any value-moving
+    /// instruction — and the operator reports the window's
+    /// collected total here, under the window's Committed
+    /// transition, with the `OPERATOR_SETTLE` capability
+    /// (design §5, as in `pay_tranche`). The FeeVault key
+    /// must equal `Config.fee_vault`: a collection into any
+    /// other account refuses, so the vault total is the one
+    /// genesis-bound account's total, never a stray ledger.
+    ///
+    /// Effect, exactly: the window's `fees_collected_raw`
+    /// rises by the amount and the FeeVault's
+    /// `collected_raw` rises by the same amount — the
+    /// per-window figure is the accounting, the vault total
+    /// the sum over windows. A zero collection refuses: it
+    /// would consume a window execution while accounting
+    /// nothing. Repeated calls in one window accumulate;
+    /// fees arrive through a window, they do not arrive
+    /// once, so no single-collection flag is imposed —
+    /// each call is a distinct reported collection and
+    /// the event chain is its audit trail.
+    ///
+    /// Scope, stated not buried: this is the accounting
+    /// half, as in the sibling slices — bookkeeping, not a
+    /// token movement. The design row also says
+    /// `collect_fees` "reconciles the vault against the
+    /// declared total"; that numeric reconciliation is NOT
+    /// implemented here, because the TransitionRecord
+    /// carries only a `declared_hash`, not a declared fee
+    /// schedule or fee total, so there is no stored total
+    /// on-chain to reconcile against. The event carries
+    /// the transition id, commit index, and declared hash
+    /// — the authorization context settle's `exact` check
+    /// attests — but a caller-supplied amount that
+    /// disagrees with the off-chain declared schedule is
+    /// not refused by this instruction. That gap is a
+    /// carried item (a declared fee schedule on the
+    /// transition, or an evidence record binding the
+    /// reported total), not a claim made here.
+    pub fn collect_fees(
+        ctx: Context<CollectFees>,
+        transition_id: u64,
+        window_id: u64,
+        amount_raw: u64,
+    ) -> Result<()> {
+        can_collect_fees(
+            ctx.accounts.transition_record.state,
+            ctx.accounts.transition_record.transition_type,
+            ctx.accounts.fee_vault.key() == ctx.accounts.config.fee_vault,
+            ctx.accounts.operator_record.active,
+            ctx.accounts
+                .operator_record
+                .capabilities
+                .contains(&OPERATOR_SETTLE),
+            amount_raw,
+        )?;
+        let window = &mut ctx.accounts.window_state;
+        window.fees_collected_raw = window
+            .fees_collected_raw
+            .checked_add(amount_raw)
+            .ok_or(TreasuryError::Overflow)?;
+        let window_collected_after = window.fees_collected_raw;
+        let vault = &mut ctx.accounts.fee_vault;
+        vault.collected_raw = vault
+            .collected_raw
+            .checked_add(amount_raw)
+            .ok_or(TreasuryError::Overflow)?;
+        let collected_after = vault.collected_raw;
+        emit!(FeesCollected {
+            window_id,
+            operator: ctx.accounts.operator.key(),
+            amount_raw,
+            window_collected_raw: window_collected_after,
+            collected_raw: collected_after,
             transition_id,
             commit_index: ctx.accounts.transition_record.commit_index,
             declared_hash: ctx.accounts.transition_record.declared_hash,
@@ -5320,6 +5405,43 @@ pub fn can_reinvest(
     Ok(())
 }
 
+/// The `collect_fees` gate, as a pure check (design §4.2,
+/// §5, D-5): the window flow transition must be Committed
+/// and of the canonical window type, the fee vault must be
+/// the genesis-bound vault in `Config`, the operator must
+/// be an active agent holding `OPERATOR_SETTLE`, and the
+/// amount must be positive. Order mirrors
+/// [`can_pay_tranche`]: the transition binding first, the
+/// vault binding next, the operator next, the amount rule
+/// last. No cap is judged here: the collected total is an
+/// operator-reported figure, not a claim against a stock,
+/// and any cap on it belongs to the declared schedule
+/// (the carried reconciliation item), not to this gate.
+pub fn can_collect_fees(
+    state: u8,
+    transition_type: [u8; 32],
+    fee_vault_matches: bool,
+    operator_active: bool,
+    operator_has_settle: bool,
+    amount_raw: u64,
+) -> Result<()> {
+    require!(state == STATE_COMMITTED, TreasuryError::BadState);
+    require!(
+        transition_type == TREASURY_WINDOW_TYPE,
+        TreasuryError::CollectMismatch
+    );
+    require!(
+        fee_vault_matches,
+        TreasuryError::CollectVaultMismatch
+    );
+    require!(
+        operator_active && operator_has_settle,
+        TreasuryError::Unauthorized
+    );
+    require!(amount_raw != 0, TreasuryError::InvalidCollectAmount);
+    Ok(())
+}
+
 /// Who may schedule a whale exit, as a pure check (design §4.2,
 /// D-10 REVISED 2026-10-24 ~18:49 CST): the authorizing
 /// transition must be Committed and of the canonical
@@ -5928,6 +6050,30 @@ pub struct Reinvested {
     pub amount_raw: u64,
     pub position_after_raw: u64,
     pub accrued_after_raw: u64,
+    pub transition_id: u64,
+    pub commit_index: u64,
+    pub declared_hash: [u8; 32],
+}
+
+/// Event for [`treasury_program::collect_fees`] (design
+/// §4.2, §6): the window, the operator, the amount
+/// collected in this call, the window's collected total
+/// after the call, and the FeeVault's total after the
+/// call — plus the authorization context, the Committed
+/// window flow transition's id, commit index, and
+/// declared hash. The collection here is bookkeeping,
+/// not a token movement: no token account is debited or
+/// credited, and the declared-schedule reconciliation the
+/// design row names is a carried item, not a field of
+/// this event (the transition carries only a declared
+/// hash, not a fee total).
+#[event]
+pub struct FeesCollected {
+    pub window_id: u64,
+    pub operator: Pubkey,
+    pub amount_raw: u64,
+    pub window_collected_raw: u64,
+    pub collected_raw: u64,
     pub transition_id: u64,
     pub commit_index: u64,
     pub declared_hash: [u8; 32],
@@ -6927,11 +7073,18 @@ pub struct WindowState {
     pub roster_hash: [u8; 32],
     /// PDA bump for the `["window", window_id]` seeds.
     pub bump: u8,
+    /// Fees collected in this window by `collect_fees`, kernel
+    /// fixed-point raw. Appended after `bump` deliberately so
+    /// every pre-existing field keeps its byte offset; the
+    /// per-window accounting for the FeeVault total, so a
+    /// window's collections sum to its own figure and the
+    /// vault total is the sum over windows.
+    pub fees_collected_raw: u64,
 }
 
 impl WindowState {
-    /// 8 (discriminator) + 10 × 8 + 32 + 1.
-    pub const SPACE: usize = 8 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 32 + 1;
+    /// 8 (discriminator) + 11 × 8 + 32 + 1.
+    pub const SPACE: usize = 8 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 32 + 1;
 }
 
 /// Holder record (design §3, §4.2) — one per holder per window, the
@@ -7832,6 +7985,44 @@ pub struct Reinvest<'info> {
     pub holder_record: Account<'info, HolderRecord>,
 }
 
+/// Accounts for [`treasury_program::collect_fees`].
+#[derive(Accounts)]
+#[instruction(transition_id: u64, window_id: u64, amount_raw: u64)]
+pub struct CollectFees<'info> {
+    /// The settling operator (signer). Not a named key:
+    /// execution is capability-gated, and the record below
+    /// is what the gate reads. Pays no rent here — no
+    /// account is created.
+    pub operator: Signer<'info>,
+    /// The operator's agent record, seeds-bound to the
+    /// signer. Must be active and hold `OPERATOR_SETTLE`
+    /// (design §5).
+    #[account(seeds = [b"agent", operator.key().as_ref()], bump = operator_record.bump)]
+    pub operator_record: Account<'info, AgentRecord>,
+    /// The window flow transition, seeds-bound to its id.
+    /// Must be Committed and of the canonical window type
+    /// — the authority for this collection, not the
+    /// operator's discretion over the reported total.
+    #[account(seeds = [b"transition", transition_id.to_le_bytes().as_ref()], bump = transition_record.bump)]
+    pub transition_record: Account<'info, TransitionRecord>,
+    /// The program configuration PDA, seeds-bound. Read
+    /// here only: its `fee_vault` field is the fail-closed
+    /// binding the handler checks the vault against.
+    #[account(seeds = [b"config"], bump = config.bump)]
+    pub config: Account<'info, Config>,
+    /// The window being collected in, seeds-bound to its
+    /// id. Mutated: its `fees_collected_raw` is the
+    /// per-window accounting for this collection.
+    #[account(mut, seeds = [b"window", window_id.to_le_bytes().as_ref()], bump = window_state.bump)]
+    pub window_state: Account<'info, WindowState>,
+    /// The fee vault PDA, seeds-bound. Mutated: its
+    /// `collected_raw` is the treasury-wide fee total.
+    /// The handler requires its key to equal
+    /// `config.fee_vault`.
+    #[account(mut, seeds = [b"fee-vault"], bump = fee_vault.bump)]
+    pub fee_vault: Account<'info, FeeVault>,
+}
+
 /// Accounts for [`treasury_program::schedule_whale_exit`].
 #[derive(Accounts)]
 #[instruction(transition_id: u64, window_id: u64, total_raw: u64)]
@@ -8512,6 +8703,26 @@ pub enum TreasuryError {
     /// position, so the accrued balance is its hard bound.
     #[msg("Reinvest exceeds accrued dividend: the reinvested amount must fit inside the accrued unpaid dividend.")]
     ReinvestExceedsAccrued,
+    /// A fee collection does not match its window: the
+    /// authorizing transition is not a canonical
+    /// `treasury.window.v1` transition. A collection names
+    /// its window by address, never by claim. Appended at
+    /// the end of the enum, not inserted among earlier
+    /// errors, so no existing error code moves (the golden
+    /// file records codes verbatim).
+    #[msg("Collect fees window mismatch: the authorizing transition is not a treasury.window.v1 transition.")]
+    CollectMismatch,
+    /// The fee vault is not the genesis-bound vault: its
+    /// key differs from `Config.fee_vault`. Fee totals
+    /// land only in the one vault genesis bound, never in
+    /// a stray account passed as the vault.
+    #[msg("Collect fees vault mismatch: the fee vault must key-equal Config.fee_vault.")]
+    CollectVaultMismatch,
+    /// A fee collection collects nothing: a zero amount
+    /// would consume a window execution while accounting
+    /// nothing.
+    #[msg("Collect fees amount must be positive: a zero collection accounts nothing.")]
+    InvalidCollectAmount,
 }
 
 #[cfg(test)]
@@ -10314,7 +10525,7 @@ mod tests {
         assert_eq!(TreasuryState::SPACE, 65);
         assert_eq!(LendingBook::SPACE, 21);
         assert_eq!(FeeVault::SPACE, 17);
-        assert_eq!(WindowState::SPACE, 121);
+        assert_eq!(WindowState::SPACE, 129);
     }
 
     #[test]
@@ -10840,6 +11051,64 @@ mod tests {
         // empty dividend reinvests nothing.
         assert!(can_reinvest(
             STATE_COMMITTED, TREASURY_WINDOW_TYPE, 13, 13, 1, 0,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn collect_fees_gate_matrix() {
+        // Argument order: state, type, vault matches,
+        // operator active, operator holds OPERATOR_SETTLE,
+        // amount. A collection moves no position, loan,
+        // stock, or penalty term — those are exactly the
+        // terms this gate must NOT judge, so the matrix
+        // has no cases for them.
+        // Happy path: a positive collection under a
+        // Committed window transition into the bound vault
+        // by a capable operator passes.
+        can_collect_fees(
+            STATE_COMMITTED, TREASURY_WINDOW_TYPE, true, true, true, 73_000,
+        )
+        .expect("a positive fee collection passes");
+        // Pre-commit and post-commit states refuse:
+        // collections ride commit, before settle, as in
+        // `pay_tranche`.
+        for state in [
+            STATE_COMMITTABLE,
+            STATE_SETTLED,
+            STATE_REJECTED,
+            STATE_EXPIRED,
+        ] {
+            assert!(can_collect_fees(
+                state, TREASURY_WINDOW_TYPE, true, true, true, 73_000,
+            )
+            .is_err());
+        }
+        // Wrong transition type refuses as a mismatch.
+        assert!(can_collect_fees(
+            STATE_COMMITTED, TREASURY_LAUNCH_TYPE, true, true, true, 73_000,
+        )
+        .is_err());
+        // A vault that is not the genesis-bound vault
+        // refuses: fee totals land only in Config's vault.
+        assert!(can_collect_fees(
+            STATE_COMMITTED, TREASURY_WINDOW_TYPE, false, true, true, 73_000,
+        )
+        .is_err());
+        // An inactive operator, and an operator without
+        // OPERATOR_SETTLE, both refuse.
+        assert!(can_collect_fees(
+            STATE_COMMITTED, TREASURY_WINDOW_TYPE, true, false, true, 73_000,
+        )
+        .is_err());
+        assert!(can_collect_fees(
+            STATE_COMMITTED, TREASURY_WINDOW_TYPE, true, true, false, 73_000,
+        )
+        .is_err());
+        // A zero collection refuses: it would consume a
+        // window execution while accounting nothing.
+        assert!(can_collect_fees(
+            STATE_COMMITTED, TREASURY_WINDOW_TYPE, true, true, true, 0,
         )
         .is_err());
     }
