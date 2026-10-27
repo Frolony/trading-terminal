@@ -2535,6 +2535,8 @@ pub mod treasury_program {
         state.backing_threshold_ppm = 0;
         state.window_count = 0;
         state.bump = ctx.bumps.treasury_state;
+        state.accepted_mint_count = 0;
+        state.accepted_mints = [Pubkey::default(); MAX_ACCEPTED_MINTS];
         let book = &mut ctx.accounts.lending_book;
         book.outstanding_raw = 0;
         book.active_loans = 0;
@@ -2587,11 +2589,15 @@ pub mod treasury_program {
     /// native-SOL vault (system-account vault, no mint) is a
     /// separate instruction, not smuggled into this one, and the
     /// holder's USDC-or-SOL disbursement choice is a payout-step
-    /// decision, not a deposit-step one. Carried, not hidden:
-    /// any mint on either program is accepted, so a junk mint
-    /// would credit T with junk value — an accepted-mints
-    /// registry is a governance item for a later increment, and
-    /// until it lands the pilot uses one intended mint (USDC).
+    /// decision, not a deposit-step one. Accepted-mints
+    /// registry (slice 20): the mint must be in the
+    /// treasury's registry — an empty registry accepts
+    /// nothing, so a junk mint credits T with nothing. The
+    /// registry is authority-signed (§4.1 Admin pattern:
+    /// `register_mint` / `unregister_mint` below), not
+    /// transition-governed; routing registry changes through
+    /// a policy transition is a future governance choice,
+    /// not a check this slice pretends to make.
     ///
     /// Sleeve rule, stated plainly: new money arrives as cash.
     /// The credit adds the amount to `total_raw` AND `cash_raw`
@@ -2673,7 +2679,17 @@ pub mod treasury_program {
                 .map(|f| f.0 == mint_key && f.1 == ctx.accounts.treasury_state.key())
                 .unwrap_or(false)
         };
-        can_deposit(amount_raw, program_ok, source_ok, vault_ok)?;
+        // Registry binding (slice 20), computed from the
+        // treasury's own fields before any mutation: only a
+        // registered mint funds the treasury. Checked last
+        // inside `can_deposit`, so earlier refusals keep
+        // their errors.
+        let mint_accepted = mint_accepted(
+            &ctx.accounts.treasury_state.accepted_mints,
+            ctx.accounts.treasury_state.accepted_mint_count,
+            &mint_key,
+        );
+        can_deposit(amount_raw, program_ok, source_ok, vault_ok, mint_accepted)?;
         // Mint decimals come from the mint account itself, never
         // from a caller argument: a caller-supplied decimals
         // value could misstate the transferred amount's scale.
@@ -2777,6 +2793,61 @@ pub mod treasury_program {
             amount_raw,
             total_raw,
             cash_raw,
+        });
+        Ok(())
+    }
+
+    /// Accepted-mint registration (design §4.2, slice 20):
+    /// add one mint to the treasury's registry, bounded at
+    /// [`MAX_ACCEPTED_MINTS`] slots. Authority-signed under
+    /// the §4.1 Admin pattern — the genesis authority in
+    /// `Config`, the same authority that installs policies —
+    /// not transition-governed: registry membership is an
+    /// admin list, and the authority key is the check, not a
+    /// fresh governance vote per mint. The handler writes
+    /// only the registry; it moves no funds and creates no
+    /// vault — a registered mint with no deposits is inert,
+    /// and deposit is what enforces the list.
+    pub fn register_mint(
+        ctx: Context<MintRegistryChange>,
+        mint: Pubkey,
+    ) -> Result<()> {
+        require!(
+            ctx.accounts.config.authority == ctx.accounts.authority.key(),
+            TreasuryError::Unauthorized
+        );
+        registry_register(&mut ctx.accounts.treasury_state, mint)?;
+        let count = ctx.accounts.treasury_state.accepted_mint_count;
+        emit!(MintRegistered {
+            mint,
+            authority: ctx.accounts.authority.key(),
+            accepted_mint_count: count,
+        });
+        Ok(())
+    }
+
+    /// Accepted-mint removal (design §4.2, slice 20): the
+    /// mirror of `register_mint`, same authority, same
+    /// account set. Removal is immediate for future
+    /// deposits — a mint removed mid-flight refuses the next
+    /// deposit — but it does not claw back deposits already
+    /// credited: the vault still holds what was transferred,
+    /// and the ledger still counts it. Registry membership
+    /// gates funding, never retroactively un-funds it.
+    pub fn unregister_mint(
+        ctx: Context<MintRegistryChange>,
+        mint: Pubkey,
+    ) -> Result<()> {
+        require!(
+            ctx.accounts.config.authority == ctx.accounts.authority.key(),
+            TreasuryError::Unauthorized
+        );
+        registry_unregister(&mut ctx.accounts.treasury_state, mint)?;
+        let count = ctx.accounts.treasury_state.accepted_mint_count;
+        emit!(MintUnregistered {
+            mint,
+            authority: ctx.accounts.authority.key(),
+            accepted_mint_count: count,
         });
         Ok(())
     }
@@ -5105,23 +5176,89 @@ pub fn can_initialize_treasury(
 /// the amount rule first (a zero deposit would pay vault rent
 /// on a first-mint deposit while funding nothing), the program
 /// binding second, the source binding third, the vault binding
-/// last. The handler computes the three booleans from the
-/// account fields and data; the PDA seeds constraint on the
+/// fourth, the registry binding last (slice 20) — so every
+/// previously-refused shape keeps its error: a junk mint with
+/// a foreign vault refuses on the vault, not on the registry.
+/// The handler computes the four booleans from the account
+/// fields and data; the PDA seeds constraint on the
 /// vault is the same address binding enforced at account
 /// validation, so a wrong vault refuses twice, never zero
 /// times. Deliberately no transition, stage, or enrollment
 /// check here: funding is value inflow authorized by the
-/// depositor's signature plus the transfer, not by governance.
+/// depositor's signature plus the transfer, not by governance
+/// — the registry is the one governed input, and it is read
+/// from the treasury's own state, not supplied by the caller.
 pub fn can_deposit(
     amount_raw: u64,
     program_ok: bool,
     source_ok: bool,
     vault_ok: bool,
+    mint_accepted: bool,
 ) -> Result<()> {
     require!(amount_raw != 0, TreasuryError::InvalidDepositAmount);
     require!(program_ok, TreasuryError::DepositProgramMismatch);
     require!(source_ok, TreasuryError::DepositSourceMismatch);
     require!(vault_ok, TreasuryError::DepositVaultMismatch);
+    require!(mint_accepted, TreasuryError::MintNotAccepted);
+    Ok(())
+}
+
+/// Whether `mint` is in the first `count` slots of the registry
+/// (slice 20). The count, not a zero-key scan, bounds the
+/// search: slots past the count are stale zero keys or
+/// swap-remove residue, never membership. `take` bounds the
+/// scan even if a corrupt count ever exceeded the array, so
+/// this helper cannot panic on treasury state it did not write.
+pub fn mint_accepted(
+    mints: &[Pubkey; MAX_ACCEPTED_MINTS],
+    count: u8,
+    mint: &Pubkey,
+) -> bool {
+    mints.iter().take(count as usize).any(|m| m == mint)
+}
+
+/// Register `mint` at the first free slot (slice 20). A
+/// duplicate refuses rather than double-counting a slot, and
+/// a full registry refuses rather than overwriting — the
+/// caller removes a mint first, so no registration ever
+/// silently evicts another mint's acceptance.
+pub fn registry_register(
+    state: &mut TreasuryState,
+    mint: Pubkey,
+) -> Result<()> {
+    if mint_accepted(&state.accepted_mints, state.accepted_mint_count, &mint) {
+        return Err(TreasuryError::MintAlreadyRegistered.into());
+    }
+    if state.accepted_mint_count as usize >= MAX_ACCEPTED_MINTS {
+        return Err(TreasuryError::MintRegistryFull.into());
+    }
+    state.accepted_mints[state.accepted_mint_count as usize] = mint;
+    state.accepted_mint_count += 1;
+    Ok(())
+}
+
+/// Unregister `mint` (slice 20), swap-removing it so the live
+/// slots stay compact: the last live mint moves into the
+/// removed slot and the freed tail slot zeroes. Order in the
+/// registry is not meaningful — membership is — so the swap
+/// changes no accepted set except removing this mint.
+/// Removing an absent mint refuses rather than silently
+/// succeeding, so a caller cannot mistake a no-op for a
+/// revocation.
+pub fn registry_unregister(
+    state: &mut TreasuryState,
+    mint: Pubkey,
+) -> Result<()> {
+    let idx = state
+        .accepted_mints
+        .iter()
+        .take(state.accepted_mint_count as usize)
+        .position(|m| *m == mint)
+        .ok_or(TreasuryError::MintNotRegistered)?;
+    let last = state.accepted_mint_count as usize - 1;
+    state.accepted_mints[idx] = state.accepted_mints[last];
+    state.accepted_mints[last] = Pubkey::default();
+    state.accepted_mint_count -= 1;
     Ok(())
 }
 
@@ -6125,6 +6262,28 @@ pub struct TreasuryDeposit {
     pub amount_raw: u64,
     pub total_raw: u64,
     pub cash_raw: u64,
+}
+
+/// Event for [`treasury_program::register_mint`] (design §4.2,
+/// §6): the mint, the authority that registered it, and the
+/// registry count after the change — the authorization context
+/// is the genesis authority's signature, recorded here, not a
+/// transition.
+#[event]
+pub struct MintRegistered {
+    pub mint: Pubkey,
+    pub authority: Pubkey,
+    pub accepted_mint_count: u8,
+}
+
+/// Event for [`treasury_program::unregister_mint`] (design §4.2,
+/// §6): the mirror receipt — the mint removed, the authority,
+/// and the count after removal.
+#[event]
+pub struct MintUnregistered {
+    pub mint: Pubkey,
+    pub authority: Pubkey,
+    pub accepted_mint_count: u8,
 }
 
 /// Event for [`treasury_program::launch_stage2`] (design §4.2,
@@ -7202,6 +7361,14 @@ impl CapacityStock {
     pub const SPACE: usize = 8 + 2 + 8 + 1;
 }
 
+/// Maximum accepted mints in the registry (design §4.2, slice 20):
+/// an on-chain record is a fixed-size array, not a growable list —
+/// raising the cap is a SPACE change, not a policy change. Eight
+/// covers the pilot (USDC first, plus wrapped SOL and a small set
+/// of stables) without reserving a page of mint slots on every
+/// treasury account.
+pub const MAX_ACCEPTED_MINTS: usize = 8;
+
 /// Treasury state (design §3, §4.2) — the treasury's ledger, created
 /// by `initialize_treasury` at zero and moved only by window flows.
 /// Sleeve balances are the stored ledger, not recomputed views: window
@@ -7234,11 +7401,25 @@ pub struct TreasuryState {
     pub window_count: u64,
     /// PDA bump for the `["treasury"]` seeds.
     pub bump: u8,
+    /// Accepted-mints registry count (slice 20): how many of
+    /// `accepted_mints` below are live. Appended after `bump`
+    /// deliberately so every pre-existing field keeps its byte
+    /// offset; `initialize_treasury` zeroes it, so an empty
+    /// registry accepts nothing — fail-closed, not
+    /// accept-anything-by-default.
+    pub accepted_mint_count: u8,
+    /// Accepted mints, fixed cap [`MAX_ACCEPTED_MINTS`]:
+    /// only a mint in the first `accepted_mint_count` slots
+    /// may fund the treasury through `deposit`. Slots past
+    /// the count are zero keys, never accepted — the count,
+    /// not a zero-key scan, is the membership boundary, so
+    /// unregister's swap-remove cannot resurrect a slot.
+    pub accepted_mints: [Pubkey; MAX_ACCEPTED_MINTS],
 }
 
 impl TreasuryState {
-    /// 8 (discriminator) + 7 × 8 + 1.
-    pub const SPACE: usize = 8 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 1;
+    /// 8 (discriminator) + 7 × 8 + 1 + 1 + 8 × 32.
+    pub const SPACE: usize = 8 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 1 + 1 + 32 + 32 + 32 + 32 + 32 + 32 + 32 + 32;
 }
 
 /// Lending book (design §3, §4.2) — aggregate only. Individual loans
@@ -8000,6 +8181,28 @@ pub struct Deposit<'info> {
     pub rent: Sysvar<'info, Rent>,
     /// System program, required by the vault-creation CPI.
     pub system_program: Program<'info, System>,
+}
+
+/// Accounts for [`treasury_program::register_mint`] and
+/// [`treasury_program::unregister_mint`] (shared, the
+/// `RoleChange` precedent: one account set, two instructions).
+/// The config is read-only here — only its authority field
+/// is checked; no config field is written by a registry change.
+#[derive(Accounts)]
+#[instruction(mint: Pubkey)]
+pub struct MintRegistryChange<'info> {
+    /// Program configuration PDA — read for the authority
+    /// check (`authority` must equal `config.authority`).
+    #[account(seeds = [b"config"], bump = config.bump)]
+    pub config: Account<'info, Config>,
+    /// Treasury state PDA — mutated: only the registry
+    /// fields move here; totals, sleeves, and the window
+    /// counter are untouched by a registry change.
+    #[account(mut, seeds = [b"treasury"], bump = treasury_state.bump)]
+    pub treasury_state: Account<'info, TreasuryState>,
+    /// Genesis authority (signer). Pays no rent — no account
+    /// is created here.
+    pub authority: Signer<'info>,
 }
 
 /// Accounts for [`treasury_program::launch_stage2`].
@@ -9082,6 +9285,26 @@ pub enum TreasuryError {
     /// window opened on.
     #[msg("Enrollment exceeds the window's funded snapshot total.")]
     EnrollExceedsFundedSnapshot,
+    /// This mint is already in the accepted-mints registry:
+    /// registration is idempotent in effect, not in call —
+    /// a duplicate register refuses rather than silently
+    /// double-counting a slot.
+    #[msg("Mint already registered in the accepted-mints registry.")]
+    MintAlreadyRegistered,
+    /// The registry is full (MAX_ACCEPTED_MINTS slots):
+    /// a new mint registers only after one is removed.
+    #[msg("Accepted-mints registry is full.")]
+    MintRegistryFull,
+    /// This mint is not in the accepted-mints registry:
+    /// unregistering an absent mint refuses rather than
+    /// silently succeeding.
+    #[msg("Mint not registered in the accepted-mints registry.")]
+    MintNotRegistered,
+    /// This mint is not in the accepted-mints registry:
+    /// only a registered mint may fund the treasury, and an
+    /// empty registry accepts nothing (fail-closed).
+    #[msg("Mint not accepted: the mint is not in the accepted-mints registry.")]
+    MintNotAccepted,
 }
 
 #[cfg(test)]
@@ -10708,20 +10931,106 @@ mod tests {
     #[test]
     fn deposit_gate_matrix() {
         // All bindings true, positive amount: passes.
-        can_deposit(1_000, true, true, true)
+        can_deposit(1_000, true, true, true, true)
             .expect("a well-bound positive deposit passes");
         // A zero deposit refuses, whatever the bindings are.
-        assert!(can_deposit(0, true, true, true).is_err());
+        assert!(can_deposit(0, true, true, true, true).is_err());
         // Each single binding failure refuses on its own.
-        assert!(can_deposit(1_000, false, true, true).is_err());
-        assert!(can_deposit(1_000, true, false, true).is_err());
-        assert!(can_deposit(1_000, true, true, false).is_err());
+        assert!(can_deposit(1_000, false, true, true, true).is_err());
+        assert!(can_deposit(1_000, true, false, true, true).is_err());
+        assert!(can_deposit(1_000, true, true, false, true).is_err());
+        // The registry binding alone refuses (slice 20).
+        assert!(can_deposit(1_000, true, true, true, false).is_err());
         // The gate order is amount first, program binding
-        // second, source binding third, vault binding last (see
-        // `can_deposit`): each refusal above fires on exactly
-        // one rule, in that order.
+        // second, source binding third, vault binding fourth,
+        // registry binding last (see `can_deposit`): each
+        // refusal above fires on exactly one rule, in that
+        // order.
     }
 
+    #[test]
+    fn accepted_mints_registry_matrix() {
+        // Slice 20: empty registry accepts nothing, not even
+        // the default key — fail-closed, not accept-anything.
+        // A bare TreasuryState value stands in for the account:
+        // the helpers only touch the registry fields.
+        let mut state = TreasuryState {
+            total_raw: 0,
+            cash_raw: 0,
+            bonds_raw: 0,
+            arb_raw: 0,
+            retained_float_raw: 0,
+            backing_threshold_ppm: 0,
+            window_count: 0,
+            bump: 0,
+            accepted_mint_count: 0,
+            accepted_mints: [Pubkey::default(); MAX_ACCEPTED_MINTS],
+        };
+        let a = Pubkey::new_from_array([10u8; 32]);
+        let b = Pubkey::new_from_array([12u8; 32]);
+        assert!(!mint_accepted(
+            &state.accepted_mints,
+            state.accepted_mint_count,
+            &a
+        ));
+        // Register, then membership holds.
+        registry_register(&mut state, a).expect("first registration");
+        assert_eq!(state.accepted_mint_count, 1);
+        assert!(mint_accepted(
+            &state.accepted_mints,
+            state.accepted_mint_count,
+            &a
+        ));
+        assert!(!mint_accepted(
+            &state.accepted_mints,
+            state.accepted_mint_count,
+            &b
+        ));
+        // A duplicate register refuses and moves nothing.
+        assert!(registry_register(&mut state, a).is_err());
+        assert_eq!(state.accepted_mint_count, 1);
+        // Unregistering an absent mint refuses.
+        assert!(registry_unregister(&mut state, b).is_err());
+        assert_eq!(state.accepted_mint_count, 1);
+        // Fill to the cap, then one more refuses.
+        for i in 1..MAX_ACCEPTED_MINTS {
+            registry_register(
+                &mut state,
+                Pubkey::new_from_array([20u8 + i as u8; 32]),
+            )
+            .expect("fill to cap");
+        }
+        assert_eq!(state.accepted_mint_count, MAX_ACCEPTED_MINTS as u8);
+        assert!(registry_register(&mut state, b).is_err());
+        // Swap-remove: removing the first mint compacts the
+        // list, keeps every other mint accepted, and frees
+        // exactly one slot.
+        registry_unregister(&mut state, a).expect("remove first mint");
+        assert_eq!(
+            state.accepted_mint_count,
+            MAX_ACCEPTED_MINTS as u8 - 1
+        );
+        assert!(!mint_accepted(
+            &state.accepted_mints,
+            state.accepted_mint_count,
+            &a
+        ));
+        for i in 1..MAX_ACCEPTED_MINTS {
+            assert!(mint_accepted(
+                &state.accepted_mints,
+                state.accepted_mint_count,
+                &Pubkey::new_from_array([20u8 + i as u8; 32])
+            ));
+        }
+        // The freed slot takes a new mint again.
+        registry_register(&mut state, b).expect("register after removal");
+        assert_eq!(state.accepted_mint_count, MAX_ACCEPTED_MINTS as u8);
+        assert!(mint_accepted(
+            &state.accepted_mints,
+            state.accepted_mint_count,
+            &b
+        ));
+    }
     #[test]
     fn deposit_token_layouts() {
         // Only the two real token programs pass the program
@@ -10890,7 +11199,9 @@ mod tests {
 
     #[test]
     fn treasury_account_spaces_match_fields() {
-        assert_eq!(TreasuryState::SPACE, 65);
+        // Slice 20: TreasuryState 65 -> 322 (registry count 1 +
+        // 8 mint slots x 32); the other accounts are unchanged.
+        assert_eq!(TreasuryState::SPACE, 322);
         assert_eq!(LendingBook::SPACE, 21);
         assert_eq!(FeeVault::SPACE, 17);
         assert_eq!(WindowState::SPACE, 146);

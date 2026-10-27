@@ -1706,7 +1706,8 @@ fn main() {
     accounts = next;
     measured.push(serde_json::json!({"instruction": "initialize_treasury", "cu": cu, "result": "Success", "note": "slice-4 baseline (no §2.2 estimate)"}));
     let ts = accounts.iter().find(|(k, _)| *k == treasury_state).map(|(_, a)| a.clone()).unwrap();
-    assert_eq!(ts.data.len(), 65, "TreasuryState size changed");
+    // Slice 20: TreasuryState 65 -> 322 (registry count 1 + 8 mint slots x 32).
+    assert_eq!(ts.data.len(), 322, "TreasuryState size changed");
     assert_eq!(u64::from_le_bytes(ts.data[56..64].try_into().unwrap()), 0u64, "window_count not 0 at initialize_treasury");
     let lb = accounts.iter().find(|(k, _)| *k == lending_book).map(|(_, a)| a.clone()).unwrap();
     assert_eq!(u64::from_le_bytes(lb.data[8..16].try_into().unwrap()), 0u64, "lending book outstanding not 0 at initialize_treasury");
@@ -2683,6 +2684,35 @@ fn main() {
     upsert(&mut accounts, (transition8, empty.clone()));
     upsert(&mut accounts, (plan8, empty.clone()));
     upsert(&mut accounts, (signal8, empty.clone()));
+
+    // (m0) slice-20 registry prelude: the deposit mint registers
+    // BEFORE the first deposit, because slice 20 makes the
+    // registry fail-closed — an empty registry accepts nothing,
+    // so the slice-7 deposit below would refuse 6100 without
+    // this step. Authority-signed under the §4.1 Admin pattern
+    // (config.authority == [1;32], the genesis authority).
+    let mut data20pre = disc("register_mint");
+    data20pre.extend_from_slice(mint.as_ref());
+    let ix20pre = Instruction::new_with_bytes(
+        program_id,
+        &data20pre,
+        vec![
+            AccountMeta::new_readonly(config, false),
+            AccountMeta::new(treasury_state, false),
+            AccountMeta::new(authority, true),
+        ],
+    );
+    let (next, cu) = run(&mollusk, "register_mint:20prelude", &ix20pre, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({
+        "instruction": "register_mint:20prelude",
+        "cu": cu,
+        "result": "Success",
+        "note": "slice-20 prelude: genesis authority registers the deposit mint ([10;32]) into the accepted-mints registry — the fail-closed gate the slice-7 deposit then passes; without this step that deposit would refuse MintNotAccepted (6100)",
+    }));
+    let ts20pre = accounts.iter().find(|(k, _)| *k == treasury_state).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(ts20pre.data[65], 1u8, "registry count not 1 after register_mint:20prelude");
+    assert_eq!(&ts20pre.data[66..98], mint.as_ref(), "registry slot 0 is not the deposit mint after register_mint:20prelude");
 
     // (m) deposit — THE GATED-CLASS FIRST: the first real funding
     // credit on-chain. No §2.2 EST exists for deposit, so this is
@@ -4925,6 +4955,124 @@ fn main() {
     let ws19b = accounts.iter().find(|(k, _)| *k == window_state_14).map(|(_, a)| a.clone()).unwrap();
     assert_eq!(u64::from_le_bytes(ws19b.data[138..146].try_into().unwrap()), 60_000_000u64, "window 14 enrolled_total_raw moved during enroll:19over refusal");
 
+    // Slice-20 end-of-chain probes: the registry gates, in order.
+    // A duplicate registration refuses; unregistering an absent
+    // mint refuses; removing the live mint closes the door (the
+    // next deposit of that mint refuses 6100 with totals
+    // unchanged); re-registering restores the chain state for
+    // future slices.
+    let mut data20a = disc("register_mint");
+    data20a.extend_from_slice(mint.as_ref());
+    let ix20a = Instruction::new_with_bytes(
+        program_id,
+        &data20a,
+        vec![
+            AccountMeta::new_readonly(config, false),
+            AccountMeta::new(treasury_state, false),
+            AccountMeta::new(authority, true),
+        ],
+    );
+    let cu20a = run_expect_err(&mollusk, "register_mint:20dup", &ix20a, &accounts, 6097);
+    measured.push(serde_json::json!({
+        "instruction": "register_mint:20dup",
+        "cu": cu20a,
+        "result": "Refused",
+        "error": "MintAlreadyRegistered",
+        "error_code": 6097,
+        "note": "slice-20 refusal: registering the already-registered deposit mint refuses MintAlreadyRegistered (6097) — registration never double-counts a slot, NOT a success CU",
+    }));
+    let junk_mint = Pubkey::new_from_array([12u8; 32]);
+    let mut data20b = disc("unregister_mint");
+    data20b.extend_from_slice(junk_mint.as_ref());
+    let ix20b = Instruction::new_with_bytes(
+        program_id,
+        &data20b,
+        vec![
+            AccountMeta::new_readonly(config, false),
+            AccountMeta::new(treasury_state, false),
+            AccountMeta::new(authority, true),
+        ],
+    );
+    let cu20b = run_expect_err(&mollusk, "unregister_mint:20absent", &ix20b, &accounts, 6099);
+    measured.push(serde_json::json!({
+        "instruction": "unregister_mint:20absent",
+        "cu": cu20b,
+        "result": "Refused",
+        "error": "MintNotRegistered",
+        "error_code": 6099,
+        "note": "slice-20 refusal: unregistering a mint that was never registered refuses MintNotRegistered (6099) — a no-op must not masquerade as a revocation, NOT a success CU",
+    }));
+    let mut data20c = disc("unregister_mint");
+    data20c.extend_from_slice(mint.as_ref());
+    let ix20c = Instruction::new_with_bytes(
+        program_id,
+        &data20c,
+        vec![
+            AccountMeta::new_readonly(config, false),
+            AccountMeta::new(treasury_state, false),
+            AccountMeta::new(authority, true),
+        ],
+    );
+    let (next, cu) = run(&mollusk, "unregister_mint:20", &ix20c, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({
+        "instruction": "unregister_mint:20",
+        "cu": cu,
+        "result": "Success",
+        "note": "slice-20: genesis authority removes the deposit mint from the registry — the count returns to 0 (fail-closed empty) and the next deposit of that mint must refuse",
+    }));
+    let ts20c = accounts.iter().find(|(k, _)| *k == treasury_state).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(ts20c.data[65], 0u8, "registry count not 0 after unregister_mint:20");
+    let mut data20d = disc("deposit");
+    data20d.extend_from_slice(&1_000_000u64.to_le_bytes());
+    let ix20d = Instruction::new_with_bytes(
+        program_id,
+        &data20d,
+        vec![
+            AccountMeta::new(treasury_state, false),
+            AccountMeta::new(depositor, true),
+            AccountMeta::new_readonly(mint, false),
+            AccountMeta::new(source_key, false),
+            AccountMeta::new(vault, false),
+            AccountMeta::new_readonly(token_program_id, false),
+            AccountMeta::new_readonly(rent_id, false),
+            AccountMeta::new_readonly(system_id, false),
+        ],
+    );
+    let cu20d = run_expect_err(&mollusk, "deposit:20unregistered", &ix20d, &accounts, 6100);
+    measured.push(serde_json::json!({
+        "instruction": "deposit:20unregistered",
+        "cu": cu20d,
+        "result": "Refused",
+        "error": "MintNotAccepted",
+        "error_code": 6100,
+        "note": "slice-20 refusal: depositing the just-unregistered mint (vault, source, and program bindings all valid) refuses MintNotAccepted (6100) — the registry gate, checked last, closes the junk-mint hole, NOT a success CU",
+    }));
+    let ts20d = accounts.iter().find(|(k, _)| *k == treasury_state).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(ts20d.data[8..16].try_into().unwrap()), 70_000_000u64, "TreasuryState total moved during deposit:20unregistered refusal");
+    let mut data20e = disc("register_mint");
+    data20e.extend_from_slice(mint.as_ref());
+    let ix20e = Instruction::new_with_bytes(
+        program_id,
+        &data20e,
+        vec![
+            AccountMeta::new_readonly(config, false),
+            AccountMeta::new(treasury_state, false),
+            AccountMeta::new(authority, true),
+        ],
+    );
+    let (next, cu) = run(&mollusk, "register_mint:20restore", &ix20e, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({
+        "instruction": "register_mint:20restore",
+        "cu": cu,
+        "result": "Success",
+        "note": "slice-20 restore: the deposit mint re-registers, returning the chain to its pre-probe registry state (count 1) so future slices inherit a funded, registered mint",
+    }));
+    let ts20e = accounts.iter().find(|(k, _)| *k == treasury_state).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(ts20e.data[65], 1u8, "registry count not 1 after register_mint:20restore");
+    assert_eq!(&ts20e.data[66..98], mint.as_ref(), "registry slot 0 is not the deposit mint after register_mint:20restore");
+
     let golden = serde_json::json!({
         "harness": "cu-golden-mollusk",
         "mollusk_svm": MOLLUSK_SVM_VERSION,
@@ -4932,7 +5080,7 @@ fn main() {
         "program_so_sha256": so_sha256,
         "token_program_id": TOKEN_PROGRAM_ID_STR,
         "token_program_so_sha256": token_elf_sha256,
-        "slice": 19,
+        "slice": 20,
         "slice_note": "slices 1-8 as before (slice-5/6 refusal probes stand as the unfunded-chain record; slice-7 FUNDED chain: real SPL Token deposit credits TreasuryState 60,000,000, window 1 opens on the funded snapshot, borrow / exit / settle_default / schedule_whale_exit FIRST successes; slice-8 12-window walk: windows 2..13 each open on their own Settled treasury.window.v1 transition (transitions 9..20, parented in sequence), each on the funded snapshot (total 60,000,000, exit stock 10,000,000, FLAG 2,000,000), and the FIRST success measurement execute_whale_tranche (tranche 1 of 5, 2,000,000 raw, on Committed treasury.exit.v1 transition 8, creation window 1, execution window 13 >= lock_until 13), gated §2.2 ~7K (2x band 3,500-14,000)) + slice-9 W3.2 re-expression part 1: tranche-2 weekly cadence on the slice-8 chain — TrancheTooSoon refusals at the tranche-1 clock and at last_block_time + WEEK_SECS - 1, then tranche 2 of 5 (2,000,000 raw) SUCCESS at exactly last_block_time + WEEK_SECS (31,608,400), gated §2.2 ~7K; launch_stage2 unmeasured by design (ThresholdUnset, D-2) + slice-10 W3.2 re-expression part 2: blind-ape bulk exit (T11) on the funded chain — the whole-position order (23,500,000 raw) refuses ExitExceedsLiquidity under the D-10 hard bound (L = 10,000,000), the largest executable bulk exit (8,500,000 raw, the remaining window-1 stock) succeeds with the flat 13% penalty on the full excess (1,105,000 penalty, 7,395,000 paid), and a further window-1 exit refuses ExitStockExhausted with aggregate window-1 exits exactly at L + slice-11 W3.2 re-expression part 3: default-as-exit (T10) on twin holders in window 13 (position 10,000,000 each) — borrow above the cap refuses LoanExceedsPosition, the max loan 5,000,000 succeeds at the inclusive boundary of the 50%-of-position and book caps, pre-maturity settle_default refuses LoanNotMatured, at-maturity settle_default succeeds (position 10,000,000 -> 5,000,000, skip flag set), and the PROBE: pay_tranche AFTER the default SUCCEEDS despite skip_next_dividend set, because can_pay_tranche takes no skip argument — the forfeiture half of T10 is unenforced on the program today, the one-cycle ledgers come out EQUAL (11,000,000 each), and T10 is NOT claimed re-expressed until the carried skip-enforcement item lands; window 13 exit stock ends 4,000,000, clock ends 36,792,400 + slice-12 W3.2 re-expression part 4: cohort-timing at window boundaries (D-11) — enroll into past window 12 refuses NotCurrentWindow, zero-position enroll into current window 13 refuses InvalidPosition, a double enroll in window 13 refuses at the account layer (one record per holder per window), a current-window-13 enroll succeeds (cohort 1); then the boundary is crossed for real (Settled transition 21 opens window 14, window_count 15): the just-closed window 13 now refuses NotCurrentWindow, a window-14 enroll succeeds (cohort 2), a future window-15 enroll refuses at the account layer (no window account exists yet), and the new cohort's pay_tranche 1,000,000 succeeds on its own slot (14 % 12 = 2), gated §2.2 ~7K; window 13 stock ends 4,000,000, window 14 stock 10,000,000, clock ends 37,003,600 + slice-13 W3.2 re-expression part 5: fee-flow edge cases under the single 73 bps stream (D-5) — a second real deposit 10,000,000 credits TreasuryState by exactly 10,000,000 (a funding-time skim would credit 9,927,000) with vault/source conserving exactly and FeeVault collected_raw still 0, and a mid-window deposit does not inflate window 14's snapshot or stock; holder 27's all-accrued exit 1,000,000 takes neither penalty nor fee (position stays 5,000,000, stock 10,000,000 -> 9,000,000) and a further 1,000,000 all-excess exit carries exactly the flat 13% penalty (position 5,000,000 -> 4,000,000, stock 9,000,000 -> 8,000,000, can_exit has no FEE_PPM term so no second skim exists); the negative half of the fee flow is proven, but the positive half — collection and reconciliation — is NOT: FeeVault collected_raw is still 0 because collect_fees is unbuilt, and the 73 bps income identity has no on-chain realization until that remaining §4.2 row lands + slice-14 the remaining §4.2 row `reinvest` (design §4.2, engine-sim T8) on a fresh holder 29 in window 14 — enroll 5,000,000 (cohort 2), pay_tranche 1,000,000 on Committed window-flow transition 7, then reinvest 400,000 (accrued 1,000,000 -> 600,000, position 5,000,000 -> 5,400,000, window 14 exit stock UNCHANGED at 8,000,000, TreasuryState UNCHANGED), a 600,001 reinvest refusing ReinvestExceedsAccrued (6087), the remaining 600,000 reinvesting at the inclusive boundary (accrued -> 0, position -> 6,000,000), and a zero reinvest refusing InvalidReinvestAmount (6086); the reinvest reading is accrued-dividend-only, partial allowed, no stock debit, no penalty, no value created — reinvesting a borrowed amount is NOT this instruction and needs its own ruling; program IDL 37 -> 38 instructions, 85 -> 88 errors, accounts 16, host tests 82 -> 83, and slices 1-13 re-measured against the new .so (sha e0f40adf...) with any shifts reported in the run log, not silently re-baselined + slice-15 the last §4.2 row `collect_fees` (design §4.2, D-5) on the slice-14 chain — operator collects 73,000 (73 bps on a 10,000,000 flow, operator-reported) in window 14 on Committed window flow transition 7 (window fees_collected_raw 0 -> 73,000, FeeVault collected_raw 0 -> 73,000, exit stock still 8,000,000, TreasuryState still 70,000,000), a further 27,000 accumulates in the same window (window and vault both 100,000 — the vault total is the sum over windows), a zero collection refuses InvalidCollectAmount (6090), and an agent without OPERATOR_SETTLE refuses Unauthorized (6000); the fee flow now has its positive half as on-chain accounting, but the design row's numeric reconciliation against the declared total is NOT implemented (the TransitionRecord carries only a declared_hash, not a fee total) and rides as a carried item; program IDL 38 -> 39 instructions, 88 -> 91 errors, accounts 16, host tests 83 -> 84, WindowState SPACE 121 -> 129 (fees_collected_raw appended after bump), and slices 1-14 re-measured against the new .so with any shifts reported in the run log, not silently re-baselined + slice-16 skip-next-dividend enforcement (D-3, the carried item from slice 11): can_pay_tranche takes the skip flag and refuses DividendSkipped (6091) — the slice-11 probe tranche now REFUSES (accrued 0, flag stays set, slot unpaid), twin D's replacement 1,000,000 exit comes from position at the flat 13% penalty (paid 870,000, position 5,000,000 -> 4,000,000), and the one-cycle ledgers are strictly worse for the defaulter (9,870,000 vs 11,000,000), so T10 is claimed re-expressed on the record that carries the flag; the cross-record carry to a later window's fresh record stays carried; program IDL 39 instructions, 91 -> 92 errors, accounts 16, host tests 84 (pay_tranche_gate_matrix gains the skip case, no new test fn), and slices 1-15 re-measured against the new .so with any shifts reported in the run log, not silently re-baselined + slice-17 the open_window source-transition consumption fix (the carried Part B4 item): TransitionRecord gains window_open_applied (SPACE 865 -> 866, appended after the signalled bitmap, no field moves), open_window sets it in the same instruction as the counter advance and window creation, and a second open on the same Settled transition refuses SourceTransitionConsumed (6092) — the slice-17 probe reuses transition 21 (which opened window 14) for window 15 and refuses, window_count stays 15, no window 15 is created; every open_window caller now passes the transition writable, since the handler writes the flag; program IDL 39 instructions, 92 -> 93 errors, accounts 16, host tests 84 (window_open_gate_matrix gains the consumed case, no new test fn), and slices 1-16 re-measured against the new .so with any shifts reported in the run log, not silently re-baselined + slice-18 the declared-fee-schedule reconciliation (the carried item from slice 15): WindowState gains declared_fees_raw + fee_schedule_declared (SPACE 129 -> 138, appended after fees_collected_raw, no field moves), a new instruction declare_fee_schedule sets the window's schedule once under its Committed window flow transition (a second declaration refuses FeeScheduleAlreadyDeclared, 6093), and collect_fees now refuses in an undeclared window (FeeScheduleUndeclared, 6094) and past the declared total (CollectExceedsDeclaredSchedule, 6095) — on this chain window 14's schedule is declared at 100,000 before the slice-15 collections, which land exactly on it (73,000 + 27,000), a further 1 refuses as over-declared, window 13 collects nothing while undeclared, a declared zero for window 13 is a real declaration (a further 1 then refuses as over-declared, not undeclared); the declaration itself is operator-reported, so this slice bounds collections by a prior immutable declaration and makes shortfall visible, it does not independently verify the declaration against compose-layer volume; program IDL 39 -> 40 instructions, 93 -> 96 errors, accounts 16, host tests 84 -> 85 (declare_fee_schedule_gate_matrix added, collect_fees_gate_matrix gains the reconciliation cases), and slices 1-17 re-measured against the new .so with any shifts reported in the run log, not silently re-baselined + slice-19 the deposit↔enroll binding (the carried item from the funding path): WindowState gains enrolled_total_raw (SPACE 138 -> 146, appended after fee_schedule_declared, no field moves), open_window initializes it to 0, and enroll now refuses EnrollExceedsFundedSnapshot (6096) when the window's cumulative enrolled total plus the new position would exceed the window's period-start snapshot total — enrolled positions are bounded by deposits actually held at open, and a mid-window deposit cannot inflate the current window's enrollment budget (design §7). In an unfunded window (snapshot total zero) the cap does not apply: pre-funding enrollments are opted out of contract under the funding-path ruling, permitted and tracked, never refused for exceeding a zero bound — so the slice-4 unfunded window-0 enrollment (10,000,000 on a zero snapshot) still succeeds, and the slice-12/14 window-14 enrollments (5,000,000 + 5,000,000) still succeed under the 60,000,000 snapshot. On the chain, a 50,000,000 enrollment in window 14 lands the cumulative total exactly on the 60,000,000 snapshot (Success, the inclusive boundary), and 1 more refuses 6096 with the enrolled total unchanged at 60,000,000. Honest scope: this is the window-level binding — no per-depositor ledger exists, so one holder's position is not checked against that holder's own deposits; per-holder deposit backing remains future work. Program IDL 40 instructions, 96 -> 97 errors, accounts 16, host tests 85 (enroll_gate_matrix gains the binding cases, no new test fn), and slices 1-18 re-measured against the new .so with any shifts reported in the run log, not silently re-baselined",
         "clock": {"phase_a_unix_timestamp": NOW0, "planning_window_s": PLANNING_WINDOW, "phase_b_unix_timestamp": NOW1},
         "instructions": measured,
