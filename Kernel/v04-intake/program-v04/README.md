@@ -265,11 +265,58 @@ families, account inventory, and CU golden set are later step-5 slices.
   are later slices. Authority is the signing payer, the same recorded
   gap as slices 6/7.
 
+## Slice 13 — the eligible replay instruction, `mark_eligible`
+
+- `mark_eligible`: takes an `EVALUATED` record pair and runs kernel
+  `mark_eligible` on it — after replaying the ingest + register +
+  evaluate sequence on a freshly rebuilt sealed launch kernel under
+  `ProgramEnv`, because the kernel object is not persisted and
+  eligibility needs an `Evaluated` life whose `constraints_ok` /
+  `objectives_ok` flags evaluate recorded. Only `Life::Eligible`
+  advances the stage, to `ELIGIBLE` (3); a kernel refusal, and a
+  non-Eligible life, both map to `EligibleFailed` (6015) with the
+  stage untouched.
+- The feasibility gate is the kernel's: `constraints_ok` must be true
+  (evaluate under `ProgramEnv` records it, since C1 passes there),
+  and the objectives gate binds only when the policy requires
+  objectives — the launch policy's `require_objectives` is false, so
+  that check is inert for this profile and is not claimed as a gate.
+  Observation freshness and manifest expiry are re-checked by the
+  kernel at this step, so a window lapsed since evaluation fails
+  here rather than being carried forward.
+- Gates, in order: sealed state (`NotSealed`); stage exactly
+  `EVALUATED` (`WrongStage` — a merely kernel-registered record has
+  no evaluation to make eligible, an eligible record marks once
+  only); parent exactly the sealed head (`ParentMismatch`);
+  observation linkage (`RecordMismatch`); proposer/observer gates
+  against the sealed profile (`UnknownProposer`/`NotObserver`); the
+  relevant groups are slice 10's proposer-groups derivation, reused
+  here.
+- Host tests 69/69 (59 prior + 10 slice-13: eligible acceptance with
+  stage advance and SPACE preserved, kernel-registered-stage and
+  once-only refusals, unsealed / parent-mismatch /
+  observation-mismatch / unknown-proposer / non-observer refusals,
+  eligibility at an advanced clock (200), and a lapsed observation
+  (expiry 9100) refused at the advanced clock — every refusal leaves
+  the stage untouched).
+- `anchor build` green under the pinned toolchain; IDL now 9
+  instructions (adds `mark_eligible`), 3 accounts (unchanged),
+  16 errors (6000–6015), 8 events (adds `TransitionMarkedEligible`); `.so`
+  491,800 bytes (sha256 `80cbb40e…`).
+- Honesty bounds, stated not smoothed: the sibling field
+  `mark_eligible` joins lives only inside the freshly rebuilt kernel
+  and is not persisted — the program records the stage only, not
+  `eligible_at` / `consensus_deadline` — so a later slice must persist
+  those fields before `select_candidate` can be proven against a real
+  field. Select/reconcile/validate/declare, commit replay moving the
+  head, and CU measurement are later slices. Authority is the signing
+  payer, the same recorded gap as slices 6/7.
+
 ## Build
 
 ```sh
 export RUSTUP_HOME=~/workspace/toolchains/rustup CARGO_HOME=~/workspace/toolchains/cargo
 export PATH=~/workspace/toolchains/cargo/bin:~/workspace/toolchains/solana/bin:$PATH
 ~/workspace/toolchains/anchor/bin/anchor build   # from this directory
-cargo test                                        # host tests, 59/59
+cargo test                                        # host tests, 69/69
 ```

@@ -169,6 +169,33 @@
 //! verdict-bearing `Rejected` stage is a later slice's work, not claimed
 //! here. Eligible/select/reconcile/validate/declare, commit replay
 //! moving the head, and CU measurement are later slices, not this one.
+//!
+//! Slice 13 (this slice): the third replay instruction,
+//! `mark_eligible`. It takes an `EVALUATED` record and runs kernel
+//! `mark_eligible` on it — after replaying the ingest + register +
+//! evaluate sequence on a freshly rebuilt sealed launch kernel under
+//! `ProgramEnv`, because the kernel object itself is not persisted and
+//! eligibility needs an `Evaluated` life whose `constraints_ok` /
+//! `objectives_ok` flags evaluate recorded. Only `Life::Eligible`
+//! advances the record's stage, to `ELIGIBLE` (3); a kernel refusal,
+//! and a non-Eligible life, both map to `EligibleFailed` and leave the
+//! stage untouched. The feasibility gate is the kernel's, not a
+//! program guess: `constraints_ok` must be true (evaluate under
+//! `ProgramEnv` records it, since C1 passes there), and the objectives
+//! gate binds only when the policy requires objectives — the launch
+//! policy's `require_objectives` is false, so that check is inert for
+//! this profile and is not claimed as a gate here. Observation
+//! freshness and manifest expiry are re-checked by the kernel at this
+//! step, so a window lapsed since evaluation fails here (proven by
+//! test at the advanced clock), not silently carried forward. Honesty
+//! bound, stated not smoothed: the sibling field `mark_eligible`
+//! joins lives only inside the freshly rebuilt kernel and is not
+//! persisted — the program records the stage only, not
+//! `eligible_at` / `consensus_deadline` — so a later slice must persist
+//! those fields before `select_candidate` can be proven against a real
+//! field rather than a fresh one. Select/reconcile/validate/declare,
+//! commit replay moving the head, and CU measurement are later slices,
+//! not this one.
 
 extern crate alloc;
 
@@ -383,11 +410,64 @@ pub mod program_v04 {
         emit!(TransitionEvaluated { transition_id, stage: TransitionRecord::EVALUATED });
         Ok(())
     }
+
+    /// Mark eligible (§4.1, third replay row, v0.4 form): run kernel
+    /// `mark_eligible` on an `EVALUATED` record pair and advance the
+    /// transition record's stage to `ELIGIBLE`. The PDA seeds bind the
+    /// accounts to the instruction's ids, and the body re-checks the
+    /// stored ids against them; the helper enforces the sealed state,
+    /// the stage gate, the sealed-head parent, the observation linkage,
+    /// and the sealed-profile proposer/observer gates, then drives the
+    /// real kernel calls under `ProgramEnv` (see module docs for why
+    /// the ingest + register + evaluate sequence must be replayed
+    /// first). The payer is a fee payer only — eligibility executes
+    /// steps the stored records already authorized and creates no new
+    /// authority.
+    pub fn mark_eligible(
+        ctx: Context<MarkEligible>,
+        transition_id: [u8; 32],
+        observation_id: [u8; 32],
+    ) -> Result<()> {
+        if ctx.accounts.transition_record.transition_id != transition_id
+            || ctx.accounts.observation_record.observation_id != observation_id
+        {
+            return Err(error!(ProgramV04Error::RecordMismatch));
+        }
+        mark_eligible_from_records(
+            &ctx.accounts.kernel_state,
+            &mut ctx.accounts.transition_record,
+            &ctx.accounts.observation_record,
+        )?;
+        emit!(TransitionMarkedEligible { transition_id, stage: TransitionRecord::ELIGIBLE });
+        Ok(())
+    }
 }
 
 #[derive(Accounts)]
 #[instruction(transition_id: [u8; 32], observation_id: [u8; 32])]
 pub struct EvaluateTransition<'info> {
+    #[account(
+        seeds = [b"kernel-state"],
+        bump = kernel_state.bump,
+    )]
+    pub kernel_state: Account<'info, KernelState>,
+    #[account(
+        mut,
+        seeds = [b"transition", transition_id.as_ref()],
+        bump = transition_record.bump,
+    )]
+    pub transition_record: Account<'info, TransitionRecord>,
+    #[account(
+        seeds = [b"observation", observation_id.as_ref()],
+        bump = observation_record.bump,
+    )]
+    pub observation_record: Account<'info, ObservationRecord>,
+    pub payer: Signer<'info>,
+}
+
+#[derive(Accounts)]
+#[instruction(transition_id: [u8; 32], observation_id: [u8; 32])]
+pub struct MarkEligible<'info> {
     #[account(
         seeds = [b"kernel-state"],
         bump = kernel_state.bump,
@@ -565,8 +645,8 @@ pub struct TransitionRecord {
     /// id — the pubkey-to-agent mapping is a later slice).
     pub proposer: Pubkey,
     /// Lifecycle stage: 0 = Registered, 1 = Kernel-registered (slice 10
-    /// advances it), 2 = Evaluated (slice 12 advances it; no instruction
-    /// moves it past 2 in this slice).
+    /// advances it), 2 = Evaluated (slice 12 advances it), 3 = Eligible
+    /// (slice 13 advances it; no instruction moves it past 3 in this slice).
     pub stage: u8,
     /// PDA bump for the `["transition", transition_id]` seeds.
     pub bump: u8,
@@ -579,6 +659,8 @@ impl TransitionRecord {
     pub const KERNEL_REGISTERED: u8 = 1;
     /// Stage value written by `evaluate_transition` (slice 12).
     pub const EVALUATED: u8 = 2;
+    /// Stage value written by `mark_eligible` (slice 13).
+    pub const ELIGIBLE: u8 = 3;
     /// 8 (discriminator) + 32 + 32 + 8 + 32 + 32 + 32 + 8 + 32 + 1 + 1.
     pub const SPACE: usize = 218;
 }
@@ -871,6 +953,94 @@ pub fn evaluate_transition_from_records(
     Ok(life)
 }
 
+/// Mark a stored transition pair eligible through the real kernel (slice 13).
+/// Pure except for the record's stage, which advances to
+/// `ELIGIBLE` only on success — every refusal leaves the record
+/// untouched. Gates, in order: sealed state; stage exactly `EVALUATED`
+/// (a merely kernel-registered record has no evaluation to make
+/// eligible, and an already-eligible record marks once only); parent
+/// exactly the sealed head; observation linkage; proposer resolved
+/// against the sealed profile; observer holding the Observer role
+/// there. The kernel calls run at `KernelState.clock` against a freshly
+/// rebuilt sealed launch kernel under `ProgramEnv`: ingest +
+/// register (the slice-10 sequence) + evaluate (the slice-12 sequence,
+/// because eligibility needs an `Evaluated` life with its
+/// `constraints_ok` / `objectives_ok` flags recorded, and the kernel
+/// object is not persisted), then `mark_eligible`. Only
+/// `Life::Eligible` advances the stage — a kernel refusal in any of
+/// the four calls maps to `EligibleFailed`, and so does a non-Eligible
+/// life, because the stage records only a proven eligibility. The
+/// relevant-groups derivation is slice 10's rule, reused here, not a
+/// kernel rule. The sibling field `mark_eligible` joins is the fresh
+/// kernel's, not a persisted one (see module docs): this slice proves
+/// the eligibility gate and the stage advance, not field persistence.
+pub fn mark_eligible_from_records(
+    kernel_state: &KernelState,
+    transition_record: &mut TransitionRecord,
+    observation_record: &ObservationRecord,
+) -> Result<Life> {
+    if !kernel_state.sealed {
+        return Err(error!(ProgramV04Error::NotSealed));
+    }
+    if transition_record.stage != TransitionRecord::EVALUATED {
+        return Err(error!(ProgramV04Error::WrongStage));
+    }
+    if transition_record.parent_index != kernel_state.head_index
+        || transition_record.parent_hash != kernel_state.head_hash
+    {
+        return Err(error!(ProgramV04Error::ParentMismatch));
+    }
+    if transition_record.observation_id != observation_record.observation_id {
+        return Err(error!(ProgramV04Error::RecordMismatch));
+    }
+    let proposer = resolve_proposer(kernel_state, transition_record.proposer)?;
+    let observer_id = resolve_agent_id(observation_record.observer);
+    let mut k = sealed_launch_kernel_env().map_err(|_| error!(ProgramV04Error::KernelSeal))?;
+    if !k.has_role(&observer_id, Role::Observer) {
+        return Err(error!(ProgramV04Error::NotObserver));
+    }
+    let relevant_groups = match k.agent(&proposer) {
+        Some(profile) => profile.groups.clone(),
+        None => return Err(error!(ProgramV04Error::UnknownProposer)),
+    };
+    let observation = Observation {
+        id: observation_record.observation_id,
+        timestamp: observation_record.timestamp,
+        expiry: observation_record.expiry,
+        confidence: Amount::from_raw(observation_record.confidence_raw),
+    };
+    k.ingest_observation(&observer_id, observation, kernel_state.clock)
+        .map_err(|_| error!(ProgramV04Error::EligibleFailed))?;
+    let manifest = Manifest {
+        transition_type: transition_record.transition_type,
+        parent_index: transition_record.parent_index,
+        parent_hash: transition_record.parent_hash,
+        declared_next_hash: transition_record.declared_next_hash,
+        observation_id: transition_record.observation_id,
+        expires_at: transition_record.expires_at,
+        relevant_groups,
+        action: None,
+    };
+    k.register_transition(
+        &proposer,
+        transition_record.transition_id,
+        manifest,
+        BTreeSet::new(),
+        kernel_state.clock,
+    )
+    .map_err(|_| error!(ProgramV04Error::EligibleFailed))?;
+    k.evaluate_transition(&transition_record.transition_id, kernel_state.clock)
+        .map_err(|_| error!(ProgramV04Error::EligibleFailed))?;
+    k.mark_eligible(&transition_record.transition_id, kernel_state.clock)
+        .map_err(|_| error!(ProgramV04Error::EligibleFailed))?;
+    let life = match k.life_of(&transition_record.transition_id) {
+        Some(Life::Eligible) => Life::Eligible,
+        _ => return Err(error!(ProgramV04Error::EligibleFailed)),
+    };
+    transition_record.stage = TransitionRecord::ELIGIBLE;
+    Ok(life)
+}
+
 /// Advance a `KernelState`'s clock (slice 11). Pure except for the
 /// clock itself, which moves only on success — every refusal leaves
 /// the state untouched. Gates, in order: sealed state; forward-only
@@ -943,6 +1113,12 @@ pub struct TransitionEvaluated {
     pub stage: u8,
 }
 
+#[event]
+pub struct TransitionMarkedEligible {
+    pub transition_id: [u8; 32],
+    pub stage: u8,
+}
+
 #[error_code]
 pub enum ProgramV04Error {
     #[msg("program-v04 probe: kernel construction failed")]
@@ -975,6 +1151,8 @@ pub enum ProgramV04Error {
     ClockRegression,
     #[msg("program-v04 evaluate: kernel evaluation refused or did not reach Evaluated")]
     EvaluateFailed,
+    #[msg("program-v04 eligible: kernel eligibility refused or did not reach Eligible")]
+    EligibleFailed,
 }
 
 // ---------------------------------------------------------------- launch genesis
@@ -2121,5 +2299,140 @@ mod tests {
         k.evaluate_transition(&[0xD1; 32], 100)
             .expect("evaluate under NoEnv returns Ok even when it cannot evaluate");
         assert_eq!(k.life_of(&[0xD1; 32]), Some(Life::Proposed));
+    }
+
+    fn eligible_pair() -> (KernelState, TransitionRecord, ObservationRecord) {
+        let (state, mut record, obs) = evaluated_pair();
+        evaluate_transition_from_records(&state, &mut record, &obs)
+            .expect("pair must evaluate before marking eligible");
+        assert_eq!(record.stage, TransitionRecord::EVALUATED);
+        (state, record, obs)
+    }
+
+    #[test]
+    fn mark_eligible_advances_evaluated_to_eligible() {
+        let (state, mut record, obs) = eligible_pair();
+        let life = mark_eligible_from_records(&state, &mut record, &obs)
+            .expect("evaluated pair must mark eligible");
+        assert_eq!(life, Life::Eligible);
+        assert_eq!(record.stage, TransitionRecord::ELIGIBLE);
+        assert_eq!(record.stage, 3);
+        // The record's other fields are untouched by the stage advance,
+        // and it still serializes at exactly SPACE bytes.
+        assert_eq!(record.transition_type, TT);
+        assert_eq!(record.declared_next_hash, [0xE1; 32]);
+        use anchor_lang::AccountSerialize;
+        let mut bytes = Vec::new();
+        record.try_serialize(&mut bytes).expect("serialize must succeed");
+        assert_eq!(bytes.len(), TransitionRecord::SPACE);
+    }
+
+    #[test]
+    fn mark_eligible_refuses_kernel_registered_stage() {
+        let (state, mut record, obs) = evaluated_pair();
+        let err = mark_eligible_from_records(&state, &mut record, &obs)
+            .expect_err("a merely kernel-registered record has no evaluation to make eligible");
+        assert!(format!("{:?}", err).contains("WrongStage"));
+        assert_eq!(record.stage, TransitionRecord::KERNEL_REGISTERED);
+    }
+
+    #[test]
+    fn mark_eligible_is_once_only() {
+        let (state, mut record, obs) = eligible_pair();
+        mark_eligible_from_records(&state, &mut record, &obs)
+            .expect("first mark_eligible must succeed");
+        let err = mark_eligible_from_records(&state, &mut record, &obs)
+            .expect_err("second mark_eligible must refuse");
+        assert!(format!("{:?}", err).contains("WrongStage"));
+        assert_eq!(record.stage, TransitionRecord::ELIGIBLE);
+    }
+
+    #[test]
+    fn mark_eligible_refuses_unsealed() {
+        let (mut state, mut record, obs) = eligible_pair();
+        state.sealed = false;
+        let err = mark_eligible_from_records(&state, &mut record, &obs)
+            .expect_err("unsealed mark_eligible must refuse");
+        assert!(format!("{:?}", err).contains("NotSealed"));
+        assert_eq!(record.stage, TransitionRecord::EVALUATED);
+    }
+
+    #[test]
+    fn mark_eligible_refuses_parent_mismatch() {
+        let (state, mut record, obs) = eligible_pair();
+        record.parent_index = 1;
+        let err = mark_eligible_from_records(&state, &mut record, &obs)
+            .expect_err("parent off the sealed head must refuse");
+        assert!(format!("{:?}", err).contains("ParentMismatch"));
+        assert_eq!(record.stage, TransitionRecord::EVALUATED);
+    }
+
+    #[test]
+    fn mark_eligible_refuses_observation_mismatch() {
+        let (state, mut record, _) = eligible_pair();
+        let other = build_observation_record(
+            &state, [0xC1; 32], 100, 9100, 900_000, observer_pubkey(), 7,
+        )
+        .expect("second observation must build");
+        let err = mark_eligible_from_records(&state, &mut record, &other)
+            .expect_err("observation id mismatch must refuse");
+        assert!(format!("{:?}", err).contains("RecordMismatch"));
+        assert_eq!(record.stage, TransitionRecord::EVALUATED);
+    }
+
+    #[test]
+    fn mark_eligible_refuses_unknown_proposer() {
+        let (state, mut record, obs) = eligible_pair();
+        record.proposer = Pubkey::new_from_array([0x99; 32]);
+        let err = mark_eligible_from_records(&state, &mut record, &obs)
+            .expect_err("unknown proposer must refuse");
+        assert!(format!("{:?}", err).contains("UnknownProposer"));
+        assert_eq!(record.stage, TransitionRecord::EVALUATED);
+    }
+
+    #[test]
+    fn mark_eligible_refuses_non_observer_observation() {
+        // Built as a struct literal: the slice-9 builder would refuse
+        // this observer, so mark_eligible must catch a record that
+        // bypassed it.
+        let (state, mut record, _) = eligible_pair();
+        let obs = ObservationRecord {
+            observation_id: [0xC0; 32],
+            timestamp: 100,
+            expiry: 9100,
+            confidence_raw: 900_000,
+            observer: Pubkey::new_from_array(ag(1)),
+            bump: 7,
+        };
+        let err = mark_eligible_from_records(&state, &mut record, &obs)
+            .expect_err("non-observer observation must refuse");
+        assert!(format!("{:?}", err).contains("NotObserver"));
+        assert_eq!(record.stage, TransitionRecord::EVALUATED);
+    }
+
+    #[test]
+    fn mark_eligible_at_advanced_clock() {
+        let (state, mut record, obs) = eligible_pair();
+        let mut advanced = state;
+        advance_clock_on_state(&mut advanced, 200).expect("advance must succeed");
+        let life = mark_eligible_from_records(&advanced, &mut record, &obs)
+            .expect("pair must mark eligible at the advanced clock");
+        assert_eq!(life, Life::Eligible);
+        assert_eq!(record.stage, TransitionRecord::ELIGIBLE);
+    }
+
+    #[test]
+    fn mark_eligible_refuses_lapsed_observation() {
+        // Evaluation passed at the genesis clock, but the observation
+        // window (expiry 9100) has lapsed by the advanced clock: the
+        // kernel's freshness check at this step must refuse, not carry
+        // a stale evaluation forward into eligibility.
+        let (state, mut record, obs) = eligible_pair();
+        let mut advanced = state;
+        advance_clock_on_state(&mut advanced, 9100).expect("advance must succeed");
+        let err = mark_eligible_from_records(&advanced, &mut record, &obs)
+            .expect_err("lapsed observation must refuse eligibility in the kernel");
+        assert!(format!("{:?}", err).contains("EligibleFailed"));
+        assert_eq!(record.stage, TransitionRecord::EVALUATED);
     }
 }
