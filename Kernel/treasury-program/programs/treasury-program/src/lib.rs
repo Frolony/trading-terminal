@@ -2797,6 +2797,97 @@ pub mod treasury_program {
         Ok(())
     }
 
+    /// Native-SOL deposit (design §4.2, slice 21): the separate
+    /// instruction the funding-path note promised, distinct
+    /// from the token `deposit` above — SOL has no mint, no
+    /// source token account, and no token-program CPI, so it
+    /// cannot ride that instruction's bindings. The depositor
+    /// signs a plain system transfer of `amount_raw` lamports
+    /// into the program-owned SOL vault PDA, seeds
+    /// `["sol-vault", treasury]`, and the treasury credits
+    /// exactly that amount into `total_raw` and `cash_raw`,
+    /// the same sleeves and the same transfer-first-then-
+    /// credit order as the token deposit.
+    ///
+    /// Vault binding, stated exactly: the vault must be
+    /// system-owned with empty data — either not yet created
+    /// (the transfer creates it, system-owned, as a plain
+    /// transfer to a new account does) or the existing SOL
+    /// vault from prior deposits (system-owned, still empty
+    /// data, holding lamports). A vault owned by any other
+    /// program refuses `DepositVaultMismatch`: a pre-created
+    /// foreign-owned account at the PDA could otherwise
+    /// receive lamports the program can never spend while
+    /// the credit still counts them. The seeds constraint
+    /// binds the address; this check binds the ownership.
+    /// The depositor's own signature is the transfer
+    /// authority, so no other account can be drained here.
+    ///
+    /// Honest scope, carried not hidden: (1) SOL deposits
+    /// are NOT registry-gated — there is no mint to register,
+    /// so the slice-20 registry cannot apply to them, and
+    /// this instruction accepts SOL unconditionally, unlike
+    /// token deposits which require registry membership.
+    /// That asymmetry is deliberate (Carlos's disbursement
+    /// ruling makes SOL a treasury asset) and is the one
+    /// place the fail-closed registry does not reach; a
+    /// future SOL gate, if Carlos wants one, is a config
+    /// item, not something this slice pretends to enforce.
+    /// (2) The credit is lamports raw into the same
+    /// `total_raw`/`cash_raw` ledger token deposits use —
+    /// token deposits likewise sum mint-raw amounts with no
+    /// decimal normalization — so a treasury funded in both
+    /// USDC-raw and lamports carries a mixed-scale total.
+    /// No disbursement may treat that total as a
+    /// single-currency value without a conversion step, and
+    /// this slice builds no price conversion and prices
+    /// nothing: SOL-in is lamports, credited as lamports.
+    /// (3) Per-holder deposit backing is still unbuilt, as
+    /// for token deposits: the credit is aggregate only.
+    pub fn deposit_sol(ctx: Context<DepositSol>, amount_raw: u64) -> Result<()> {
+        let depositor_key = ctx.accounts.depositor.key();
+        let vault_info = ctx.accounts.sol_vault.to_account_info();
+        // Vault binding (see the doc above): system-owned,
+        // empty data. A foreign-owned account at the PDA
+        // refuses rather than being adopted.
+        let vault_ok = vault_info.owner
+            == &anchor_lang::solana_program::system_program::ID
+            && vault_info.data_is_empty();
+        can_deposit_sol(amount_raw, vault_ok)?;
+        // The transfer itself, depositor-signed: source the
+        // depositor, destination the SOL vault PDA. Transfer
+        // runs FIRST and the credit second, so a failed
+        // transfer credits nothing; an overflow on the
+        // credit rolls the whole transaction back, transfer
+        // included.
+        let transfer_ix =
+            anchor_lang::solana_program::system_instruction::transfer(
+                &depositor_key,
+                vault_info.key,
+                amount_raw,
+            );
+        anchor_lang::solana_program::program::invoke(
+            &transfer_ix,
+            &[
+                ctx.accounts.depositor.to_account_info(),
+                vault_info.clone(),
+            ],
+        )?;
+        let state = &mut ctx.accounts.treasury_state;
+        let (total_raw, cash_raw) =
+            apply_deposit(state.total_raw, state.cash_raw, amount_raw)?;
+        state.total_raw = total_raw;
+        state.cash_raw = cash_raw;
+        emit!(TreasurySolDeposit {
+            depositor: depositor_key,
+            vault: *vault_info.key,
+            amount_raw,
+            total_raw,
+            cash_raw,
+        });
+        Ok(())
+    }
+
     /// Accepted-mint registration (design §4.2, slice 20):
     /// add one mint to the treasury's registry, bounded at
     /// [`MAX_ACCEPTED_MINTS`] slots. Authority-signed under
@@ -5203,6 +5294,19 @@ pub fn can_deposit(
     Ok(())
 }
 
+/// Pure gate for [`treasury_program::deposit_sol`] (slice 21):
+/// a zero SOL deposit refuses, and a vault that is not a
+/// system-owned empty account refuses on the vault binding —
+/// the same two error codes the token deposit uses, since
+/// the failure shapes are the same. The seeds constraint on
+/// the accounts struct covers the address binding before
+/// this gate ever runs.
+pub fn can_deposit_sol(amount_raw: u64, vault_ok: bool) -> Result<()> {
+    require!(amount_raw != 0, TreasuryError::InvalidDepositAmount);
+    require!(vault_ok, TreasuryError::DepositVaultMismatch);
+    Ok(())
+}
+
 /// Whether `mint` is in the first `count` slots of the registry
 /// (slice 20). The count, not a zero-key scan, bounds the
 /// search: slots past the count are stale zero keys or
@@ -6258,6 +6362,23 @@ pub struct TreasuryInitialized {
 pub struct TreasuryDeposit {
     pub depositor: Pubkey,
     pub mint: Pubkey,
+    pub vault: Pubkey,
+    pub amount_raw: u64,
+    pub total_raw: u64,
+    pub cash_raw: u64,
+}
+
+/// Event for [`treasury_program::deposit_sol`] (design §4.2,
+/// §6): the SOL funding receipt. No mint exists for SOL, so
+/// the event carries the vault instead of a mint; otherwise
+/// the authorization context is the same as `TreasuryDeposit`
+/// — the depositor's signature plus the executed transfer,
+/// with the post-credit totals. The vault's lamport balance
+/// must equal the running total of these events' amounts, by
+/// the same transfer-then-credit construction.
+#[event]
+pub struct TreasurySolDeposit {
+    pub depositor: Pubkey,
     pub vault: Pubkey,
     pub amount_raw: u64,
     pub total_raw: u64,
@@ -8180,6 +8301,38 @@ pub struct Deposit<'info> {
     /// the first deposit of a mint.
     pub rent: Sysvar<'info, Rent>,
     /// System program, required by the vault-creation CPI.
+    pub system_program: Program<'info, System>,
+}
+
+/// Accounts for [`treasury_program::deposit_sol`] (slice 21).
+/// No mint, no source token account, no token program: SOL
+/// moves by a system transfer, so the account set is the
+/// treasury, the signing depositor, the SOL vault PDA, and
+/// the system program. The seeds constraint binds the vault
+/// address to `["sol-vault", treasury]`; the handler binds
+/// its ownership (system-owned, empty data) before any
+/// transfer, so a foreign-owned account at the PDA refuses
+/// rather than being adopted.
+#[derive(Accounts)]
+pub struct DepositSol<'info> {
+    /// Treasury state PDA — mutated: the ONLY SOL funding
+    /// credit in the program. `total_raw` and `cash_raw`
+    /// both advance by exactly the transferred lamports,
+    /// here and nowhere else.
+    #[account(mut, seeds = [b"treasury"], bump = treasury_state.bump)]
+    pub treasury_state: Account<'info, TreasuryState>,
+    /// The funding depositor (signer; the system transfer's
+    /// source authority).
+    #[account(mut)]
+    pub depositor: Signer<'info>,
+    /// CHECK: program-owned SOL vault PDA, seeds
+    /// `["sol-vault", treasury]`. Unchecked type by
+    /// necessity: a SOL vault is a bare system account with
+    /// no data layout to type-check; the handler verifies
+    /// system ownership and empty data itself.
+    #[account(mut, seeds = [b"sol-vault", treasury_state.key().as_ref()], bump)]
+    pub sol_vault: UncheckedAccount<'info>,
+    /// System program, required by the transfer CPI.
     pub system_program: Program<'info, System>,
 }
 
@@ -10946,6 +11099,19 @@ mod tests {
         // registry binding last (see `can_deposit`): each
         // refusal above fires on exactly one rule, in that
         // order.
+    }
+
+    #[test]
+    fn deposit_sol_gate_matrix() {
+        // Slice 21: a well-bound positive SOL deposit passes.
+        can_deposit_sol(1_000, true).expect("a well-bound positive SOL deposit passes");
+        // A zero SOL deposit refuses, whatever the vault is.
+        assert!(can_deposit_sol(0, true).is_err());
+        // A foreign-owned vault refuses on its own.
+        assert!(can_deposit_sol(1_000, false).is_err());
+        // Amount is checked first, vault second (see
+        // `can_deposit_sol`): a zero amount with a bad vault
+        // still refuses, on the amount rule.
     }
 
     #[test]
