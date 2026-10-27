@@ -141,6 +141,51 @@ families, account inventory, and CU golden set are later step-5 slices.
   (adds `ingest_observation`), 3 accounts (adds `ObservationRecord`),
   10 errors (6000–6009), 4 events (adds `ObservationIngested`).
 
+## Slice 10 — the first replay instruction, `replay_transition`
+
+- `replay_transition`: runs kernel `ingest_observation` +
+  `register_transition` from a stored `ObservationRecord` +
+  `TransitionRecord` pair against a freshly rebuilt sealed launch
+  kernel, and advances the transition record's `stage` from
+  `REGISTERED` (0) to `KERNEL_REGISTERED` (1). Gates, in order:
+  sealed state (`NotSealed`), once-only stage (`WrongStage` 6011),
+  parent exactly the sealed head (`ParentMismatch`), observation
+  linkage (`RecordMismatch` 6010), proposer resolved against the
+  sealed profile (`UnknownProposer`), observer holding the Observer
+  role there (`NotObserver`). A kernel refusal in either call maps
+  to `ReplayFailed` (6012): governance and unknown types, an expired
+  manifest, and an overconfident observation all fail through the
+  kernel, not through a program-side guess.
+- The manifest's `relevant_groups` are derived, not supplied: the
+  proposer's own groups in the sealed profile (every seeded agent is
+  in group 1, matching the bridge's ordinary record). That derivation
+  is this slice's rule, recorded in the program docs, not a kernel
+  rule — a transition needing groups beyond its proposer's must store
+  those groups in the record in a later manifest-completion slice.
+- Honesty bounds, stated not smoothed: replay creates no new
+  authority — it executes steps the stored records already authorized
+  (slice 8's register signature, slice 9's ingest signature) and the
+  payer is a fee payer only. Replay is once-only per record because
+  the rebuilt kernel is fresh each time and cannot refuse a duplicate
+  itself — the stage byte is the duplicate guard. Replay proves
+  registration only: the kernel is rebuilt at the genesis head, so a
+  replayed transition is `Proposed` against head 0 and `KernelState`
+  does not advance; sequencing past the genesis head, the
+  evaluate/eligible/select/reconcile/validate/declare steps, CU
+  measurement, and clock advancement are later slices. Replay runs at
+  `KernelState.clock` (100 at genesis), so only genesis-clock pairs
+  replay.
+- Host tests 41/41 (32 prior + 9 slice-10: genesis-pair acceptance
+  with stage advance and SPACE preserved, unsealed / second-replay /
+  parent-mismatch / observation-mismatch / unknown-proposer /
+  non-observer refusals, expired-transition and overconfident-
+  observation kernel refusals, governance- and unknown-type kernel
+  refusals — every refusal leaves the stage untouched).
+- `anchor build` green under the pinned toolchain; IDL now 6
+  instructions (adds `replay_transition`), 3 accounts (unchanged),
+  13 errors (6000–6012), 5 events (adds `TransitionReplayed`); `.so`
+  386,784 bytes (sha256 `ee10d4c7…`).
+
 ## Build
 
 ```sh

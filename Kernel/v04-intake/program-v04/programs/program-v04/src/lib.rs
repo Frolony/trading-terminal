@@ -97,6 +97,35 @@
 //! record. What slice 9 does prove, in a combined host test, is that the
 //! resolved ids actually drive kernel registration: the observer pubkey
 //! ingests and the proposer pubkey registers on a sealed kernel.
+//!
+//! Slice 10 (this slice): the first replay instruction,
+//! `replay_transition`. It runs kernel `ingest_observation` +
+//! `register_transition` from a stored `ObservationRecord` +
+//! `TransitionRecord` pair against a freshly rebuilt sealed launch
+//! kernel, and advances the transition record's `stage` from
+//! `REGISTERED` (0) to `KERNEL_REGISTERED` (1). The kernel's manifest
+//! needs `relevant_groups`, which the stored record does not carry, so
+//! slice 10 derives them from the sealed profile: the proposer's own
+//! groups there (every seeded agent is in group 1, matching the bridge's
+//! ordinary record). That derivation is this slice's rule, recorded
+//! here, not a kernel rule — a transition needing groups beyond its
+//! proposer's is a later manifest-completion slice's work, and it must
+//! store those groups in the record rather than derive them.
+//! Replay creates no new authority: it executes steps the stored
+//! records already authorized (slice 8's register signature, slice 9's
+//! ingest signature), judged against the sealed profile, and the
+//! instruction's payer is a fee payer only. Replay is once-only per
+//! record (`WrongStage` on a second replay) because the rebuilt kernel
+//! is fresh each time and cannot itself refuse a duplicate — the stage
+//! byte is the duplicate guard, not the kernel. And replay proves
+//! registration only: the kernel is rebuilt at the genesis head, so a
+//! replayed transition is `Proposed` against head 0 and `KernelState`
+//! does not advance; sequencing past the genesis head (commit replay
+//! moving the head) and the evaluate/eligible/select/reconcile/
+//! validate/declare steps are later slices, not claimed here. Clock
+//! advancement is still a later slice: replay runs at
+//! `KernelState.clock` (100 at genesis), so only genesis-clock pairs
+//! replay.
 
 extern crate alloc;
 
@@ -104,8 +133,9 @@ use alloc::collections::BTreeSet;
 use alloc::vec;
 use anchor_lang::prelude::*;
 use coordination_kernel::{
-    Amount, Config, GovAction, Kernel, KernelError, NoEnv, Policy, Role, SystemState,
-    T_GOV_ADJUSTABLE, T_GOV_CONSTITUTION, T_GOV_COUNCIL, T_GOV_REBOOT, SCALE,
+    Amount, Config, GovAction, Kernel, KernelError, Life, Manifest, NoEnv, Observation, Policy,
+    Role, SystemState, T_GOV_ADJUSTABLE, T_GOV_CONSTITUTION, T_GOV_COUNCIL, T_GOV_REBOOT,
+    SCALE,
 };
 
 declare_id!("FzxnCtig4asxnCxGhjcbCDY5zkfcpfTb5GcXNL9UaGg6");
@@ -230,6 +260,62 @@ pub mod program_v04 {
         emit!(ObservationIngested { observation_id, observer: ctx.accounts.payer.key(), timestamp });
         Ok(())
     }
+
+    /// Replay (§4.1, first replay row, v0.4 form): run kernel
+    /// `ingest_observation` + `register_transition` from the stored
+    /// `ObservationRecord` + `TransitionRecord` pair and advance the
+    /// transition record's stage to `KERNEL_REGISTERED`. The PDA seeds
+    /// bind the accounts to the instruction's ids, and the body re-checks
+    /// the stored ids against them; the helper enforces the sealed
+    /// state, the once-only stage, the sealed-head parent, the
+    /// observation linkage, and the sealed-profile proposer/observer
+    /// gates, then drives the real kernel calls (see module docs for
+    /// the relevant-groups derivation and the genesis-head-only scope).
+    /// The payer is a fee payer only — replay executes steps the stored
+    /// records already authorized and creates no new authority.
+    pub fn replay_transition(
+        ctx: Context<ReplayTransition>,
+        transition_id: [u8; 32],
+        observation_id: [u8; 32],
+    ) -> Result<()> {
+        if ctx.accounts.transition_record.transition_id != transition_id
+            || ctx.accounts.observation_record.observation_id != observation_id
+        {
+            return Err(error!(ProgramV04Error::RecordMismatch));
+        }
+        replay_transition_from_records(
+            &ctx.accounts.kernel_state,
+            &mut ctx.accounts.transition_record,
+            &ctx.accounts.observation_record,
+        )?;
+        emit!(TransitionReplayed {
+            transition_id,
+            stage: TransitionRecord::KERNEL_REGISTERED,
+        });
+        Ok(())
+    }
+}
+
+#[derive(Accounts)]
+#[instruction(transition_id: [u8; 32], observation_id: [u8; 32])]
+pub struct ReplayTransition<'info> {
+    #[account(
+        seeds = [b"kernel-state"],
+        bump = kernel_state.bump,
+    )]
+    pub kernel_state: Account<'info, KernelState>,
+    #[account(
+        mut,
+        seeds = [b"transition", transition_id.as_ref()],
+        bump = transition_record.bump,
+    )]
+    pub transition_record: Account<'info, TransitionRecord>,
+    #[account(
+        seeds = [b"observation", observation_id.as_ref()],
+        bump = observation_record.bump,
+    )]
+    pub observation_record: Account<'info, ObservationRecord>,
+    pub payer: Signer<'info>,
 }
 
 #[derive(Accounts)]
@@ -356,7 +442,8 @@ pub struct TransitionRecord {
     /// Signing payer that registered the record (not yet a kernel agent
     /// id — the pubkey-to-agent mapping is a later slice).
     pub proposer: Pubkey,
-    /// Lifecycle stage: 0 = Registered (this slice's only stage).
+    /// Lifecycle stage: 0 = Registered, 1 = Kernel-registered (slice 10
+    /// advances it; no instruction moves it past 1 in this slice).
     pub stage: u8,
     /// PDA bump for the `["transition", transition_id]` seeds.
     pub bump: u8,
@@ -365,6 +452,8 @@ pub struct TransitionRecord {
 impl TransitionRecord {
     /// Stage value written by `register_transition`.
     pub const REGISTERED: u8 = 0;
+    /// Stage value written by `replay_transition` (slice 10).
+    pub const KERNEL_REGISTERED: u8 = 1;
     /// 8 (discriminator) + 32 + 32 + 8 + 32 + 32 + 32 + 8 + 32 + 1 + 1.
     pub const SPACE: usize = 218;
 }
@@ -497,6 +586,83 @@ pub fn build_observation_record(
     Ok(ObservationRecord { observation_id, timestamp, expiry, confidence_raw, observer, bump })
 }
 
+/// Replay a stored transition pair through the real kernel (slice 10).
+/// Pure except for the record's stage, which advances to
+/// `KERNEL_REGISTERED` only on success — every refusal leaves the record
+/// untouched. Gates, in order: sealed state; once-only stage; parent
+/// exactly the sealed head; observation linkage; proposer resolved
+/// against the sealed profile; observer holding the Observer role there.
+/// The kernel calls run at `KernelState.clock` against a freshly rebuilt
+/// sealed launch kernel, so this proves registration against the genesis
+/// head only (see module docs). The manifest's `relevant_groups` are the
+/// proposer's groups in the sealed profile — slice 10's derivation, not a
+/// kernel rule. A kernel refusal in either call maps to `ReplayFailed`:
+/// governance and unknown types, an expired manifest, and an
+/// overconfident observation all fail here, through the kernel, not
+/// through a program-side guess about them.
+pub fn replay_transition_from_records(
+    kernel_state: &KernelState,
+    transition_record: &mut TransitionRecord,
+    observation_record: &ObservationRecord,
+) -> Result<Life> {
+    if !kernel_state.sealed {
+        return Err(error!(ProgramV04Error::NotSealed));
+    }
+    if transition_record.stage != TransitionRecord::REGISTERED {
+        return Err(error!(ProgramV04Error::WrongStage));
+    }
+    if transition_record.parent_index != kernel_state.head_index
+        || transition_record.parent_hash != kernel_state.head_hash
+    {
+        return Err(error!(ProgramV04Error::ParentMismatch));
+    }
+    if transition_record.observation_id != observation_record.observation_id {
+        return Err(error!(ProgramV04Error::RecordMismatch));
+    }
+    let proposer = resolve_proposer(kernel_state, transition_record.proposer)?;
+    let observer_id = resolve_agent_id(observation_record.observer);
+    let mut k = sealed_launch_kernel().map_err(|_| error!(ProgramV04Error::KernelSeal))?;
+    if !k.has_role(&observer_id, Role::Observer) {
+        return Err(error!(ProgramV04Error::NotObserver));
+    }
+    let relevant_groups = match k.agent(&proposer) {
+        Some(profile) => profile.groups.clone(),
+        None => return Err(error!(ProgramV04Error::UnknownProposer)),
+    };
+    let observation = Observation {
+        id: observation_record.observation_id,
+        timestamp: observation_record.timestamp,
+        expiry: observation_record.expiry,
+        confidence: Amount::from_raw(observation_record.confidence_raw),
+    };
+    k.ingest_observation(&observer_id, observation, kernel_state.clock)
+        .map_err(|_| error!(ProgramV04Error::ReplayFailed))?;
+    let manifest = Manifest {
+        transition_type: transition_record.transition_type,
+        parent_index: transition_record.parent_index,
+        parent_hash: transition_record.parent_hash,
+        declared_next_hash: transition_record.declared_next_hash,
+        observation_id: transition_record.observation_id,
+        expires_at: transition_record.expires_at,
+        relevant_groups,
+        action: None,
+    };
+    k.register_transition(
+        &proposer,
+        transition_record.transition_id,
+        manifest,
+        BTreeSet::new(),
+        kernel_state.clock,
+    )
+    .map_err(|_| error!(ProgramV04Error::ReplayFailed))?;
+    let life = match k.life_of(&transition_record.transition_id) {
+        Some(Life::Proposed) => Life::Proposed,
+        _ => return Err(error!(ProgramV04Error::ReplayFailed)),
+    };
+    transition_record.stage = TransitionRecord::KERNEL_REGISTERED;
+    Ok(life)
+}
+
 /// The genesis `KernelState`: the probe-config kernel's genesis values
 /// (unsealed, head 0, zero hash, clock 0), with a zero bump — the
 /// instruction overwrites the bump with the PDA bump.
@@ -530,6 +696,12 @@ pub struct ObservationIngested {
     pub timestamp: u64,
 }
 
+#[event]
+pub struct TransitionReplayed {
+    pub transition_id: [u8; 32],
+    pub stage: u8,
+}
+
 #[error_code]
 pub enum ProgramV04Error {
     #[msg("program-v04 probe: kernel construction failed")]
@@ -552,6 +724,12 @@ pub enum ProgramV04Error {
     UnknownProposer,
     #[msg("program-v04 ingest: signer agent does not hold the Observer role")]
     NotObserver,
+    #[msg("program-v04 replay: transition and observation records do not belong together")]
+    RecordMismatch,
+    #[msg("program-v04 replay: transition record is not at the Registered stage")]
+    WrongStage,
+    #[msg("program-v04 replay: kernel ingest or registration refused")]
+    ReplayFailed,
 }
 
 // ---------------------------------------------------------------- launch genesis
@@ -1215,5 +1393,151 @@ mod tests {
         k.register_transition(&proposer_id, [0xD1; 32], manifest, BTreeSet::new(), 100)
             .expect("proposer id must register on the sealed kernel");
         assert_eq!(k.life_of(&[0xD1; 32]), Some(coordination_kernel::Life::Proposed));
+    }
+
+    fn replay_pair() -> (KernelState, TransitionRecord, ObservationRecord) {
+        let state = sealed_state();
+        let record = build_transition_record(
+            &state, [0xD1; 32], TT, 0, [0; 32], [0xE1; 32], [0xC0; 32], 10_100,
+            Pubkey::new_from_array(ag(1)), 7,
+        )
+        .expect("sealed-head register must build");
+        let obs = build_observation_record(
+            &state, [0xC0; 32], 100, 9100, 900_000, observer_pubkey(), 7,
+        )
+        .expect("observer at the genesis clock must ingest");
+        (state, record, obs)
+    }
+
+    #[test]
+    fn replay_advances_registered_record_to_kernel_registered() {
+        let (state, mut record, obs) = replay_pair();
+        let life = replay_transition_from_records(&state, &mut record, &obs)
+            .expect("genesis-clock pair must replay");
+        assert_eq!(life, Life::Proposed);
+        assert_eq!(record.stage, TransitionRecord::KERNEL_REGISTERED);
+        assert_eq!(record.stage, 1);
+        // The record's other fields are untouched by the stage advance,
+        // and it still serializes at exactly SPACE bytes.
+        assert_eq!(record.transition_type, TT);
+        assert_eq!(record.declared_next_hash, [0xE1; 32]);
+        use anchor_lang::AccountSerialize;
+        let mut bytes = Vec::new();
+        record.try_serialize(&mut bytes).expect("serialize must succeed");
+        assert_eq!(bytes.len(), TransitionRecord::SPACE);
+    }
+
+    #[test]
+    fn replay_refuses_unsealed() {
+        let (mut state, mut record, obs) = replay_pair();
+        state.sealed = false;
+        let err = replay_transition_from_records(&state, &mut record, &obs)
+            .expect_err("unsealed replay must refuse");
+        assert!(format!("{:?}", err).contains("NotSealed"));
+        assert_eq!(record.stage, TransitionRecord::REGISTERED, "a refused replay must not move the stage");
+    }
+
+    #[test]
+    fn replay_is_once_only() {
+        let (state, mut record, obs) = replay_pair();
+        replay_transition_from_records(&state, &mut record, &obs)
+            .expect("first replay must succeed");
+        let err = replay_transition_from_records(&state, &mut record, &obs)
+            .expect_err("second replay must refuse");
+        assert!(format!("{:?}", err).contains("WrongStage"));
+        assert_eq!(record.stage, TransitionRecord::KERNEL_REGISTERED);
+    }
+
+    #[test]
+    fn replay_refuses_parent_mismatch() {
+        let (state, mut record, obs) = replay_pair();
+        record.parent_index = 1;
+        let err = replay_transition_from_records(&state, &mut record, &obs)
+            .expect_err("parent off the sealed head must refuse");
+        assert!(format!("{:?}", err).contains("ParentMismatch"));
+        assert_eq!(record.stage, TransitionRecord::REGISTERED);
+    }
+
+    #[test]
+    fn replay_refuses_observation_mismatch() {
+        let (state, mut record, _) = replay_pair();
+        let other = build_observation_record(
+            &state, [0xC1; 32], 100, 9100, 900_000, observer_pubkey(), 7,
+        )
+        .expect("second observation must build");
+        let err = replay_transition_from_records(&state, &mut record, &other)
+            .expect_err("observation id mismatch must refuse");
+        assert!(format!("{:?}", err).contains("RecordMismatch"));
+        assert_eq!(record.stage, TransitionRecord::REGISTERED);
+    }
+
+    #[test]
+    fn replay_refuses_unknown_proposer() {
+        // The slice-8 builder does not gate the proposer, so such a
+        // record can exist — replay is where it must be refused.
+        let (state, mut record, obs) = replay_pair();
+        record.proposer = Pubkey::new_from_array([0x99; 32]);
+        let err = replay_transition_from_records(&state, &mut record, &obs)
+            .expect_err("unknown proposer must refuse");
+        assert!(format!("{:?}", err).contains("UnknownProposer"));
+        assert_eq!(record.stage, TransitionRecord::REGISTERED);
+    }
+
+    #[test]
+    fn replay_refuses_non_observer_observation() {
+        // Built as a struct literal: the slice-9 builder would refuse
+        // this observer, so replay must catch a record that bypassed it.
+        let (state, mut record, _) = replay_pair();
+        let obs = ObservationRecord {
+            observation_id: [0xC0; 32],
+            timestamp: 100,
+            expiry: 9100,
+            confidence_raw: 900_000,
+            observer: Pubkey::new_from_array(ag(1)),
+            bump: 7,
+        };
+        let err = replay_transition_from_records(&state, &mut record, &obs)
+            .expect_err("non-observer observation must refuse");
+        assert!(format!("{:?}", err).contains("NotObserver"));
+        assert_eq!(record.stage, TransitionRecord::REGISTERED);
+    }
+
+    #[test]
+    fn replay_refuses_expired_transition_and_overconfident_observation() {
+        let (state, mut record, obs) = replay_pair();
+        record.expires_at = 100;
+        let err = replay_transition_from_records(&state, &mut record, &obs)
+            .expect_err("expiry at the clock must refuse in the kernel");
+        assert!(format!("{:?}", err).contains("ReplayFailed"));
+        assert_eq!(record.stage, TransitionRecord::REGISTERED);
+        let (state, mut record, _) = replay_pair();
+        let obs = ObservationRecord {
+            observation_id: [0xC0; 32],
+            timestamp: 100,
+            expiry: 9100,
+            confidence_raw: SCALE + 1,
+            observer: observer_pubkey(),
+            bump: 7,
+        };
+        let err = replay_transition_from_records(&state, &mut record, &obs)
+            .expect_err("confidence above SCALE must refuse in the kernel");
+        assert!(format!("{:?}", err).contains("ReplayFailed"));
+        assert_eq!(record.stage, TransitionRecord::REGISTERED);
+    }
+
+    #[test]
+    fn replay_refuses_governance_and_unknown_types() {
+        let (state, mut record, obs) = replay_pair();
+        record.transition_type = T_GOV_COUNCIL;
+        let err = replay_transition_from_records(&state, &mut record, &obs)
+            .expect_err("governance type must refuse in the kernel");
+        assert!(format!("{:?}", err).contains("ReplayFailed"));
+        assert_eq!(record.stage, TransitionRecord::REGISTERED);
+        let (state, mut record, obs) = replay_pair();
+        record.transition_type = [0x77; 32];
+        let err = replay_transition_from_records(&state, &mut record, &obs)
+            .expect_err("type without a policy must refuse in the kernel");
+        assert!(format!("{:?}", err).contains("ReplayFailed"));
+        assert_eq!(record.stage, TransitionRecord::REGISTERED);
     }
 }
