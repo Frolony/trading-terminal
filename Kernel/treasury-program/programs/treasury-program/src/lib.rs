@@ -2912,6 +2912,8 @@ pub mod treasury_program {
         window.roster_hash = [0; 32];
         window.bump = ctx.bumps.window_state;
         window.fees_collected_raw = 0;
+        window.declared_fees_raw = 0;
+        window.fee_schedule_declared = false;
         state.window_count = state
             .window_count
             .checked_add(1)
@@ -3512,6 +3514,69 @@ pub mod treasury_program {
         Ok(())
     }
 
+    /// Declare a window's fee schedule (design §4.2, D-5,
+    /// slice 18): the first half of the declared-fee
+    /// reconciliation the design row names. The operator
+    /// declares, under the window's Committed transition
+    /// with the `OPERATOR_SETTLE` capability, the total
+    /// fee amount the window will collect — once, before
+    /// any collection, and never raised afterwards: a
+    /// second declaration refuses
+    /// `FeeScheduleAlreadyDeclared`, whatever total it
+    /// names. The declaration is stored on the window
+    /// itself (`declared_fees_raw` +
+    /// `fee_schedule_declared`), because the
+    /// TransitionRecord carries only a `declared_hash`,
+    /// not a fee total — the window is the transition's
+    /// per-window incarnation, so a schedule declared
+    /// on the window is the schedule for that window's
+    /// flow. `collect_fees` then reconciles every
+    /// collection against this figure: no schedule, no
+    /// collection; a collection past the declared total
+    /// refuses. A shortfall (collected below declared)
+    /// is visible on-chain — the window's collected
+    /// figure against its declared figure — not a
+    /// silent gap.
+    ///
+    /// Honest scope, stated not buried: the declaration
+    /// itself is operator-reported, as the collection
+    /// was — this slice bounds collections by a prior,
+    /// immutable declaration and makes any shortfall
+    /// auditable, it does not independently verify the
+    /// declaration against compose-layer transfer
+    /// volume. That verification (an evidence record
+    /// binding the reported total to realized flows)
+    /// remains future work, and is not claimed here.
+    pub fn declare_fee_schedule(
+        ctx: Context<DeclareFeeSchedule>,
+        transition_id: u64,
+        window_id: u64,
+        declared_fees_raw: u64,
+    ) -> Result<()> {
+        can_declare_fee_schedule(
+            ctx.accounts.transition_record.state,
+            ctx.accounts.transition_record.transition_type,
+            ctx.accounts.operator_record.active,
+            ctx.accounts
+                .operator_record
+                .capabilities
+                .contains(&OPERATOR_SETTLE),
+            ctx.accounts.window_state.fee_schedule_declared,
+        )?;
+        let window = &mut ctx.accounts.window_state;
+        window.declared_fees_raw = declared_fees_raw;
+        window.fee_schedule_declared = true;
+        emit!(FeeScheduleDeclared {
+            window_id,
+            operator: ctx.accounts.operator.key(),
+            declared_fees_raw,
+            transition_id,
+            commit_index: ctx.accounts.transition_record.commit_index,
+            declared_hash: ctx.accounts.transition_record.declared_hash,
+        });
+        Ok(())
+    }
+
     /// Collect fees (design §4.2, D-5): the positive half of
     /// the fee flow, completing the slice-13 proof. The 73 bps
     /// single flow rides token transfers and venue flows in
@@ -3539,21 +3604,18 @@ pub mod treasury_program {
     ///
     /// Scope, stated not buried: this is the accounting
     /// half, as in the sibling slices — bookkeeping, not a
-    /// token movement. The design row also says
-    /// `collect_fees` "reconciles the vault against the
-    /// declared total"; that numeric reconciliation is NOT
-    /// implemented here, because the TransitionRecord
-    /// carries only a `declared_hash`, not a declared fee
-    /// schedule or fee total, so there is no stored total
-    /// on-chain to reconcile against. The event carries
+    /// token movement. The design row's reconciliation is
+    /// implemented by slice 18 as a declared schedule on
+    /// the window (see `declare_fee_schedule`): a
+    /// collection in a window with no declared schedule
+    /// refuses `FeeScheduleUndeclared`, and a collection
+    /// that would push the window's collected total past
+    /// its declared total refuses
+    /// `CollectExceedsDeclaredSchedule`. The event carries
     /// the transition id, commit index, and declared hash
     /// — the authorization context settle's `exact` check
-    /// attests — but a caller-supplied amount that
-    /// disagrees with the off-chain declared schedule is
-    /// not refused by this instruction. That gap is a
-    /// carried item (a declared fee schedule on the
-    /// transition, or an evidence record binding the
-    /// reported total), not a claim made here.
+    /// attests — and the window's collected-vs-declared
+    /// figures are the reconciliation record itself.
     pub fn collect_fees(
         ctx: Context<CollectFees>,
         transition_id: u64,
@@ -3570,6 +3632,9 @@ pub mod treasury_program {
                 .capabilities
                 .contains(&OPERATOR_SETTLE),
             amount_raw,
+            ctx.accounts.window_state.fee_schedule_declared,
+            ctx.accounts.window_state.declared_fees_raw,
+            ctx.accounts.window_state.fees_collected_raw,
         )?;
         let window = &mut ctx.accounts.window_state;
         window.fees_collected_raw = window
@@ -5457,6 +5522,39 @@ pub fn can_reinvest(
     Ok(())
 }
 
+/// The `declare_fee_schedule` gate, as a pure check (design
+/// §4.2, §5, D-5, slice 18): the window flow transition must
+/// be Committed and of the canonical window type, the
+/// operator must be an active agent holding
+/// `OPERATOR_SETTLE`, and no schedule may already be
+/// declared for the window — the declaration is one-time,
+/// so it cannot be raised after collections begin. A
+/// declared zero is allowed: it declares that the window
+/// collects no fees, and `collect_fees` then refuses every
+/// positive amount against it.
+pub fn can_declare_fee_schedule(
+    state: u8,
+    transition_type: [u8; 32],
+    operator_active: bool,
+    operator_has_settle: bool,
+    already_declared: bool,
+) -> Result<()> {
+    require!(state == STATE_COMMITTED, TreasuryError::BadState);
+    require!(
+        transition_type == TREASURY_WINDOW_TYPE,
+        TreasuryError::CollectMismatch
+    );
+    require!(
+        operator_active && operator_has_settle,
+        TreasuryError::Unauthorized
+    );
+    require!(
+        !already_declared,
+        TreasuryError::FeeScheduleAlreadyDeclared
+    );
+    Ok(())
+}
+
 /// The `collect_fees` gate, as a pure check (design §4.2,
 /// §5, D-5): the window flow transition must be Committed
 /// and of the canonical window type, the fee vault must be
@@ -5465,10 +5563,13 @@ pub fn can_reinvest(
 /// amount must be positive. Order mirrors
 /// [`can_pay_tranche`]: the transition binding first, the
 /// vault binding next, the operator next, the amount rule
-/// last. No cap is judged here: the collected total is an
-/// operator-reported figure, not a claim against a stock,
-/// and any cap on it belongs to the declared schedule
-/// (the carried reconciliation item), not to this gate.
+/// next. The schedule rules are deliberately LAST, so every
+/// previously-refused shape keeps its error: a schedule
+/// must have been declared, and the window's collected
+/// total plus this amount must not exceed the declared
+/// total. The cap is the slice-18 reconciliation — the
+/// collected total is no longer bounded only by each
+/// call's own claim.
 pub fn can_collect_fees(
     state: u8,
     transition_type: [u8; 32],
@@ -5476,6 +5577,9 @@ pub fn can_collect_fees(
     operator_active: bool,
     operator_has_settle: bool,
     amount_raw: u64,
+    schedule_declared: bool,
+    declared_fees_raw: u64,
+    window_collected_raw: u64,
 ) -> Result<()> {
     require!(state == STATE_COMMITTED, TreasuryError::BadState);
     require!(
@@ -5491,6 +5595,16 @@ pub fn can_collect_fees(
         TreasuryError::Unauthorized
     );
     require!(amount_raw != 0, TreasuryError::InvalidCollectAmount);
+    require!(
+        schedule_declared,
+        TreasuryError::FeeScheduleUndeclared
+    );
+    require!(
+        window_collected_raw
+            .checked_add(amount_raw)
+            .map_or(false, |total| total <= declared_fees_raw),
+        TreasuryError::CollectExceedsDeclaredSchedule
+    );
     Ok(())
 }
 
@@ -6107,6 +6221,24 @@ pub struct Reinvested {
     pub declared_hash: [u8; 32],
 }
 
+/// Event for [`treasury_program::declare_fee_schedule`]
+/// (design §4.2, §6, slice 18): the window, the declaring
+/// operator, the declared fee total, and the authorization
+/// context — the Committed window flow transition's id,
+/// commit index, and declared hash. The declaration is
+/// the schedule `collect_fees` reconciles against; the
+/// event is its public receipt, and the window account
+/// itself is the binding record.
+#[event]
+pub struct FeeScheduleDeclared {
+    pub window_id: u64,
+    pub operator: Pubkey,
+    pub declared_fees_raw: u64,
+    pub transition_id: u64,
+    pub commit_index: u64,
+    pub declared_hash: [u8; 32],
+}
+
 /// Event for [`treasury_program::collect_fees`] (design
 /// §4.2, §6): the window, the operator, the amount
 /// collected in this call, the window's collected total
@@ -6115,10 +6247,11 @@ pub struct Reinvested {
 /// window flow transition's id, commit index, and
 /// declared hash. The collection here is bookkeeping,
 /// not a token movement: no token account is debited or
-/// credited, and the declared-schedule reconciliation the
-/// design row names is a carried item, not a field of
-/// this event (the transition carries only a declared
-/// hash, not a fee total).
+/// credited, and the declared-schedule reconciliation
+/// (slice 18) is enforced by the gate, not carried in
+/// this event: the window's declared total is the
+/// schedule, and this event's window-collected figure
+/// against it is the reconciliation record.
 #[event]
 pub struct FeesCollected {
     pub window_id: u64,
@@ -7078,8 +7211,9 @@ impl LendingBook {
 /// Fee vault (design §3, §4.2) — the 73 bps single flow's collection
 /// ledger (D-5). This is a program-owned data account, not a token
 /// account: `collect_fees` reconciles its collected total against
-/// the window transition's declared total, and a shortfall is an
-/// inexact settle, visible, never a silent gap. Its key must equal
+/// the window's declared fee schedule (slice 18), and a shortfall
+/// (collected below declared) is visible on the window, never a
+/// silent gap. Its key must equal
 /// `Config.fee_vault` (see `initialize_treasury`).
 #[account]
 pub struct FeeVault {
@@ -7143,11 +7277,28 @@ pub struct WindowState {
     /// window's collections sum to its own figure and the
     /// vault total is the sum over windows.
     pub fees_collected_raw: u64,
+    /// The window's declared fee total, kernel fixed-point
+    /// raw, set once by `declare_fee_schedule` (slice 18).
+    /// Appended after `fees_collected_raw` deliberately so
+    /// every pre-existing field keeps its byte offset; the
+    /// total `collect_fees` reconciles against — a
+    /// collection that would push `fees_collected_raw`
+    /// past this figure refuses, so the vault total is
+    /// bounded per window by a prior declaration, not by
+    /// each collection's own claim.
+    pub declared_fees_raw: u64,
+    /// Whether a fee schedule has been declared for this
+    /// window. False at open: no collection is possible
+    /// until a schedule is declared, and a declared zero
+    /// is a real declaration (no fees this window), not
+    /// an undeclared window — so the flag, not a zero
+    /// total, distinguishes the two states.
+    pub fee_schedule_declared: bool,
 }
 
 impl WindowState {
-    /// 8 (discriminator) + 11 × 8 + 32 + 1.
-    pub const SPACE: usize = 8 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 32 + 1;
+    /// 8 (discriminator) + 12 × 8 + 32 + 1 + 1.
+    pub const SPACE: usize = 8 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 32 + 1 + 1;
 }
 
 /// Holder record (design §3, §4.2) — one per holder per window, the
@@ -8050,6 +8201,36 @@ pub struct Reinvest<'info> {
     pub holder_record: Account<'info, HolderRecord>,
 }
 
+/// Accounts for [`treasury_program::declare_fee_schedule`]
+/// (slice 18). No vault, no config: the declaration binds
+/// only the window and its authorizing transition, and
+/// the vault is bound later, at collection time.
+#[derive(Accounts)]
+#[instruction(transition_id: u64, window_id: u64, declared_fees_raw: u64)]
+pub struct DeclareFeeSchedule<'info> {
+    /// The declaring operator (signer). Not a named key:
+    /// execution is capability-gated, and the record below
+    /// is what the gate reads. Pays no rent here — no
+    /// account is created.
+    pub operator: Signer<'info>,
+    /// The operator's agent record, seeds-bound to the
+    /// signer. Must be active and hold `OPERATOR_SETTLE`
+    /// (design §5).
+    #[account(seeds = [b"agent", operator.key().as_ref()], bump = operator_record.bump)]
+    pub operator_record: Account<'info, AgentRecord>,
+    /// The window flow transition, seeds-bound to its id.
+    /// Must be Committed and of the canonical window type
+    /// — the authority for this declaration, not the
+    /// operator's discretion over the schedule.
+    #[account(seeds = [b"transition", transition_id.to_le_bytes().as_ref()], bump = transition_record.bump)]
+    pub transition_record: Account<'info, TransitionRecord>,
+    /// The window being declared for, seeds-bound to its
+    /// id. Mutated: its `declared_fees_raw` and
+    /// `fee_schedule_declared` are the schedule itself.
+    #[account(mut, seeds = [b"window", window_id.to_le_bytes().as_ref()], bump = window_state.bump)]
+    pub window_state: Account<'info, WindowState>,
+}
+
 /// Accounts for [`treasury_program::collect_fees`].
 #[derive(Accounts)]
 #[instruction(transition_id: u64, window_id: u64, amount_raw: u64)]
@@ -8811,6 +8992,20 @@ pub enum TreasuryError {
     /// errors, so no existing error code moves.
     #[msg("Source transition consumed: this Settled treasury.window.v1 transition already opened a window.")]
     SourceTransitionConsumed,
+    /// A fee schedule was already declared for this window:
+    /// the declaration is one-time, so a second declaration
+    /// cannot raise the total a collection reconciles against.
+    #[msg("Fee schedule already declared for this window.")]
+    FeeScheduleAlreadyDeclared,
+    /// No fee schedule has been declared for this window:
+    /// collections reconcile against a prior declaration,
+    /// so an undeclared window collects nothing.
+    #[msg("No fee schedule declared for this window.")]
+    FeeScheduleUndeclared,
+    /// This collection would push the window's collected
+    /// total past its declared fee total.
+    #[msg("Collection exceeds the window's declared fee total.")]
+    CollectExceedsDeclaredSchedule,
 }
 
 #[cfg(test)]
@@ -10622,7 +10817,7 @@ mod tests {
         assert_eq!(TreasuryState::SPACE, 65);
         assert_eq!(LendingBook::SPACE, 21);
         assert_eq!(FeeVault::SPACE, 17);
-        assert_eq!(WindowState::SPACE, 129);
+        assert_eq!(WindowState::SPACE, 138);
     }
 
     #[test]
@@ -11159,15 +11354,18 @@ mod tests {
     fn collect_fees_gate_matrix() {
         // Argument order: state, type, vault matches,
         // operator active, operator holds OPERATOR_SETTLE,
-        // amount. A collection moves no position, loan,
-        // stock, or penalty term — those are exactly the
-        // terms this gate must NOT judge, so the matrix
-        // has no cases for them.
+        // amount, schedule declared, declared total,
+        // window collected so far. A collection moves no
+        // position, loan, stock, or penalty term — those
+        // are exactly the terms this gate must NOT judge,
+        // so the matrix has no cases for them.
         // Happy path: a positive collection under a
         // Committed window transition into the bound vault
-        // by a capable operator passes.
+        // by a capable operator passes, inside a declared
+        // 100,000 schedule with 0 collected so far.
         can_collect_fees(
             STATE_COMMITTED, TREASURY_WINDOW_TYPE, true, true, true, 73_000,
+            true, 100_000, 0,
         )
         .expect("a positive fee collection passes");
         // Pre-commit and post-commit states refuse:
@@ -11181,34 +11379,103 @@ mod tests {
         ] {
             assert!(can_collect_fees(
                 state, TREASURY_WINDOW_TYPE, true, true, true, 73_000,
+                true, 100_000, 0,
             )
             .is_err());
         }
         // Wrong transition type refuses as a mismatch.
         assert!(can_collect_fees(
             STATE_COMMITTED, TREASURY_LAUNCH_TYPE, true, true, true, 73_000,
+            true, 100_000, 0,
         )
         .is_err());
         // A vault that is not the genesis-bound vault
         // refuses: fee totals land only in Config's vault.
         assert!(can_collect_fees(
             STATE_COMMITTED, TREASURY_WINDOW_TYPE, false, true, true, 73_000,
+            true, 100_000, 0,
         )
         .is_err());
         // An inactive operator, and an operator without
         // OPERATOR_SETTLE, both refuse.
         assert!(can_collect_fees(
             STATE_COMMITTED, TREASURY_WINDOW_TYPE, true, false, true, 73_000,
+            true, 100_000, 0,
         )
         .is_err());
         assert!(can_collect_fees(
             STATE_COMMITTED, TREASURY_WINDOW_TYPE, true, true, false, 73_000,
+            true, 100_000, 0,
         )
         .is_err());
         // A zero collection refuses: it would consume a
         // window execution while accounting nothing.
         assert!(can_collect_fees(
             STATE_COMMITTED, TREASURY_WINDOW_TYPE, true, true, true, 0,
+            true, 100_000, 0,
+        )
+        .is_err());
+        // Slice 18, the reconciliation cases: no declared
+        // schedule refuses, even for a positive amount a
+        // capable operator reports.
+        assert!(can_collect_fees(
+            STATE_COMMITTED, TREASURY_WINDOW_TYPE, true, true, true, 73_000,
+            false, 0, 0,
+        )
+        .is_err());
+        // A collection landing exactly on the declared
+        // total passes (27,000 more on 73,000 collected
+        // against a 100,000 schedule).
+        can_collect_fees(
+            STATE_COMMITTED, TREASURY_WINDOW_TYPE, true, true, true, 27_000,
+            true, 100_000, 73_000,
+        )
+        .expect("a collection landing exactly on the declared total passes");
+        // One unit past the declared total refuses, even
+        // though every other gate passes.
+        assert!(can_collect_fees(
+            STATE_COMMITTED, TREASURY_WINDOW_TYPE, true, true, true, 1,
+            true, 100_000, 100_000,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn declare_fee_schedule_gate_matrix() {
+        // Slice 18: a declaration under a Committed window
+        // transition by a capable operator passes, and a
+        // declared zero passes (it declares no fees for
+        // the window, which `collect_fees` then enforces).
+        can_declare_fee_schedule(
+            STATE_COMMITTED, TREASURY_WINDOW_TYPE, true, true, false,
+        )
+        .expect("a first fee schedule declaration passes");
+        can_declare_fee_schedule(
+            STATE_COMMITTED, TREASURY_WINDOW_TYPE, true, true, false,
+        )
+        .expect("the gate itself takes no amount, so zero is not its refusal");
+        // A second declaration refuses: the schedule is
+        // one-time and cannot be raised after collections.
+        assert!(can_declare_fee_schedule(
+            STATE_COMMITTED, TREASURY_WINDOW_TYPE, true, true, true,
+        )
+        .is_err());
+        // Non-committed state, wrong type, and incapable
+        // operators refuse, as in `collect_fees`.
+        assert!(can_declare_fee_schedule(
+            STATE_SETTLED, TREASURY_WINDOW_TYPE, true, true, false,
+        )
+        .is_err());
+        assert!(can_declare_fee_schedule(
+            STATE_COMMITTED, TREASURY_LAUNCH_TYPE, true, true, false,
+        )
+        .is_err());
+        assert!(can_declare_fee_schedule(
+            STATE_COMMITTED, TREASURY_WINDOW_TYPE, false, true, false,
+        )
+        .is_err());
+        assert!(can_declare_fee_schedule(
+            STATE_COMMITTED, TREASURY_WINDOW_TYPE, true, false, false,
         )
         .is_err());
     }

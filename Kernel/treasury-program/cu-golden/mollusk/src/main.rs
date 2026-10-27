@@ -1964,7 +1964,7 @@ fn main() {
     let ts = accounts.iter().find(|(k, _)| *k == treasury_state).map(|(_, a)| a.clone()).unwrap();
     assert_eq!(u64::from_le_bytes(ts.data[56..64].try_into().unwrap()), 1u64, "window_count not 1 after open_window");
     let ws = accounts.iter().find(|(k, _)| *k == window_state).map(|(_, a)| a.clone()).unwrap();
-    assert_eq!(ws.data.len(), 129, "WindowState size changed");
+    assert_eq!(ws.data.len(), 138, "WindowState size changed");
     assert_eq!(u64::from_le_bytes(ws.data[8..16].try_into().unwrap()), 0u64, "window_id not 0");
     assert_eq!(u64::from_le_bytes(ws.data[72..80].try_into().unwrap()), 3u64, "window source transition not 3");
 
@@ -4476,13 +4476,45 @@ fn main() {
     // on the vault's collected_raw (the sum over windows). A zero collection
     // refuses, and a capable-operator check is what refuses an agent without
     // OPERATOR_SETTLE. Stated, not passed off: this is the accounting half,
-    // bookkeeping not token movement, as in the sibling slices — and the
-    // design row's "reconciles the vault against the declared total" is NOT
-    // implemented, because the TransitionRecord carries only a declared_hash,
-    // not a declared fee total to reconcile against; that numeric
-    // reconciliation is a carried item, and no claim is made here that a
-    // misreported amount would refuse. The window is still 14, the
-    // transition still Committed transition 7, the operator still [7;32].
+    // bookkeeping not token movement, as in the sibling slices. Slice 18
+    // closes the design row's reconciliation gap for this chain: the window's
+    // fee schedule is declared FIRST (100,000, below), so the two
+    // collections that follow (73,000 + 27,000) land exactly on the declared
+    // total — a collection past it would refuse, and a window with no
+    // declaration collects nothing (the slice-18 probes after slice 17 prove
+    // both). The window is still 14, the transition still Committed
+    // transition 7, the operator still [7;32].
+    // Slice 18 declaration: operator declares window 14's fee schedule,
+    // 100,000, under Committed transition 7 — before any collection, as
+    // the reconciliation requires. WindowState layout after slice 18:
+    // fees_collected_raw at [121..129], declared_fees_raw at [129..137],
+    // fee_schedule_declared flag at [137].
+    let mut data18d = disc("declare_fee_schedule");
+    data18d.extend_from_slice(&7u64.to_le_bytes());
+    data18d.extend_from_slice(&14u64.to_le_bytes());
+    data18d.extend_from_slice(&100_000u64.to_le_bytes());
+    let ix18d = Instruction::new_with_bytes(
+        program_id,
+        &data18d,
+        vec![
+            AccountMeta::new(operator, true),
+            AccountMeta::new_readonly(operator_record, false),
+            AccountMeta::new_readonly(transition7, false),
+            AccountMeta::new(window_state_14, false),
+        ],
+    );
+    let (next, cu) = run(&mollusk, "declare_fee_schedule:18", &ix18d, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({
+        "instruction": "declare_fee_schedule:18",
+        "cu": cu,
+        "result": "Success",
+        "note": "slice-18 declaration (design §4.2, D-5): operator declares window 14's fee schedule, 100,000, under Committed window flow transition 7 — window 14 declared_fees_raw 0 -> 100,000, fee_schedule_declared false -> true, fees_collected_raw still 0, FeeVault still 0; no §2.2 estimate exists for this instruction, so this value is a baseline, not a gated figure",
+    }));
+    let ws18d = accounts.iter().find(|(k, _)| *k == window_state_14).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(ws18d.data[129..137].try_into().unwrap()), 100_000u64, "window 14 declared_fees_raw not 100,000 after declare_fee_schedule:18");
+    assert_eq!(ws18d.data[137], 1u8, "window 14 fee_schedule_declared flag not set after declare_fee_schedule:18");
+    assert_eq!(u64::from_le_bytes(ws18d.data[121..129].try_into().unwrap()), 0u64, "window 14 fees_collected_raw moved during declare_fee_schedule:18 (a declaration collects nothing)");
     // (a) first collection: 73,000 — 73 bps on a 10,000,000 flow, the
     // operator-reported window total for this window's compose-layer flows.
     let mut data15a = disc("collect_fees");
@@ -4670,6 +4702,160 @@ fn main() {
     assert_eq!(u64::from_le_bytes(ws15f.data[64..72].try_into().unwrap()), 8_000_000u64, "window 14 exit stock moved during slice 15 (a collection claims no cash)");
     assert_eq!(mollusk.sysvars.clock.unix_timestamp, 37_003_600i64, "clock not 37,003,600 after slice 15");
 
+    // ---- Slice 18 probes: the declared-fee-schedule reconciliation ----
+    // (a) a second declaration for window 14 MUST refuse
+    // FeeScheduleAlreadyDeclared (6093): the schedule is one-time, so it
+    // cannot be raised after collections begin — even to the same total.
+    let mut data18a = disc("declare_fee_schedule");
+    data18a.extend_from_slice(&7u64.to_le_bytes());
+    data18a.extend_from_slice(&14u64.to_le_bytes());
+    data18a.extend_from_slice(&100_000u64.to_le_bytes());
+    let ix18a = Instruction::new_with_bytes(
+        program_id,
+        &data18a,
+        vec![
+            AccountMeta::new(operator, true),
+            AccountMeta::new_readonly(operator_record, false),
+            AccountMeta::new_readonly(transition7, false),
+            AccountMeta::new(window_state_14, false),
+        ],
+    );
+    let cu18a = run_expect_err(&mollusk, "declare_fee_schedule:18redeclare", &ix18a, &accounts, 6093);
+    measured.push(serde_json::json!({
+        "instruction": "declare_fee_schedule:18redeclare",
+        "cu": cu18a,
+        "result": "Refused",
+        "error": "FeeScheduleAlreadyDeclared",
+        "error_code": 6093,
+        "note": "slice-18 refusal: a second declaration for window 14 refuses FeeScheduleAlreadyDeclared (6093) — the schedule is one-time and cannot be raised after collections, NOT a success CU",
+    }));
+    let ws18a = accounts.iter().find(|(k, _)| *k == window_state_14).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(ws18a.data[129..137].try_into().unwrap()), 100_000u64, "window 14 declared_fees_raw moved during declare_fee_schedule:18redeclare refusal");
+    assert_eq!(u64::from_le_bytes(ws18a.data[121..129].try_into().unwrap()), 100_000u64, "window 14 fees_collected_raw moved during declare_fee_schedule:18redeclare refusal");
+    // (b) one unit past the declared total MUST refuse
+    // CollectExceedsDeclaredSchedule (6095): window 14 is collected
+    // exactly to its 100,000 declaration, so any further positive
+    // collection is over-declared, however small.
+    let mut data18b = disc("collect_fees");
+    data18b.extend_from_slice(&7u64.to_le_bytes());
+    data18b.extend_from_slice(&14u64.to_le_bytes());
+    data18b.extend_from_slice(&1u64.to_le_bytes());
+    let ix18b = Instruction::new_with_bytes(
+        program_id,
+        &data18b,
+        vec![
+            AccountMeta::new(operator, true),
+            AccountMeta::new_readonly(operator_record, false),
+            AccountMeta::new_readonly(transition7, false),
+            AccountMeta::new_readonly(config, false),
+            AccountMeta::new(window_state_14, false),
+            AccountMeta::new(fee_vault, false),
+        ],
+    );
+    let cu18b = run_expect_err(&mollusk, "collect_fees:18over", &ix18b, &accounts, 6095);
+    measured.push(serde_json::json!({
+        "instruction": "collect_fees:18over",
+        "cu": cu18b,
+        "result": "Refused",
+        "error": "CollectExceedsDeclaredSchedule",
+        "error_code": 6095,
+        "note": "slice-18 refusal: collecting 1 more in window 14 (already collected exactly to its 100,000 declaration) refuses CollectExceedsDeclaredSchedule (6095) — the vault total is bounded per window by the prior declaration, NOT a success CU",
+    }));
+    let ws18b = accounts.iter().find(|(k, _)| *k == window_state_14).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(ws18b.data[121..129].try_into().unwrap()), 100_000u64, "window 14 fees_collected_raw moved during collect_fees:18over refusal");
+    let fv18b = accounts.iter().find(|(k, _)| *k == fee_vault).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(fv18b.data[8..16].try_into().unwrap()), 100_000u64, "FeeVault collected_raw moved during collect_fees:18over refusal");
+    // (c) a collection in an UNDECLARED window MUST refuse
+    // FeeScheduleUndeclared (6094): window 13 has no schedule (its
+    // declared flag is still false), so no collection is possible
+    // there, even under the same Committed transition type — the
+    // schedule is per window, not per transition.
+    let mut data18c = disc("collect_fees");
+    data18c.extend_from_slice(&7u64.to_le_bytes());
+    data18c.extend_from_slice(&13u64.to_le_bytes());
+    data18c.extend_from_slice(&1_000u64.to_le_bytes());
+    let ix18c = Instruction::new_with_bytes(
+        program_id,
+        &data18c,
+        vec![
+            AccountMeta::new(operator, true),
+            AccountMeta::new_readonly(operator_record, false),
+            AccountMeta::new_readonly(transition7, false),
+            AccountMeta::new_readonly(config, false),
+            AccountMeta::new(window_state_13, false),
+            AccountMeta::new(fee_vault, false),
+        ],
+    );
+    let cu18c = run_expect_err(&mollusk, "collect_fees:18undeclared", &ix18c, &accounts, 6094);
+    measured.push(serde_json::json!({
+        "instruction": "collect_fees:18undeclared",
+        "cu": cu18c,
+        "result": "Refused",
+        "error": "FeeScheduleUndeclared",
+        "error_code": 6094,
+        "note": "slice-18 refusal: collecting 1,000 in window 13 (no fee schedule declared) refuses FeeScheduleUndeclared (6094) — no schedule, no collection, NOT a success CU",
+    }));
+    let ws18c = accounts.iter().find(|(k, _)| *k == window_state_13).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(ws18c.data[137], 0u8, "window 13 fee_schedule_declared flag moved during collect_fees:18undeclared refusal");
+    assert_eq!(u64::from_le_bytes(ws18c.data[121..129].try_into().unwrap()), 0u64, "window 13 fees_collected_raw moved during collect_fees:18undeclared refusal");
+    // (d) a declared ZERO is a real declaration, not an undeclared
+    // window: declaring window 13's schedule at 0 succeeds, and a
+    // further 1-unit collection then refuses as over-declared
+    // (6095), not as undeclared — the flag, not a zero total,
+    // distinguishes the two states.
+    let mut data18d2 = disc("declare_fee_schedule");
+    data18d2.extend_from_slice(&7u64.to_le_bytes());
+    data18d2.extend_from_slice(&13u64.to_le_bytes());
+    data18d2.extend_from_slice(&0u64.to_le_bytes());
+    let ix18d2 = Instruction::new_with_bytes(
+        program_id,
+        &data18d2,
+        vec![
+            AccountMeta::new(operator, true),
+            AccountMeta::new_readonly(operator_record, false),
+            AccountMeta::new_readonly(transition7, false),
+            AccountMeta::new(window_state_13, false),
+        ],
+    );
+    let (next, cu) = run(&mollusk, "declare_fee_schedule:18zero", &ix18d2, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({
+        "instruction": "declare_fee_schedule:18zero",
+        "cu": cu,
+        "result": "Success",
+        "note": "slice-18 declaration: operator declares window 13's fee schedule at 0 — a declared zero is a real declaration (no fees this window), not an undeclared window; no §2.2 estimate exists for this instruction, so this value is a baseline, not a gated figure",
+    }));
+    let ws18d2 = accounts.iter().find(|(k, _)| *k == window_state_13).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(ws18d2.data[137], 1u8, "window 13 fee_schedule_declared flag not set after declare_fee_schedule:18zero");
+    assert_eq!(u64::from_le_bytes(ws18d2.data[129..137].try_into().unwrap()), 0u64, "window 13 declared_fees_raw not 0 after declare_fee_schedule:18zero");
+    let mut data18e = disc("collect_fees");
+    data18e.extend_from_slice(&7u64.to_le_bytes());
+    data18e.extend_from_slice(&13u64.to_le_bytes());
+    data18e.extend_from_slice(&1u64.to_le_bytes());
+    let ix18e = Instruction::new_with_bytes(
+        program_id,
+        &data18e,
+        vec![
+            AccountMeta::new(operator, true),
+            AccountMeta::new_readonly(operator_record, false),
+            AccountMeta::new_readonly(transition7, false),
+            AccountMeta::new_readonly(config, false),
+            AccountMeta::new(window_state_13, false),
+            AccountMeta::new(fee_vault, false),
+        ],
+    );
+    let cu18e = run_expect_err(&mollusk, "collect_fees:18zeroexceeds", &ix18e, &accounts, 6095);
+    measured.push(serde_json::json!({
+        "instruction": "collect_fees:18zeroexceeds",
+        "cu": cu18e,
+        "result": "Refused",
+        "error": "CollectExceedsDeclaredSchedule",
+        "error_code": 6095,
+        "note": "slice-18 refusal: collecting 1 in window 13 (declared schedule 0) refuses CollectExceedsDeclaredSchedule (6095), not FeeScheduleUndeclared — a declared zero is a schedule, NOT a success CU",
+    }));
+    let ws18e = accounts.iter().find(|(k, _)| *k == window_state_13).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(ws18e.data[121..129].try_into().unwrap()), 0u64, "window 13 fees_collected_raw moved during collect_fees:18zeroexceeds refusal");
+
     let golden = serde_json::json!({
         "harness": "cu-golden-mollusk",
         "mollusk_svm": MOLLUSK_SVM_VERSION,
@@ -4677,8 +4863,8 @@ fn main() {
         "program_so_sha256": so_sha256,
         "token_program_id": TOKEN_PROGRAM_ID_STR,
         "token_program_so_sha256": token_elf_sha256,
-        "slice": 17,
-        "slice_note": "slices 1-8 as before (slice-5/6 refusal probes stand as the unfunded-chain record; slice-7 FUNDED chain: real SPL Token deposit credits TreasuryState 60,000,000, window 1 opens on the funded snapshot, borrow / exit / settle_default / schedule_whale_exit FIRST successes; slice-8 12-window walk: windows 2..13 each open on their own Settled treasury.window.v1 transition (transitions 9..20, parented in sequence), each on the funded snapshot (total 60,000,000, exit stock 10,000,000, FLAG 2,000,000), and the FIRST success measurement execute_whale_tranche (tranche 1 of 5, 2,000,000 raw, on Committed treasury.exit.v1 transition 8, creation window 1, execution window 13 >= lock_until 13), gated §2.2 ~7K (2x band 3,500-14,000)) + slice-9 W3.2 re-expression part 1: tranche-2 weekly cadence on the slice-8 chain — TrancheTooSoon refusals at the tranche-1 clock and at last_block_time + WEEK_SECS - 1, then tranche 2 of 5 (2,000,000 raw) SUCCESS at exactly last_block_time + WEEK_SECS (31,608,400), gated §2.2 ~7K; launch_stage2 unmeasured by design (ThresholdUnset, D-2) + slice-10 W3.2 re-expression part 2: blind-ape bulk exit (T11) on the funded chain — the whole-position order (23,500,000 raw) refuses ExitExceedsLiquidity under the D-10 hard bound (L = 10,000,000), the largest executable bulk exit (8,500,000 raw, the remaining window-1 stock) succeeds with the flat 13% penalty on the full excess (1,105,000 penalty, 7,395,000 paid), and a further window-1 exit refuses ExitStockExhausted with aggregate window-1 exits exactly at L + slice-11 W3.2 re-expression part 3: default-as-exit (T10) on twin holders in window 13 (position 10,000,000 each) — borrow above the cap refuses LoanExceedsPosition, the max loan 5,000,000 succeeds at the inclusive boundary of the 50%-of-position and book caps, pre-maturity settle_default refuses LoanNotMatured, at-maturity settle_default succeeds (position 10,000,000 -> 5,000,000, skip flag set), and the PROBE: pay_tranche AFTER the default SUCCEEDS despite skip_next_dividend set, because can_pay_tranche takes no skip argument — the forfeiture half of T10 is unenforced on the program today, the one-cycle ledgers come out EQUAL (11,000,000 each), and T10 is NOT claimed re-expressed until the carried skip-enforcement item lands; window 13 exit stock ends 4,000,000, clock ends 36,792,400 + slice-12 W3.2 re-expression part 4: cohort-timing at window boundaries (D-11) — enroll into past window 12 refuses NotCurrentWindow, zero-position enroll into current window 13 refuses InvalidPosition, a double enroll in window 13 refuses at the account layer (one record per holder per window), a current-window-13 enroll succeeds (cohort 1); then the boundary is crossed for real (Settled transition 21 opens window 14, window_count 15): the just-closed window 13 now refuses NotCurrentWindow, a window-14 enroll succeeds (cohort 2), a future window-15 enroll refuses at the account layer (no window account exists yet), and the new cohort's pay_tranche 1,000,000 succeeds on its own slot (14 % 12 = 2), gated §2.2 ~7K; window 13 stock ends 4,000,000, window 14 stock 10,000,000, clock ends 37,003,600 + slice-13 W3.2 re-expression part 5: fee-flow edge cases under the single 73 bps stream (D-5) — a second real deposit 10,000,000 credits TreasuryState by exactly 10,000,000 (a funding-time skim would credit 9,927,000) with vault/source conserving exactly and FeeVault collected_raw still 0, and a mid-window deposit does not inflate window 14's snapshot or stock; holder 27's all-accrued exit 1,000,000 takes neither penalty nor fee (position stays 5,000,000, stock 10,000,000 -> 9,000,000) and a further 1,000,000 all-excess exit carries exactly the flat 13% penalty (position 5,000,000 -> 4,000,000, stock 9,000,000 -> 8,000,000, can_exit has no FEE_PPM term so no second skim exists); the negative half of the fee flow is proven, but the positive half — collection and reconciliation — is NOT: FeeVault collected_raw is still 0 because collect_fees is unbuilt, and the 73 bps income identity has no on-chain realization until that remaining §4.2 row lands + slice-14 the remaining §4.2 row `reinvest` (design §4.2, engine-sim T8) on a fresh holder 29 in window 14 — enroll 5,000,000 (cohort 2), pay_tranche 1,000,000 on Committed window-flow transition 7, then reinvest 400,000 (accrued 1,000,000 -> 600,000, position 5,000,000 -> 5,400,000, window 14 exit stock UNCHANGED at 8,000,000, TreasuryState UNCHANGED), a 600,001 reinvest refusing ReinvestExceedsAccrued (6087), the remaining 600,000 reinvesting at the inclusive boundary (accrued -> 0, position -> 6,000,000), and a zero reinvest refusing InvalidReinvestAmount (6086); the reinvest reading is accrued-dividend-only, partial allowed, no stock debit, no penalty, no value created — reinvesting a borrowed amount is NOT this instruction and needs its own ruling; program IDL 37 -> 38 instructions, 85 -> 88 errors, accounts 16, host tests 82 -> 83, and slices 1-13 re-measured against the new .so (sha e0f40adf...) with any shifts reported in the run log, not silently re-baselined + slice-15 the last §4.2 row `collect_fees` (design §4.2, D-5) on the slice-14 chain — operator collects 73,000 (73 bps on a 10,000,000 flow, operator-reported) in window 14 on Committed window flow transition 7 (window fees_collected_raw 0 -> 73,000, FeeVault collected_raw 0 -> 73,000, exit stock still 8,000,000, TreasuryState still 70,000,000), a further 27,000 accumulates in the same window (window and vault both 100,000 — the vault total is the sum over windows), a zero collection refuses InvalidCollectAmount (6090), and an agent without OPERATOR_SETTLE refuses Unauthorized (6000); the fee flow now has its positive half as on-chain accounting, but the design row's numeric reconciliation against the declared total is NOT implemented (the TransitionRecord carries only a declared_hash, not a fee total) and rides as a carried item; program IDL 38 -> 39 instructions, 88 -> 91 errors, accounts 16, host tests 83 -> 84, WindowState SPACE 121 -> 129 (fees_collected_raw appended after bump), and slices 1-14 re-measured against the new .so with any shifts reported in the run log, not silently re-baselined + slice-16 skip-next-dividend enforcement (D-3, the carried item from slice 11): can_pay_tranche takes the skip flag and refuses DividendSkipped (6091) — the slice-11 probe tranche now REFUSES (accrued 0, flag stays set, slot unpaid), twin D's replacement 1,000,000 exit comes from position at the flat 13% penalty (paid 870,000, position 5,000,000 -> 4,000,000), and the one-cycle ledgers are strictly worse for the defaulter (9,870,000 vs 11,000,000), so T10 is claimed re-expressed on the record that carries the flag; the cross-record carry to a later window's fresh record stays carried; program IDL 39 instructions, 91 -> 92 errors, accounts 16, host tests 84 (pay_tranche_gate_matrix gains the skip case, no new test fn), and slices 1-15 re-measured against the new .so with any shifts reported in the run log, not silently re-baselined + slice-17 the open_window source-transition consumption fix (the carried Part B4 item): TransitionRecord gains window_open_applied (SPACE 865 -> 866, appended after the signalled bitmap, no field moves), open_window sets it in the same instruction as the counter advance and window creation, and a second open on the same Settled transition refuses SourceTransitionConsumed (6092) — the slice-17 probe reuses transition 21 (which opened window 14) for window 15 and refuses, window_count stays 15, no window 15 is created; every open_window caller now passes the transition writable, since the handler writes the flag; program IDL 39 instructions, 92 -> 93 errors, accounts 16, host tests 84 (window_open_gate_matrix gains the consumed case, no new test fn), and slices 1-16 re-measured against the new .so with any shifts reported in the run log, not silently re-baselined",
+        "slice": 18,
+        "slice_note": "slices 1-8 as before (slice-5/6 refusal probes stand as the unfunded-chain record; slice-7 FUNDED chain: real SPL Token deposit credits TreasuryState 60,000,000, window 1 opens on the funded snapshot, borrow / exit / settle_default / schedule_whale_exit FIRST successes; slice-8 12-window walk: windows 2..13 each open on their own Settled treasury.window.v1 transition (transitions 9..20, parented in sequence), each on the funded snapshot (total 60,000,000, exit stock 10,000,000, FLAG 2,000,000), and the FIRST success measurement execute_whale_tranche (tranche 1 of 5, 2,000,000 raw, on Committed treasury.exit.v1 transition 8, creation window 1, execution window 13 >= lock_until 13), gated §2.2 ~7K (2x band 3,500-14,000)) + slice-9 W3.2 re-expression part 1: tranche-2 weekly cadence on the slice-8 chain — TrancheTooSoon refusals at the tranche-1 clock and at last_block_time + WEEK_SECS - 1, then tranche 2 of 5 (2,000,000 raw) SUCCESS at exactly last_block_time + WEEK_SECS (31,608,400), gated §2.2 ~7K; launch_stage2 unmeasured by design (ThresholdUnset, D-2) + slice-10 W3.2 re-expression part 2: blind-ape bulk exit (T11) on the funded chain — the whole-position order (23,500,000 raw) refuses ExitExceedsLiquidity under the D-10 hard bound (L = 10,000,000), the largest executable bulk exit (8,500,000 raw, the remaining window-1 stock) succeeds with the flat 13% penalty on the full excess (1,105,000 penalty, 7,395,000 paid), and a further window-1 exit refuses ExitStockExhausted with aggregate window-1 exits exactly at L + slice-11 W3.2 re-expression part 3: default-as-exit (T10) on twin holders in window 13 (position 10,000,000 each) — borrow above the cap refuses LoanExceedsPosition, the max loan 5,000,000 succeeds at the inclusive boundary of the 50%-of-position and book caps, pre-maturity settle_default refuses LoanNotMatured, at-maturity settle_default succeeds (position 10,000,000 -> 5,000,000, skip flag set), and the PROBE: pay_tranche AFTER the default SUCCEEDS despite skip_next_dividend set, because can_pay_tranche takes no skip argument — the forfeiture half of T10 is unenforced on the program today, the one-cycle ledgers come out EQUAL (11,000,000 each), and T10 is NOT claimed re-expressed until the carried skip-enforcement item lands; window 13 exit stock ends 4,000,000, clock ends 36,792,400 + slice-12 W3.2 re-expression part 4: cohort-timing at window boundaries (D-11) — enroll into past window 12 refuses NotCurrentWindow, zero-position enroll into current window 13 refuses InvalidPosition, a double enroll in window 13 refuses at the account layer (one record per holder per window), a current-window-13 enroll succeeds (cohort 1); then the boundary is crossed for real (Settled transition 21 opens window 14, window_count 15): the just-closed window 13 now refuses NotCurrentWindow, a window-14 enroll succeeds (cohort 2), a future window-15 enroll refuses at the account layer (no window account exists yet), and the new cohort's pay_tranche 1,000,000 succeeds on its own slot (14 % 12 = 2), gated §2.2 ~7K; window 13 stock ends 4,000,000, window 14 stock 10,000,000, clock ends 37,003,600 + slice-13 W3.2 re-expression part 5: fee-flow edge cases under the single 73 bps stream (D-5) — a second real deposit 10,000,000 credits TreasuryState by exactly 10,000,000 (a funding-time skim would credit 9,927,000) with vault/source conserving exactly and FeeVault collected_raw still 0, and a mid-window deposit does not inflate window 14's snapshot or stock; holder 27's all-accrued exit 1,000,000 takes neither penalty nor fee (position stays 5,000,000, stock 10,000,000 -> 9,000,000) and a further 1,000,000 all-excess exit carries exactly the flat 13% penalty (position 5,000,000 -> 4,000,000, stock 9,000,000 -> 8,000,000, can_exit has no FEE_PPM term so no second skim exists); the negative half of the fee flow is proven, but the positive half — collection and reconciliation — is NOT: FeeVault collected_raw is still 0 because collect_fees is unbuilt, and the 73 bps income identity has no on-chain realization until that remaining §4.2 row lands + slice-14 the remaining §4.2 row `reinvest` (design §4.2, engine-sim T8) on a fresh holder 29 in window 14 — enroll 5,000,000 (cohort 2), pay_tranche 1,000,000 on Committed window-flow transition 7, then reinvest 400,000 (accrued 1,000,000 -> 600,000, position 5,000,000 -> 5,400,000, window 14 exit stock UNCHANGED at 8,000,000, TreasuryState UNCHANGED), a 600,001 reinvest refusing ReinvestExceedsAccrued (6087), the remaining 600,000 reinvesting at the inclusive boundary (accrued -> 0, position -> 6,000,000), and a zero reinvest refusing InvalidReinvestAmount (6086); the reinvest reading is accrued-dividend-only, partial allowed, no stock debit, no penalty, no value created — reinvesting a borrowed amount is NOT this instruction and needs its own ruling; program IDL 37 -> 38 instructions, 85 -> 88 errors, accounts 16, host tests 82 -> 83, and slices 1-13 re-measured against the new .so (sha e0f40adf...) with any shifts reported in the run log, not silently re-baselined + slice-15 the last §4.2 row `collect_fees` (design §4.2, D-5) on the slice-14 chain — operator collects 73,000 (73 bps on a 10,000,000 flow, operator-reported) in window 14 on Committed window flow transition 7 (window fees_collected_raw 0 -> 73,000, FeeVault collected_raw 0 -> 73,000, exit stock still 8,000,000, TreasuryState still 70,000,000), a further 27,000 accumulates in the same window (window and vault both 100,000 — the vault total is the sum over windows), a zero collection refuses InvalidCollectAmount (6090), and an agent without OPERATOR_SETTLE refuses Unauthorized (6000); the fee flow now has its positive half as on-chain accounting, but the design row's numeric reconciliation against the declared total is NOT implemented (the TransitionRecord carries only a declared_hash, not a fee total) and rides as a carried item; program IDL 38 -> 39 instructions, 88 -> 91 errors, accounts 16, host tests 83 -> 84, WindowState SPACE 121 -> 129 (fees_collected_raw appended after bump), and slices 1-14 re-measured against the new .so with any shifts reported in the run log, not silently re-baselined + slice-16 skip-next-dividend enforcement (D-3, the carried item from slice 11): can_pay_tranche takes the skip flag and refuses DividendSkipped (6091) — the slice-11 probe tranche now REFUSES (accrued 0, flag stays set, slot unpaid), twin D's replacement 1,000,000 exit comes from position at the flat 13% penalty (paid 870,000, position 5,000,000 -> 4,000,000), and the one-cycle ledgers are strictly worse for the defaulter (9,870,000 vs 11,000,000), so T10 is claimed re-expressed on the record that carries the flag; the cross-record carry to a later window's fresh record stays carried; program IDL 39 instructions, 91 -> 92 errors, accounts 16, host tests 84 (pay_tranche_gate_matrix gains the skip case, no new test fn), and slices 1-15 re-measured against the new .so with any shifts reported in the run log, not silently re-baselined + slice-17 the open_window source-transition consumption fix (the carried Part B4 item): TransitionRecord gains window_open_applied (SPACE 865 -> 866, appended after the signalled bitmap, no field moves), open_window sets it in the same instruction as the counter advance and window creation, and a second open on the same Settled transition refuses SourceTransitionConsumed (6092) — the slice-17 probe reuses transition 21 (which opened window 14) for window 15 and refuses, window_count stays 15, no window 15 is created; every open_window caller now passes the transition writable, since the handler writes the flag; program IDL 39 instructions, 92 -> 93 errors, accounts 16, host tests 84 (window_open_gate_matrix gains the consumed case, no new test fn), and slices 1-16 re-measured against the new .so with any shifts reported in the run log, not silently re-baselined + slice-18 the declared-fee-schedule reconciliation (the carried item from slice 15): WindowState gains declared_fees_raw + fee_schedule_declared (SPACE 129 -> 138, appended after fees_collected_raw, no field moves), a new instruction declare_fee_schedule sets the window's schedule once under its Committed window flow transition (a second declaration refuses FeeScheduleAlreadyDeclared, 6093), and collect_fees now refuses in an undeclared window (FeeScheduleUndeclared, 6094) and past the declared total (CollectExceedsDeclaredSchedule, 6095) — on this chain window 14's schedule is declared at 100,000 before the slice-15 collections, which land exactly on it (73,000 + 27,000), a further 1 refuses as over-declared, window 13 collects nothing while undeclared, a declared zero for window 13 is a real declaration (a further 1 then refuses as over-declared, not undeclared); the declaration itself is operator-reported, so this slice bounds collections by a prior immutable declaration and makes shortfall visible, it does not independently verify the declaration against compose-layer volume; program IDL 39 -> 40 instructions, 93 -> 96 errors, accounts 16, host tests 84 -> 85 (declare_fee_schedule_gate_matrix added, collect_fees_gate_matrix gains the reconciliation cases), and slices 1-17 re-measured against the new .so with any shifts reported in the run log, not silently re-baselined",
         "clock": {"phase_a_unix_timestamp": NOW0, "planning_window_s": PLANNING_WINDOW, "phase_b_unix_timestamp": NOW1},
         "instructions": measured,
     });
