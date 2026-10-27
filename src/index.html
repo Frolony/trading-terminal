@@ -122,6 +122,11 @@ a.wrow{text-decoration:none}
    control (no extra chrome in the dense header row); the pointer cursor is
    the affordance, the ▲/▼ in the label and aria-sort are the state. */
 .disctable th[data-disc-col]{cursor:pointer;white-space:nowrap}
+/* N3.15 (A94): sortable pairs-table headers — the header cell itself is the
+   control (the N3.10 interaction, reused); pointer cursor is the affordance,
+   the ▲/▼ in the label and aria-sort are the state. Scoped by the attribute
+   itself: only the pairs headers carry data-pairs-col. */
+th[data-pairs-col]{cursor:pointer;white-space:nowrap}
 /* N5.22 (A83): the trending table fits its panel. Root cause: .results is a grid whose single track defaulted to the table's min-content width, so the table forced the panel wider instead of scrolling inside it; the fix clamps the track (above) and the wrapper, compresses the money columns, and caps the two wide cells. Search cards are untouched: these rules are scoped to .disctable, and the card strip keeps its grid. */
 .results .tablewrap{min-width:0;max-width:100%;overflow-x:auto}
 .disctable .discpair{min-width:0;max-width:250px}
@@ -413,7 +418,7 @@ the brief outline flash marks the landing panel without touching its copy.*/
 <div class="sub" style="margin-bottom:4px">Deploy pins a configuration and tracks it against new daily bars. Simulated — no real funds, nothing on-chain.</div>
 <div id="btDeployList" style="margin-top:10px"></div>
 </div></section>
-<section class="panel" data-panel="pairs"><div class="panelhead" data-drag-handle><h2>Solana market pairs</h2><div style="display:flex;align-items:center;gap:8px"><button type="button" class="action" id="retryFeed" data-testid="retry-btn">Retry feed</button><span class="pill" id="pairCount">DISCOVERING</span></div></div><div class="tablewrap"><table><thead><tr><th>Pair / DEX</th><th id="pairsPriceHead">Price USD</th><th>24H</th><th>Liquidity</th><th>24H volume</th><th>Trade</th></tr></thead><tbody id="pairs" data-testid="pairs-table"><tr><td colspan="6" class="empty">Loading live pairs from DexScreener…</td></tr></tbody></table></div><div class="sub" style="padding:8px 16px 12px">DS = DexScreener (the live feed) · GT = GeckoTerminal (comparison only — hero, watchlist values and the ticket still use DexScreener prices).</div></section>
+<section class="panel" data-panel="pairs"><div class="panelhead" data-drag-handle><h2>Solana market pairs</h2><div style="display:flex;align-items:center;gap:8px"><button type="button" class="action" id="retryFeed" data-testid="retry-btn">Retry feed</button><span class="pill" id="pairCount">DISCOVERING</span></div></div><div class="tablewrap"><table><thead><tr><th data-pairs-col="pair" aria-sort="none" title="Sort by Pair">Pair / DEX</th><th id="pairsPriceHead" data-pairs-col="price" aria-sort="none" title="Sort by Price">Price USD</th><th data-pairs-col="chg24" aria-sort="none" title="Sort by 24H %">24H</th><th data-pairs-col="liq" aria-sort="none" title="Sort by Liquidity">Liquidity</th><th data-pairs-col="volume" aria-sort="none" title="Sort by 24H volume">24H volume</th><th>Trade</th></tr></thead><tbody id="pairs" data-testid="pairs-table"><tr><td colspan="6" class="empty">Loading live pairs from DexScreener…</td></tr></tbody></table></div><div class="sub" id="pairsSortNote" hidden style="padding:8px 16px 0"></div><div class="sub" style="padding:8px 16px 12px">DS = DexScreener (the live feed) · GT = GeckoTerminal (comparison only — hero, watchlist values and the ticket still use DexScreener prices).</div></section>
 <section class="panel" data-panel="dashboard" id="dashboardPanel"><div class="panelhead" data-drag-handle><h2>Dashboard</h2><span class="pill" id="dashModePill">PAPER</span></div><div class="panelbody"><div class="amounts" id="dashModeChips" role="group" aria-label="Dashboard mode"><button type="button" data-dm="paper" class="on">Paper</button><button type="button" data-dm="live">Live</button></div><div id="dashContent" style="margin-top:12px"><div class="empty">Loading dashboard…</div></div><div class="sub" style="margin-top:10px">P&amp;L uses FIFO cost basis from your paper fills. Paper figures are simulated — no blockchain transaction is ever sent. The dashboard is a read view: it is derived, never stored.</div></div></section>
 <section class="panel" data-panel="mktcond"><div class="panelhead" data-drag-handle><h2>Solana market conditions</h2><span class="eyebrow">TRENDING SAMPLE · NOT A PREDICTION</span></div><div class="panelbody"><div id="mktCondBody"><div class="empty">Loading market conditions…</div></div><div class="sub" style="margin-top:10px">Computed from public feed data — context, not a prediction. The breadth sample is the trending table's rows, never "the market" as a whole.</div></div></section>
 <section class="panel" data-panel="discovery"><div class="panelhead" data-drag-handle><h2>Token discovery</h2><span class="eyebrow">LIVE DISCOVERY</span></div><div class="panelbody"><div class="searchrow"><input id="tokenSearch" placeholder="Search token, ticker or mint address" value="SOL"><button id="searchBtn">Search</button></div><div id="searchResults" class="results" data-testid="search-results"><div class="empty">Search live Solana pairs and add candidates to your watchlist.</div></div></div></section>
@@ -1280,7 +1285,35 @@ function poolLinks(p){const out=[];const addr=p&&p.pairAddress;if(isPlausiblePoo
 function poolIdentityHtml(p){const addr=p&&p.pairAddress;if(!isPlausiblePoolAddress(addr))return '<div class="poolident"><span class="poolnone">Pool address not in this record</span></div>';const links=poolLinks(p);return '<div class="poolident"><button type="button" class="pooladdr" data-copy-addr="'+esc(addr)+'" title="Copy pool address '+esc(addr)+'">'+esc(truncateAddr(addr))+'</button>'+(links.length?'<div class="poolinks">'+links.map(l=>'<a href="'+esc(l.url)+'" target="_blank" rel="noopener">'+esc(l.label)+' \u2197</a>').join('')+'</div>':'')+'</div>';}
 function copyAddressText(addr,label){if(!addr)return;if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(addr).then(()=>toast(label+' copied.'),()=>toast('Copy failed \u2014 select the address manually.'));}else toast('Copy not available in this browser.');}
 document.addEventListener('click',e=>{const b=e.target&&e.target.closest?e.target.closest('[data-copy-addr]'):null;if(b)copyAddressText(b.dataset.copyAddr,'Address');});
-function renderPairs(){const rows=marketPairs.slice(0,8);const ph=$('pairsPriceHead');if(ph)ph.textContent=pairsPriceHeadText();$('pairCount').textContent=rows.length+' PAIRS';rows.forEach(p=>{try{if(p.baseToken&&p.baseToken.address)wlFeedMap.set(p.baseToken.address,{priceUsd:Number(p.priceUsd),change24h:p.priceChange?.h24==null?null:Number(p.priceChange.h24)});}catch(_){}});if(!rows.length){$('pairs').innerHTML='<tr><td colspan="6" class="empty">No market pairs are currently available.</td></tr>';return}$('pairs').innerHTML=rows.map(p=>{const rawChange=p.priceChange?.h24,ch=rawChange===null||rawChange===undefined||!Number.isFinite(Number(rawChange))?null:Number(rawChange),sym=p.baseToken.symbol||'TOKEN',pair=sym+'/'+(p.quoteToken.symbol||'—'),liquidity=Number(p.liquidity?.usd),volume=p.volume?.h24===null||p.volume?.h24===undefined?NaN:Number(p.volume.h24),changeText=ch===null?'—':(ch>=0?'+':'')+fmt(ch,2)+'%';return '<tr data-testid="pair-row"><td><div class="token"><div class="tokenbadge">'+esc(sym.slice(0,3))+'</div><div><strong>'+esc(pair)+'</strong><small>'+esc(p.dexId||'DEX')+'</small>'+poolIdentityHtml(p)+'</div></div></td><td>'+pairDualPriceHtml(p)+'</td><td data-testid="chg-24h" class="'+(ch===null?'':ch>=0?'positive':'negative')+'">'+changeText+'</td><td>'+(Number.isFinite(liquidity)&&liquidity>0?usd(liquidity):'—')+'</td><td>'+(Number.isFinite(volume)&&volume>=0?usd(volume):'—')+'</td><td><button class="action" data-trade="buy" data-mint="'+esc(p.baseToken.address||'')+'">Buy</button></td></tr>'}).join('');document.querySelectorAll('[data-trade]').forEach(b=>b.onclick=()=>{const p=marketPairs.find(r=>r.baseToken&&r.baseToken.address===b.dataset.mint);if(p)selectTicketPair(p);});syncPricesFromPairs();updatePortfolio();renderWatchlist()}
+/* N3.15 (2026-10-26, A94): sortable Terminal pairs table, reusing the
+   N3.10 interaction (click a header = sort; click again = reverse; arrow +
+   aria-sort show the state; missing values sort LAST in both directions).
+   SORTABLE: Pair (alphabetical, A→Z on first click), Price (DS — the GT
+   comparison price stays DISPLAY-ONLY per the N3.5 ownership rule and is
+   never a sort key), 24h %, Volume 24h, Liquidity. Trade is not sortable.
+   FIRST-CLICK DIRECTION: numerics descend first (largest first, the N3.10
+   rule); Pair ascends first (A→Z, the spec's acceptance). DISPLAY-ONLY:
+   renderPairs sorts a COPY of marketPairs; the feed array itself never
+   reorders, so hero/stat derivations (fetchMarket's SOL spot pick, heroPair,
+   syncPricesFromPairs, the ticket) all still read feed order — display order
+   cannot change what the hero quotes, the same discipline as N3.5. DEFAULT
+   is the feed's own order (the fetch already sorts by liquidity desc); while
+   a manual sort is active the footer under the table says so and offers a
+   one-click 'Feed order' reset. STATE lives in settings.pairsManualSort
+   (validated in loadSettings, next to the discovery manual sort) and is read
+   fresh at every render via pairsManualSortState(), so a wallet/account sync
+   pull that replaces settings takes effect on the next renderPairs(). */
+const PAIRS_SORT_KEYS=['pair','price','chg24','liq','volume'];
+const PAIRS_SORT_LABELS={pair:'Pair / DEX',price:null,chg24:'24H',liq:'Liquidity',volume:'24H volume'};
+function pairsValidManualSort(v){if(!v||typeof v!=='object')return null;if(PAIRS_SORT_KEYS.indexOf(v.key)<0)return null;if(v.dir!=='asc'&&v.dir!=='desc')return null;return{key:v.key,dir:v.dir};}
+function pairsManualSortState(){try{return pairsValidManualSort(settings&&settings.pairsManualSort);}catch(_){return null;}}
+function pairsSortValue(p,key){if(!p)return null;if(key==='pair'){const sym=(p.baseToken&&p.baseToken.symbol)||'TOKEN';const q=(p.quoteToken&&p.quoteToken.symbol)||'—';return (sym+'/'+q).toUpperCase();}if(key==='price'){const v=Number(p.priceUsd);return (Number.isFinite(v)&&v>0)?v:null;}if(key==='chg24'){const v=p.priceChange?p.priceChange.h24:null;const n=(v===null||v===undefined)?NaN:Number(v);return Number.isFinite(n)?n:null;}if(key==='liq'){const v=Number(p.liquidity?p.liquidity.usd:null);return (Number.isFinite(v)&&v>0)?v:null;}if(key==='volume'){const v=p.volume?p.volume.h24:null;const n=(v===null||v===undefined)?NaN:Number(v);return (Number.isFinite(n)&&n>=0)?n:null;}/* N3.15: null volume is missing, never 0 (Number(null) is 0 — the harness-found null-to-0 hardening) */return null;}
+function pairsSortRows(rows,manual){const m=pairsValidManualSort(manual);const arr=(rows||[]).slice();if(!m)return arr;const indexed=arr.map((p,i)=>({p:p,i:i}));indexed.sort((a,b)=>{const x=pairsSortValue(a.p,m.key),y=pairsSortValue(b.p,m.key);if(x==null&&y==null)return a.i-b.i;if(x==null)return 1;if(y==null)return -1;let c=0;if(typeof x==='string')c=x<y?-1:(x>y?1:0);else c=x-y;if(c!==0)return m.dir==='asc'?c:-c;return a.i-b.i;});return indexed.map(o=>o.p);}
+function pairsApplyManualSort(key){if(PAIRS_SORT_KEYS.indexOf(key)<0||!settings)return;const cur=pairsManualSortState();settings.pairsManualSort=cur&&cur.key===key?{key:key,dir:cur.dir==='desc'?'asc':'desc'}:{key:key,dir:key==='pair'?'asc':'desc'};saveSettings();renderPairs();}
+function pairsResetSort(){if(!settings)return;settings.pairsManualSort=null;saveSettings();renderPairs();}
+function pairsPaintHeaders(){const m=pairsManualSortState();document.querySelectorAll('[data-pairs-col]').forEach(th=>{const key=th.dataset.pairsCol;const active=m&&m.key===key;th.setAttribute('aria-sort',active?(m.dir==='desc'?'descending':'ascending'):'none');const label=key==='price'?pairsPriceHeadText():PAIRS_SORT_LABELS[key];if(label)th.textContent=label+(active?(m.dir==='desc'?' ▼':' ▲'):'');});const foot=$('pairsSortNote');if(!foot)return;if(!m){foot.hidden=true;foot.innerHTML='';return;}const label=m.key==='price'?pairsPriceHeadText():PAIRS_SORT_LABELS[m.key];foot.hidden=false;foot.innerHTML='Sorted by '+esc(label)+' '+(m.dir==='desc'?'▼':'▲')+' · <button type="button" class="action" data-pairs-reset>Feed order</button>';const btn=foot.querySelector('[data-pairs-reset]');if(btn)btn.onclick=()=>pairsResetSort();}
+document.addEventListener('click',e=>{const th=e.target&&e.target.closest?e.target.closest('[data-pairs-col]'):null;if(th)pairsApplyManualSort(th.dataset.pairsCol);});
+function renderPairs(){const rows=pairsSortRows(marketPairs,pairsManualSortState()).slice(0,8);pairsPaintHeaders();$('pairCount').textContent=rows.length+' PAIRS';rows.forEach(p=>{try{if(p.baseToken&&p.baseToken.address)wlFeedMap.set(p.baseToken.address,{priceUsd:Number(p.priceUsd),change24h:p.priceChange?.h24==null?null:Number(p.priceChange.h24)});}catch(_){}});if(!rows.length){$('pairs').innerHTML='<tr><td colspan="6" class="empty">No market pairs are currently available.</td></tr>';return}$('pairs').innerHTML=rows.map(p=>{const rawChange=p.priceChange?.h24,ch=rawChange===null||rawChange===undefined||!Number.isFinite(Number(rawChange))?null:Number(rawChange),sym=p.baseToken.symbol||'TOKEN',pair=sym+'/'+(p.quoteToken.symbol||'—'),liquidity=Number(p.liquidity?.usd),volume=p.volume?.h24===null||p.volume?.h24===undefined?NaN:Number(p.volume.h24),changeText=ch===null?'—':(ch>=0?'+':'')+fmt(ch,2)+'%';return '<tr data-testid="pair-row"><td><div class="token"><div class="tokenbadge">'+esc(sym.slice(0,3))+'</div><div><strong>'+esc(pair)+'</strong><small>'+esc(p.dexId||'DEX')+'</small>'+poolIdentityHtml(p)+'</div></div></td><td>'+pairDualPriceHtml(p)+'</td><td data-testid="chg-24h" class="'+(ch===null?'':ch>=0?'positive':'negative')+'">'+changeText+'</td><td>'+(Number.isFinite(liquidity)&&liquidity>0?usd(liquidity):'—')+'</td><td>'+(Number.isFinite(volume)&&volume>=0?usd(volume):'—')+'</td><td><button class="action" data-trade="buy" data-mint="'+esc(p.baseToken.address||'')+'">Buy</button></td></tr>'}).join('');document.querySelectorAll('[data-trade]').forEach(b=>b.onclick=()=>{const p=marketPairs.find(r=>r.baseToken&&r.baseToken.address===b.dataset.mint);if(p)selectTicketPair(p);});syncPricesFromPairs();updatePortfolio();renderWatchlist()}
 function esc(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 /* N4.3 (2026-10-22): multi-asset paper ticket + mode safety contract.
    - Holdings are keyed by base mint: holdings[mint] = {symbol, quoteSymbol, qty, avgCost, lastPrice}.
@@ -1349,7 +1382,7 @@ function slipSave(bps){if(!Number.isInteger(bps)||bps<SLIP_MIN||bps>SLIP_MAX)ret
    (written before the shared store existed) describes. */
 const SETTINGS_KEY='gecko-terminal:settings-v1';
 const SETTINGS_VERSION=2;
-const DEFAULT_SETTINGS=Object.freeze({version:SETTINGS_VERSION,theme:'dark',density:'comfortable',defaultPair:'SOL',defaultOrderSize:100,defaultOrderSizeCurrency:'USD',defaultSlippageBps:50,quoteCurrency:'USD',quickBuyPresets:[0.025,0.1,0.5],quickBuyActive:0,discManualSort:null,discFilters:null});
+const DEFAULT_SETTINGS=Object.freeze({version:SETTINGS_VERSION,theme:'dark',density:'comfortable',defaultPair:'SOL',defaultOrderSize:100,defaultOrderSizeCurrency:'USD',defaultSlippageBps:50,quoteCurrency:'USD',quickBuyPresets:[0.025,0.1,0.5],quickBuyActive:0,discManualSort:null,discFilters:null,pairsManualSort:null});
 function loadSettings(){
   let parsed={};
   try{parsed=JSON.parse(localStorage.getItem(SETTINGS_KEY)||'{}')||{};}catch(_){parsed={};}
@@ -1386,6 +1419,15 @@ function loadSettings(){
      consts exist (TDZ) — same reason as the quick-buy validation above.
      Anything else normalizes to null (no manual sort; the presets rule). */
   s.discManualSort=(s.discManualSort&&typeof s.discManualSort==='object'&&['age','price','mcap','liq','volume','txns'].indexOf(s.discManualSort.key)>=0&&(s.discManualSort.dir==='asc'||s.discManualSort.dir==='desc'))?{key:s.discManualSort.key,dir:s.discManualSort.dir}:null;
+  /* N3.15 (2026-10-26, A94): manual pairs sort lives in the settings object,
+     next to the discovery manual sort, so it rides the existing settings sync
+     namespace with no new namespace. Validation is inline here, not via the
+     pairs-block helper, because loadSettings runs before that block's consts
+     exist (TDZ) — same reason as the discovery validations above. Anything
+     else normalizes to null (no manual sort; the feed's own order rules).
+     The key list here intentionally omits the N3.14 chg7d/chg30d keys: the
+     pairs table has no such columns. */
+  s.pairsManualSort=(s.pairsManualSort&&typeof s.pairsManualSort==='object'&&['pair','price','chg24','liq','volume'].indexOf(s.pairsManualSort.key)>=0&&(s.pairsManualSort.dir==='asc'||s.pairsManualSort.dir==='desc'))?{key:s.pairsManualSort.key,dir:s.pairsManualSort.dir}:null;
   /* N3.12 (2026-10-26, A90): payload-native discovery filters live in the
      settings object, next to the quick-buy presets and the manual sort, so
      they ride the existing settings sync namespace with no new namespace.
@@ -1591,7 +1633,7 @@ function applySettingsBoot(){
   document.documentElement.dataset.theme=settings.theme;
   document.documentElement.dataset.density=settings.density;
   syncMetaTheme();
-  const ph=$('pairsPriceHead');if(ph)ph.textContent=pairsPriceHeadText(); // A21 follow-up: header unit correct from first paint, even before the first feed tick (boot never calls renderPairs, so a feed-less load kept the static "Price USD")
+  try{pairsPaintHeaders();}catch(_){const ph=$('pairsPriceHead');if(ph)ph.textContent=pairsPriceHeadText();} // A21 follow-up: header unit correct from first paint, even before the first feed tick (boot never calls renderPairs, so a feed-less load kept the static "Price USD"); N3.15: boot also paints the sort headers/footer, so a stored sort shows before the first feed tick
   if(!fillDefaultSizeInput())bootSizePending=true; // N7.6: the live price is not up yet — defer the unit-aware boot fill to the first feed beat
 }
 /*__N52_LAYOUT_START__*/
