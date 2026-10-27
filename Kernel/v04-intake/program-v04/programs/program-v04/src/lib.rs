@@ -70,6 +70,33 @@
 //! and a registered-agent proposer, and the pubkey-to-agent mapping for
 //! both is a later slice — so no kernel call is made here, and the record
 //! is a stored manifest awaiting that replay, not a registered transition.
+//!
+//! Slice 9 (this slice): the third §3 account, `ObservationRecord`,
+//! the `ingest_observation` instruction, and the pubkey-to-agent mapping
+//! slice 8 deferred. The mapping rule is identity, not a registry: kernel
+//! agent ids are 32-byte key identities, so a signer's agent id IS the
+//! signer's pubkey bytes — the signer proves the agent by signing, and no
+//! account invents authority a signature did not grant. `resolve_proposer`
+//! gates that identity against the sealed launch profile (the agent must
+//! be registered and active there; the Observer-role holder is NOT a
+//! registered agent and is refused as a proposer, and an unknown pubkey is
+//! refused outright), and `ingest_observation` gates the observer the same
+//! way (the agent must hold the Observer role in the sealed launch
+//! profile). Both gates replay the sealed launch kernel — the same
+//! genesis constants slice 7 seals — so they judge the pinned profile,
+//! not a caller-supplied roster; a governance-changed roster is a later
+//! slice's replay scope, not claimed here. The observation builder mirrors
+//! the kernel's ingest rules against `KernelState.clock` (timestamp at or
+//! before the clock, expiry after it, confidence at or below SCALE); at the
+//! sealed genesis clock of 100 that admits the bridge's t=100 observations
+//! and refuses anything from the future, so clock advancement is a later
+//! slice before post-genesis observations can ingest. Like slice 8, the
+//! instruction stores the record — it does not run kernel
+//! `ingest_observation`, because the kernel object itself is not persisted
+//! — and the later replay slice runs the kernel call from the stored
+//! record. What slice 9 does prove, in a combined host test, is that the
+//! resolved ids actually drive kernel registration: the observer pubkey
+//! ingests and the proposer pubkey registers on a sealed kernel.
 
 extern crate alloc;
 
@@ -173,6 +200,57 @@ pub mod program_v04 {
         emit!(TransitionRegistered { transition_id, parent_index });
         Ok(())
     }
+
+    /// Ingest (§4.1, second lifecycle row, v0.4 form): store an
+    /// observation as an `ObservationRecord` PDA, gated on the sealed
+    /// state, the Observer role of the signing payer's agent id, and the
+    /// kernel's ingest window rules against the state's clock. This
+    /// stores the observation — it does not run kernel
+    /// `ingest_observation` (see module docs: the kernel object is not
+    /// persisted); the later replay slice runs the kernel call from this
+    /// stored record. A second record for the same id is refused by the
+    /// `init` constraint.
+    pub fn ingest_observation(
+        ctx: Context<IngestObservation>,
+        observation_id: [u8; 32],
+        timestamp: u64,
+        expiry: u64,
+        confidence_raw: u64,
+    ) -> Result<()> {
+        let record = build_observation_record(
+            &ctx.accounts.kernel_state,
+            observation_id,
+            timestamp,
+            expiry,
+            confidence_raw,
+            ctx.accounts.payer.key(),
+            ctx.bumps.observation_record,
+        )?;
+        *ctx.accounts.observation_record = record;
+        emit!(ObservationIngested { observation_id, observer: ctx.accounts.payer.key(), timestamp });
+        Ok(())
+    }
+}
+
+#[derive(Accounts)]
+#[instruction(observation_id: [u8; 32])]
+pub struct IngestObservation<'info> {
+    #[account(
+        seeds = [b"kernel-state"],
+        bump = kernel_state.bump,
+    )]
+    pub kernel_state: Account<'info, KernelState>,
+    #[account(
+        init,
+        payer = payer,
+        space = ObservationRecord::SPACE,
+        seeds = [b"observation", observation_id.as_ref()],
+        bump,
+    )]
+    pub observation_record: Account<'info, ObservationRecord>,
+    #[account(mut)]
+    pub payer: Signer<'info>,
+    pub system_program: Program<'info, System>,
 }
 
 #[derive(Accounts)]
@@ -327,6 +405,98 @@ pub fn build_transition_record(
     })
 }
 
+/// The third §3 account: one stored observation. This is the record the
+/// later replay slice feeds to kernel `ingest_observation` — the fields
+/// are exactly the kernel's `Observation` fields plus the observing
+/// signer's pubkey and the PDA bump. No stage byte: an observation is
+/// either stored (ingested, in this slice's sense) or absent.
+#[account]
+#[derive(Debug)]
+pub struct ObservationRecord {
+    /// Observation id (the PDA seed after `"observation"`).
+    pub observation_id: [u8; 32],
+    /// Observation timestamp — at or before `KernelState.clock`.
+    pub timestamp: u64,
+    /// Observation expiry — after `KernelState.clock`.
+    pub expiry: u64,
+    /// Confidence in kernel `Amount` raw units (SCALE = 1.0).
+    pub confidence_raw: u64,
+    /// Signing payer that ingested the record (its agent id, by the
+    /// identity mapping, must hold the Observer role).
+    pub observer: Pubkey,
+    /// PDA bump for the `["observation", observation_id]` seeds.
+    pub bump: u8,
+}
+
+impl ObservationRecord {
+    /// 8 (discriminator) + 32 + 8 + 8 + 8 + 32 + 1.
+    pub const SPACE: usize = 97;
+}
+
+/// The pubkey-to-agent mapping, slice 9's rule: identity. Kernel agent
+/// ids are 32-byte key identities, so a signer's agent id is the signer's
+/// pubkey bytes — the signature is the proof, and no mapping account can
+/// grant an agent id the signer does not hold. Pure and total: every
+/// pubkey resolves to exactly one agent id, and the gates below decide
+/// whether that agent may act.
+pub fn resolve_agent_id(payer: Pubkey) -> [u8; 32] {
+    payer.to_bytes()
+}
+
+/// Resolve a transition proposer: the signer's agent id must be a
+/// registered, active agent in the sealed launch profile. The Observer
+/// role holder is role-bearing but NOT a registered agent, so it is
+/// refused here exactly as kernel `register_transition` would refuse it
+/// via its active-agent gate; an unknown pubkey is refused outright.
+/// The gate replays the sealed launch kernel (slice 7's constants), so it
+/// judges the pinned profile, not a caller-supplied roster.
+pub fn resolve_proposer(
+    kernel_state: &KernelState,
+    payer: Pubkey,
+) -> Result<[u8; 32]> {
+    if !kernel_state.sealed {
+        return Err(error!(ProgramV04Error::NotSealed));
+    }
+    let agent_id = resolve_agent_id(payer);
+    let k = sealed_launch_kernel().map_err(|_| error!(ProgramV04Error::KernelSeal))?;
+    match k.agent(&agent_id) {
+        Some(profile) if profile.active => Ok(agent_id),
+        _ => Err(error!(ProgramV04Error::UnknownProposer)),
+    }
+}
+
+/// Build an `ObservationRecord` against a `KernelState`, enforcing the
+/// sealed-state gate, the Observer-role gate (via the sealed launch
+/// profile, as in `resolve_proposer`), and the kernel's ingest window
+/// rules against the state's clock. Pure: a refused record leaves the
+/// state untouched, and the caller (instruction or test) owns persistence.
+pub fn build_observation_record(
+    kernel_state: &KernelState,
+    observation_id: [u8; 32],
+    timestamp: u64,
+    expiry: u64,
+    confidence_raw: u64,
+    observer: Pubkey,
+    bump: u8,
+) -> Result<ObservationRecord> {
+    if !kernel_state.sealed {
+        return Err(error!(ProgramV04Error::NotSealed));
+    }
+    let agent_id = resolve_agent_id(observer);
+    let k = sealed_launch_kernel().map_err(|_| error!(ProgramV04Error::KernelSeal))?;
+    if !k.has_role(&agent_id, Role::Observer) {
+        return Err(error!(ProgramV04Error::NotObserver));
+    }
+    let now = kernel_state.clock;
+    if timestamp > now {
+        return Err(error!(ProgramV04Error::ObservationFromFuture));
+    }
+    if expiry <= now || confidence_raw > SCALE {
+        return Err(error!(ProgramV04Error::ObservationBadWindow));
+    }
+    Ok(ObservationRecord { observation_id, timestamp, expiry, confidence_raw, observer, bump })
+}
+
 /// The genesis `KernelState`: the probe-config kernel's genesis values
 /// (unsealed, head 0, zero hash, clock 0), with a zero bump — the
 /// instruction overwrites the bump with the PDA bump.
@@ -353,6 +523,13 @@ pub struct TransitionRegistered {
     pub parent_index: u64,
 }
 
+#[event]
+pub struct ObservationIngested {
+    pub observation_id: [u8; 32],
+    pub observer: Pubkey,
+    pub timestamp: u64,
+}
+
 #[error_code]
 pub enum ProgramV04Error {
     #[msg("program-v04 probe: kernel construction failed")]
@@ -367,6 +544,14 @@ pub enum ProgramV04Error {
     NotSealed,
     #[msg("program-v04 register: parent is not the sealed head")]
     ParentMismatch,
+    #[msg("program-v04 ingest: observation timestamp is after the kernel clock")]
+    ObservationFromFuture,
+    #[msg("program-v04 ingest: observation expiry or confidence outside the kernel window")]
+    ObservationBadWindow,
+    #[msg("program-v04 mapping: signer is not a registered, active agent of the sealed profile")]
+    UnknownProposer,
+    #[msg("program-v04 ingest: signer agent does not hold the Observer role")]
+    NotObserver,
 }
 
 // ---------------------------------------------------------------- launch genesis
@@ -589,6 +774,7 @@ pub fn probe_kernel_state() -> core::result::Result<(bool, u64, u64), KernelErro
 #[cfg(test)]
 mod tests {
     use super::*;
+    use coordination_kernel::{Manifest, Observation};
 
     #[test]
     fn probe_state_is_genesis_unsealed() {
@@ -844,5 +1030,190 @@ mod tests {
         assert_eq!(record.stage, TransitionRecord::REGISTERED);
         assert_eq!(record.stage, 0);
         assert_eq!(record.bump, 7);
+    }
+
+    #[test]
+    fn observation_record_space_accounts_for_every_field() {
+        // Discriminator 8 + id 32 + timestamp 8 + expiry 8 +
+        // confidence 8 + observer 32 + bump 1.
+        assert_eq!(
+            ObservationRecord::SPACE,
+            8 + 32 + 8 + 8 + 8 + 32 + 1
+        );
+    }
+
+    #[test]
+    fn observation_record_borsh_round_trips() {
+        use anchor_lang::{AccountDeserialize, AccountSerialize};
+        let record = ObservationRecord {
+            observation_id: [0xC0; 32],
+            timestamp: 100,
+            expiry: 9100,
+            confidence_raw: 900_000,
+            observer: Pubkey::new_from_array(OBSERVER),
+            bump: 254,
+        };
+        let mut bytes = Vec::new();
+        record.try_serialize(&mut bytes).expect("serialize must succeed");
+        assert_eq!(bytes.len(), ObservationRecord::SPACE);
+        let back = <ObservationRecord as AccountDeserialize>::try_deserialize(&mut &bytes[..])
+            .expect("deserialize must succeed");
+        assert_eq!(back.observation_id, [0xC0; 32]);
+        assert_eq!(back.timestamp, 100);
+        assert_eq!(back.expiry, 9100);
+        assert_eq!(back.confidence_raw, 900_000);
+        assert_eq!(back.observer, Pubkey::new_from_array(OBSERVER));
+        assert_eq!(back.bump, 254);
+    }
+
+    fn observer_pubkey() -> Pubkey {
+        Pubkey::new_from_array(OBSERVER)
+    }
+
+    #[test]
+    fn resolve_agent_id_is_identity() {
+        let pubkey = Pubkey::new_from_array([0x42; 32]);
+        assert_eq!(resolve_agent_id(pubkey), [0x42; 32]);
+        assert_eq!(resolve_agent_id(observer_pubkey()), OBSERVER);
+        assert_eq!(resolve_agent_id(Pubkey::new_from_array(ag(1))), ag(1));
+    }
+
+    #[test]
+    fn build_observation_record_refuses_unsealed() {
+        let state = genesis_kernel_state().expect("genesis must construct");
+        let err = build_observation_record(
+            &state, [0xC0; 32], 100, 9100, 900_000, observer_pubkey(), 1,
+        )
+        .expect_err("unsealed ingest must refuse");
+        assert!(format!("{:?}", err).contains("NotSealed"));
+    }
+
+    #[test]
+    fn build_observation_record_refuses_non_observer_agent() {
+        // Agent 1 is registered and active but holds no Observer role.
+        let state = sealed_state();
+        let err = build_observation_record(
+            &state, [0xC0; 32], 100, 9100, 900_000,
+            Pubkey::new_from_array(ag(1)), 1,
+        )
+        .expect_err("agent without Observer role must refuse");
+        assert!(format!("{:?}", err).contains("NotObserver"));
+    }
+
+    #[test]
+    fn build_observation_record_refuses_unknown_pubkey() {
+        let state = sealed_state();
+        let err = build_observation_record(
+            &state, [0xC0; 32], 100, 9100, 900_000,
+            Pubkey::new_from_array([0x77; 32]), 1,
+        )
+        .expect_err("unknown pubkey must refuse");
+        assert!(format!("{:?}", err).contains("NotObserver"));
+    }
+
+    #[test]
+    fn build_observation_record_refuses_future_timestamp() {
+        let state = sealed_state();
+        assert_eq!(state.clock, 100);
+        let err = build_observation_record(
+            &state, [0xC0; 32], 101, 9100, 900_000, observer_pubkey(), 1,
+        )
+        .expect_err("timestamp after the clock must refuse");
+        assert!(format!("{:?}", err).contains("ObservationFromFuture"));
+    }
+
+    #[test]
+    fn build_observation_record_refuses_expired_and_overconfident() {
+        let state = sealed_state();
+        let expired = build_observation_record(
+            &state, [0xC0; 32], 100, 100, 900_000, observer_pubkey(), 1,
+        )
+        .expect_err("expiry at the clock must refuse");
+        assert!(format!("{:?}", expired).contains("ObservationBadWindow"));
+        let overconfident = build_observation_record(
+            &state, [0xC0; 32], 100, 9100, SCALE + 1, observer_pubkey(), 1,
+        )
+        .expect_err("confidence above SCALE must refuse");
+        assert!(format!("{:?}", overconfident).contains("ObservationBadWindow"));
+    }
+
+    #[test]
+    fn build_observation_record_accepts_observer_at_genesis_clock() {
+        let state = sealed_state();
+        let record = build_observation_record(
+            &state, [0xC0; 32], 100, 9100, 900_000, observer_pubkey(), 7,
+        )
+        .expect("observer at the genesis clock must ingest");
+        assert_eq!(record.observation_id, [0xC0; 32]);
+        assert_eq!(record.timestamp, 100);
+        assert_eq!(record.expiry, 9100);
+        assert_eq!(record.confidence_raw, 900_000);
+        assert_eq!(record.observer, observer_pubkey());
+        assert_eq!(record.bump, 7);
+    }
+
+    #[test]
+    fn resolve_proposer_accepts_seeded_agents() {
+        let state = sealed_state();
+        for n in [1u8, 6u8] {
+            let resolved = resolve_proposer(&state, Pubkey::new_from_array(ag(n)))
+                .expect("seeded agent must resolve");
+            assert_eq!(resolved, ag(n));
+        }
+    }
+
+    #[test]
+    fn resolve_proposer_refuses_observer_and_unknown() {
+        let state = sealed_state();
+        let observer_err = resolve_proposer(&state, observer_pubkey())
+            .expect_err("role holder without agent registration must refuse");
+        assert!(format!("{:?}", observer_err).contains("UnknownProposer"));
+        let unknown_err = resolve_proposer(
+            &state, Pubkey::new_from_array([0x77; 32]),
+        )
+        .expect_err("unknown pubkey must refuse");
+        assert!(format!("{:?}", unknown_err).contains("UnknownProposer"));
+        let unsealed = genesis_kernel_state().expect("genesis must construct");
+        let unsealed_err = resolve_proposer(&unsealed, Pubkey::new_from_array(ag(1)))
+            .expect_err("unsealed proposer must refuse");
+        assert!(format!("{:?}", unsealed_err).contains("NotSealed"));
+    }
+
+    #[test]
+    fn resolved_ids_drive_kernel_registration() {
+        // The slice-9 proof: the pubkey-derived ids are not just stored —
+        // the observer id ingests and the proposer id registers on a real
+        // sealed kernel, which is exactly what the later replay slice
+        // needs from the stored records.
+        let state = sealed_state();
+        let observer_id =
+            resolve_agent_id(observer_pubkey());
+        let proposer_id =
+            resolve_proposer(&state, Pubkey::new_from_array(ag(1)))
+                .expect("agent 1 must resolve as proposer");
+        assert_eq!(observer_id, OBSERVER);
+        assert_eq!(proposer_id, ag(1));
+        let mut k = sealed_launch_kernel().expect("launch sequence must seal");
+        let obs = Observation {
+            id: [0xC0; 32],
+            timestamp: 100,
+            expiry: 9100,
+            confidence: Amount::from_raw(900_000),
+        };
+        k.ingest_observation(&observer_id, obs, 100)
+            .expect("observer id must ingest on the sealed kernel");
+        let manifest = Manifest {
+            transition_type: TT,
+            parent_index: 0,
+            parent_hash: [0; 32],
+            declared_next_hash: [0xE1; 32],
+            observation_id: [0xC0; 32],
+            expires_at: 10_100,
+            relevant_groups: BTreeSet::from([1u16]),
+            action: None,
+        };
+        k.register_transition(&proposer_id, [0xD1; 32], manifest, BTreeSet::new(), 100)
+            .expect("proposer id must register on the sealed kernel");
+        assert_eq!(k.life_of(&[0xD1; 32]), Some(coordination_kernel::Life::Proposed));
     }
 }

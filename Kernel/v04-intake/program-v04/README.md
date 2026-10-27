@@ -107,11 +107,45 @@ families, account inventory, and CU golden set are later step-5 slices.
   `TransitionRegistered`); `.so` 304,704 bytes
   (sha256 `f28ca7ca…`).
 
+## Slice 9 — the `ObservationRecord` account, `ingest_observation`, and the pubkey-to-agent mapping
+
+- `ObservationRecord` (SPACE 97): the stored observation — id, timestamp,
+  expiry, confidence in kernel raw units (SCALE = 1.0), observing signer,
+  bump. PDA seeds `["observation", observation_id]`; a second record for
+  the same id is refused by the `init` constraint.
+- `ingest_observation`: gates on the sealed state (`NotSealed`), the
+  signing payer's Observer role in the sealed launch profile
+  (`NotObserver`), and the kernel's ingest window rules against
+  `KernelState.clock` (`ObservationFromFuture` 6006, `ObservationBadWindow`
+  6007). At the sealed genesis clock of 100 it admits the bridge's t=100
+  observations; clock advancement is a later slice before post-genesis
+  observations can ingest. Like slice 8 it stores the record — it does not
+  run kernel `ingest_observation`, because the kernel object is not
+  persisted; the later replay slice runs the kernel call from this record.
+- The mapping rule is identity, not a registry: a signer's agent id IS the
+  signer's pubkey bytes (`resolve_agent_id`), so the signature is the
+  proof and no account grants an id the signer does not hold.
+  `resolve_proposer` gates that identity against the sealed launch profile
+  (registered AND active; `UnknownProposer` 6008): the Observer-role holder
+  is role-bearing but not a registered agent, so it is refused as a proposer,
+  and an unknown pubkey is refused outright. Both gates replay the sealed
+  launch kernel, so they judge the pinned profile, not a caller-supplied
+  roster; a governance-changed roster is a later slice's replay scope.
+- Host tests 32/32 (20 prior + 12 slice-9: SPACE accounting, Borsh
+  round-trip at exactly SPACE bytes, identity mapping, unsealed/non-observer/
+  unknown/future/expired/overconfident refusals, observer acceptance at the
+  genesis clock, proposer acceptance for seeded agents, proposer refusal for
+  observer and unknown, and the combined proof that the resolved observer
+  id ingests and the resolved proposer id registers on a real sealed kernel).
+- `anchor build` green under the pinned toolchain; IDL now 5 instructions
+  (adds `ingest_observation`), 3 accounts (adds `ObservationRecord`),
+  10 errors (6000–6009), 4 events (adds `ObservationIngested`).
+
 ## Build
 
 ```sh
 export RUSTUP_HOME=~/workspace/toolchains/rustup CARGO_HOME=~/workspace/toolchains/cargo
 export PATH=~/workspace/toolchains/cargo/bin:~/workspace/toolchains/solana/bin:$PATH
 ~/workspace/toolchains/anchor/bin/anchor build   # from this directory
-cargo test                                        # host tests, 20/20
+cargo test                                        # host tests, 32/32
 ```
