@@ -456,6 +456,35 @@
 //! plans), so a miscounted remainder refuses at the anchor, not at
 //! a parse. Reconcile, validate, declare, and commit replay are
 //! later slices, not smuggled in here.
+//!
+//! Slice 22 (this slice): the Blocked re-plan path — `open_planning`
+//! now admits a `BLOCKED` record (stage 6, new `replans: u32` field,
+//! SPACE 258 -> 262) as well as `SELECTED`. The kernel's re-plan rule
+//! is enforced by the helper from the stored record, in the kernel's
+//! own order: caller is the record's proposer or a seat of the sealed
+//! launch council (seats 1–3, pinned genesis), and the stored replan
+//! count is below the kernel's `MAX_REPLANS` (3, imported from the
+//! kernel crate, never re-stated) — a stranger or a capped record
+//! refuses with `ReplanRefused` and nothing moves. On a re-plan
+//! success the stage advances to `PLANNING`, the deadline resets to
+//! `clock + planning_window`, and `replans` increments by exactly
+//! one; the Selected path leaves `replans` untouched, and a re-plan
+//! never clears `plan_count` or the stored plan set, because the
+//! kernel carries its plan map across a re-plan unchanged.
+//! Honesty bound, stated not smoothed: the replay kernel reaches
+//! `Selected`, so the kernel call itself takes its anyone path —
+//! the re-plan authority and cap live in the helper, not in the
+//! replay, because no slice can yet replay a transition INTO
+//! `Blocked` (reconcile/validate are later slices). The stored
+//! `BLOCKED` label is therefore trusted this slice in exactly one
+//! narrow sense, and it is safe to trust that far: no instruction
+//! writes `BLOCKED` yet, so no live record can carry it, and the
+//! label becomes program-written — hence re-provable — the day
+//! validate lands. Until then the re-plan tests set the label as a
+//! fixture standing in for validate's future output. Selection, the
+//! proposer, and the seat roster are all re-proven in every call.
+//! Reconcile, validate, declare, and commit replay are still later
+//! slices, not smuggled in here.
 
 extern crate alloc;
 
@@ -465,7 +494,7 @@ use anchor_lang::prelude::*;
 use coordination_kernel::{
     Amount, Config, ConstraintStatus, Env, GovAction, Kernel, KernelError, Life, Manifest, NoEnv,
     Observation, Plan, Policy, Role, SystemState, T_GOV_ADJUSTABLE, T_GOV_CONSTITUTION,
-    T_GOV_COUNCIL, T_GOV_REBOOT, SCALE,
+    T_GOV_COUNCIL, T_GOV_REBOOT, MAX_REPLANS, SCALE,
 };
 
 declare_id!("FzxnCtig4asxnCxGhjcbCDY5zkfcpfTb5GcXNL9UaGg6");
@@ -924,20 +953,24 @@ pub mod program_v04 {
         Ok(())
     }
 
-    /// Open planning (§4.1, sixth replay row, v0.4 form, slice 20):
-    /// run kernel `open_planning` on a `SELECTED` record pair and
-    /// advance the transition record's stage to `PLANNING`, persisting
-    /// the planning deadline the kernel sets (`clock +
-    /// planning_window`). Prior signals for the transition arrive as
-    /// remaining accounts and must number exactly the record's
-    /// `signal_count` — the slice-16 anchor — because the helper
-    /// re-proves the selection chain before opening planning; a
-    /// stored `SELECTED` label alone opens nothing. The payer is a
-    /// fee payer and, for the Selected path, the kernel's planning
-    /// caller: the kernel admits anyone there, so no proposer or
-    /// seat gate applies in this instruction. A `Blocked` record
-    /// refuses here: the kernel's proposer-or-seat re-plan path is
-    /// later work, not opened by this instruction.
+    /// Open planning (§4.1, sixth replay row, v0.4 form, slices 20
+    /// and 22): run kernel `open_planning` on a `SELECTED` record
+    /// pair and advance the transition record's stage to
+    /// `PLANNING`, persisting the planning deadline the kernel
+    /// sets (`clock + planning_window`). Prior signals for the
+    /// transition arrive as remaining accounts and must number
+    /// exactly the record's `signal_count` — the slice-16 anchor —
+    /// because the helper re-proves the selection chain before
+    /// opening planning; a stored `SELECTED` label alone opens
+    /// nothing. The payer is a fee payer and, for the Selected
+    /// path, the kernel's planning caller: the kernel admits
+    /// anyone there, so no proposer or seat gate applies on that
+    /// path. A `BLOCKED` record (slice 22) re-opens planning only
+    /// on the kernel's re-plan rule — caller is the proposer or a
+    /// launch-council seat, and fewer than `MAX_REPLANS` re-plans
+    /// taken — enforced by this helper from the stored record
+    /// (see the helper's honesty bound: the replay proves
+    /// selection, not Blocked-ness, until reconcile/validate land).
     pub fn open_planning(
         ctx: Context<OpenPlanning>,
         transition_id: [u8; 32],
@@ -1380,7 +1413,9 @@ pub struct TransitionRecord {
     pub proposer: Pubkey,
     /// Lifecycle stage: 0 = Registered, 1 = Kernel-registered (slice 10
     /// advances it), 2 = Evaluated (slice 12 advances it), 3 = Eligible
-    /// (slice 13 advances it), 4 = Selected (slice 16 advances it).
+    /// (slice 13 advances it), 4 = Selected (slice 16 advances it),
+    /// 5 = Planning (slice 20 advances it), 6 = Blocked (a future
+    /// validate slice writes it; slice 22 opens the re-plan from it).
     pub stage: u8,
     /// Kernel clock at which `mark_eligible` proved eligibility (slice 14
     /// persists it; 0 until eligibility is proven). This is the
@@ -1405,6 +1440,12 @@ pub struct TransitionRecord {
     /// on success only — one per created record — so the count and
     /// the plan set cannot diverge on-chain.
     pub plan_count: u64,
+    /// Number of Blocked re-plans already taken on this transition
+    /// (slice 22: the kernel's `MAX_REPLANS` cap, persisted here
+    /// because the rebuilt replay kernel starts every replay at
+    /// zero — the program, not the replay, enforces the cap).
+    /// Written by `open_planning` on a Blocked-path success only.
+    pub replans: u32,
     /// PDA bump for the `["transition", transition_id]` seeds.
     pub bump: u8,
 }
@@ -1422,8 +1463,12 @@ impl TransitionRecord {
     pub const SELECTED: u8 = 4;
     /// Stage value written by `open_planning` (slice 20).
     pub const PLANNING: u8 = 5;
-    /// 8 (discriminator) + 32 + 32 + 8 + 32 + 32 + 32 + 8 + 32 + 1 + 8 + 8 + 8 + 8 + 8 + 1.
-    pub const SPACE: usize = 258;
+    /// Stage value a future validate slice writes when a transition
+    /// blocks (slice 22 records it; no slice yet produces it — see
+    /// the slice-22 module note on the re-plan honesty bound).
+    pub const BLOCKED: u8 = 6;
+    /// 8 (discriminator) + 32 + 32 + 8 + 32 + 32 + 32 + 8 + 32 + 1 + 8 + 8 + 8 + 8 + 8 + 4 + 1.
+    pub const SPACE: usize = 262;
 }
 
 /// Build a `TransitionRecord` against a `KernelState`, enforcing the
@@ -1463,6 +1508,7 @@ pub fn build_transition_record(
         planning_deadline: 0,
         signal_count: 0,
         plan_count: 0,
+        replans: 0,
         bump,
     })
 }
@@ -2262,14 +2308,18 @@ pub fn select_candidate_from_records(
 }
 
 /// Open planning on a selected transition through the real kernel
-/// (slice 20). Pure except for the target record's stage and planning
-/// deadline, which advance only on success — every refusal leaves the
-/// record untouched. Gates, in order: sealed state; stage exactly
-/// `SELECTED` (a `Blocked` record refuses here — the kernel's
-/// proposer-or-seat re-plan path is later work, not this
-/// instruction); parent exactly the sealed head; observation linkage;
-/// a proven window; the completeness anchor — the supplied prior set
-/// must number exactly `signal_count`; every prior belonging to the
+/// (slices 20 and 22). Pure except for the target record's stage,
+/// planning deadline, and (Blocked path only) `replans` count,
+/// which advance only on success — every refusal leaves the record
+/// untouched. Gates, in order: sealed state; stage exactly
+/// `SELECTED` or `BLOCKED`; on the Blocked path, the kernel's
+/// re-plan rule enforced here — caller is the record's proposer or
+/// a seat of the sealed launch council, and the stored `replans`
+/// count is below the kernel's `MAX_REPLANS` (imported, not
+/// re-stated, so the cap cannot drift from the kernel's);
+/// parent exactly the sealed head; observation linkage; a proven
+/// window; the completeness anchor — the supplied prior set must
+/// number exactly `signal_count`; every prior belonging to the
 /// target with a stored round matching its own `submitted_at`; no
 /// duplicated (agent, round) in the set. Replay then rebuilds the
 /// sealed launch kernel under `ProgramEnv`, replays the eligibility
@@ -2277,14 +2327,28 @@ pub fn select_candidate_from_records(
 /// its own `submitted_at` in order, and runs kernel
 /// `select_candidate` at the state's clock — the stored `SELECTED`
 /// label is re-proven, never trusted — and only then runs kernel
-/// `open_planning` with the caller's agent id at the same clock,
-/// where the kernel's Selected-path rule admits anyone. Only a
+/// `open_planning` with the caller's agent id at the same clock.
+/// Honesty bound, stated not smoothed: the replay kernel reaches
+/// `Selected`, so the kernel call itself always takes its anyone
+/// path — the Blocked path's proposer-or-seat rule and cap are
+/// enforced by this helper from the stored record, not by the
+/// kernel call, because no slice can yet replay a transition INTO
+/// `Blocked` (that needs reconcile/validate, later slices). The
+/// stored `BLOCKED` label is therefore trusted this slice in one
+/// narrow sense: no instruction writes `BLOCKED` yet, so no live
+/// record can carry it, and the label becomes program-written —
+/// hence re-provable — the day validate lands; until then the
+/// re-plan tests set it as a fixture. Selection, proposer, and the
+/// seat roster are all re-proven, not trusted. Only a
 /// `Life::Planning` life advances the stage, and the persisted
 /// deadline is the state's clock plus the launch policy's
 /// planning window: `apply_launch_genesis` installs exactly
 /// `launch_policy()` for this transition's type, so that window is
 /// the kernel's own policy value, and a checked add refuses an
-/// overflowing deadline rather than wrapping it.
+/// overflowing deadline rather than wrapping it. A re-plan does
+/// not clear `plan_count` or the stored plan set: the kernel
+/// carries its plan map across a re-plan unchanged, and this
+/// helper does the same — reconcile judges the carried set.
 pub fn open_planning_from_records(
     kernel_state: &KernelState,
     transition_record: &mut TransitionRecord,
@@ -2295,8 +2359,23 @@ pub fn open_planning_from_records(
     if !kernel_state.sealed {
         return Err(error!(ProgramV04Error::NotSealed));
     }
-    if transition_record.stage != TransitionRecord::SELECTED {
+    if transition_record.stage != TransitionRecord::SELECTED
+        && transition_record.stage != TransitionRecord::BLOCKED
+    {
         return Err(error!(ProgramV04Error::WrongStage));
+    }
+    let is_replan = transition_record.stage == TransitionRecord::BLOCKED;
+    if is_replan {
+        let proposer_id = resolve_agent_id(transition_record.proposer);
+        let seated = sealed_launch_kernel()
+            .map(|k| k.is_seated(&caller))
+            .map_err(|_| error!(ProgramV04Error::PlanningFailed))?;
+        if caller != proposer_id && !seated {
+            return Err(error!(ProgramV04Error::ReplanRefused));
+        }
+        if transition_record.replans >= MAX_REPLANS {
+            return Err(error!(ProgramV04Error::ReplanRefused));
+        }
     }
     if transition_record.parent_index != kernel_state.head_index
         || transition_record.parent_hash != kernel_state.head_hash
@@ -2416,6 +2495,9 @@ pub fn open_planning_from_records(
         .ok_or(error!(ProgramV04Error::PlanningFailed))?;
     transition_record.stage = TransitionRecord::PLANNING;
     transition_record.planning_deadline = deadline;
+    if is_replan {
+        transition_record.replans += 1;
+    }
     Ok(Life::Planning)
 }
 
@@ -3251,6 +3333,8 @@ pub enum ProgramV04Error {
     SelectFailed,
     #[msg("program-v04 planning: kernel planning refused, selection unproven, or supplied signal set incomplete")]
     PlanningFailed,
+    #[msg("program-v04 planning: Blocked re-plan refused — caller is neither the proposer nor a council seat, or the re-plan cap is reached")]
+    ReplanRefused,
     #[msg("program-v04 plan: kernel plan refused, planning window unproven, or supplied plan set incomplete")]
     PlanFailed,
 }
@@ -3720,10 +3804,10 @@ mod tests {
         // Discriminator 8 + id 32 + type 32 + parent_index 8 +
         // parent_hash 32 + declared 32 + observation 32 + expires 8 +
         // proposer 32 + stage 1 + eligible_at 8 + consensus_deadline 8 +
-        // planning_deadline 8 + signal_count 8 + plan_count 8 + bump 1.
+        // planning_deadline 8 + signal_count 8 + plan_count 8 + replans 4 + bump 1.
         assert_eq!(
             TransitionRecord::SPACE,
-            8 + 32 + 32 + 8 + 32 + 32 + 32 + 8 + 32 + 1 + 8 + 8 + 8 + 8 + 8 + 1
+            8 + 32 + 32 + 8 + 32 + 32 + 32 + 8 + 32 + 1 + 8 + 8 + 8 + 8 + 8 + 4 + 1
         );
     }
 
@@ -3745,6 +3829,7 @@ mod tests {
             planning_deadline: 400,
             signal_count: 2,
             plan_count: 1,
+            replans: 2,
             bump: 254,
         };
         let mut bytes = Vec::new();
@@ -5312,6 +5397,7 @@ mod tests {
             planning_deadline: 0,
             signal_count: 0,
             plan_count: 0,
+            replans: 0,
             bump: 7,
         };
         let sib_obs = ObservationRecord {
@@ -5910,6 +5996,117 @@ mod tests {
         assert!(format!("{:?}", err).contains("ParentMismatch"));
         assert_eq!(record.stage, TransitionRecord::SELECTED);
         assert_eq!(record.planning_deadline, 0);
+    }
+
+    fn blocked_pair() -> (KernelState, TransitionRecord, ObservationRecord, SignalRecord) {
+        // Slice 22 fixture: a planning pair whose record stands at
+        // BLOCKED with a prior episode's deadline of 250 — deliberately
+        // not 300, so a successful re-plan proves the deadline RESET
+        // to clock 200 + window 100, rather than leaving it alone. No slice can yet produce a Blocked
+        // record — a future validate slice will — so the fixture
+        // sets the label; the tests below prove the re-plan
+        // authority gate and the cap, not the label itself (see
+        // the slice-22 module note for the honesty bound).
+        let (state, mut record, obs, first) = planning_pair();
+        record.stage = TransitionRecord::BLOCKED;
+        record.planning_deadline = 250;
+        assert_eq!(record.replans, 0);
+        (state, record, obs, first)
+    }
+
+    #[test]
+    fn replan_by_proposer_opens_planning() {
+        // The proposer (ag(1), also a seat) re-plans: stage
+        // BLOCKED -> PLANNING, deadline reset to clock 200 + window
+        // 100 = 300, replans 0 -> 1.
+        let (state, mut record, obs, first) = blocked_pair();
+        let life = open_planning_from_records(&state, &mut record, &obs, &[first], ag(1))
+            .expect("a proposer re-plan must open planning");
+        assert_eq!(life, Life::Planning);
+        assert_eq!(record.stage, TransitionRecord::PLANNING);
+        assert_eq!(record.planning_deadline, 300);
+        assert_eq!(record.replans, 1);
+    }
+
+    #[test]
+    fn replan_by_seat_opens_planning() {
+        // A seat who is NOT the proposer re-plans: the proposer is
+        // moved to ag(4) (seeded, active, same group), so the
+        // caller ag(2) qualifies on the seat ground alone.
+        let (state, mut record, obs, first) = blocked_pair();
+        record.proposer = Pubkey::new_from_array(ag(4));
+        let life = open_planning_from_records(&state, &mut record, &obs, &[first], ag(2))
+            .expect("a seat re-plan must open planning");
+        assert_eq!(life, Life::Planning);
+        assert_eq!(record.stage, TransitionRecord::PLANNING);
+        assert_eq!(record.replans, 1);
+    }
+
+    #[test]
+    fn replan_by_non_seat_proposer_opens_planning() {
+        // The proposer who holds no seat re-plans: ag(4) is a
+        // seeded agent but not a council seat, so the caller
+        // qualifies on the proposer ground alone.
+        let (state, mut record, obs, first) = blocked_pair();
+        record.proposer = Pubkey::new_from_array(ag(4));
+        let life = open_planning_from_records(&state, &mut record, &obs, &[first], ag(4))
+            .expect("a non-seat proposer re-plan must open planning");
+        assert_eq!(life, Life::Planning);
+        assert_eq!(record.stage, TransitionRecord::PLANNING);
+        assert_eq!(record.replans, 1);
+    }
+
+    #[test]
+    fn replan_refuses_stranger() {
+        // Neither proposer nor seat: ReplanRefused, and the record
+        // stands exactly as it stood — stage, deadline, count.
+        let (state, mut record, obs, first) = blocked_pair();
+        let err = open_planning_from_records(&state, &mut record, &obs, &[first], [0x77; 32])
+            .expect_err("a stranger re-plan must refuse");
+        assert!(format!("{:?}", err).contains("ReplanRefused"));
+        assert_eq!(record.stage, TransitionRecord::BLOCKED);
+        assert_eq!(record.planning_deadline, 250);
+        assert_eq!(record.replans, 0);
+    }
+
+    #[test]
+    fn replan_refuses_at_cap() {
+        // MAX_REPLANS (3) already taken: even the proposer refuses,
+        // and the count does not advance past the cap.
+        let (state, mut record, obs, first) = blocked_pair();
+        record.replans = 3;
+        let err = open_planning_from_records(&state, &mut record, &obs, &[first], ag(1))
+            .expect_err("a capped re-plan must refuse");
+        assert!(format!("{:?}", err).contains("ReplanRefused"));
+        assert_eq!(record.stage, TransitionRecord::BLOCKED);
+        assert_eq!(record.planning_deadline, 250);
+        assert_eq!(record.replans, 3);
+    }
+
+    #[test]
+    fn replan_then_open_refuses_second_time() {
+        // A re-plan is once per Blocked episode: after success the
+        // stage is PLANNING, so a second open refuses WrongStage
+        // and the count stays at 1, not 2.
+        let (state, mut record, obs, first) = blocked_pair();
+        open_planning_from_records(&state, &mut record, &obs, &[first], ag(1))
+            .expect("first re-plan must succeed");
+        let err = open_planning_from_records(&state, &mut record, &obs, &[first], ag(1))
+            .expect_err("a second planning open must refuse");
+        assert!(format!("{:?}", err).contains("WrongStage"));
+        assert_eq!(record.stage, TransitionRecord::PLANNING);
+        assert_eq!(record.planning_deadline, 300);
+        assert_eq!(record.replans, 1);
+    }
+
+    #[test]
+    fn selected_open_leaves_replans_untouched() {
+        // The Selected path is not a re-plan: replans stays 0.
+        let (state, mut record, obs, first) = planning_pair();
+        open_planning_from_records(&state, &mut record, &obs, &[first], ag(1))
+            .expect("a Selected open must succeed");
+        assert_eq!(record.stage, TransitionRecord::PLANNING);
+        assert_eq!(record.replans, 0);
     }
 
     fn planned_pair() -> (KernelState, TransitionRecord, ObservationRecord, SignalRecord) {

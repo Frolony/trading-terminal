@@ -662,11 +662,55 @@ families, account inventory, and CU golden set are later step-5 slices.
   path, reconcile/validate/declare, commit replay moving the
   head, and CU measurement — later slices.
 
+## Slice 22 — Blocked re-plan (`BLOCKED` -> `PLANNING`)
+
+- The `open_planning` instruction now admits a `BLOCKED` record
+  (stage 6) as well as `SELECTED`, on the kernel's re-plan rule
+  enforced by the helper from the stored record, in the kernel's
+  own order: caller is the record's proposer or a seat of the
+  sealed launch council (seats 1–3, pinned genesis), and the
+  stored replan count is below the kernel's `MAX_REPLANS` (3,
+  imported from the kernel crate, never re-stated). A stranger
+  or a capped record refuses with the new `ReplanRefused` error
+  and nothing moves. On success the stage advances to
+  `PLANNING`, the deadline resets to `clock + planning_window`,
+  and `replans` increments by exactly one; the Selected path
+  leaves `replans` untouched, and a re-plan never clears
+  `plan_count` or the stored plan set, because the kernel
+  carries its plan map across a re-plan unchanged.
+  `TransitionRecord` SPACE grows 258 -> 262 for the new
+  `replans: u32` field.
+- Honesty bound, stated not smoothed: the replay kernel reaches
+  `Selected`, so the kernel call itself takes its anyone path —
+  the re-plan authority and cap live in the helper, not in the
+  replay, because no slice can yet replay a transition INTO
+  `Blocked` (reconcile/validate are later slices). The stored
+  `BLOCKED` label is trusted this slice in exactly one narrow
+  sense, and it is safe to trust that far: no instruction writes
+  `BLOCKED` yet, so no live record can carry it, and the label
+  becomes program-written — hence re-provable — the day validate
+  lands. Until then the re-plan tests set the label as a fixture
+  standing in for validate's future output. Selection, the
+  proposer, and the seat roster are all re-proven in every call.
+- Host tests 150/150 (143 prior + 7 slice-22: proposer re-plan,
+  seat-only re-plan, non-seat proposer re-plan, stranger
+  refusal, cap refusal, second-open refusal, Selected path
+  leaving `replans` untouched — the fixture deadline is 250,
+  not 300, so success proves the deadline reset).
+- `anchor build` green under the pinned toolchain; the IDL gains
+  the 21st error (`ReplanRefused`) and the `TransitionRecord`
+  type gains the `replans: u32` field — 14 instructions, 5
+  accounts, 21 errors, 12 events; `.so` 831,808 bytes (sha256
+  `34bdb513…`).
+- Deliberately NOT slice 22: reconcile/validate/declare,
+  commit replay moving the head, and CU measurement — later
+  slices.
+
 ## Build
 
 ```sh
 export RUSTUP_HOME=~/workspace/toolchains/rustup CARGO_HOME=~/workspace/toolchains/cargo
 export PATH=~/workspace/toolchains/cargo/bin:~/workspace/toolchains/solana/bin:$PATH
 ~/workspace/toolchains/anchor/bin/anchor build   # from this directory
-cargo test                                        # host tests, 143/143
+cargo test                                        # host tests, 150/150
 ```
