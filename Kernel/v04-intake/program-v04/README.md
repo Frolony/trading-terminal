@@ -915,11 +915,60 @@ families, account inventory, and CU golden set are later step-5 slices.
 - Deliberately NOT slice 26: the committed-claims ledger, the
   `commit_governance` path, and CU measurement — later slices.
 
+## Slice 27 — the committed-claims ledger (commit judges remaining capacity)
+
+- `KernelState` gains `committed_claims`: cumulative committed
+  claims per launch resource (treasury tranche, lending book,
+  exit window, in that order), in kernel `Amount` raw units —
+  `KernelState::SPACE` grows 106 -> 130. `commit_transition`
+  now checks each commit's per-resource claim sums (the same
+  sums the slice-23 mirror recomputes from the prior plans)
+  against the sealed stocks minus prior committed claims,
+  after the replayed declare succeeds and before kernel
+  `commit` runs: a commit that would exceed any stock refuses
+  with `CommitFailed`, and a refused commit writes nothing —
+  the record stands `DECLARED`, the head stands, and the
+  ledger stands at its prior totals. On success the new totals
+  are written together with the stage advance and the head
+  move, so a later commit is judged against what prior commits
+  already consumed. The ledger is totals, not per-commit
+  entries: it enforces the bound across commits without
+  attributing a past debit to a transition. Declaration is
+  still not a reservation — reconcile, validate, and declare
+  judge a transition's own plan set against the sealed stocks,
+  so a transition can declare and then refuse at commit when
+  the ledger is exhausted.
+- Host tests 202/202 (198 prior + 4 slice-27: ledger totals
+  written on success, refusal when ledger plus new claims
+  exceed the tranche stock with ledger untouched, success at
+  exact ledger capacity (1000/500), refusal on another gate
+  leaving pre-seeded totals untouched). Clippy back to the
+  pre-existing profile (anchor macro `unexpected cfg` noise +
+  the slice-8 helper's `type_complexity` note); zero new
+  warnings.
+- `anchor build` green under the pinned toolchain; IDL counts
+  unchanged (18 instructions, 5 accounts, 26 errors, 16
+  events — the ledger is a field on `KernelState`, not a new
+  instruction or account); `.so` 1,016,240 bytes
+  (sha256 `f3a57d2f…`).
+- Honesty bound, recorded not built: the rebuilt kernel starts
+  from the sealed genesis head, so a second transition whose
+  parent is the moved head still cannot replay its chain
+  through the current helpers (kernel `register_transition`
+  refuses a parent that is not the rebuilt kernel's declared
+  head) — end-to-end two-commit sequencing needs a
+  replay-from-head slice. The ledger gate is therefore tested
+  at its enforcement point with pre-seeded totals standing in
+  for prior commits; the gate itself is complete and will
+  bind successive commits once replay-from-head lands.
+- Deliberately NOT slice 27: the `commit_governance` path,
+  CU measurement, and replay-from-head — later slices.
+
 ## Build
 
 ```sh
 export RUSTUP_HOME=~/workspace/toolchains/rustup CARGO_HOME=~/workspace/toolchains/cargo
 export PATH=~/workspace/toolchains/cargo/bin:~/workspace/toolchains/solana/bin:$PATH
 ~/workspace/toolchains/anchor/bin/anchor build   # from this directory
-cargo test                                        # host tests, 198/198
+cargo test                                        # host tests, 202/202
 ```

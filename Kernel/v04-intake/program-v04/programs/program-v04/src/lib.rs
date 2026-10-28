@@ -636,15 +636,45 @@
 //! capacity debit and the dialect effects of `commit_apply`
 //! run in the rebuilt kernel, which is discarded — the
 //! program persists the head move, not the post-commit
-//! capacity stocks — so until a committed-claims ledger
-//! lands (a later slice), each commit is judged against the
-//! sealed launch stocks, not against post-commit stocks, and
-//! two successive commits are not capacity-checked against
-//! each other. The head move is real and usable — a new
-//! record registers against the new head — but the capacity
-//! ledger is the next slice's work, not this one's claim.
+//! capacity stocks — before slice 27, each commit was judged
+//! against the sealed launch stocks, not against post-commit
+//! stocks, and two successive commits were not
+//! capacity-checked against each other. Slice 27 lands the
+//! ledger below, so a commit is now judged against the sealed
+//! stocks minus prior committed claims. The head move is real
+//! and usable — a new record registers against the new head.
 //! CU measurement is still a later slice, not smuggled in
 //! here.
+//! Slice 27 (this slice): the committed-claims ledger.
+//! `KernelState` gains `committed_claims`, the cumulative
+//! committed claim per launch resource (treasury tranche,
+//! lending book, exit window, in that order), in kernel
+//! `Amount` raw units. `commit_transition` computes the new
+//! transition's per-resource claim sums from its prior plans
+//! (the same sums the slice-23 mirror recomputes), and after
+//! the replayed declare succeeds and before kernel `commit`
+//! runs, refuses with `CommitFailed` — record standing
+//! `DECLARED`, head unmoved, ledger untouched — when any
+//! resource's prior committed total plus the new sum would
+//! exceed the sealed capacity stock the rebuilt kernel
+//! reports. On success the new totals are written together
+//! with the stage advance and the head move, so a later
+//! commit is judged against what prior commits already
+//! consumed, not against the sealed stocks alone. The ledger
+//! is totals, not per-commit entries: it enforces the
+//! capacity bound across commits; it does not by itself
+//! attribute a past debit to a transition. Declaration is
+//! still not a reservation: reconcile, validate, and declare
+//! judge a transition's own plan set against the sealed
+//! stocks, so a transition can declare and then refuse at
+//! commit when the ledger is exhausted. And the replay
+//! horizon is unchanged: the rebuilt kernel starts from the
+//! sealed genesis head, so a second transition whose parent
+//! is the moved head still cannot replay its chain through
+//! the current helpers — end-to-end two-commit sequencing
+//! needs a replay-from-head slice (recorded, not built
+//! here); the ledger gate is tested at its enforcement point
+//! with pre-seeded totals standing in for prior commits.
 
 extern crate alloc;
 
@@ -1859,11 +1889,17 @@ pub struct KernelState {
     pub eligible_sibling_count: u64,
     /// PDA bump for the `kernel-state` seeds.
     pub bump: u8,
+    /// Cumulative committed claims per launch resource (slice 27):
+    /// index 0 = `RES_TREASURY_TRANCHE`, 1 = `RES_LENDING_BOOK`,
+    /// 2 = `RES_EXIT_WINDOW`, in kernel `Amount` raw units.
+    /// Written by `commit_transition` on success only, together
+    /// with the stage advance and the head move; genesis: zeros.
+    pub committed_claims: [u64; 3],
 }
 
 impl KernelState {
-    /// 8 (discriminator) + 1 + 8 + 32 + 8 + 8 + 32 + 8 + 1.
-    pub const SPACE: usize = 106;
+    /// 8 (discriminator) + 1 + 8 + 32 + 8 + 8 + 32 + 8 + 1 + 24.
+    pub const SPACE: usize = 130;
 }
 
 /// The second §3 account: one stored transition manifest. This is the
@@ -4158,12 +4194,14 @@ pub fn declare_transition_from_records(
 /// hash — before any write; only then does the stage advance
 /// to `COMMITTED` and the sealed head move. The capacity
 /// debit and dialect effects of `commit_apply` run in the
-/// rebuilt kernel, which is discarded: the program persists
-/// the head move, not the post-commit capacity stocks (see
-/// the slice-26 module docs — the committed-claims ledger is
-/// a later slice). The payer is a fee payer only: kernel
-/// `commit` is permissionless, so no proposer, seat, or agent
-/// gate applies here.
+/// rebuilt kernel, which is discarded — but slice 27 persists
+/// the debit as ledger totals on `KernelState` (see the
+/// slice-27 module docs): the new transition's per-resource
+/// claim sums are checked against the sealed stocks minus
+/// prior committed claims before kernel `commit` runs, and
+/// the new totals are written with the head move. The payer
+/// is a fee payer only: kernel `commit` is permissionless,
+/// so no proposer, seat, or agent gate applies here.
 pub fn commit_transition_from_records(
     kernel_state: &mut KernelState,
     transition_record: &mut TransitionRecord,
@@ -4391,6 +4429,33 @@ pub fn commit_transition_from_records(
         Some(Life::Committable) => {}
         _ => return Err(error!(ProgramV04Error::CommitFailed)),
     }
+    // Slice 27 ledger gate: the rebuilt kernel judges the new
+    // claims against the sealed stocks, but the program's live
+    // capacity is the sealed stocks minus prior committed
+    // claims. Refuse here — before kernel commit, before any
+    // program write — when any resource's committed total plus
+    // the new sum would exceed its sealed stock. The `sums`
+    // map is the transition's own per-resource claim totals,
+    // recomputed from the supplied prior plans by the mirror
+    // above; a resource with no ledger slot, or with no sealed
+    // stock in the rebuilt kernel, refuses rather than
+    // passing through unchecked.
+    let mut new_committed = kernel_state.committed_claims;
+    for (resource, total) in &sums {
+        let slot = committed_ledger_index(*resource)
+            .ok_or(error!(ProgramV04Error::CommitFailed))?;
+        let cap = k
+            .capacity_of(*resource)
+            .ok_or(error!(ProgramV04Error::CommitFailed))?;
+        let already = Amount::from_raw(new_committed[slot]);
+        let next = already
+            .checked_add(*total)
+            .map_err(|_| error!(ProgramV04Error::CommitFailed))?;
+        if next > cap {
+            return Err(error!(ProgramV04Error::CommitFailed));
+        }
+        new_committed[slot] = next.raw();
+    }
     let new_state = k
         .commit(&transition_record.transition_id, kernel_state.clock)
         .map_err(|_| error!(ProgramV04Error::CommitFailed))?;
@@ -4414,6 +4479,7 @@ pub fn commit_transition_from_records(
     transition_record.stage = TransitionRecord::COMMITTED;
     kernel_state.head_index = new_state.index;
     kernel_state.head_hash = new_state.hash;
+    kernel_state.committed_claims = new_committed;
     Ok(Life::Committed)
 }
 
@@ -4811,6 +4877,7 @@ pub fn genesis_kernel_state() -> core::result::Result<KernelState, KernelError> 
         eligible_sibling_parent_hash: [0; 32],
         eligible_sibling_count: 0,
         bump: 0,
+        committed_claims: [0, 0, 0],
     })
 }
 
@@ -5010,6 +5077,21 @@ pub const RES_TREASURY_TRANCHE: u16 = 0;
 pub const RES_LENDING_BOOK: u16 = 1;
 /// Rotational exit windows (mirrors v0.2 `kernel-policy` id 2).
 pub const RES_EXIT_WINDOW: u16 = 2;
+
+/// Ledger slot of a launch resource in
+/// `KernelState.committed_claims` (slice 27): tranche 0, lending
+/// book 1, exit window 2. Any other resource has no slot — the
+/// kernel's own commit refuses it for want of a capacity stock,
+/// and the ledger gate refuses it first, so no unslotted claim
+/// can ever be written to the ledger.
+pub fn committed_ledger_index(resource: u16) -> Option<usize> {
+    match resource {
+        RES_TREASURY_TRANCHE => Some(0),
+        RES_LENDING_BOOK => Some(1),
+        RES_EXIT_WINDOW => Some(2),
+        _ => None,
+    }
+}
 
 /// Agent ids 1..=6 for the seeded agent set.
 pub fn ag(n: u8) -> [u8; 32] {
@@ -5308,8 +5390,8 @@ mod tests {
     fn kernel_state_space_accounts_for_every_field() {
         // Discriminator 8 + sealed 1 + head_index 8 + head_hash 32 +
         // clock 8 + census parent index 8 + census parent hash 32 +
-        // census count 8 + bump 1.
-        assert_eq!(KernelState::SPACE, 8 + 1 + 8 + 32 + 8 + 8 + 32 + 8 + 1);
+        // census count 8 + bump 1 + committed claims 24 (3 x u64).
+        assert_eq!(KernelState::SPACE, 8 + 1 + 8 + 32 + 8 + 8 + 32 + 8 + 1 + 24);
     }
 
     #[test]
@@ -5324,10 +5406,11 @@ mod tests {
             eligible_sibling_parent_hash: [0xAB; 32],
             eligible_sibling_count: 3,
             bump: 254,
+            committed_claims: [11, 22, 33],
         };
         let mut bytes = Vec::new();
         state.try_serialize(&mut bytes).expect("serialize must succeed");
-        // Discriminator (8) + fields (98) = SPACE.
+        // Discriminator (8) + fields (122) = SPACE.
         assert_eq!(bytes.len(), KernelState::SPACE);
         let back = <KernelState as AccountDeserialize>::try_deserialize(&mut &bytes[..])
             .expect("deserialize must succeed");
@@ -5339,6 +5422,7 @@ mod tests {
         assert_eq!(back.eligible_sibling_parent_hash, [0xAB; 32]);
         assert_eq!(back.eligible_sibling_count, 3);
         assert_eq!(back.bump, 254);
+        assert_eq!(back.committed_claims, [11, 22, 33]);
     }
 
     #[test]
@@ -8851,5 +8935,73 @@ mod tests {
         assert!(format!("{:?}", err).contains("ParentMismatch"));
         assert_eq!(record.stage, TransitionRecord::DECLARED);
         assert_eq!(state.head_index, 9);
+    }
+
+    #[test]
+    fn commit_writes_ledger_totals_on_success() {
+        // Slice 27's write, proven on the fixture's own plan set
+        // (tranche 10, lending book 5, exit window untouched):
+        // a successful commit persists exactly those per-resource
+        // totals in the ledger, together with the stage advance
+        // and the head move — the slice-26 honesty gap, closed
+        // at the enforcement point.
+        let (mut state, mut record, obs, first, plan) = declared_pair();
+        assert_eq!(state.committed_claims, [0, 0, 0]);
+        commit_transition_from_records(&mut state, &mut record, &obs, &[first], std::slice::from_ref(&plan))
+            .expect("a fitting declared chain must commit");
+        assert_eq!(record.stage, TransitionRecord::COMMITTED);
+        assert_eq!(state.committed_claims, [10 * SCALE, 5 * SCALE, 0]);
+    }
+
+    #[test]
+    fn commit_refuses_when_ledger_plus_new_claims_exceeds_stock() {
+        // The ledger gate, at the boundary that matters: prior
+        // committed claims of 995 on the tranche stock (1000)
+        // plus this transition's 10 exceed the sealed stock, so
+        // commit refuses with `CommitFailed` — and, exactly as
+        // with the head, a refused commit writes nothing: the
+        // record stands `DECLARED`, the head stands, and the
+        // ledger stands at the pre-seeded totals, unmoved.
+        let (mut state, mut record, obs, first, plan) = declared_pair();
+        state.committed_claims = [995 * SCALE, 0, 0];
+        let err = commit_transition_from_records(&mut state, &mut record, &obs, &[first], &[plan])
+            .expect_err("a ledger-exhausting commit must refuse");
+        assert!(format!("{:?}", err).contains("CommitFailed"));
+        assert_eq!(record.stage, TransitionRecord::DECLARED);
+        assert_eq!(state.head_index, 0);
+        assert_eq!(state.committed_claims, [995 * SCALE, 0, 0]);
+    }
+
+    #[test]
+    fn commit_succeeds_at_exact_ledger_capacity() {
+        // The gate is a bound, not a hair trigger: prior totals
+        // of 990 (tranche) and 495 (lending book) plus this
+        // transition's 10 and 5 land exactly on the sealed
+        // stocks (1000, 500), so commit succeeds and the ledger
+        // records the full stocks — the next commit of any
+        // positive claim on either resource must refuse.
+        let (mut state, mut record, obs, first, plan) = declared_pair();
+        state.committed_claims = [990 * SCALE, 495 * SCALE, 0];
+        commit_transition_from_records(&mut state, &mut record, &obs, &[first], std::slice::from_ref(&plan))
+            .expect("an exactly-fitting ledger must commit");
+        assert_eq!(record.stage, TransitionRecord::COMMITTED);
+        assert_eq!(state.committed_claims, [1000 * SCALE, 500 * SCALE, 0]);
+    }
+
+    #[test]
+    fn commit_refusal_leaves_preseeded_ledger_untouched() {
+        // A refusal on a different gate must not partially
+        // write the ledger either: with pre-seeded totals, a
+        // stale-observation refusal (clock 9100) leaves the
+        // ledger exactly as seeded, alongside the standing
+        // `DECLARED` record and head.
+        let (mut state, mut record, obs, first, plan) = declared_pair();
+        state.committed_claims = [100 * SCALE, 50 * SCALE, 25 * SCALE];
+        advance_clock_on_state(&mut state, 9100).expect("advance to the observation expiry must succeed");
+        let err = commit_transition_from_records(&mut state, &mut record, &obs, &[first], &[plan])
+            .expect_err("a stale-observation commit must refuse");
+        assert!(format!("{:?}", err).contains("CommitFailed"));
+        assert_eq!(record.stage, TransitionRecord::DECLARED);
+        assert_eq!(state.committed_claims, [100 * SCALE, 50 * SCALE, 25 * SCALE]);
     }
 }
