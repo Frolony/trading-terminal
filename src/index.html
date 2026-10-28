@@ -177,6 +177,16 @@ th[data-pairs-col]{cursor:pointer;white-space:nowrap}
    their spacing. */
 .discfilters{margin:0}
 .discctrl{margin-bottom:0}
+/* N3.19 (A105): the chain rail — the real no-wrap strip. N3.18 left
+   the chain row on .discfgroup (flex-wrap:wrap), so at narrower panel
+   widths the six chains could stack; the rail class below is the
+   DexScreener shape: one line, sideways scroll, slim muted labels
+   with the active chain softly highlighted (the 11px muted / lime
+   treatment itself is unchanged from N3.17). Scoped to the chain row
+   only — filter groups keep plain .discfgroup and still wrap. */
+.discfilters.discchains{min-width:0}
+.discfgroup.discchainrail{display:flex;flex-wrap:nowrap;overflow-x:auto;min-width:0;scrollbar-width:thin}
+.discfgroup.discchainrail button{flex:0 0 auto;white-space:nowrap}
 /* N3.18 geometry (measured 2026-10-27, 1440x900): in the 7-column search
    table the Pair Info column lands at 262px, so the Token Info strip
    (209px after the 32px image + 9px gap) wraps its five cells 2-per-row
@@ -3413,7 +3423,7 @@ function discPoolKey(chain,pool){return (chain||'solana')+':'+(pool||'');}
 function discJupKey(chain,mint){return (chain||'solana')+':'+(mint||'');}
 function discChainState(){try{const id=settings&&settings.discChain;const c=id&&discChainForId(id);return c&&c.verified?c.id:'solana';}catch(_){return 'solana';}}
 function discChainRecord(){return discChainForId(discChainState())||DISC_CHAINS[0];}
-function discChainHtml(){const cur=discChainState();return '<div class="discfilters discchains" aria-label="Discovery chain"><span class="discfgroup"><span class="discflabel">Chain</span>'+DISC_CHAINS.filter(c=>c.verified).map(c=>'<button type="button" data-disc-chain="'+c.id+'" class="'+(c.id===cur?'active':'')+'" aria-pressed="'+(c.id===cur?'true':'false')+'">'+esc(c.label)+'</button>').join('')+'</span></div>';}
+function discChainHtml(){const cur=discChainState();return '<div class="discfilters discchains" aria-label="Discovery chain"><span class="discfgroup discchainrail"><span class="discflabel">Chain</span>'+DISC_CHAINS.filter(c=>c.verified).map(c=>'<button type="button" data-disc-chain="'+c.id+'" class="'+(c.id===cur?'active':'')+'" aria-pressed="'+(c.id===cur?'true':'false')+'">'+esc(c.label)+'</button>').join('')+'</span></div>';}
 function discApplyChain(id){const c=discChainForId(id);if(!c||!c.verified||!settings)return;if(settings.discChain===c.id){paintDiscovery();return;}settings.discChain=c.id;saveSettings();if(discoveryMode==='search'){if(discoveryQuery)searchTokensFrom('tokenSearch');else paintDiscovery();}else{discoveryTrend=[];discoveryTrendAt=0;loadTrendingDiscovery({force:true});}}
 let discoveryMode='trending';
 let discoveryWindow='h24';
