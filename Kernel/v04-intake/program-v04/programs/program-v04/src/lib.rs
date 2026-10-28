@@ -275,6 +275,42 @@
 //! than claimed here. Select is permissionless, as the kernel's is:
 //! the payer is a fee payer only, and the stage advances to
 //! `SELECTED` (4) only on a kernel-proven selection.
+//!
+//! Slice 17 (this slice): sibling replay for select — the
+//! `select_candidate_with_siblings` instruction. The caller supplies
+//! the target's priors plus, for each competing sibling, its stored
+//! transition record, its observation record, and its stored signals;
+//! the helper replays every supplied transition into one rebuilt
+//! kernel and runs kernel `select_candidate` on the target there, so
+//! the kernel's sibling arms can now fire: a sibling whose window is
+//! still open refuses with `SiblingsStillOpen`, a qualifying sibling
+//! with higher confidence (or equal confidence and an earlier
+//! eligibility) refuses with `OutrankedBySibling`, and a target that
+//! outranks every supplied sibling selects. Replay runs as ONE
+//! merged timeline, not two phases: eligibility chains (ingest +
+//! register + evaluate + mark_eligible at the stored `eligible_at`)
+//! and signals (at their `submitted_at`) are interleaved in ascending
+//! time order, chains before signals at an equal time — two phases
+//! would regress the kernel clock whenever a transition's signal
+//! predates another transition's eligibility, which is the normal
+//! interleaved case. The mark-eligible order is the kernel's
+//! siblings-vec order, and `eligible_at` IS that order — the clock
+//! only moves forward, so an earlier `eligible_at` was necessarily
+//! marked eligible earlier. The one case the clock cannot order is
+//! equal `eligible_at`: siblings replay before the target there, so
+//! an equal-confidence tie at equal eligibility refuses the target —
+//! the fail-closed direction, stated not smoothed. Each sibling's supplied signal set must number exactly
+//! its own `signal_count` (the slice-16 anchor, per transition), and
+//! a sibling at any stage but `ELIGIBLE` refuses: a `SELECTED`
+//! sibling's own select replay — the `ParentAlreadyHasASelected`
+//! arm — is the next slice's work, not smuggled in here. Honesty
+//! bounds, stated not smoothed: this slice proves the comparison
+//! over the siblings SUPPLIED; it does not prove the supplied set is
+//! complete — no count anchor for siblings exists on `KernelState`
+//! (slice 16's anchor covers one transition's signals, not the
+//! sibling field), so omitting a blocking sibling is still a caller
+//! omission the program cannot catch, and that anchor is the next
+//! slice's work after the already-selected replay.
 
 extern crate alloc;
 
@@ -622,6 +658,108 @@ pub mod program_v04 {
         emit!(TransitionSelected { transition_id, stage: TransitionRecord::SELECTED });
         Ok(())
     }
+
+    /// Select a candidate with sibling replay (§4.1, fifth replay row,
+    /// v0.4 form, slice 17): the slice-16 select plus the competing
+    /// field. Remaining accounts carry the sibling evidence, one
+    /// account per stored record, classified by discriminator:
+    /// sibling `TransitionRecord`s, their `ObservationRecord`s, and
+    /// `SignalRecord`s (target priors and sibling priors alike, told
+    /// apart by each signal's `transition_id`). A signal for no
+    /// supplied transition, a sibling without exactly one matching
+    /// observation, an observation matching no sibling, a duplicated
+    /// sibling id, or a remaining account that is none of the three
+    /// record types refuses with `RecordMismatch` before any replay.
+    /// The payer is a fee payer only, as in slice 16; only the target
+    /// record's stage advances, to `SELECTED`, and only on a
+    /// kernel-proven selection over the supplied field.
+    pub fn select_candidate_with_siblings(
+        ctx: Context<SelectCandidateWithSiblings>,
+        transition_id: [u8; 32],
+        observation_id: [u8; 32],
+    ) -> Result<()> {
+        if ctx.accounts.transition_record.transition_id != transition_id
+            || ctx.accounts.observation_record.observation_id != observation_id
+        {
+            return Err(error!(ProgramV04Error::RecordMismatch));
+        }
+        let mut sibling_transitions: alloc::vec::Vec<TransitionRecord> = alloc::vec::Vec::new();
+        let mut sibling_observations: alloc::vec::Vec<ObservationRecord> = alloc::vec::Vec::new();
+        let mut all_signals: alloc::vec::Vec<SignalRecord> = alloc::vec::Vec::new();
+        for acc in ctx.remaining_accounts {
+            if let Ok(parsed) = Account::<TransitionRecord>::try_from(acc) {
+                sibling_transitions.push(parsed.into_inner());
+                continue;
+            }
+            if let Ok(parsed) = Account::<ObservationRecord>::try_from(acc) {
+                sibling_observations.push(parsed.into_inner());
+                continue;
+            }
+            let parsed = Account::<SignalRecord>::try_from(acc)
+                .map_err(|_| error!(ProgramV04Error::RecordMismatch))?;
+            all_signals.push(parsed.into_inner());
+        }
+        for (i, tr) in sibling_transitions.iter().enumerate() {
+            if tr.transition_id == transition_id
+                || sibling_transitions[..i]
+                    .iter()
+                    .any(|t| t.transition_id == tr.transition_id)
+            {
+                return Err(error!(ProgramV04Error::RecordMismatch));
+            }
+        }
+        let mut sibling_signal_sets: alloc::vec::Vec<alloc::vec::Vec<SignalRecord>> =
+            alloc::vec::Vec::new();
+        for _ in &sibling_transitions {
+            sibling_signal_sets.push(alloc::vec::Vec::new());
+        }
+        let mut target_priors: alloc::vec::Vec<SignalRecord> = alloc::vec::Vec::new();
+        for sig in all_signals {
+            if sig.transition_id == transition_id {
+                target_priors.push(sig);
+                continue;
+            }
+            match sibling_transitions
+                .iter()
+                .position(|t| t.transition_id == sig.transition_id)
+            {
+                Some(i) => sibling_signal_sets[i].push(sig),
+                None => return Err(error!(ProgramV04Error::RecordMismatch)),
+            }
+        }
+        let mut siblings: alloc::vec::Vec<SiblingReplay> = alloc::vec::Vec::new();
+        for (i, tr) in sibling_transitions.iter().enumerate() {
+            let matches: alloc::vec::Vec<&ObservationRecord> = sibling_observations
+                .iter()
+                .filter(|o| o.observation_id == tr.observation_id)
+                .collect();
+            if matches.len() != 1 {
+                return Err(error!(ProgramV04Error::RecordMismatch));
+            }
+            siblings.push(SiblingReplay {
+                transition_record: tr,
+                observation_record: matches[0],
+                prior_signals: &sibling_signal_sets[i],
+            });
+        }
+        for obs in &sibling_observations {
+            if !sibling_transitions
+                .iter()
+                .any(|t| t.observation_id == obs.observation_id)
+            {
+                return Err(error!(ProgramV04Error::RecordMismatch));
+            }
+        }
+        select_candidate_from_records_with_siblings(
+            &ctx.accounts.kernel_state,
+            &mut ctx.accounts.transition_record,
+            &ctx.accounts.observation_record,
+            &target_priors,
+            &siblings,
+        )?;
+        emit!(TransitionSelected { transition_id, stage: TransitionRecord::SELECTED });
+        Ok(())
+    }
 }
 
 #[derive(Accounts)]
@@ -649,6 +787,28 @@ pub struct EvaluateTransition<'info> {
 #[derive(Accounts)]
 #[instruction(transition_id: [u8; 32], observation_id: [u8; 32])]
 pub struct SelectCandidate<'info> {
+    #[account(
+        seeds = [b"kernel-state"],
+        bump = kernel_state.bump,
+    )]
+    pub kernel_state: Account<'info, KernelState>,
+    #[account(
+        mut,
+        seeds = [b"transition", transition_id.as_ref()],
+        bump = transition_record.bump,
+    )]
+    pub transition_record: Account<'info, TransitionRecord>,
+    #[account(
+        seeds = [b"observation", observation_id.as_ref()],
+        bump = observation_record.bump,
+    )]
+    pub observation_record: Account<'info, ObservationRecord>,
+    pub payer: Signer<'info>,
+}
+
+#[derive(Accounts)]
+#[instruction(transition_id: [u8; 32], observation_id: [u8; 32])]
+pub struct SelectCandidateWithSiblings<'info> {
     #[account(
         seeds = [b"kernel-state"],
         bump = kernel_state.bump,
@@ -1702,6 +1862,300 @@ pub fn select_candidate_from_records(
             prior.submitted_at,
         )
         .map_err(|_| error!(ProgramV04Error::SelectFailed))?;
+    }
+    k.select_candidate(&transition_record.transition_id, kernel_state.clock)
+        .map_err(|_| error!(ProgramV04Error::SelectFailed))?;
+    let life = match k.life_of(&transition_record.transition_id) {
+        Some(Life::Selected) => Life::Selected,
+        _ => return Err(error!(ProgramV04Error::SelectFailed)),
+    };
+    transition_record.stage = TransitionRecord::SELECTED;
+    Ok(life)
+}
+
+/// One sibling transition offered to a sibling-aware select (slice 17):
+/// the sibling's stored transition record, its observation record, and
+/// its stored signal records. All three are read, never written: the
+/// replay proves the sibling's tally in a rebuilt kernel, and only the
+/// target record's stage advances.
+#[derive(Clone, Copy)]
+pub struct SiblingReplay<'a> {
+    pub transition_record: &'a TransitionRecord,
+    pub observation_record: &'a ObservationRecord,
+    pub prior_signals: &'a [SignalRecord],
+}
+
+/// Replay one transition's eligibility chain into a rebuilt kernel
+/// (slice 17's phase 1): ingest + register + evaluate +
+/// mark_eligible, all at the stored `eligible_at`, so the rebuilt
+/// kernel's window IS the stored window. Every failure maps to
+/// `SelectFailed` — this helper judges a supplied replay set, not a
+/// single transition's gates, so the pre-replay gates of the calling
+/// helper carry the distinct errors.
+fn replay_transition_chain(
+    kernel_state: &KernelState,
+    k: &mut LaunchKernelProgramEnv,
+    transition_record: &TransitionRecord,
+    observation_record: &ObservationRecord,
+) -> Result<()> {
+    let proposer = resolve_proposer(kernel_state, transition_record.proposer)
+        .map_err(|_| error!(ProgramV04Error::SelectFailed))?;
+    let observer_id = resolve_agent_id(observation_record.observer);
+    if !k.has_role(&observer_id, Role::Observer) {
+        return Err(error!(ProgramV04Error::SelectFailed));
+    }
+    let relevant_groups = match k.agent(&proposer) {
+        Some(profile) => profile.groups.clone(),
+        None => return Err(error!(ProgramV04Error::SelectFailed)),
+    };
+    let observation = Observation {
+        id: observation_record.observation_id,
+        timestamp: observation_record.timestamp,
+        expiry: observation_record.expiry,
+        confidence: Amount::from_raw(observation_record.confidence_raw),
+    };
+    let eligible_at = transition_record.eligible_at;
+    k.ingest_observation(&observer_id, observation, eligible_at)
+        .map_err(|_| error!(ProgramV04Error::SelectFailed))?;
+    let manifest = Manifest {
+        transition_type: transition_record.transition_type,
+        parent_index: transition_record.parent_index,
+        parent_hash: transition_record.parent_hash,
+        declared_next_hash: transition_record.declared_next_hash,
+        observation_id: transition_record.observation_id,
+        expires_at: transition_record.expires_at,
+        relevant_groups,
+        action: None,
+    };
+    k.register_transition(
+        &proposer,
+        transition_record.transition_id,
+        manifest,
+        BTreeSet::new(),
+        eligible_at,
+    )
+    .map_err(|_| error!(ProgramV04Error::SelectFailed))?;
+    k.evaluate_transition(&transition_record.transition_id, eligible_at)
+        .map_err(|_| error!(ProgramV04Error::SelectFailed))?;
+    k.mark_eligible(&transition_record.transition_id, eligible_at)
+        .map_err(|_| error!(ProgramV04Error::SelectFailed))?;
+    match k.life_of(&transition_record.transition_id) {
+        Some(Life::Eligible) => Ok(()),
+        _ => Err(error!(ProgramV04Error::SelectFailed)),
+    }
+}
+
+/// Select a candidate over a supplied sibling field through the real
+/// kernel (slice 17). Pure except for the target record's stage,
+/// which advances to `SELECTED` only on success — every refusal
+/// leaves every record untouched. Target gates, in order: sealed
+/// state; stage exactly `ELIGIBLE`; parent exactly the sealed head;
+/// observation linkage; a proven window; the completeness anchor —
+/// the supplied target prior set must number exactly `signal_count`;
+/// every target prior belonging to the target with a stored round
+/// matching its own `submitted_at`; no duplicated (agent, round) in
+/// the target set. Sibling gates, per sibling: an id distinct from
+/// the target and from every other supplied sibling; stage exactly
+/// `ELIGIBLE` (a `SELECTED` sibling's own select replay is the next
+/// slice's work — it refuses here rather than being silently
+/// treated as merely eligible); parent exactly the target's parent
+/// (hence the sealed head); observation linkage to its own
+/// observation record; a proven window; its supplied signal set
+/// numbering exactly its own `signal_count`; every sibling prior
+/// belonging to the sibling with a stored round matching its own
+/// `submitted_at`; no duplicated (agent, round) within the sibling's
+/// set. Replay then runs as one merged timeline against a freshly
+/// rebuilt sealed launch kernel under `ProgramEnv`: eligibility
+/// chains and signals interleaved in ascending time order, chains
+/// before signals at an equal time (siblings before the target on an
+/// equal `eligible_at` — the fail-closed tie rule); then kernel
+/// `select_candidate` runs on the target at the state's clock. A kernel refusal in any
+/// call maps to `SelectFailed`: a still-open target or sibling
+/// window, an unmet quorum, confidence below the launch threshold,
+/// an outranking sibling, an expired manifest, and a signal at or
+/// past a deadline during the prior replay all fail here, through
+/// the kernel, not through a program-side guess about them. Only a
+/// `Life::Selected` life advances the stage. What this does NOT
+/// prove, stated not smoothed: that the supplied sibling set is
+/// complete — no count anchor for siblings exists on `KernelState`,
+/// so a blocking sibling the caller omits cannot be caught here.
+#[allow(clippy::too_many_arguments)]
+pub fn select_candidate_from_records_with_siblings(
+    kernel_state: &KernelState,
+    transition_record: &mut TransitionRecord,
+    observation_record: &ObservationRecord,
+    prior_signals: &[SignalRecord],
+    siblings: &[SiblingReplay],
+) -> Result<Life> {
+    if !kernel_state.sealed {
+        return Err(error!(ProgramV04Error::NotSealed));
+    }
+    if transition_record.stage != TransitionRecord::ELIGIBLE {
+        return Err(error!(ProgramV04Error::WrongStage));
+    }
+    if transition_record.parent_index != kernel_state.head_index
+        || transition_record.parent_hash != kernel_state.head_hash
+    {
+        return Err(error!(ProgramV04Error::ParentMismatch));
+    }
+    if transition_record.observation_id != observation_record.observation_id {
+        return Err(error!(ProgramV04Error::RecordMismatch));
+    }
+    if transition_record.eligible_at == 0
+        || transition_record.consensus_deadline <= transition_record.eligible_at
+    {
+        return Err(error!(ProgramV04Error::SelectFailed));
+    }
+    if prior_signals.len() as u64 != transition_record.signal_count {
+        return Err(error!(ProgramV04Error::SelectFailed));
+    }
+    for prior in prior_signals {
+        if prior.transition_id != transition_record.transition_id {
+            return Err(error!(ProgramV04Error::RecordMismatch));
+        }
+        if signal_round(
+            transition_record.eligible_at,
+            transition_record.consensus_deadline,
+            prior.submitted_at,
+        ) != prior.round
+        {
+            return Err(error!(ProgramV04Error::RecordMismatch));
+        }
+    }
+    {
+        let mut seen: BTreeSet<([u8; 32], u64)> = BTreeSet::new();
+        for prior in prior_signals {
+            if !seen.insert((prior.agent.to_bytes(), prior.round)) {
+                return Err(error!(ProgramV04Error::SelectFailed));
+            }
+        }
+    }
+    {
+        let mut seen_ids: BTreeSet<[u8; 32]> = BTreeSet::new();
+        for sibling in siblings {
+            let srec = sibling.transition_record;
+            if srec.transition_id == transition_record.transition_id
+                || !seen_ids.insert(srec.transition_id)
+            {
+                return Err(error!(ProgramV04Error::SelectFailed));
+            }
+            if srec.stage != TransitionRecord::ELIGIBLE {
+                return Err(error!(ProgramV04Error::SelectFailed));
+            }
+            if srec.parent_index != transition_record.parent_index
+                || srec.parent_hash != transition_record.parent_hash
+            {
+                return Err(error!(ProgramV04Error::ParentMismatch));
+            }
+            if srec.observation_id != sibling.observation_record.observation_id {
+                return Err(error!(ProgramV04Error::RecordMismatch));
+            }
+            if srec.eligible_at == 0 || srec.consensus_deadline <= srec.eligible_at {
+                return Err(error!(ProgramV04Error::SelectFailed));
+            }
+            if sibling.prior_signals.len() as u64 != srec.signal_count {
+                return Err(error!(ProgramV04Error::SelectFailed));
+            }
+            let mut seen: BTreeSet<([u8; 32], u64)> = BTreeSet::new();
+            for prior in sibling.prior_signals {
+                if prior.transition_id != srec.transition_id {
+                    return Err(error!(ProgramV04Error::RecordMismatch));
+                }
+                if signal_round(srec.eligible_at, srec.consensus_deadline, prior.submitted_at)
+                    != prior.round
+                {
+                    return Err(error!(ProgramV04Error::RecordMismatch));
+                }
+                if !seen.insert((prior.agent.to_bytes(), prior.round)) {
+                    return Err(error!(ProgramV04Error::SelectFailed));
+                }
+            }
+        }
+    }
+    let mut k = sealed_launch_kernel_env().map_err(|_| error!(ProgramV04Error::KernelSeal))?;
+    // One merged timeline: (time, kind rank, tie rank, index) with
+    // kind rank 0 = eligibility chain, 1 = signal, so a chain always
+    // precedes same-time signals; tie rank 0 = sibling, 1 = target,
+    // so siblings precede the target on an equal eligible_at. The
+    // index is usize::MAX for the target, the sibling's supply index
+    // otherwise; sort_by is stable, so equal keys keep supply order.
+    // A two-phase replay would regress the kernel clock here: a
+    // transition's signal routinely predates another transition's
+    // eligibility, and the kernel's tick refuses backward time.
+    enum TimelineEvent<'a> {
+        Chain(usize),
+        Signal(&'a SignalRecord, [u8; 32]),
+    }
+    let mut timeline: alloc::vec::Vec<(u64, u8, u8, TimelineEvent)> = alloc::vec::Vec::new();
+    for (i, sibling) in siblings.iter().enumerate() {
+        timeline.push((
+            sibling.transition_record.eligible_at,
+            0,
+            0,
+            TimelineEvent::Chain(i),
+        ));
+    }
+    timeline.push((
+        transition_record.eligible_at,
+        0,
+        1,
+        TimelineEvent::Chain(usize::MAX),
+    ));
+    for prior in prior_signals {
+        timeline.push((
+            prior.submitted_at,
+            1,
+            1,
+            TimelineEvent::Signal(prior, transition_record.transition_id),
+        ));
+    }
+    for sibling in siblings {
+        for prior in sibling.prior_signals {
+            timeline.push((
+                prior.submitted_at,
+                1,
+                0,
+                TimelineEvent::Signal(prior, sibling.transition_record.transition_id),
+            ));
+        }
+    }
+    timeline.sort_by_key(|t| (t.0, t.1, t.2));
+    for (_, _, _, event) in &timeline {
+        match event {
+            TimelineEvent::Chain(idx) => {
+                if *idx == usize::MAX {
+                    replay_transition_chain(
+                        kernel_state,
+                        &mut k,
+                        transition_record,
+                        observation_record,
+                    )?;
+                } else {
+                    let sibling = &siblings[*idx];
+                    replay_transition_chain(
+                        kernel_state,
+                        &mut k,
+                        sibling.transition_record,
+                        sibling.observation_record,
+                    )?;
+                }
+            }
+            TimelineEvent::Signal(prior, tid) => {
+                let support = if prior.has_support {
+                    Some(Amount::from_raw(prior.support_raw))
+                } else {
+                    None
+                };
+                k.submit_round_signal(
+                    &prior.agent.to_bytes(),
+                    tid,
+                    Amount::from_raw(prior.raw),
+                    support,
+                    prior.submitted_at,
+                )
+                .map_err(|_| error!(ProgramV04Error::SelectFailed))?;
+            }
+        }
     }
     k.select_candidate(&transition_record.transition_id, kernel_state.clock)
         .map_err(|_| error!(ProgramV04Error::SelectFailed))?;
@@ -3609,5 +4063,389 @@ mod tests {
         .expect("round-1 revision must submit");
         assert_eq!(record.signal_count, 2);
         assert_eq!(record.stage, TransitionRecord::ELIGIBLE);
+    }
+
+    // Slice 17 fixtures: build an ELIGIBLE transition pair at a chosen
+    // mark-eligible clock (100 = the sealed clock, 150 = one advance
+    // later), always proposer agent 1, observer OBSERVER, window
+    // mark_clock / mark_clock + 100. The select-time state is built
+    // separately — records carry their own windows, so one select
+    // state serves pairs marked at different clocks.
+    fn eligible_sibling_at(
+        mark_clock: u64,
+        id: [u8; 32],
+        obs_id: [u8; 32],
+        declared: [u8; 32],
+        expires: u64,
+    ) -> (TransitionRecord, ObservationRecord) {
+        let mut state = sealed_state();
+        if mark_clock > state.clock {
+            advance_clock_on_state(&mut state, mark_clock).expect("advance must succeed");
+        }
+        let mut record = build_transition_record(
+            &state, id, TT, 0, [0; 32], declared, obs_id, expires,
+            Pubkey::new_from_array(ag(1)), 7,
+        )
+        .expect("sibling register must build");
+        let obs = build_observation_record(
+            &state, obs_id, 100, 9100, 900_000, observer_pubkey(), 7,
+        )
+        .expect("sibling observation must build");
+        replay_transition_from_records(&state, &mut record, &obs)
+            .expect("sibling replay must succeed");
+        evaluate_transition_from_records(&state, &mut record, &obs)
+            .expect("sibling evaluate must succeed");
+        mark_eligible_from_records(&state, &mut record, &obs)
+            .expect("sibling mark eligible must succeed");
+        assert_eq!(record.stage, TransitionRecord::ELIGIBLE);
+        assert_eq!(record.eligible_at, mark_clock);
+        assert_eq!(record.consensus_deadline, mark_clock + 100);
+        (record, obs)
+    }
+
+    fn sibling_signal_at(
+        record: &mut TransitionRecord,
+        obs: &ObservationRecord,
+        priors: &[SignalRecord],
+        agent_n: u8,
+        support_raw: u64,
+        at_clock: u64,
+    ) -> SignalRecord {
+        let mut state = sealed_state();
+        if at_clock > state.clock {
+            advance_clock_on_state(&mut state, at_clock).expect("advance must succeed");
+        }
+        let (sig, _, _) = submit_signal_from_records(
+            &state, record, obs, priors, Pubkey::new_from_array(ag(agent_n)),
+            0, SCALE, support_raw, true, 7,
+        )
+        .expect("sibling signal must submit");
+        sig
+    }
+
+    fn select_state_at(clock: u64) -> KernelState {
+        let mut state = sealed_state();
+        if clock > state.clock {
+            advance_clock_on_state(&mut state, clock).expect("advance must succeed");
+        }
+        state
+    }
+
+    #[test]
+    fn select_with_siblings_target_wins_over_weaker_sibling() {
+        // Target confidence 1.0, sibling confidence 0, both windows
+        // 100/200: the sibling qualifies (weight clears quorum) but
+        // does not outrank, so the target selects at clock 200.
+        let state = select_state_at(200);
+        let (_, mut target, target_obs, first) = selected_pair();
+        let (mut sib, sib_obs) = eligible_sibling_at(100, [0xD2; 32], [0xC1; 32], [0xE2; 32], 10_100);
+        let sib_sig = sibling_signal_at(&mut sib, &sib_obs, &[], 2, 0, 100);
+        let sibling = SiblingReplay {
+            transition_record: &sib,
+            observation_record: &sib_obs,
+            prior_signals: &[sib_sig],
+        };
+        let life = select_candidate_from_records_with_siblings(
+            &state, &mut target, &target_obs, &[first], &[sibling],
+        )
+        .expect("target outranking its sibling must select");
+        assert_eq!(life, Life::Selected);
+        assert_eq!(target.stage, TransitionRecord::SELECTED);
+    }
+
+    #[test]
+    fn select_with_siblings_refuses_outranked() {
+        // Target confidence exactly 0.5 (two signals: support 1.0 and
+        // support 0), sibling confidence 1.0, both windows closed at
+        // 200: the kernel's OutrankedBySibling arm must refuse, and
+        // the target's stage stays ELIGIBLE. (A 0-confidence target
+        // would fail its own threshold first, so it cannot prove
+        // this arm.)
+        let state = select_state_at(200);
+        let (_, mut target, target_obs, first, second) = two_signals();
+        let (mut sib, sib_obs) = eligible_sibling_at(100, [0xD2; 32], [0xC1; 32], [0xE2; 32], 10_100);
+        let sib_sig = sibling_signal_at(&mut sib, &sib_obs, &[], 2, SCALE, 100);
+        let sibling = SiblingReplay {
+            transition_record: &sib,
+            observation_record: &sib_obs,
+            prior_signals: &[sib_sig],
+        };
+        let err = select_candidate_from_records_with_siblings(
+            &state, &mut target, &target_obs, &[first, second], &[sibling],
+        )
+        .expect_err("a higher-confidence sibling must refuse selection");
+        assert!(format!("{:?}", err).contains("SelectFailed"));
+        assert_eq!(target.stage, TransitionRecord::ELIGIBLE);
+    }
+
+    #[test]
+    fn select_with_siblings_refuses_open_sibling() {
+        // Target window 100/200 closed at clock 200, sibling window
+        // 150/250 still open: the kernel's SiblingsStillOpen arm must
+        // refuse even though the sibling would otherwise qualify.
+        let state = select_state_at(200);
+        let (_, mut target, target_obs, first) = selected_pair();
+        let (mut sib, sib_obs) = eligible_sibling_at(150, [0xD2; 32], [0xC1; 32], [0xE2; 32], 10_100);
+        let sib_sig = sibling_signal_at(&mut sib, &sib_obs, &[], 2, SCALE, 150);
+        let sibling = SiblingReplay {
+            transition_record: &sib,
+            observation_record: &sib_obs,
+            prior_signals: &[sib_sig],
+        };
+        let err = select_candidate_from_records_with_siblings(
+            &state, &mut target, &target_obs, &[first], &[sibling],
+        )
+        .expect_err("an open sibling window must refuse selection");
+        assert!(format!("{:?}", err).contains("SelectFailed"));
+        assert_eq!(target.stage, TransitionRecord::ELIGIBLE);
+    }
+
+    #[test]
+    fn select_with_siblings_tie_earlier_sibling_wins() {
+        // Equal confidence 1.0, sibling eligible at 100, target at
+        // 150, both windows closed at 250: the earlier sibling wins
+        // the kernel's tie-break, so the target refuses.
+        let state = select_state_at(250);
+        let (mut sib, sib_obs) = eligible_sibling_at(100, [0xD2; 32], [0xC1; 32], [0xE2; 32], 10_100);
+        let sib_sig = sibling_signal_at(&mut sib, &sib_obs, &[], 2, SCALE, 100);
+        let (mut target, target_obs) = eligible_sibling_at(150, [0xD1; 32], [0xC0; 32], [0xE1; 32], 10_100);
+        let target_sig = sibling_signal_at(&mut target, &target_obs, &[], 2, SCALE, 150);
+        let sibling = SiblingReplay {
+            transition_record: &sib,
+            observation_record: &sib_obs,
+            prior_signals: &[sib_sig],
+        };
+        let err = select_candidate_from_records_with_siblings(
+            &state, &mut target, &target_obs, &[target_sig], &[sibling],
+        )
+        .expect_err("an earlier equal-confidence sibling must refuse selection");
+        assert!(format!("{:?}", err).contains("SelectFailed"));
+        assert_eq!(target.stage, TransitionRecord::ELIGIBLE);
+    }
+
+    #[test]
+    fn select_with_siblings_tie_earlier_target_wins() {
+        // Mirror of the previous test: target eligible at 100,
+        // sibling at 150, equal confidence, both windows closed at
+        // 250 — the target wins its own tie-break and selects.
+        let state = select_state_at(250);
+        let (_, mut target, target_obs, first) = selected_pair();
+        let (mut sib, sib_obs) = eligible_sibling_at(150, [0xD2; 32], [0xC1; 32], [0xE2; 32], 10_100);
+        let sib_sig = sibling_signal_at(&mut sib, &sib_obs, &[], 2, SCALE, 150);
+        let sibling = SiblingReplay {
+            transition_record: &sib,
+            observation_record: &sib_obs,
+            prior_signals: &[sib_sig],
+        };
+        let life = select_candidate_from_records_with_siblings(
+            &state, &mut target, &target_obs, &[first], &[sibling],
+        )
+        .expect("the earlier target must win its tie");
+        assert_eq!(life, Life::Selected);
+        assert_eq!(target.stage, TransitionRecord::SELECTED);
+    }
+
+    #[test]
+    fn select_with_siblings_tie_equal_eligibility_refuses() {
+        // Equal confidence 1.0 AND equal eligibility (both 100/200):
+        // the slice-17 tie rule replays siblings before the target,
+        // so the sibling wins and the target refuses — the fail-closed
+        // direction for an order the clock cannot distinguish.
+        let state = select_state_at(200);
+        let (_, mut target, target_obs, first) = selected_pair();
+        let (mut sib, sib_obs) = eligible_sibling_at(100, [0xD2; 32], [0xC1; 32], [0xE2; 32], 10_100);
+        let sib_sig = sibling_signal_at(&mut sib, &sib_obs, &[], 2, SCALE, 100);
+        let sibling = SiblingReplay {
+            transition_record: &sib,
+            observation_record: &sib_obs,
+            prior_signals: &[sib_sig],
+        };
+        let err = select_candidate_from_records_with_siblings(
+            &state, &mut target, &target_obs, &[first], &[sibling],
+        )
+        .expect_err("an equal-eligibility tie must refuse the target");
+        assert!(format!("{:?}", err).contains("SelectFailed"));
+        assert_eq!(target.stage, TransitionRecord::ELIGIBLE);
+    }
+
+    #[test]
+    fn select_with_siblings_ignores_expired_sibling() {
+        // Sibling eligible at 100 with confidence 1.0 would win the
+        // tie against the target (eligible 150, confidence 1.0) — but
+        // the sibling expires at 150, so at the select clock 250 the
+        // kernel skips it and the target selects.
+        let state = select_state_at(250);
+        let (mut sib, sib_obs) = eligible_sibling_at(100, [0xD2; 32], [0xC1; 32], [0xE2; 32], 150);
+        let sib_sig = sibling_signal_at(&mut sib, &sib_obs, &[], 2, SCALE, 100);
+        let (mut target, target_obs) = eligible_sibling_at(150, [0xD1; 32], [0xC0; 32], [0xE1; 32], 10_100);
+        let target_sig = sibling_signal_at(&mut target, &target_obs, &[], 2, SCALE, 150);
+        let sibling = SiblingReplay {
+            transition_record: &sib,
+            observation_record: &sib_obs,
+            prior_signals: &[sib_sig],
+        };
+        let life = select_candidate_from_records_with_siblings(
+            &state, &mut target, &target_obs, &[target_sig], &[sibling],
+        )
+        .expect("an expired sibling must not block selection");
+        assert_eq!(life, Life::Selected);
+        assert_eq!(target.stage, TransitionRecord::SELECTED);
+    }
+
+    #[test]
+    fn select_with_siblings_refuses_incomplete_sibling_set() {
+        // The sibling's count is 2 but only its first signal is
+        // supplied: the per-sibling completeness anchor refuses
+        // before any replay, and the target's stage stays ELIGIBLE.
+        let state = select_state_at(200);
+        let (_, mut target, target_obs, first) = selected_pair();
+        let (mut sib, sib_obs) = eligible_sibling_at(100, [0xD2; 32], [0xC1; 32], [0xE2; 32], 10_100);
+        let sib_first = sibling_signal_at(&mut sib, &sib_obs, &[], 2, SCALE, 100);
+        let _sib_second = sibling_signal_at(&mut sib, &sib_obs, &[sib_first], 3, 0, 100);
+        assert_eq!(sib.signal_count, 2);
+        let sibling = SiblingReplay {
+            transition_record: &sib,
+            observation_record: &sib_obs,
+            prior_signals: &[sib_first],
+        };
+        let err = select_candidate_from_records_with_siblings(
+            &state, &mut target, &target_obs, &[first], &[sibling],
+        )
+        .expect_err("a short sibling signal set must refuse");
+        assert!(format!("{:?}", err).contains("SelectFailed"));
+        assert_eq!(target.stage, TransitionRecord::ELIGIBLE);
+    }
+
+    #[test]
+    fn select_with_siblings_refuses_non_sibling_parent() {
+        // A bundle whose parent hash is not the target's parent is
+        // not a sibling at all: ParentMismatch, before any replay.
+        let state = select_state_at(200);
+        let (_, mut target, target_obs, first) = selected_pair();
+        let sib = TransitionRecord {
+            transition_id: [0xD2; 32],
+            transition_type: TT,
+            parent_index: 0,
+            parent_hash: [0xAB; 32],
+            declared_next_hash: [0xE2; 32],
+            observation_id: [0xC9; 32],
+            expires_at: 10_100,
+            proposer: Pubkey::new_from_array(ag(1)),
+            stage: TransitionRecord::ELIGIBLE,
+            eligible_at: 100,
+            consensus_deadline: 200,
+            signal_count: 0,
+            bump: 7,
+        };
+        let sib_obs = ObservationRecord {
+            observation_id: [0xC9; 32],
+            timestamp: 100,
+            expiry: 9100,
+            confidence_raw: 900_000,
+            observer: observer_pubkey(),
+            bump: 7,
+        };
+        let sibling = SiblingReplay {
+            transition_record: &sib,
+            observation_record: &sib_obs,
+            prior_signals: &[],
+        };
+        let err = select_candidate_from_records_with_siblings(
+            &state, &mut target, &target_obs, &[first], &[sibling],
+        )
+        .expect_err("a non-sibling parent must refuse");
+        assert!(format!("{:?}", err).contains("ParentMismatch"));
+        assert_eq!(target.stage, TransitionRecord::ELIGIBLE);
+    }
+
+    #[test]
+    fn select_with_siblings_refuses_wrong_stage_sibling() {
+        // A sibling stopped at EVALUATED (never marked eligible) is
+        // not a field member yet: SelectFailed, and the target's
+        // stage stays ELIGIBLE.
+        let state = select_state_at(200);
+        let (_, mut target, target_obs, first) = selected_pair();
+        let eval_state = sealed_state();
+        let mut sib = build_transition_record(
+            &eval_state, [0xD2; 32], TT, 0, [0; 32], [0xE2; 32], [0xC1; 32], 10_100,
+            Pubkey::new_from_array(ag(1)), 7,
+        )
+        .expect("sibling register must build");
+        let sib_obs = build_observation_record(
+            &eval_state, [0xC1; 32], 100, 9100, 900_000, observer_pubkey(), 7,
+        )
+        .expect("sibling observation must build");
+        replay_transition_from_records(&eval_state, &mut sib, &sib_obs)
+            .expect("sibling replay must succeed");
+        evaluate_transition_from_records(&eval_state, &mut sib, &sib_obs)
+            .expect("sibling evaluate must succeed");
+        assert_eq!(sib.stage, TransitionRecord::EVALUATED);
+        let sibling = SiblingReplay {
+            transition_record: &sib,
+            observation_record: &sib_obs,
+            prior_signals: &[],
+        };
+        let err = select_candidate_from_records_with_siblings(
+            &state, &mut target, &target_obs, &[first], &[sibling],
+        )
+        .expect_err("a non-eligible sibling must refuse");
+        assert!(format!("{:?}", err).contains("SelectFailed"));
+        assert_eq!(target.stage, TransitionRecord::ELIGIBLE);
+    }
+
+    #[test]
+    fn select_with_siblings_refuses_duplicate_sibling() {
+        // The same sibling bundle supplied twice is not two
+        // siblings: SelectFailed, before any replay.
+        let state = select_state_at(200);
+        let (_, mut target, target_obs, first) = selected_pair();
+        let (mut sib, sib_obs) = eligible_sibling_at(100, [0xD2; 32], [0xC1; 32], [0xE2; 32], 10_100);
+        let sib_sig = sibling_signal_at(&mut sib, &sib_obs, &[], 2, SCALE, 100);
+        let sibling = SiblingReplay {
+            transition_record: &sib,
+            observation_record: &sib_obs,
+            prior_signals: &[sib_sig],
+        };
+        let err = select_candidate_from_records_with_siblings(
+            &state, &mut target, &target_obs, &[first], &[sibling, sibling],
+        )
+        .expect_err("a duplicated sibling must refuse");
+        assert!(format!("{:?}", err).contains("SelectFailed"));
+        assert_eq!(target.stage, TransitionRecord::ELIGIBLE);
+    }
+
+    #[test]
+    fn select_with_siblings_refuses_mismatched_sibling_observation() {
+        // The sibling's observation record carries a different id
+        // than the sibling transition's linkage: RecordMismatch.
+        let state = select_state_at(200);
+        let (_, mut target, target_obs, first) = selected_pair();
+        let (mut sib, sib_obs) = eligible_sibling_at(100, [0xD2; 32], [0xC1; 32], [0xE2; 32], 10_100);
+        let sib_sig = sibling_signal_at(&mut sib, &sib_obs, &[], 2, SCALE, 100);
+        let sibling = SiblingReplay {
+            transition_record: &sib,
+            observation_record: &target_obs,
+            prior_signals: &[sib_sig],
+        };
+        let err = select_candidate_from_records_with_siblings(
+            &state, &mut target, &target_obs, &[first], &[sibling],
+        )
+        .expect_err("a mismatched sibling observation must refuse");
+        assert!(format!("{:?}", err).contains("RecordMismatch"));
+        assert_eq!(target.stage, TransitionRecord::ELIGIBLE);
+    }
+
+    #[test]
+    fn select_with_siblings_empty_is_plain_select() {
+        // No siblings supplied: the new helper reduces to the
+        // slice-16 select, and the target selects at clock 200.
+        let state = select_state_at(200);
+        let (_, mut target, target_obs, first) = selected_pair();
+        let life = select_candidate_from_records_with_siblings(
+            &state, &mut target, &target_obs, &[first], &[],
+        )
+        .expect("an empty sibling field must select like plain select");
+        assert_eq!(life, Life::Selected);
+        assert_eq!(target.stage, TransitionRecord::SELECTED);
     }
 }

@@ -448,11 +448,59 @@ families, account inventory, and CU golden set are later step-5 slices.
   siblings), reconcile/validate/declare, commit replay moving the
   head, and CU measurement — all later slices.
 
+## Slice 17 — sibling replay for select
+
+- The `select_candidate_with_siblings` instruction: remaining
+  accounts carry the sibling evidence, one account per stored record,
+  classified by discriminator — sibling `TransitionRecord`s, their
+  `ObservationRecord`s, and `SignalRecord`s (target priors and
+  sibling priors alike, told apart by each signal's
+  `transition_id`). A signal for no supplied transition, a sibling
+  without exactly one matching observation, an observation matching
+  no sibling, a duplicated sibling id, or an unclassifiable
+  remaining account refuses with `RecordMismatch` before any replay.
+- The helper replays every supplied transition into one rebuilt
+  kernel as ONE merged timeline — eligibility chains and signals
+  interleaved in ascending time order, chains before signals at an
+  equal time — because two phases would regress the kernel clock
+  whenever a transition's signal predates another transition's
+  eligibility, which is the normal interleaved case. The
+  mark-eligible order is the kernel's siblings-vec order, and
+  `eligible_at` IS that order; on an equal `eligible_at`, siblings
+  replay before the target, so an equal-confidence tie at equal
+  eligibility refuses the target (the fail-closed direction).
+- The kernel's sibling arms now fire: `SiblingsStillOpen` for a
+  sibling whose window is still open, `OutrankedBySibling` for a
+  qualifying sibling with higher confidence or an earlier
+  equal-confidence eligibility, and an expired sibling is skipped
+  exactly as the kernel skips it. Each sibling's supplied signal set
+  must number exactly its own `signal_count`; a sibling at any stage
+  but `ELIGIBLE` refuses.
+- Host tests 108/108 (95 prior + 13 slice-17: target wins over a
+  weaker sibling, outranked by a 1.0-confidence sibling over a 0.5
+  target, open-sibling refusal, tie with the earlier sibling
+  winning, tie with the earlier target winning, equal-eligibility
+  tie refusing the target, expired sibling ignored, incomplete
+  sibling set, non-sibling parent, wrong-stage sibling, duplicate
+  sibling, mismatched sibling observation, and empty field reducing
+  to plain select).
+- `anchor build` green under the pinned toolchain; IDL now 12
+  instructions (adds `select_candidate_with_siblings`), 4 accounts
+  (unchanged), 18 errors (unchanged), 10 events (unchanged); `.so`
+  710,656 bytes (sha256 `45dcfdea…`).
+- Deliberately NOT slice 17: the already-selected sibling replay
+  (a `SELECTED` sibling's own select replay — the
+  `ParentAlreadyHasASelected` arm), the sibling-set completeness
+  anchor (no count anchor for siblings exists on `KernelState`, so
+  an omitted blocking sibling is still a caller omission),
+  reconcile/validate/declare, commit replay moving the head, and CU
+  measurement — all later slices.
+
 ## Build
 
 ```sh
 export RUSTUP_HOME=~/workspace/toolchains/rustup CARGO_HOME=~/workspace/toolchains/cargo
 export PATH=~/workspace/toolchains/cargo/bin:~/workspace/toolchains/solana/bin:$PATH
 ~/workspace/toolchains/anchor/bin/anchor build   # from this directory
-cargo test                                        # host tests, 95/95
+cargo test                                        # host tests, 108/108
 ```
