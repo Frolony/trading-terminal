@@ -342,11 +342,69 @@ families, account inventory, and CU golden set are later step-5 slices.
   stays a later slice, now unblocked on the window field and still
   blocked on signal persistence.
 
+## Slice 15 — the signal persistence slice 14 named
+
+- The fourth §3 account, `SignalRecord` (SPACE 106): one record per
+  (transition, agent, round) — PDA seeds `["signal", transition_id,
+  agent, round_le]` — carrying raw, support (0 when no position),
+  the `has_support` flag, and `submitted_at`, the state's clock at
+  submission. A new round is a new record, never an overwrite, so the
+  record set is the audit trail the select replay walks; the latest
+  record per agent is the one the kernel counts.
+- The `submit_signal` instruction: the round is an instruction
+  argument the helper re-derives from the stored window and refuses
+  on mismatch, never trusts. The helper replays the full chain before
+  the new signal — ingest + register + evaluate + mark_eligible at
+  the stored `eligible_at` (so the rebuilt kernel's window IS the
+  stored window), then every supplied prior signal at its own
+  `submitted_at`, then the new signal at the state's clock — and
+  returns the kernel's tally (total weight, confidence) alongside the
+  record, plus a `SignalSubmitted` event carrying them. Prior signals
+  arrive as remaining accounts on-chain. Signals do not advance the
+  transition stage: it stays `ELIGIBLE`, and the window is untouched.
+- Gates, in order: sealed state (`NotSealed`); stage exactly
+  `ELIGIBLE` (`WrongStage`); parent exactly the sealed head
+  (`ParentMismatch`); observation linkage (`RecordMismatch`); a
+  proven window (nonzero `eligible_at`, deadline after it) and a
+  round argument equal to the derived round (`SignalFailed`); every
+  prior belonging to this transition with a stored round matching its
+  own `submitted_at` (`RecordMismatch`); proposer/observer gates
+  against the sealed profile (`UnknownProposer`/`NotObserver`); the
+  relevant groups are slice 10's proposer-groups derivation, reused
+  here. Every kernel refusal in the replay maps to `SignalFailed`:
+  same-round duplicate, revision away from the last round's mean,
+  signal at or past the deadline, unknown/inactive agent, over-range
+  raw or support.
+- Host tests 86/86 (71 prior + 15 slice-15: round-slice derivation,
+  SPACE accounting, borsh round-trip, first-signal acceptance with
+  the kernel tally (weight 2.0, confidence 1.0), no-position signal
+  at zero weight with support normalization, wrong-stage /
+  observation-mismatch / unknown-agent / over-range /
+  wrong-round-arg / foreign-prior refusals, same-round duplicate
+  refused, later-round same-support revision accepted,
+  away-from-mean revision refused, two-agent tally accumulation
+  (weight 4.0, confidence exactly 0.5), signal at the deadline
+  refused).
+- `anchor build` green under the pinned toolchain; IDL now 10
+  instructions (adds `submit_signal`), 4 accounts (adds
+  `SignalRecord`), 17 errors (6000–6016, adds `SignalFailed`),
+  9 events (adds `SignalSubmitted`); `.so` 614,584 bytes (sha256
+  `59891a10…`).
+- Deliberately NOT slice 15: a `select_candidate` instruction, and
+  the completeness anchor select needs — `submit_signal` replays the
+  priors the caller supplies, so a record that could only pass by
+  omitting a prior can never survive the select replay, which replays
+  the full set, but proving a supplied set IS the full set needs a
+  count anchored on the transition record (or an equivalent), and
+  that is the select slice's work, named here rather than claimed
+  here. Select/reconcile/validate/declare, commit replay moving the
+  head, and CU measurement are later slices.
+
 ## Build
 
 ```sh
 export RUSTUP_HOME=~/workspace/toolchains/rustup CARGO_HOME=~/workspace/toolchains/cargo
 export PATH=~/workspace/toolchains/cargo/bin:~/workspace/toolchains/solana/bin:$PATH
 ~/workspace/toolchains/anchor/bin/anchor build   # from this directory
-cargo test                                        # host tests, 71/71
+cargo test                                        # host tests, 86/86
 ```

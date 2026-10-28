@@ -216,6 +216,31 @@
 //! refuse, the no-op pattern slice 12 rejected. Select therefore stays
 //! a later slice, now unblocked on the window field and still blocked
 //! on signal persistence.
+//!
+//! Slice 15 (this slice): the signal persistence slice 14 named —
+//! the fourth §3 account, `SignalRecord`, and the `submit_signal`
+//! instruction. One record per (transition, agent, round): the PDA
+//! seeds bind the transition id, the signing agent's pubkey, and the
+//! round, so a same-round duplicate is refused twice over — by the
+//! `init` constraint on-chain and by the kernel's
+//! `AlreadySignalledThisRound` in the helper replay. The helper
+//! replays the full chain before the new signal — ingest + register +
+//! evaluate + mark_eligible at the stored `eligible_at` (so the
+//! rebuilt kernel's window is exactly the stored window), then every
+//! supplied prior signal at its own `submitted_at`, then the new
+//! signal at the state's clock — and returns the kernel's tally
+//! (total weight, confidence) alongside the record, so the tally a
+//! later select slice reads is a kernel-proven number, not a
+//! program-side sum. Signals do not advance the transition stage: it
+//! stays `ELIGIBLE`, and the record's window is untouched. What slice
+//! 15 deliberately does NOT close: select itself, and the completeness
+//! anchor select needs — `submit_signal` replays the priors the
+//! caller supplies (remaining accounts on-chain), so a record that
+//! could only pass by omitting a prior can never survive the select
+//! replay, which replays the full set, but select cannot yet prove a
+//! supplied set IS the full set; a count anchored on the transition
+//! record, or an equivalent, is the select slice's work, named here
+//! rather than claimed here.
 
 extern crate alloc;
 
@@ -463,6 +488,65 @@ pub mod program_v04 {
         emit!(TransitionMarkedEligible { transition_id, stage: TransitionRecord::ELIGIBLE });
         Ok(())
     }
+
+    /// Submit a signal (§4.1, fourth replay row, v0.4 form): run kernel
+    /// `submit_round_signal` for the signing payer's agent on an
+    /// `ELIGIBLE` record pair and persist it as a `SignalRecord` PDA.
+    /// The PDA seeds bind the transition id, the signer's pubkey, and
+    /// the round (an instruction argument the helper re-derives and
+    /// refuses on mismatch, never trusts). Prior signals for the
+    /// transition arrive as remaining accounts and are replayed by the
+    /// helper in `submitted_at` order, so the kernel judges the new
+    /// signal against the same tally history the chain holds — a
+    /// same-round duplicate and a revision away from the last round's
+    /// mean are refused by the kernel, not by a program-side guess.
+    /// The transition record is not mutated: signals do not advance
+    /// its stage, and its window is untouched. The payer is a fee payer
+    /// and the signal's agent in one: the identity mapping means the
+    /// signer proves the agent by signing, and no other agent's signal
+    /// can be submitted through this instruction.
+    pub fn submit_signal(
+        ctx: Context<SubmitSignal>,
+        transition_id: [u8; 32],
+        observation_id: [u8; 32],
+        round: u64,
+        raw: u64,
+        support_raw: u64,
+        has_support: bool,
+    ) -> Result<()> {
+        if ctx.accounts.transition_record.transition_id != transition_id
+            || ctx.accounts.observation_record.observation_id != observation_id
+        {
+            return Err(error!(ProgramV04Error::RecordMismatch));
+        }
+        let mut priors: alloc::vec::Vec<SignalRecord> = alloc::vec::Vec::new();
+        for acc in ctx.remaining_accounts {
+            let parsed = Account::<SignalRecord>::try_from(acc)
+                .map_err(|_| error!(ProgramV04Error::RecordMismatch))?;
+            priors.push(parsed.into_inner());
+        }
+        let (record, total, confidence) = submit_signal_from_records(
+            &ctx.accounts.kernel_state,
+            &ctx.accounts.transition_record,
+            &ctx.accounts.observation_record,
+            &priors,
+            ctx.accounts.payer.key(),
+            round,
+            raw,
+            support_raw,
+            has_support,
+            ctx.bumps.signal_record,
+        )?;
+        *ctx.accounts.signal_record = record;
+        emit!(SignalSubmitted {
+            transition_id,
+            agent: ctx.accounts.payer.key(),
+            round,
+            total_weight_raw: total.raw(),
+            confidence_raw: confidence.raw(),
+        });
+        Ok(())
+    }
 }
 
 #[derive(Accounts)]
@@ -485,6 +569,37 @@ pub struct EvaluateTransition<'info> {
     )]
     pub observation_record: Account<'info, ObservationRecord>,
     pub payer: Signer<'info>,
+}
+
+#[derive(Accounts)]
+#[instruction(transition_id: [u8; 32], observation_id: [u8; 32], round: u64, raw: u64, support_raw: u64, has_support: bool)]
+pub struct SubmitSignal<'info> {
+    #[account(
+        seeds = [b"kernel-state"],
+        bump = kernel_state.bump,
+    )]
+    pub kernel_state: Account<'info, KernelState>,
+    #[account(
+        seeds = [b"transition", transition_id.as_ref()],
+        bump = transition_record.bump,
+    )]
+    pub transition_record: Account<'info, TransitionRecord>,
+    #[account(
+        seeds = [b"observation", observation_id.as_ref()],
+        bump = observation_record.bump,
+    )]
+    pub observation_record: Account<'info, ObservationRecord>,
+    #[account(
+        init,
+        payer = payer,
+        space = SignalRecord::SPACE,
+        seeds = [b"signal", transition_id.as_ref(), payer.key().as_ref(), &round.to_le_bytes()],
+        bump,
+    )]
+    pub signal_record: Account<'info, SignalRecord>,
+    #[account(mut)]
+    pub payer: Signer<'info>,
+    pub system_program: Program<'info, System>,
 }
 
 #[derive(Accounts)]
@@ -1093,6 +1208,247 @@ pub fn mark_eligible_from_records(
     Ok(life)
 }
 
+/// The fourth §3 account: one stored round signal (slice 15). One
+/// record per (transition, agent, round) — the PDA seeds are
+/// `["signal", transition_id, agent, round_le]` — because the kernel
+/// allows one signal per agent per round and a revision means a later
+/// round: a new round is a new record, never an overwrite, so the
+/// record set is the audit trail the select replay walks. The latest
+/// record per agent is the one the kernel counts; earlier rounds stay
+/// as history, exactly as the kernel's `round_sigs` map keeps them.
+/// `submitted_at` is the state's clock at submission: the replay clock
+/// a later slice uses to rebuild that signal's round exactly.
+#[account]
+#[derive(Debug, Copy)]
+pub struct SignalRecord {
+    /// Transition this signal belongs to (the PDA seed after `"signal"`).
+    pub transition_id: [u8; 32],
+    /// Signalling agent (the signer's pubkey, by the identity mapping).
+    pub agent: Pubkey,
+    /// Consensus round this signal was submitted in, derived from the
+    /// stored eligibility window and the clock at submission.
+    pub round: u64,
+    /// Raw signal weight in kernel `Amount` raw units (SCALE = 1.0).
+    pub raw: u64,
+    /// Support in kernel `Amount` raw units; 0 when `has_support` is false.
+    pub support_raw: u64,
+    /// False means "no position": recorded and classified by the
+    /// kernel, but adding no weight (the kernel's `support == None`).
+    pub has_support: bool,
+    /// State clock at submission (the replay clock for this record).
+    pub submitted_at: u64,
+    /// PDA bump for the `["signal", transition_id, agent, round]` seeds.
+    pub bump: u8,
+}
+
+impl SignalRecord {
+    /// 8 (discriminator) + 32 + 32 + 8 + 8 + 8 + 1 + 8 + 1.
+    pub const SPACE: usize = 106;
+}
+
+/// Derive a consensus round from a stored eligibility window and a
+/// clock, mirroring the kernel's `round_of` exactly: rounds are slices
+/// of the window, `(deadline - eligible_at) / max_rounds` ticks each
+/// (at least 1), capped at the last round. The program derives rather
+/// than trusts: the instruction's round argument must equal this, and
+/// every prior record's stored round must equal this at its own
+/// `submitted_at`, or the helper refuses. The policy is the sealed
+/// launch policy's, never a caller-supplied value.
+pub fn signal_round(eligible_at: u64, consensus_deadline: u64, now: u64) -> u64 {
+    let max_rounds = launch_policy().max_rounds as u64;
+    let slice = (consensus_deadline.saturating_sub(eligible_at) / max_rounds).max(1);
+    let r = now.saturating_sub(eligible_at) / slice;
+    if r >= max_rounds {
+        max_rounds - 1
+    } else {
+        r
+    }
+}
+
+/// Submit a signal through the real kernel (slice 15). Pure except for
+/// the returned record: the transition record is not mutated (signals
+/// do not advance its stage) and every refusal leaves everything
+/// untouched. Gates, in order: sealed state; stage exactly `ELIGIBLE`
+/// (a merely-evaluated record has no consensus window to signal in,
+/// and signalling never moves the stage); parent exactly the sealed
+/// head; observation linkage; a proven window (`eligible_at` nonzero
+/// and the deadline after it — a stage-ELIGIBLE record with a zero
+/// window was never proven eligible, so it cannot anchor a round);
+/// the round argument equal to the round derived from the stored
+/// window and the state's clock; every prior record belonging to this
+/// transition with a stored round matching its own `submitted_at`
+/// (a prior that contradicts the window math is not a record this
+/// transition produced). The kernel calls run against a freshly
+/// rebuilt sealed launch kernel under `ProgramEnv`: ingest, register,
+/// evaluate, and mark_eligible, all at the stored `eligible_at` (so the
+/// rebuilt kernel's window IS the stored window — the kernel exposes
+/// no `eligible_at` accessor, so replaying at the stored clock is what
+/// reproduces it), then each prior signal at its `submitted_at` in
+/// order, then the new signal at the state's clock. A kernel refusal
+/// in any call maps to `SignalFailed`: a same-round duplicate, a
+/// revision away from the last round's mean, a signal at or past the
+/// deadline, an unknown or inactive agent, and an over-range raw or
+/// support all fail here, through the kernel, not through a
+/// program-side guess about them. On success the return is the new
+/// record plus the kernel's tally after it — total weight and
+/// confidence in raw units — so a later select slice reads a
+/// kernel-proven tally, not a program-side sum. A caller-supplied
+/// `support_raw` with `has_support` false is normalized to 0 in the
+/// record: the record is canonical, `has_support` false ⟺
+/// `support_raw` 0. Completeness bound, stated not smoothed: this
+/// helper replays the priors it is given; a record that could only
+/// pass by omitting a prior can never survive the select replay,
+/// which replays the full set — but proving a supplied set IS the full
+/// set needs a count anchored on the transition record, and that is
+/// the select slice's work (see module docs).
+#[allow(clippy::too_many_arguments)]
+pub fn submit_signal_from_records(
+    kernel_state: &KernelState,
+    transition_record: &TransitionRecord,
+    observation_record: &ObservationRecord,
+    prior_signals: &[SignalRecord],
+    agent: Pubkey,
+    round: u64,
+    raw: u64,
+    support_raw: u64,
+    has_support: bool,
+    bump: u8,
+) -> Result<(SignalRecord, Amount, Amount)> {
+    if !kernel_state.sealed {
+        return Err(error!(ProgramV04Error::NotSealed));
+    }
+    if transition_record.stage != TransitionRecord::ELIGIBLE {
+        return Err(error!(ProgramV04Error::WrongStage));
+    }
+    if transition_record.parent_index != kernel_state.head_index
+        || transition_record.parent_hash != kernel_state.head_hash
+    {
+        return Err(error!(ProgramV04Error::ParentMismatch));
+    }
+    if transition_record.observation_id != observation_record.observation_id {
+        return Err(error!(ProgramV04Error::RecordMismatch));
+    }
+    if transition_record.eligible_at == 0
+        || transition_record.consensus_deadline <= transition_record.eligible_at
+    {
+        return Err(error!(ProgramV04Error::SignalFailed));
+    }
+    let derived = signal_round(
+        transition_record.eligible_at,
+        transition_record.consensus_deadline,
+        kernel_state.clock,
+    );
+    if derived != round {
+        return Err(error!(ProgramV04Error::SignalFailed));
+    }
+    for prior in prior_signals {
+        if prior.transition_id != transition_record.transition_id {
+            return Err(error!(ProgramV04Error::RecordMismatch));
+        }
+        if signal_round(
+            transition_record.eligible_at,
+            transition_record.consensus_deadline,
+            prior.submitted_at,
+        ) != prior.round
+        {
+            return Err(error!(ProgramV04Error::RecordMismatch));
+        }
+    }
+    let proposer = resolve_proposer(kernel_state, transition_record.proposer)?;
+    let observer_id = resolve_agent_id(observation_record.observer);
+    let mut k = sealed_launch_kernel_env().map_err(|_| error!(ProgramV04Error::KernelSeal))?;
+    if !k.has_role(&observer_id, Role::Observer) {
+        return Err(error!(ProgramV04Error::NotObserver));
+    }
+    let relevant_groups = match k.agent(&proposer) {
+        Some(profile) => profile.groups.clone(),
+        None => return Err(error!(ProgramV04Error::UnknownProposer)),
+    };
+    let observation = Observation {
+        id: observation_record.observation_id,
+        timestamp: observation_record.timestamp,
+        expiry: observation_record.expiry,
+        confidence: Amount::from_raw(observation_record.confidence_raw),
+    };
+    let eligible_at = transition_record.eligible_at;
+    k.ingest_observation(&observer_id, observation, eligible_at)
+        .map_err(|_| error!(ProgramV04Error::SignalFailed))?;
+    let manifest = Manifest {
+        transition_type: transition_record.transition_type,
+        parent_index: transition_record.parent_index,
+        parent_hash: transition_record.parent_hash,
+        declared_next_hash: transition_record.declared_next_hash,
+        observation_id: transition_record.observation_id,
+        expires_at: transition_record.expires_at,
+        relevant_groups,
+        action: None,
+    };
+    k.register_transition(
+        &proposer,
+        transition_record.transition_id,
+        manifest,
+        BTreeSet::new(),
+        eligible_at,
+    )
+    .map_err(|_| error!(ProgramV04Error::SignalFailed))?;
+    k.evaluate_transition(&transition_record.transition_id, eligible_at)
+        .map_err(|_| error!(ProgramV04Error::SignalFailed))?;
+    k.mark_eligible(&transition_record.transition_id, eligible_at)
+        .map_err(|_| error!(ProgramV04Error::SignalFailed))?;
+    match k.life_of(&transition_record.transition_id) {
+        Some(Life::Eligible) => {}
+        _ => return Err(error!(ProgramV04Error::SignalFailed)),
+    }
+    let mut priors: alloc::vec::Vec<SignalRecord> = prior_signals.to_vec();
+    priors.sort_by_key(|s| s.submitted_at);
+    for prior in &priors {
+        let support = if prior.has_support {
+            Some(Amount::from_raw(prior.support_raw))
+        } else {
+            None
+        };
+        k.submit_round_signal(
+            &prior.agent.to_bytes(),
+            &transition_record.transition_id,
+            Amount::from_raw(prior.raw),
+            support,
+            prior.submitted_at,
+        )
+        .map_err(|_| error!(ProgramV04Error::SignalFailed))?;
+    }
+    let agent_id = resolve_agent_id(agent);
+    let support = if has_support {
+        Some(Amount::from_raw(support_raw))
+    } else {
+        None
+    };
+    k.submit_round_signal(
+        &agent_id,
+        &transition_record.transition_id,
+        Amount::from_raw(raw),
+        support,
+        kernel_state.clock,
+    )
+    .map_err(|_| error!(ProgramV04Error::SignalFailed))?;
+    let total = k
+        .total_weight(&transition_record.transition_id)
+        .map_err(|_| error!(ProgramV04Error::SignalFailed))?;
+    let confidence = k
+        .confidence(&transition_record.transition_id)
+        .map_err(|_| error!(ProgramV04Error::SignalFailed))?;
+    let record = SignalRecord {
+        transition_id: transition_record.transition_id,
+        agent,
+        round,
+        raw,
+        support_raw: if has_support { support_raw } else { 0 },
+        has_support,
+        submitted_at: kernel_state.clock,
+        bump,
+    };
+    Ok((record, total, confidence))
+}
+
 /// Advance a `KernelState`'s clock (slice 11). Pure except for the
 /// clock itself, which moves only on success — every refusal leaves
 /// the state untouched. Gates, in order: sealed state; forward-only
@@ -1171,6 +1527,15 @@ pub struct TransitionMarkedEligible {
     pub stage: u8,
 }
 
+#[event]
+pub struct SignalSubmitted {
+    pub transition_id: [u8; 32],
+    pub agent: Pubkey,
+    pub round: u64,
+    pub total_weight_raw: u64,
+    pub confidence_raw: u64,
+}
+
 #[error_code]
 pub enum ProgramV04Error {
     #[msg("program-v04 probe: kernel construction failed")]
@@ -1205,6 +1570,8 @@ pub enum ProgramV04Error {
     EvaluateFailed,
     #[msg("program-v04 eligible: kernel eligibility refused or did not reach Eligible")]
     EligibleFailed,
+    #[msg("program-v04 signal: kernel signal refused, window unproven, or round mismatch")]
+    SignalFailed,
 }
 
 // ---------------------------------------------------------------- launch genesis
@@ -2527,5 +2894,284 @@ mod tests {
             .expect_err("lapsed observation must refuse eligibility in the kernel");
         assert!(format!("{:?}", err).contains("EligibleFailed"));
         assert_eq!(record.stage, TransitionRecord::EVALUATED);
+    }
+
+    fn signal_pair() -> (KernelState, TransitionRecord, ObservationRecord) {
+        let (state, mut record, obs) = eligible_pair();
+        mark_eligible_from_records(&state, &mut record, &obs)
+            .expect("pair must mark eligible before signalling");
+        assert_eq!(record.stage, TransitionRecord::ELIGIBLE);
+        assert_eq!(record.eligible_at, 100);
+        assert_eq!(record.consensus_deadline, 200);
+        (state, record, obs)
+    }
+
+    #[test]
+    fn signal_round_matches_kernel_round_slices() {
+        // The window is 100/200 with max_rounds 3, so rounds are
+        // 33-tick slices: 100–132 round 0, 133–165 round 1, 166–199
+        // round 2, and the last round caps rather than overflows.
+        assert_eq!(signal_round(100, 200, 100), 0);
+        assert_eq!(signal_round(100, 200, 132), 0);
+        assert_eq!(signal_round(100, 200, 133), 1);
+        assert_eq!(signal_round(100, 200, 165), 1);
+        assert_eq!(signal_round(100, 200, 166), 2);
+        assert_eq!(signal_round(100, 200, 199), 2);
+    }
+
+    #[test]
+    fn signal_record_space_accounts_for_every_field() {
+        // Discriminator 8 + transition 32 + agent 32 + round 8 +
+        // raw 8 + support 8 + has_support 1 + submitted_at 8 + bump 1.
+        assert_eq!(
+            SignalRecord::SPACE,
+            8 + 32 + 32 + 8 + 8 + 8 + 1 + 8 + 1
+        );
+    }
+
+    #[test]
+    fn signal_record_borsh_round_trips() {
+        use anchor_lang::{AccountDeserialize, AccountSerialize};
+        let record = SignalRecord {
+            transition_id: [0xD1; 32],
+            agent: Pubkey::new_from_array(ag(2)),
+            round: 1,
+            raw: SCALE,
+            support_raw: SCALE,
+            has_support: true,
+            submitted_at: 133,
+            bump: 254,
+        };
+        let mut bytes = Vec::new();
+        record.try_serialize(&mut bytes).expect("serialize must succeed");
+        assert_eq!(bytes.len(), SignalRecord::SPACE);
+        let back = <SignalRecord as AccountDeserialize>::try_deserialize(&mut &bytes[..])
+            .expect("deserialize must succeed");
+        assert_eq!(back.transition_id, [0xD1; 32]);
+        assert_eq!(back.agent, Pubkey::new_from_array(ag(2)));
+        assert_eq!(back.round, 1);
+        assert_eq!(back.raw, SCALE);
+        assert_eq!(back.support_raw, SCALE);
+        assert!(back.has_support);
+        assert_eq!(back.submitted_at, 133);
+        assert_eq!(back.bump, 254);
+    }
+
+    #[test]
+    fn submit_signal_accepts_first_signal_and_reports_kernel_tally() {
+        // Agent 2 is not the proposer: any seeded agent may signal.
+        // Raw 1.0 at base influence 2.0 (reputation pin-OFF) weighs
+        // 2.0, which clears the 1.0 quorum alone; support 1.0 gives
+        // confidence 1.0. The tally comes from the kernel, not from a
+        // program-side sum.
+        let (state, record, obs) = signal_pair();
+        let (signal, total, confidence) = submit_signal_from_records(
+            &state, &record, &obs, &[], Pubkey::new_from_array(ag(2)),
+            0, SCALE, SCALE, true, 7,
+        )
+        .expect("first signal at the genesis clock must submit");
+        assert_eq!(signal.transition_id, [0xD1; 32]);
+        assert_eq!(signal.agent, Pubkey::new_from_array(ag(2)));
+        assert_eq!(signal.round, 0);
+        assert_eq!(signal.raw, SCALE);
+        assert_eq!(signal.support_raw, SCALE);
+        assert!(signal.has_support);
+        assert_eq!(signal.submitted_at, 100);
+        assert_eq!(signal.bump, 7);
+        assert_eq!(total.raw(), 2 * SCALE);
+        assert_eq!(confidence.raw(), SCALE);
+        // Signals do not advance the stage or touch the window.
+        assert_eq!(record.stage, TransitionRecord::ELIGIBLE);
+        assert_eq!(record.eligible_at, 100);
+        assert_eq!(record.consensus_deadline, 200);
+    }
+
+    #[test]
+    fn submit_signal_accepts_no_position_signal_at_zero_weight() {
+        // support == None is recorded and classified but adds no
+        // weight: the tally stays zero, and a caller-supplied
+        // support_raw with has_support false normalizes to 0.
+        let (state, record, obs) = signal_pair();
+        let (signal, total, confidence) = submit_signal_from_records(
+            &state, &record, &obs, &[], Pubkey::new_from_array(ag(3)),
+            0, SCALE, 5, false, 7,
+        )
+        .expect("no-position signal must submit");
+        assert!(!signal.has_support);
+        assert_eq!(signal.support_raw, 0);
+        assert_eq!(total.raw(), 0);
+        assert_eq!(confidence.raw(), 0);
+    }
+
+    #[test]
+    fn submit_signal_refuses_wrong_stage() {
+        let (state, record, obs) = evaluated_pair();
+        let err = submit_signal_from_records(
+            &state, &record, &obs, &[], Pubkey::new_from_array(ag(2)),
+            0, SCALE, SCALE, true, 7,
+        )
+        .expect_err("a merely-evaluated record has no window to signal in");
+        assert!(format!("{:?}", err).contains("WrongStage"));
+    }
+
+    #[test]
+    fn submit_signal_refuses_observation_mismatch() {
+        let (state, record, _) = signal_pair();
+        let other = build_observation_record(
+            &state, [0xC1; 32], 100, 9100, 900_000, observer_pubkey(), 7,
+        )
+        .expect("second observation must build");
+        let err = submit_signal_from_records(
+            &state, &record, &other, &[], Pubkey::new_from_array(ag(2)),
+            0, SCALE, SCALE, true, 7,
+        )
+        .expect_err("observation id mismatch must refuse");
+        assert!(format!("{:?}", err).contains("RecordMismatch"));
+    }
+
+    #[test]
+    fn submit_signal_refuses_unknown_agent_and_over_range_raw() {
+        let (state, record, obs) = signal_pair();
+        let err = submit_signal_from_records(
+            &state, &record, &obs, &[], Pubkey::new_from_array([0x77; 32]),
+            0, SCALE, SCALE, true, 7,
+        )
+        .expect_err("unknown pubkey is no agent and must refuse in the kernel");
+        assert!(format!("{:?}", err).contains("SignalFailed"));
+        let err = submit_signal_from_records(
+            &state, &record, &obs, &[], Pubkey::new_from_array(ag(2)),
+            0, SCALE + 1, SCALE, true, 7,
+        )
+        .expect_err("raw above SCALE must refuse in the kernel");
+        assert!(format!("{:?}", err).contains("SignalFailed"));
+    }
+
+    #[test]
+    fn submit_signal_refuses_wrong_round_arg() {
+        let (state, record, obs) = signal_pair();
+        let err = submit_signal_from_records(
+            &state, &record, &obs, &[], Pubkey::new_from_array(ag(2)),
+            1, SCALE, SCALE, true, 7,
+        )
+        .expect_err("round 1 at clock 100 contradicts the derived round 0");
+        assert!(format!("{:?}", err).contains("SignalFailed"));
+    }
+
+    #[test]
+    fn submit_signal_refuses_foreign_prior() {
+        let (state, record, obs) = signal_pair();
+        let foreign = SignalRecord {
+            transition_id: [0xD9; 32],
+            agent: Pubkey::new_from_array(ag(2)),
+            round: 0,
+            raw: SCALE,
+            support_raw: SCALE,
+            has_support: true,
+            submitted_at: 100,
+            bump: 7,
+        };
+        let err = submit_signal_from_records(
+            &state, &record, &obs, &[foreign], Pubkey::new_from_array(ag(3)),
+            0, SCALE, SCALE, true, 7,
+        )
+        .expect_err("a prior from another transition must refuse");
+        assert!(format!("{:?}", err).contains("RecordMismatch"));
+    }
+
+    fn first_signal_at_genesis(
+        state: &KernelState,
+        record: &TransitionRecord,
+        obs: &ObservationRecord,
+    ) -> SignalRecord {
+        let (signal, _, _) = submit_signal_from_records(
+            state, record, obs, &[], Pubkey::new_from_array(ag(2)),
+            0, SCALE, SCALE, true, 7,
+        )
+        .expect("first signal must submit");
+        signal
+    }
+
+    #[test]
+    fn submit_signal_refuses_same_round_duplicate() {
+        let (state, record, obs) = signal_pair();
+        let first = first_signal_at_genesis(&state, &record, &obs);
+        let err = submit_signal_from_records(
+            &state, &record, &obs, &[first], Pubkey::new_from_array(ag(2)),
+            0, SCALE, SCALE, true, 7,
+        )
+        .expect_err("one signal per agent per round: the kernel must refuse");
+        assert!(format!("{:?}", err).contains("SignalFailed"));
+    }
+
+    #[test]
+    fn submit_signal_accepts_later_round_revision_same_support() {
+        // Round 1 starts at clock 133. A revision repeating the same
+        // support sits exactly on the last round's mean, so the
+        // monotone rule admits it; the tally replaces, not adds, the
+        // agent's earlier weight.
+        let (state, record, obs) = signal_pair();
+        let first = first_signal_at_genesis(&state, &record, &obs);
+        let mut advanced = state;
+        advance_clock_on_state(&mut advanced, 133).expect("advance must succeed");
+        let (signal, total, confidence) = submit_signal_from_records(
+            &advanced, &record, &obs, &[first], Pubkey::new_from_array(ag(2)),
+            1, SCALE, SCALE, true, 7,
+        )
+        .expect("same-support revision in round 1 must submit");
+        assert_eq!(signal.round, 1);
+        assert_eq!(signal.submitted_at, 133);
+        assert_eq!(total.raw(), 2 * SCALE);
+        assert_eq!(confidence.raw(), SCALE);
+    }
+
+    #[test]
+    fn submit_signal_refuses_revision_away_from_mean() {
+        // Single agent, so the last round's mean IS the agent's own
+        // support: moving to 0 moves strictly away from it, and the
+        // kernel's monotone rule must refuse.
+        let (state, record, obs) = signal_pair();
+        let first = first_signal_at_genesis(&state, &record, &obs);
+        let mut advanced = state;
+        advance_clock_on_state(&mut advanced, 133).expect("advance must succeed");
+        let err = submit_signal_from_records(
+            &advanced, &record, &obs, &[first], Pubkey::new_from_array(ag(2)),
+            1, SCALE, 0, true, 7,
+        )
+        .expect_err("revision away from the mean must refuse in the kernel");
+        assert!(format!("{:?}", err).contains("SignalFailed"));
+    }
+
+    #[test]
+    fn submit_signal_two_agents_accumulate_tally() {
+        // Agent 2 at support 1.0, then agent 3 at support 0: total
+        // weight 4.0, weighted 2.0, confidence exactly 0.5 — the launch
+        // policy's threshold. This proves the helper's prior replay
+        // accumulates across agents, not just the submitting one.
+        let (state, record, obs) = signal_pair();
+        let first = first_signal_at_genesis(&state, &record, &obs);
+        let (second, total, confidence) = submit_signal_from_records(
+            &state, &record, &obs, &[first], Pubkey::new_from_array(ag(3)),
+            0, SCALE, 0, true, 7,
+        )
+        .expect("second agent's round-0 signal must submit");
+        assert_eq!(second.agent, Pubkey::new_from_array(ag(3)));
+        assert_eq!(total.raw(), 4 * SCALE);
+        assert_eq!(confidence.raw(), SCALE / 2);
+    }
+
+    #[test]
+    fn submit_signal_refuses_at_and_past_deadline() {
+        // The window is 100/200: at clock 200 the round derives to the
+        // capped last round (2), but the kernel's consensus window is
+        // closed at the deadline itself, so the signal must refuse.
+        let (state, record, obs) = signal_pair();
+        let mut advanced = state;
+        advance_clock_on_state(&mut advanced, 200).expect("advance must succeed");
+        let err = submit_signal_from_records(
+            &advanced, &record, &obs, &[], Pubkey::new_from_array(ag(2)),
+            2, SCALE, SCALE, true, 7,
+        )
+        .expect_err("signal at the deadline must refuse in the kernel");
+        assert!(format!("{:?}", err).contains("SignalFailed"));
     }
 }
