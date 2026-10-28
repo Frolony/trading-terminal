@@ -46,6 +46,9 @@ path = "api/sync.rs"
 [[bin]]
 name = "account"
 path = "api/account.rs"
+[[bin]]
+name = "balances"
+path = "api/balances.rs"
 
 [profile.release]
 codegen-units = 1

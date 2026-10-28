@@ -5444,6 +5444,48 @@ function walletBalScheduleRetry(){
   walletBalRetryTimer=setTimeout(()=>{walletBalRetryTimer=null;if(wallet.connected&&walletBalNeedsRetry())refreshWalletBalances();},d);
   if(walletBalRetryStep<WALLET_BALANCE_RETRY_DELAYS.length-1)walletBalRetryStep++;
 }
+/* N4.18 (A103, 2026-10-27): server-side balance proxy, tried FIRST by
+   refreshWalletBalances below. The proxy route carries no Origin header,
+   so mainnet-beta answers getTokenAccountsByOwner there where the browser
+   path is refused (publicnode -32602, mainnet-beta Origin 403). The route
+   answers ok:true with per-asset values (number) or null plus an error
+   string; a null is an unanswered read, never a zero — the caller keeps
+   the previous value and records the error class, exactly like the
+   N4.11 per-asset loader. Any route failure (transport, non-200, ok:false,
+   malformed envelope) throws, and the caller falls back to the N4.14
+   endpoint rotation unchanged. A proxy ok:true result is authoritative
+   for that refresh: no per-asset rotation fallback mixes a second source
+   into the same refresh, and the N4.13 retry ladder re-probes the proxy
+   first on its own cadence. */
+function proxyErrClass(msg){
+  const m=String(msg||'').toLowerCase();
+  if(m.indexOf('refused')>=0||m.indexOf('403')>=0)return 'refused';
+  if(m.indexOf('busy')>=0||m.indexOf('rate limit')>=0||m.indexOf('429')>=0||m.indexOf('too many')>=0)return 'busy';
+  if(m.indexOf('http 5')>=0)return 'busy';
+  return 'failed';
+}
+function proxyBalancesToWallet(j){
+  if(!j||j.ok!==true||!j.balances||typeof j.balances!=='object')return null;
+  const out={balances:{sol:null,usdc:null,usdt:null},balErr:{}};
+  const keys=['sol','usdc','usdt'];
+  for(let i=0;i<keys.length;i++){
+    const k=keys[i];const v=j.balances[k];
+    if(typeof v==='number'&&Number.isFinite(v)){out.balances[k]=v;out.balErr[k]=null;}
+    else{out.balances[k]=null;const e=j.errors&&j.errors[k];out.balErr[k]=proxyErrClass(typeof e==='string'?e:'proxy failed');}
+  }
+  return out;
+}
+async function fetchProxyBalances(pk){
+  const c=new AbortController(),tm=setTimeout(()=>c.abort(),10000);
+  try{
+    const r=await fetch('/api/balances?owner='+encodeURIComponent(pk),{signal:c.signal});
+    const j=await r.json();
+    if(!r.ok||!j||j.ok!==true)throw new Error('proxy HTTP '+r.status);
+    const mapped=proxyBalancesToWallet(j);
+    if(!mapped)throw new Error('proxy malformed');
+    return mapped;
+  }finally{clearTimeout(tm);}
+}
 async function refreshWalletBalances(){
   if(!wallet.connected||!wallet.publicKey||wallet.balLoading)return;
   wallet.balLoading=true;renderWalletDd();
@@ -5454,11 +5496,26 @@ async function refreshWalletBalances(){
      the generic copy, and walletBalNeedsRetry keeps the N4.13 ladder running
      because 'refused' is truthy like 'busy'/'failed'. */
   const load=async(key,fn)=>{try{const v=await fn();if(!wallet.connected||wallet.publicKey!==pk)return prev[key];wallet.balErr[key]=null;return v;}catch(e){if(!wallet.connected||wallet.publicKey!==pk)return prev[key];wallet.balErr[key]=((e&&e.rpcCode===403)||(String((e&&e.message)||e||'').indexOf('RPC HTTP 403')>=0))?'refused':(isTransientRpcError(e)?'busy':'failed');return prev[key];}}; // N4.15: JSON-RPC 403 classifies as refused, like HTTP 403
-  const results=await Promise.all([
-    load('sol',()=>getSolBalance(pk)),
-    load('usdc',()=>getSplBalance(pk,WALLET_USDC_MINT)),
-    load('usdt',()=>getSplBalance(pk,WALLET_USDT_MINT))
-  ]);
+  /* N4.18: proxy first. Any proxy failure leaves _proxy null and the
+     N4.14 rotation path below runs exactly as before — the proxy never
+     replaces the fallback, it precedes it. */
+  let _proxy=null;
+  try{_proxy=await fetchProxyBalances(pk);}catch(e){_proxy=null;}
+  if(!wallet.connected||wallet.publicKey!==pk){wallet.balLoading=false;if(!wallet.connected){try{if(typeof walletBalStopTimers==='function')walletBalStopTimers();}catch(_){}}return;} // disconnected mid-flight
+  let results;
+  if(_proxy){
+    /* Proxy ok:true is authoritative for this refresh (see the N4.18
+       note above): a failed asset keeps its previous value with its
+       error class recorded, never a false zero. */
+    ['sol','usdc','usdt'].forEach(k=>{if(_proxy.balances[k]!==null&&_proxy.balances[k]!==undefined)wallet.balErr[k]=null;else wallet.balErr[k]=_proxy.balErr[k]||'failed';});
+    results=['sol','usdc','usdt'].map(k=>(_proxy.balances[k]!==null&&_proxy.balances[k]!==undefined?_proxy.balances[k]:prev[k]));
+  }else{
+    results=await Promise.all([
+      load('sol',()=>getSolBalance(pk)),
+      load('usdc',()=>getSplBalance(pk,WALLET_USDC_MINT)),
+      load('usdt',()=>getSplBalance(pk,WALLET_USDT_MINT))
+    ]);
+  }
   if(!wallet.connected||wallet.publicKey!==pk){wallet.balLoading=false;if(!wallet.connected){try{if(typeof walletBalStopTimers==='function')walletBalStopTimers();}catch(_){}}return;} // disconnected mid-flight
   wallet.balances={sol:results[0],usdc:results[1],usdt:results[2]};wallet.balLoading=false;const entry=walletRosterFind(pk);if(entry){entry.balances=wallet.balances;entry.balErr=wallet.balErr;}
   window.__walletState.balances={sol:results[0],usdc:results[1],usdt:results[2]};window.__walletState.balErr=wallet.balErr; // N4.15
