@@ -961,8 +961,10 @@ families, account inventory, and CU golden set are later step-5 slices.
   at its enforcement point with pre-seeded totals standing in
   for prior commits; the gate itself is complete and will
   bind successive commits once replay-from-head lands.
-- Deliberately NOT slice 27: the `commit_governance` path,
-  CU measurement, and replay-from-head — later slices.
+- Deliberately NOT slice 27: the `commit_governance` path
+  and CU measurement — later slices. Replay-from-head is
+  slice 29, below; the current helpers still rebuild from
+  genesis until it is threaded through them.
 
 ## Slice 28 — the governance commit path (`commit_governance_from_records`)
 
@@ -1028,8 +1030,73 @@ families, account inventory, and CU golden set are later step-5 slices.
   bytes (sha256 `a50da0bd…`).
 - Deliberately NOT slice 28: the governance-registration
   instruction, approval persistence, governance-state
-  persistence, CU measurement, and replay-from-head —
-  later slices.
+  persistence, and CU measurement — later slices.
+  Replay-from-head is slice 29, below.
+
+## Slice 29 — replay-from-head (`kernel_at_head_from_commits`)
+
+- A rebuilt sealed launch kernel advanced to the program's
+  current head by replaying a supplied chain of prior
+  `COMMITTED` bundles (`PriorCommit`: transition record,
+  observation record, signal records, plan records), each
+  driven through its full ordinary commit chain and checked
+  link by link against the running head: a prior whose
+  parent is not the running head, whose label is not
+  `COMMITTED`, whose plan set does not reproduce its stored
+  `compatible` verdict, or whose commit does not land
+  exactly one past its parent at its declared next hash
+  refuses, and a refusal returns nothing — a partial history
+  is never a head. An empty prior set returns the genesis
+  kernel and passes only when the program's head is genesis;
+  a chain that stops short of, or overshoots, the program's
+  head refuses with `ParentMismatch`.
+- The clock rule, stated not smoothed: a prior is historical
+  reproduction, so its final steps (reconcile, validate,
+  declare, commit) run at its stored `planning_deadline` —
+  the clock its declare/commit originally proved at — not at
+  the current state clock, because replaying an old commit at
+  today's clock would re-judge it under conditions that no
+  longer hold (a plan whose expiry has passed since) and
+  brick every chain older than one plan expiry. A prior
+  whose deadline lies ahead of the state clock refuses as
+  history from the future. Because the kernel clock never
+  regresses, a valid successor chain is time-ordered: each
+  prior's window must open after the previous prior's
+  deadline, and a target replayed from this head must open
+  after the last prior's deadline — a target created before
+  the last commit is a sibling, not a successor. Governance
+  priors refuse with `GovernanceCommitRequired`: a bundle
+  carries no action and no approvals, so skipping one would
+  silently drop a head move. Capacity is judged against the
+  kernel's current stocks, which already carry earlier
+  priors' debits — the second commit in the two-prior test
+  is judged against tranche 990 / lending book 495, not the
+  sealed 1000 / 500. The slice-27 program ledger is untouched
+  by this helper (it reconstructs kernel state, not program
+  state); governance-state persistence still awaits its
+  slice, as in slice 28.
+- Host tests 223/223 (212 prior + 11 slice-29: moved head
+  with a second transition registering in it — and refusing
+  in a genesis kernel — genesis head from empty priors,
+  moved head with no history, non-committed prior, broken
+  parent link, unreproducible prior plan, governance prior,
+  future-deadline prior, unsealed, two priors debiting both
+  stocks to index 2, chain overshooting the program head).
+  Clippy back to the pre-existing profile (anchor macro
+  `unexpected cfg` noise + the slice-8 test helper's
+  `type_complexity` warning); zero new warnings — one
+  doc-wrap fix was needed to keep it there (a doc line
+  starting with `+` parsed as a rustdoc list marker, the
+  slice-26 trap). No new instruction, account, or error this
+  slice, as designed: IDL counts unchanged (18 instructions,
+  5 accounts, 28 errors, 16 events); `.so` 1,025,352 bytes
+  (sha256 `ae325496…`, coincidentally the slice-28 byte size
+  with different content).
+- Deliberately NOT slice 29: threading this head through
+  the thirteen stage helpers and the commit instructions
+  (the next slice), the governance-registration instruction,
+  approval persistence, governance-state persistence, and
+  CU measurement — later slices.
 
 ## Build
 
@@ -1037,5 +1104,5 @@ families, account inventory, and CU golden set are later step-5 slices.
 export RUSTUP_HOME=~/workspace/toolchains/rustup CARGO_HOME=~/workspace/toolchains/cargo
 export PATH=~/workspace/toolchains/cargo/bin:~/workspace/toolchains/solana/bin:$PATH
 ~/workspace/toolchains/anchor/bin/anchor build   # from this directory
-cargo test                                        # host tests, 212/212
+cargo test                                        # host tests, 223/223
 ```

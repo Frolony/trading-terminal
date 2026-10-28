@@ -672,9 +672,9 @@
 //! sealed genesis head, so a second transition whose parent
 //! is the moved head still cannot replay its chain through
 //! the current helpers — end-to-end two-commit sequencing
-//! needs a replay-from-head slice (recorded, not built
-//! here); the ledger gate is tested at its enforcement point
-//! with pre-seeded totals standing in for prior commits.
+//! needs a replay-from-head slice (slice 29 below); the ledger
+//! gate is tested at its enforcement point with pre-seeded
+//! totals standing in for prior commits.
 //!
 //! Slice 28 (this slice): the governance commit path,
 //! `commit_governance_from_records` — `DECLARED` (9) ->
@@ -716,6 +716,52 @@
 //! claims-carrying governance plan would be ledger-bound
 //! identically, not passed through unchecked). CU
 //! measurement is still a later slice, not smuggled in here.
+//!
+//! Slice 29 (this slice): replay-from-head,
+//! `kernel_at_head_from_commits` — a rebuilt sealed launch
+//! kernel advanced to the program's current head by replaying
+//! a supplied chain of prior `COMMITTED` bundles, each driven
+//! through its full ordinary commit chain (ingest, register,
+//! evaluate, eligible, signals, select, open_planning, plans,
+//! reconcile, validate, declare, commit) and
+//! checked, link by link, against the running head: a prior
+//! whose parent is not the running head, whose stored label
+//! is not `COMMITTED`, whose plan set does not reproduce its
+//! stored `compatible` verdict, or whose commit does not land
+//! exactly one past its parent at its declared next hash
+//! refuses, and the returned kernel is discarded on any
+//! refusal — a partial history is never a head. The clock
+//! rule is the slice's design point, and it differs from the
+//! target commit's on purpose: a prior is historical
+//! reproduction, so its final steps (reconcile, validate,
+//! declare, commit) run at its stored `planning_deadline` —
+//! the clock its declare/commit originally proved at — not
+//! at the current state clock, because replaying an old
+//! commit at today's clock would re-judge it under
+//! conditions that no longer hold (a plan whose expiry has
+//! passed since) and brick every chain older than one plan
+//! expiry. A prior whose deadline lies ahead of the state
+//! clock is history from the future and refuses. Because the
+//! kernel clock never regresses, a valid successor chain is
+//! time-ordered by construction: each prior's window must
+//! open after the previous prior's deadline, and a target
+//! transition replayed from this head must open after the
+//! last prior's deadline — a target created before the last
+//! commit is a sibling of it, not its successor, and its
+//! parent is the old head, not this one. Governance priors
+//! refuse with `GovernanceCommitRequired`: a bundle carries
+//! no action and no approvals, so a governance commit cannot
+//! be driven from it, and skipping it would silently drop a
+//! head move. This slice is helper + host tests only: the
+//! thirteen stage helpers and the commit instructions still
+//! rebuild from genesis, and threading this head through
+//! them is the next slice, not smuggled in here. The
+//! program's slice-27 ledger is untouched by this helper —
+//! the kernel's own post-commit stocks, debited by each
+//! replayed commit, are what later replays judge against —
+//! and a governance commit's applied rule still awaits the
+//! governance-state persistence slice, exactly as in
+//! slice 28.
 
 extern crate alloc;
 
@@ -4839,6 +4885,328 @@ pub fn commit_governance_from_records(
     kernel_state.head_hash = new_state.hash;
     kernel_state.committed_claims = new_committed;
     Ok(Life::Committed)
+}
+
+/// One prior committed transition offered to a replay-from-head
+/// (slice 29): the stored transition record (stage `COMMITTED`),
+/// its observation record, and its stored signal and plan records.
+/// All four are read, never written: the replay re-proves the
+/// prior's commit in a rebuilt kernel, and the caller owns the
+/// returned kernel. A bundle carries no governance action and no
+/// council approvals, so a governance-typed prior refuses rather
+/// than replaying without its commit path.
+#[derive(Clone, Copy)]
+pub struct PriorCommit<'a> {
+    pub transition_record: &'a TransitionRecord,
+    pub observation_record: &'a ObservationRecord,
+    pub prior_signals: &'a [SignalRecord],
+    pub prior_plans: &'a [PlanRecord],
+}
+
+/// Drive one prior commit through its full ordinary chain inside a
+/// rebuilt kernel that already stands at the prior's parent (slice 29).
+/// Pure except for the kernel: every refusal leaves the caller to
+/// discard it, so a failed history never becomes a head. Gates, in
+/// order: the record stands `COMMITTED` (a merely-declared prior is
+/// not history yet); the type is ordinary (governance priors refuse
+/// with `GovernanceCommitRequired`, for want of an action and
+/// approvals); observation linkage; a proven planning window — a
+/// nonzero stored `planning_deadline` at or before the state clock,
+/// with a derivable open clock — because the final steps replay at
+/// that deadline, the clock the chain originally proved at (see the
+/// slice-29 module note for why the current state clock is the wrong
+/// clock for history); the signal and plan completeness anchors, the
+/// stored rounds, and the per-plan claim uniqueness, exactly as the
+/// slice-26 commit helper checks them. The chain itself mirrors that
+/// helper step for step — ingest + register + evaluate +
+/// mark_eligible at `eligible_at`, signals in `submitted_at` order,
+/// select + open_planning at the derived open clock with the
+/// replayed deadline checked equal to the stored deadline, plans at
+/// the open clock, then reconcile + validate + declare + commit at
+/// the planning deadline — except that the capacity mirror judges
+/// the plan sums against the kernel's *current* stocks, which already
+/// carry every earlier prior's debit, so a second commit is judged
+/// against what the first consumed, not against the sealed stocks
+/// alone. The slice-27 program ledger is deliberately not consulted
+/// here: it lives on `KernelState`, and this helper reconstructs
+/// kernel state, not program state. The returned state must land
+/// exactly one past the prior's parent at its declared next hash,
+/// or the history refuses.
+fn drive_prior_commit_to_commit(
+    kernel_state: &KernelState,
+    k: &mut LaunchKernelProgramEnv,
+    prior: &PriorCommit,
+) -> Result<SystemState> {
+    let transition_record = prior.transition_record;
+    let observation_record = prior.observation_record;
+    let prior_signals = prior.prior_signals;
+    let prior_plans = prior.prior_plans;
+    if transition_record.stage != TransitionRecord::COMMITTED {
+        return Err(error!(ProgramV04Error::WrongStage));
+    }
+    if is_gov_type(&transition_record.transition_type) {
+        return Err(error!(ProgramV04Error::GovernanceCommitRequired));
+    }
+    if transition_record.observation_id != observation_record.observation_id {
+        return Err(error!(ProgramV04Error::RecordMismatch));
+    }
+    if transition_record.planning_deadline == 0
+        || transition_record.planning_deadline > kernel_state.clock
+    {
+        return Err(error!(ProgramV04Error::CommitFailed));
+    }
+    let open_clock = transition_record
+        .planning_deadline
+        .checked_sub(launch_policy().planning_window)
+        .ok_or(error!(ProgramV04Error::CommitFailed))?;
+    if prior_signals.len() as u64 != transition_record.signal_count {
+        return Err(error!(ProgramV04Error::CommitFailed));
+    }
+    for prior_signal in prior_signals {
+        if prior_signal.transition_id != transition_record.transition_id {
+            return Err(error!(ProgramV04Error::RecordMismatch));
+        }
+        if signal_round(
+            transition_record.eligible_at,
+            transition_record.consensus_deadline,
+            prior_signal.submitted_at,
+        ) != prior_signal.round
+        {
+            return Err(error!(ProgramV04Error::RecordMismatch));
+        }
+    }
+    {
+        let mut seen: BTreeSet<([u8; 32], u64)> = BTreeSet::new();
+        for prior_signal in prior_signals {
+            if !seen.insert((prior_signal.agent.to_bytes(), prior_signal.round)) {
+                return Err(error!(ProgramV04Error::CommitFailed));
+            }
+        }
+    }
+    if prior_plans.len() as u64 != transition_record.plan_count {
+        return Err(error!(ProgramV04Error::CommitFailed));
+    }
+    for prior_plan in prior_plans {
+        if prior_plan.transition_id != transition_record.transition_id {
+            return Err(error!(ProgramV04Error::RecordMismatch));
+        }
+        if prior_plan.claim_count as usize > PlanRecord::MAX_PLAN_CLAIMS {
+            return Err(error!(ProgramV04Error::CommitFailed));
+        }
+        let mut seen: BTreeSet<u16> = BTreeSet::new();
+        for resource in &prior_plan.claim_resources[..prior_plan.claim_count as usize] {
+            if !seen.insert(*resource) {
+                return Err(error!(ProgramV04Error::CommitFailed));
+            }
+        }
+    }
+    let proposer = resolve_proposer(kernel_state, transition_record.proposer)
+        .map_err(|_| error!(ProgramV04Error::CommitFailed))?;
+    let observer_id = resolve_agent_id(observation_record.observer);
+    if !k.has_role(&observer_id, Role::Observer) {
+        return Err(error!(ProgramV04Error::NotObserver));
+    }
+    let relevant_groups = match k.agent(&proposer) {
+        Some(profile) => profile.groups.clone(),
+        None => return Err(error!(ProgramV04Error::UnknownProposer)),
+    };
+    let observation = Observation {
+        id: observation_record.observation_id,
+        timestamp: observation_record.timestamp,
+        expiry: observation_record.expiry,
+        confidence: Amount::from_raw(observation_record.confidence_raw),
+    };
+    let eligible_at = transition_record.eligible_at;
+    k.ingest_observation(&observer_id, observation, eligible_at)
+        .map_err(|_| error!(ProgramV04Error::CommitFailed))?;
+    let manifest = Manifest {
+        transition_type: transition_record.transition_type,
+        parent_index: transition_record.parent_index,
+        parent_hash: transition_record.parent_hash,
+        declared_next_hash: transition_record.declared_next_hash,
+        observation_id: transition_record.observation_id,
+        expires_at: transition_record.expires_at,
+        relevant_groups,
+        action: None,
+    };
+    k.register_transition(
+        &proposer,
+        transition_record.transition_id,
+        manifest,
+        BTreeSet::new(),
+        eligible_at,
+    )
+    .map_err(|_| error!(ProgramV04Error::CommitFailed))?;
+    k.evaluate_transition(&transition_record.transition_id, eligible_at)
+        .map_err(|_| error!(ProgramV04Error::CommitFailed))?;
+    k.mark_eligible(&transition_record.transition_id, eligible_at)
+        .map_err(|_| error!(ProgramV04Error::CommitFailed))?;
+    match k.life_of(&transition_record.transition_id) {
+        Some(Life::Eligible) => {}
+        _ => return Err(error!(ProgramV04Error::CommitFailed)),
+    }
+    let mut priors: alloc::vec::Vec<SignalRecord> = prior_signals.to_vec();
+    priors.sort_by_key(|s| s.submitted_at);
+    for prior_signal in &priors {
+        let support = if prior_signal.has_support {
+            Some(Amount::from_raw(prior_signal.support_raw))
+        } else {
+            None
+        };
+        k.submit_round_signal(
+            &prior_signal.agent.to_bytes(),
+            &transition_record.transition_id,
+            Amount::from_raw(prior_signal.raw),
+            support,
+            prior_signal.submitted_at,
+        )
+        .map_err(|_| error!(ProgramV04Error::CommitFailed))?;
+    }
+    k.select_candidate(&transition_record.transition_id, open_clock)
+        .map_err(|_| error!(ProgramV04Error::CommitFailed))?;
+    match k.life_of(&transition_record.transition_id) {
+        Some(Life::Selected) => {}
+        _ => return Err(error!(ProgramV04Error::CommitFailed)),
+    }
+    k.open_planning(&proposer, &transition_record.transition_id, open_clock)
+        .map_err(|_| error!(ProgramV04Error::CommitFailed))?;
+    match k.life_of(&transition_record.transition_id) {
+        Some(Life::Planning) => {}
+        _ => return Err(error!(ProgramV04Error::CommitFailed)),
+    }
+    let deadline = open_clock
+        .checked_add(launch_policy().planning_window)
+        .ok_or(error!(ProgramV04Error::CommitFailed))?;
+    if deadline != transition_record.planning_deadline {
+        return Err(error!(ProgramV04Error::CommitFailed));
+    }
+    for prior_plan in prior_plans {
+        let mut prior_map: BTreeMap<u16, Amount> = BTreeMap::new();
+        for (resource, amount) in prior_plan.claim_resources[..prior_plan.claim_count as usize]
+            .iter()
+            .zip(prior_plan.claim_amounts[..prior_plan.claim_count as usize].iter())
+        {
+            prior_map.insert(*resource, Amount::from_raw(*amount));
+        }
+        let prior_plan_kernel = Plan {
+            agent: prior_plan.agent.to_bytes(),
+            claims: prior_map,
+            expires_at: prior_plan.expires_at,
+        };
+        k.submit_plan(
+            &prior_plan.agent.to_bytes(),
+            &transition_record.transition_id,
+            prior_plan_kernel,
+            open_clock,
+        )
+        .map_err(|_| error!(ProgramV04Error::CommitFailed))?;
+    }
+    let final_clock = transition_record.planning_deadline;
+    k.reconcile_plans(&transition_record.transition_id, final_clock)
+        .map_err(|_| error!(ProgramV04Error::CommitFailed))?;
+    match k.life_of(&transition_record.transition_id) {
+        Some(Life::Reconciling) => {}
+        _ => return Err(error!(ProgramV04Error::CommitFailed)),
+    }
+    // Slice 23's exact mirror, recomputed over the supplied set and
+    // judged against the kernel's current stocks (post-earlier-priors):
+    // a stored verdict the set does not reproduce refuses here,
+    // before the kernel's own validate runs, exactly as in slices 24/25.
+    let mut sums: BTreeMap<u16, Amount> = BTreeMap::new();
+    let mut fits = !prior_plans.is_empty();
+    for prior_plan in prior_plans {
+        for (resource, amount) in prior_plan.claim_resources[..prior_plan.claim_count as usize]
+            .iter()
+            .zip(prior_plan.claim_amounts[..prior_plan.claim_count as usize].iter())
+        {
+            let entry = sums.entry(*resource).or_insert(Amount::ZERO);
+            match entry.checked_add(Amount::from_raw(*amount)) {
+                Ok(v) => *entry = v,
+                Err(_) => fits = false,
+            }
+        }
+    }
+    if fits {
+        for (resource, total) in &sums {
+            if !k.capacity_of(*resource).is_some_and(|cap| *total <= cap) {
+                fits = false;
+            }
+        }
+    }
+    if fits != transition_record.compatible {
+        return Err(error!(ProgramV04Error::CommitFailed));
+    }
+    k.validate_transition(&transition_record.transition_id, final_clock)
+        .map_err(|_| error!(ProgramV04Error::CommitFailed))?;
+    match k.life_of(&transition_record.transition_id) {
+        Some(Life::Validated) => {}
+        Some(Life::Blocked) => return Err(error!(ProgramV04Error::CommitFailed)),
+        _ => return Err(error!(ProgramV04Error::CommitFailed)),
+    }
+    k.declare_commit(&transition_record.transition_id, final_clock)
+        .map_err(|_| error!(ProgramV04Error::CommitFailed))?;
+    match k.life_of(&transition_record.transition_id) {
+        Some(Life::Committable) => {}
+        _ => return Err(error!(ProgramV04Error::CommitFailed)),
+    }
+    let new_state = k
+        .commit(&transition_record.transition_id, final_clock)
+        .map_err(|_| error!(ProgramV04Error::CommitFailed))?;
+    match k.life_of(&transition_record.transition_id) {
+        Some(Life::Committed) => {}
+        _ => return Err(error!(ProgramV04Error::CommitFailed)),
+    }
+    let expected_index = transition_record
+        .parent_index
+        .checked_add(1)
+        .ok_or(error!(ProgramV04Error::CommitFailed))?;
+    if new_state.index != expected_index || new_state.hash != transition_record.declared_next_hash {
+        return Err(error!(ProgramV04Error::CommitFailed));
+    }
+    Ok(new_state)
+}
+
+/// Rebuild the sealed launch kernel at the program's current head
+/// (slice 29): start from the sealed genesis kernel and drive each
+/// supplied prior commit, in order, through
+/// `drive_prior_commit_to_commit`, checking each prior's parent
+/// against the running head before it drives. Pure: the returned
+/// kernel is a fresh object, and a refusal returns nothing — the
+/// caller discards the partially advanced kernel, so no partial
+/// history is ever mistaken for the head. An empty prior set
+/// returns the genesis kernel, and it only passes when the
+/// program's head IS genesis: a moved head with no supplied
+/// history refuses with `ParentMismatch`, because the chain that
+/// moved it is missing. Likewise a supplied chain that stops
+/// short of, or overshoots, the program's head refuses with
+/// `ParentMismatch` at the end, not with a kernel at the wrong
+/// head. The kernel's internal clock after the last prior is that
+/// prior's planning deadline — the next transition's window must
+/// open after it (see the slice-29 module note).
+pub fn kernel_at_head_from_commits(
+    kernel_state: &KernelState,
+    prior_commits: &[PriorCommit],
+) -> Result<LaunchKernelProgramEnv> {
+    if !kernel_state.sealed {
+        return Err(error!(ProgramV04Error::NotSealed));
+    }
+    let mut k = sealed_launch_kernel_env().map_err(|_| error!(ProgramV04Error::KernelSeal))?;
+    let mut running_index = k.declared_state().index;
+    let mut running_hash = k.declared_state().hash;
+    for prior in prior_commits {
+        if prior.transition_record.parent_index != running_index
+            || prior.transition_record.parent_hash != running_hash
+        {
+            return Err(error!(ProgramV04Error::ParentMismatch));
+        }
+        let new_state = drive_prior_commit_to_commit(kernel_state, &mut k, prior)?;
+        running_index = new_state.index;
+        running_hash = new_state.hash;
+    }
+    if running_index != kernel_state.head_index || running_hash != kernel_state.head_hash {
+        return Err(error!(ProgramV04Error::ParentMismatch));
+    }
+    Ok(k)
 }
 
 /// One sibling transition offered to a sibling-aware select (slice 17):
@@ -9622,5 +9990,376 @@ mod tests {
         .expect_err("a record off the sealed head must refuse governance commit");
         assert!(format!("{:?}", err).contains("ParentMismatch"));
         assert_eq!(record.stage, TransitionRecord::DECLARED);
+    }
+
+    fn committed_pair() -> (
+        KernelState,
+        TransitionRecord,
+        ObservationRecord,
+        SignalRecord,
+        PlanRecord,
+    ) {
+        // A DECLARED chain driven through the ordinary commit: the
+        // first head move the slice-29 tests replay from. Clock 300,
+        // head 1 at the record's declared next hash, ledger
+        // tranche 10 / lending book 5.
+        let (mut state, mut record, obs, first, plan) = declared_pair();
+        let life = commit_transition_from_records(
+            &mut state, &mut record, &obs, &[first], std::slice::from_ref(&plan),
+        )
+        .expect("a fitting declared chain must commit");
+        assert_eq!(life, Life::Committed);
+        assert_eq!(record.stage, TransitionRecord::COMMITTED);
+        assert_eq!(state.head_index, 1);
+        assert_eq!(state.head_hash, record.declared_next_hash);
+        assert_eq!(state.committed_claims, [10 * SCALE, 5 * SCALE, 0]);
+        (state, record, obs, first, plan)
+    }
+
+    #[test]
+    fn at_head_returns_moved_head_and_second_registers() {
+        // The slice's core proof: a rebuilt kernel advanced by one
+        // prior commit stands at index 1 with the first commit's
+        // debit already in its stocks (tranche 990, lending book
+        // 495 of 1000/500), and a second transition whose parent
+        // is that moved head registers in it — the exact step the
+        // genesis-rebuilding helpers refuse. The same register
+        // against a genesis kernel refuses, proving the head move
+        // is what admits it, not a loosened gate.
+        let (state, record, obs, first, plan) = committed_pair();
+        let prior = PriorCommit {
+            transition_record: &record,
+            observation_record: &obs,
+            prior_signals: std::slice::from_ref(&first),
+            prior_plans: std::slice::from_ref(&plan),
+        };
+        let mut k = kernel_at_head_from_commits(&state, std::slice::from_ref(&prior))
+            .expect("a proven prior commit must rebuild to the moved head");
+        assert_eq!(k.declared_state().index, 1);
+        assert_eq!(k.declared_state().hash, record.declared_next_hash);
+        assert_eq!(
+            k.capacity_of(RES_TREASURY_TRANCHE).map(|a| a.raw()),
+            Some(990 * SCALE)
+        );
+        assert_eq!(
+            k.capacity_of(RES_LENDING_BOOK).map(|a| a.raw()),
+            Some(495 * SCALE)
+        );
+        let observation2 = Observation {
+            id: [0xC1; 32],
+            timestamp: 400,
+            expiry: 9500,
+            confidence: Amount::from_raw(900_000),
+        };
+        k.ingest_observation(&OBSERVER, observation2.clone(), 400)
+            .expect("a fresh observation at the later clock must ingest");
+        let manifest2 = Manifest {
+            transition_type: TT,
+            parent_index: 1,
+            parent_hash: record.declared_next_hash,
+            declared_next_hash: [0x66; 32],
+            observation_id: [0xC1; 32],
+            expires_at: 10400,
+            relevant_groups: BTreeSet::from([1u16]),
+            action: None,
+        };
+        k.register_transition(&ag(1), [0xD2; 32], manifest2, BTreeSet::new(), 400)
+            .expect("a second transition against the moved head must register");
+        assert_eq!(k.life_of(&[0xD2; 32]), Some(Life::Proposed));
+        let mut g = sealed_launch_kernel_env().expect("a genesis kernel must build");
+        g.ingest_observation(&OBSERVER, observation2, 400)
+            .expect("the same observation must ingest in a genesis kernel");
+        let manifest_genesis = Manifest {
+            transition_type: TT,
+            parent_index: 1,
+            parent_hash: record.declared_next_hash,
+            declared_next_hash: [0x66; 32],
+            observation_id: [0xC1; 32],
+            expires_at: 10400,
+            relevant_groups: BTreeSet::from([1u16]),
+            action: None,
+        };
+        assert!(
+            g.register_transition(&ag(1), [0xD2; 32], manifest_genesis, BTreeSet::new(), 400)
+                .is_err(),
+            "a genesis kernel must refuse a parent it has not reached"
+        );
+    }
+
+    #[test]
+    fn at_head_empty_priors_returns_genesis_head() {
+        // No history, genesis head: the empty chain is the genesis
+        // kernel itself, at index 0 with the sealed stocks intact.
+        let state = sealed_state();
+        let k = kernel_at_head_from_commits(&state, &[])
+            .expect("an empty chain at genesis must return the genesis kernel");
+        assert_eq!(k.declared_state().index, 0);
+        assert_eq!(k.declared_state().hash, [0; 32]);
+        assert_eq!(
+            k.capacity_of(RES_TREASURY_TRANCHE).map(|a| a.raw()),
+            Some(1000 * SCALE)
+        );
+    }
+
+    #[test]
+    fn at_head_refuses_moved_head_with_no_history() {
+        // The mirror of the genesis case: a moved head with no
+        // supplied history is a missing chain, not a genesis
+        // kernel — refusing here is what stops a caller from
+        // replaying a successor against stocks that never saw
+        // the first commit's debit.
+        let (state, _, _, _, _) = committed_pair();
+        let err = kernel_at_head_from_commits(&state, &[])
+            .err()
+            .expect("a moved head with no history must refuse");
+        assert!(format!("{:?}", err).contains("ParentMismatch"));
+    }
+
+    #[test]
+    fn at_head_refuses_non_committed_prior() {
+        // A DECLARED record is not history yet: its commit has
+        // not moved any head, so replaying it as a prior would
+        // invent a head move the program never made.
+        let (state, record, obs, first, plan) = declared_pair();
+        let prior = PriorCommit {
+            transition_record: &record,
+            observation_record: &obs,
+            prior_signals: std::slice::from_ref(&first),
+            prior_plans: std::slice::from_ref(&plan),
+        };
+        let err = kernel_at_head_from_commits(&state, std::slice::from_ref(&prior))
+            .err()
+            .expect("a merely-declared prior must refuse");
+        assert!(format!("{:?}", err).contains("WrongStage"));
+    }
+
+    #[test]
+    fn at_head_refuses_broken_parent_link() {
+        // A prior whose parent is not the running head breaks
+        // the chain before any replay runs: the link, not the
+        // predicate, is what refuses.
+        let (state, mut record, obs, first, plan) = committed_pair();
+        record.parent_hash = [0x99; 32];
+        let prior = PriorCommit {
+            transition_record: &record,
+            observation_record: &obs,
+            prior_signals: std::slice::from_ref(&first),
+            prior_plans: std::slice::from_ref(&plan),
+        };
+        let err = kernel_at_head_from_commits(&state, std::slice::from_ref(&prior))
+            .err()
+            .expect("a prior off the running head must refuse");
+        assert!(format!("{:?}", err).contains("ParentMismatch"));
+    }
+
+    #[test]
+    fn at_head_refuses_unreproducible_prior_plan() {
+        // A COMMITTED label with a plan the kernel cannot replay
+        // (an agent outside the seeded set) proves nothing: the
+        // history refuses, and no kernel at any head is returned.
+        let (state, record, obs, first, plan) = committed_pair();
+        let bad_plan = PlanRecord {
+            agent: Pubkey::new_from_array([0x77; 32]),
+            ..plan
+        };
+        let prior = PriorCommit {
+            transition_record: &record,
+            observation_record: &obs,
+            prior_signals: std::slice::from_ref(&first),
+            prior_plans: std::slice::from_ref(&bad_plan),
+        };
+        let err = kernel_at_head_from_commits(&state, std::slice::from_ref(&prior))
+            .err()
+            .expect("an unreproducible prior plan must refuse");
+        assert!(format!("{:?}", err).contains("CommitFailed"));
+    }
+
+    #[test]
+    fn at_head_refuses_governance_prior() {
+        // A governance prior carries no action and no approvals
+        // in its bundle, so its commit path cannot be driven from
+        // here — refusing names the gap instead of silently
+        // dropping a head move from the chain.
+        let (state, mut record, obs, first, plan) = gov_declared_pair();
+        record.stage = TransitionRecord::COMMITTED;
+        let prior = PriorCommit {
+            transition_record: &record,
+            observation_record: &obs,
+            prior_signals: std::slice::from_ref(&first),
+            prior_plans: std::slice::from_ref(&plan),
+        };
+        let err = kernel_at_head_from_commits(&state, std::slice::from_ref(&prior))
+            .err()
+            .expect("a governance prior must refuse without its commit path");
+        assert!(format!("{:?}", err).contains("GovernanceCommitRequired"));
+    }
+
+    #[test]
+    fn at_head_refuses_future_deadline_prior() {
+        // A prior whose planning deadline lies ahead of the state
+        // clock is history from the future: its final steps
+        // never ran at a clock the program has reached.
+        let (state, mut record, obs, first, plan) = declared_pair();
+        record.stage = TransitionRecord::COMMITTED;
+        record.planning_deadline = 9999;
+        let prior = PriorCommit {
+            transition_record: &record,
+            observation_record: &obs,
+            prior_signals: std::slice::from_ref(&first),
+            prior_plans: std::slice::from_ref(&plan),
+        };
+        let err = kernel_at_head_from_commits(&state, std::slice::from_ref(&prior))
+            .err()
+            .expect("a future-deadline prior must refuse");
+        assert!(format!("{:?}", err).contains("CommitFailed"));
+    }
+
+    #[test]
+    fn at_head_refuses_unsealed() {
+        let (mut state, record, obs, first, plan) = committed_pair();
+        state.sealed = false;
+        let prior = PriorCommit {
+            transition_record: &record,
+            observation_record: &obs,
+            prior_signals: std::slice::from_ref(&first),
+            prior_plans: std::slice::from_ref(&plan),
+        };
+        let err = kernel_at_head_from_commits(&state, std::slice::from_ref(&prior))
+            .err()
+            .expect("an unsealed state must refuse");
+        assert!(format!("{:?}", err).contains("NotSealed"));
+    }
+
+    #[test]
+    fn at_head_replays_two_priors_and_debits_both() {
+        // Two-commit sequencing, the gap slice 27 named: the
+        // second prior is a re-based copy of the declared chain
+        // with a strictly later window (eligible 400, consensus
+        // 500, planning 600, plan expiry 700, observation
+        // 400/9500) — later because the kernel clock never
+        // regresses, so a successor's window must open after
+        // its predecessor's deadline. Both commits land, the
+        // head reaches index 2 at the second declared hash, and
+        // the stocks carry both debits (tranche 980, lending
+        // book 490): the second commit was judged against what
+        // the first consumed, not against the sealed stocks.
+        let (mut state, record, obs, first, plan) = committed_pair();
+        let first_next = record.declared_next_hash;
+        let prior1 = PriorCommit {
+            transition_record: &record,
+            observation_record: &obs,
+            prior_signals: std::slice::from_ref(&first),
+            prior_plans: std::slice::from_ref(&plan),
+        };
+        let (_, record2_declared, obs2_declared, signal2_declared, plan2_declared) =
+            declared_pair();
+        let record2 = TransitionRecord {
+            transition_id: [0xD2; 32],
+            parent_index: 1,
+            parent_hash: first_next,
+            declared_next_hash: [0xE2; 32],
+            observation_id: [0xC1; 32],
+            stage: TransitionRecord::COMMITTED,
+            eligible_at: 400,
+            consensus_deadline: 500,
+            planning_deadline: 600,
+            expires_at: 10400,
+            ..record2_declared
+        };
+        let obs2 = ObservationRecord {
+            observation_id: [0xC1; 32],
+            timestamp: 400,
+            expiry: 9500,
+            ..obs2_declared
+        };
+        let signal2 = SignalRecord {
+            transition_id: [0xD2; 32],
+            submitted_at: 400,
+            ..signal2_declared
+        };
+        let plan2 = PlanRecord {
+            transition_id: [0xD2; 32],
+            expires_at: 700,
+            ..plan2_declared
+        };
+        let prior2 = PriorCommit {
+            transition_record: &record2,
+            observation_record: &obs2,
+            prior_signals: std::slice::from_ref(&signal2),
+            prior_plans: std::slice::from_ref(&plan2),
+        };
+        advance_clock_on_state(&mut state, 600).expect("advance to the second deadline must succeed");
+        state.head_index = 2;
+        state.head_hash = [0xE2; 32];
+        let k = kernel_at_head_from_commits(&state, &[prior1, prior2])
+            .expect("two proven priors must rebuild to index 2");
+        assert_eq!(k.declared_state().index, 2);
+        assert_eq!(k.declared_state().hash, [0xE2; 32]);
+        assert_eq!(
+            k.capacity_of(RES_TREASURY_TRANCHE).map(|a| a.raw()),
+            Some(980 * SCALE)
+        );
+        assert_eq!(
+            k.capacity_of(RES_LENDING_BOOK).map(|a| a.raw()),
+            Some(490 * SCALE)
+        );
+    }
+
+    #[test]
+    fn at_head_refuses_chain_that_overshoots_program_head() {
+        // The same two-prior chain against a program head of 1:
+        // the chain lands at 2, the program stands at 1, and the
+        // mismatch refuses — a chain longer than the head it is
+        // offered against is not silently truncated to fit.
+        let (mut state, record, obs, first, plan) = committed_pair();
+        let first_next = record.declared_next_hash;
+        let prior1 = PriorCommit {
+            transition_record: &record,
+            observation_record: &obs,
+            prior_signals: std::slice::from_ref(&first),
+            prior_plans: std::slice::from_ref(&plan),
+        };
+        let (_, record2_declared, obs2_declared, signal2_declared, plan2_declared) =
+            declared_pair();
+        let record2 = TransitionRecord {
+            transition_id: [0xD2; 32],
+            parent_index: 1,
+            parent_hash: first_next,
+            declared_next_hash: [0xE2; 32],
+            observation_id: [0xC1; 32],
+            stage: TransitionRecord::COMMITTED,
+            eligible_at: 400,
+            consensus_deadline: 500,
+            planning_deadline: 600,
+            expires_at: 10400,
+            ..record2_declared
+        };
+        let obs2 = ObservationRecord {
+            observation_id: [0xC1; 32],
+            timestamp: 400,
+            expiry: 9500,
+            ..obs2_declared
+        };
+        let signal2 = SignalRecord {
+            transition_id: [0xD2; 32],
+            submitted_at: 400,
+            ..signal2_declared
+        };
+        let plan2 = PlanRecord {
+            transition_id: [0xD2; 32],
+            expires_at: 700,
+            ..plan2_declared
+        };
+        let prior2 = PriorCommit {
+            transition_record: &record2,
+            observation_record: &obs2,
+            prior_signals: std::slice::from_ref(&signal2),
+            prior_plans: std::slice::from_ref(&plan2),
+        };
+        advance_clock_on_state(&mut state, 600).expect("advance to the second deadline must succeed");
+        let err = kernel_at_head_from_commits(&state, &[prior1, prior2])
+            .err()
+            .expect("a chain overshooting the program head must refuse");
+        assert!(format!("{:?}", err).contains("ParentMismatch"));
     }
 }
