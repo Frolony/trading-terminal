@@ -312,11 +312,41 @@ families, account inventory, and CU golden set are later step-5 slices.
   head, and CU measurement are later slices. Authority is the signing
   payer, the same recorded gap as slices 6/7.
 
+## Slice 14 — the eligibility-window persistence slice 13 named
+
+- `TransitionRecord` gains `eligible_at` / `consensus_deadline`
+  (SPACE 218 → 234); `mark_eligible_from_records` writes them on
+  success only — the state's clock, and that clock plus the sealed
+  launch policy's `consensus_window` (100) — so a later select slice
+  reads a real field rather than a freshly rebuilt one. No new
+  instruction, no new error, no stage-gate change: the `mark_eligible`
+  instruction's meaning grows by exactly this persistence.
+- The values are derived from the same inputs the kernel's own
+  `mark_eligible` used: the delivered crate exposes no `eligible_at`
+  accessor, so the program derives rather than reads, and the
+  derivation is proven by test at two clocks (100 → 100/200,
+  200 → 200/300), not assumed. A refusal leaves both fields at 0, so
+  0 means "eligibility never proven" and can never be mistaken for a
+  window.
+- Host tests 71/71 (69 prior + 2 slice-14: window persistence at the
+  advanced clock, and a refusal leaving both fields at 0; the slice-13
+  acceptance test now also asserts 100/200, and the borsh round-trip
+  now carries a 200/300 window).
+- `anchor build` green under the pinned toolchain; IDL counts
+  unchanged (9 instructions, 3 accounts, 16 errors 6000–6015,
+  8 events) with the `TransitionRecord` type gaining the two `u64`
+  fields; `.so` 492,368 bytes (sha256 `35750964…`).
+- Deliberately NOT slice 14: a `select_candidate` instruction — the
+  signal tally it needs has no persisted record yet, so a select this
+  slice could only refuse, the no-op pattern slice 12 rejected. Select
+  stays a later slice, now unblocked on the window field and still
+  blocked on signal persistence.
+
 ## Build
 
 ```sh
 export RUSTUP_HOME=~/workspace/toolchains/rustup CARGO_HOME=~/workspace/toolchains/cargo
 export PATH=~/workspace/toolchains/cargo/bin:~/workspace/toolchains/solana/bin:$PATH
 ~/workspace/toolchains/anchor/bin/anchor build   # from this directory
-cargo test                                        # host tests, 69/69
+cargo test                                        # host tests, 71/71
 ```

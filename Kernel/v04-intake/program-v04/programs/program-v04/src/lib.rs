@@ -196,6 +196,26 @@
 //! field rather than a fresh one. Select/reconcile/validate/declare,
 //! commit replay moving the head, and CU measurement are later slices,
 //! not this one.
+//!
+//! Slice 14 (this slice): the persistence slice 13 named —
+//! `TransitionRecord` gains `eligible_at` / `consensus_deadline`, and
+//! `mark_eligible_from_records` writes them on success (the state's
+//! clock, and that clock plus the sealed launch policy's
+//! `consensus_window` of 100). No new instruction: the `mark_eligible`
+//! instruction's meaning grows by exactly this persistence, and its
+//! stage gate is unchanged. The values are derived from the same inputs
+//! the kernel's own `mark_eligible` used — the delivered crate exposes
+//! no `eligible_at` accessor, so the program derives rather than
+//! reads, and the derivation is checked by test at two clocks (100 →
+//! 100/200, 200 → 200/300), not assumed. A refusal still leaves both
+//! fields at 0, so 0 means "eligibility never proven" and can never be
+//! mistaken for a window. What slice 14 deliberately does NOT close:
+//! the signal tally — `select_candidate` also needs persisted round
+//! signals to rebuild a quorum, and no signal record exists yet, so a
+//! select instruction this slice would be an instruction that can only
+//! refuse, the no-op pattern slice 12 rejected. Select therefore stays
+//! a later slice, now unblocked on the window field and still blocked
+//! on signal persistence.
 
 extern crate alloc;
 
@@ -420,9 +440,11 @@ pub mod program_v04 {
     /// and the sealed-profile proposer/observer gates, then drives the
     /// real kernel calls under `ProgramEnv` (see module docs for why
     /// the ingest + register + evaluate sequence must be replayed
-    /// first). The payer is a fee payer only — eligibility executes
-    /// steps the stored records already authorized and creates no new
-    /// authority.
+    /// first). On success the helper also persists the proven window
+    /// (`eligible_at` / `consensus_deadline`, slice 14) into the record,
+    /// so a later select slice reads a real field. The payer is a fee
+    /// payer only — eligibility executes steps the stored records
+    /// already authorized and creates no new authority.
     pub fn mark_eligible(
         ctx: Context<MarkEligible>,
         transition_id: [u8; 32],
@@ -648,6 +670,16 @@ pub struct TransitionRecord {
     /// advances it), 2 = Evaluated (slice 12 advances it), 3 = Eligible
     /// (slice 13 advances it; no instruction moves it past 3 in this slice).
     pub stage: u8,
+    /// Kernel clock at which `mark_eligible` proved eligibility (slice 14
+    /// persists it; 0 until eligibility is proven). This is the
+    /// `eligible_at` the kernel's `select_candidate` window runs from —
+    /// persisted here so a later select slice reads a real field, not a
+    /// freshly rebuilt one (slice 13's named honesty gap, closed here).
+    pub eligible_at: u64,
+    /// Consensus deadline `eligible_at + consensus_window` of the sealed
+    /// launch policy (slice 14 persists it alongside `eligible_at`).
+    /// 0 until eligibility is proven.
+    pub consensus_deadline: u64,
     /// PDA bump for the `["transition", transition_id]` seeds.
     pub bump: u8,
 }
@@ -661,8 +693,8 @@ impl TransitionRecord {
     pub const EVALUATED: u8 = 2;
     /// Stage value written by `mark_eligible` (slice 13).
     pub const ELIGIBLE: u8 = 3;
-    /// 8 (discriminator) + 32 + 32 + 8 + 32 + 32 + 32 + 8 + 32 + 1 + 1.
-    pub const SPACE: usize = 218;
+    /// 8 (discriminator) + 32 + 32 + 8 + 32 + 32 + 32 + 8 + 32 + 1 + 8 + 8 + 1.
+    pub const SPACE: usize = 234;
 }
 
 /// Build a `TransitionRecord` against a `KernelState`, enforcing the
@@ -697,6 +729,8 @@ pub fn build_transition_record(
         expires_at,
         proposer,
         stage: TransitionRecord::REGISTERED,
+        eligible_at: 0,
+        consensus_deadline: 0,
         bump,
     })
 }
@@ -953,9 +987,11 @@ pub fn evaluate_transition_from_records(
     Ok(life)
 }
 
-/// Mark a stored transition pair eligible through the real kernel (slice 13).
-/// Pure except for the record's stage, which advances to
-/// `ELIGIBLE` only on success — every refusal leaves the record
+/// Mark a stored transition pair eligible through the real kernel (slice 13;
+/// slice 14 persists the proven window).
+/// Pure except for the record's stage and eligibility window, which
+/// advance to `ELIGIBLE` with `eligible_at` / `consensus_deadline`
+/// written only on success — every refusal leaves the record
 /// untouched. Gates, in order: sealed state; stage exactly `EVALUATED`
 /// (a merely kernel-registered record has no evaluation to make
 /// eligible, and an already-eligible record marks once only); parent
@@ -1037,7 +1073,23 @@ pub fn mark_eligible_from_records(
         Some(Life::Eligible) => Life::Eligible,
         _ => return Err(error!(ProgramV04Error::EligibleFailed)),
     };
+    // Slice 14: persist the eligibility window the kernel just proved.
+    // The kernel sets eligible_at to the `now` it was called with and
+    // the deadline to now + the policy's consensus_window; the program
+    // derives the same two values from the same inputs (this state's
+    // clock, the sealed launch policy's window) — never from an
+    // instruction argument — and only after the kernel proved
+    // Eligible, so a refusal leaves both fields at 0. The kernel
+    // exposes no eligible_at accessor, so this derivation, not a read,
+    // is what the record stores; the window the kernel enforced and
+    // the window the record stores agree exactly because both run from
+    // the same clock and the same policy constant.
     transition_record.stage = TransitionRecord::ELIGIBLE;
+    transition_record.eligible_at = kernel_state.clock;
+    transition_record.consensus_deadline = kernel_state
+        .clock
+        .checked_add(launch_policy().consensus_window)
+        .ok_or(error!(ProgramV04Error::EligibleFailed))?;
     Ok(life)
 }
 
@@ -1612,10 +1664,10 @@ mod tests {
     fn transition_record_space_accounts_for_every_field() {
         // Discriminator 8 + id 32 + type 32 + parent_index 8 +
         // parent_hash 32 + declared 32 + observation 32 + expires 8 +
-        // proposer 32 + stage 1 + bump 1.
+        // proposer 32 + stage 1 + eligible_at 8 + consensus_deadline 8 + bump 1.
         assert_eq!(
             TransitionRecord::SPACE,
-            8 + 32 + 32 + 8 + 32 + 32 + 32 + 8 + 32 + 1 + 1
+            8 + 32 + 32 + 8 + 32 + 32 + 32 + 8 + 32 + 1 + 8 + 8 + 1
         );
     }
 
@@ -1631,7 +1683,9 @@ mod tests {
             observation_id: [0xC0; 32],
             expires_at: 10_100,
             proposer: Pubkey::new_from_array([0x99; 32]),
-            stage: TransitionRecord::REGISTERED,
+            stage: TransitionRecord::ELIGIBLE,
+            eligible_at: 200,
+            consensus_deadline: 300,
             bump: 254,
         };
         let mut bytes = Vec::new();
@@ -1642,7 +1696,9 @@ mod tests {
         assert_eq!(back.transition_id, [0xD1; 32]);
         assert_eq!(back.parent_index, 3);
         assert_eq!(back.parent_hash, [0xAA; 32]);
-        assert_eq!(back.stage, 0);
+        assert_eq!(back.stage, 3);
+        assert_eq!(back.eligible_at, 200);
+        assert_eq!(back.consensus_deadline, 300);
         assert_eq!(back.bump, 254);
     }
 
@@ -2317,8 +2373,13 @@ mod tests {
         assert_eq!(life, Life::Eligible);
         assert_eq!(record.stage, TransitionRecord::ELIGIBLE);
         assert_eq!(record.stage, 3);
-        // The record's other fields are untouched by the stage advance,
-        // and it still serializes at exactly SPACE bytes.
+        // Slice 14: the proven window is persisted alongside the stage —
+        // the sealed genesis clock is 100, the launch policy's
+        // consensus_window is 100, so the window is 100/200. The
+        // record's other fields are untouched by the advance, and it
+        // still serializes at exactly SPACE bytes.
+        assert_eq!(record.eligible_at, 100);
+        assert_eq!(record.consensus_deadline, 200);
         assert_eq!(record.transition_type, TT);
         assert_eq!(record.declared_next_hash, [0xE1; 32]);
         use anchor_lang::AccountSerialize;
@@ -2419,6 +2480,38 @@ mod tests {
             .expect("pair must mark eligible at the advanced clock");
         assert_eq!(life, Life::Eligible);
         assert_eq!(record.stage, TransitionRecord::ELIGIBLE);
+    }
+
+    #[test]
+    fn mark_eligible_persists_window_at_advanced_clock() {
+        // Slice 14: the persisted window tracks the clock the kernel
+        // actually ran at, not the genesis clock — 200 + the policy's
+        // 100-tick consensus_window = a 200/300 window.
+        let (state, mut record, obs) = eligible_pair();
+        assert_eq!(record.eligible_at, 0);
+        assert_eq!(record.consensus_deadline, 0);
+        let mut advanced = state;
+        advance_clock_on_state(&mut advanced, 200).expect("advance must succeed");
+        mark_eligible_from_records(&advanced, &mut record, &obs)
+            .expect("pair must mark eligible at the advanced clock");
+        assert_eq!(record.stage, TransitionRecord::ELIGIBLE);
+        assert_eq!(record.eligible_at, 200);
+        assert_eq!(record.consensus_deadline, 300);
+    }
+
+    #[test]
+    fn mark_eligible_refusal_leaves_window_zero() {
+        // Slice 14: 0 means "eligibility never proven" — a refusal must
+        // not write a window that could later be mistaken for one.
+        let (state, mut record, obs) = eligible_pair();
+        let mut advanced = state;
+        advance_clock_on_state(&mut advanced, 9100).expect("advance must succeed");
+        let err = mark_eligible_from_records(&advanced, &mut record, &obs)
+            .expect_err("lapsed observation must refuse eligibility in the kernel");
+        assert!(format!("{:?}", err).contains("EligibleFailed"));
+        assert_eq!(record.stage, TransitionRecord::EVALUATED);
+        assert_eq!(record.eligible_at, 0);
+        assert_eq!(record.consensus_deadline, 0);
     }
 
     #[test]
