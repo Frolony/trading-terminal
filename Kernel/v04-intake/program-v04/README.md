@@ -810,8 +810,53 @@ families, account inventory, and CU golden set are later step-5 slices.
   (`ValidateFailed`), and the 14th event (`TransitionValidated`)
   — 16 instructions, 5 accounts, 23 errors, 14 events; `.so`
   912,672 bytes (sha256 `6fffcfd5…`).
-- Deliberately NOT slice 24: declare, commit replay moving the
-  head, and CU measurement — later slices.
+- Deliberately NOT slice 24: commit replay moving the head, and
+  CU measurement — later slices.
+
+## Slice 25 — declare (`VALIDATED` -> `DECLARED`)
+
+- The `declare_transition` instruction re-proves the whole chain
+  in a rebuilt kernel (chain + priors + select + open_planning +
+  every prior plan + reconcile + validate at the state's clock)
+  and only then runs kernel `declare_commit` at the state's
+  clock, advancing a `VALIDATED` record to `DECLARED` (stage 9,
+  a new program stage value; kernel `Committable` is 8) when the
+  full 13-bit predicate passes. The payer is a fee payer only:
+  kernel `declare_commit` is permissionless — the predicate is
+  the gate, not a person.
+- The slice's design point: declare is NOT a verdict writer.
+  The kernel's `declare_commit` never moves `Validated` ->
+  `Blocked` (only the exception path does), so a replay
+  validate that yields `Blocked` (a predicate that no longer
+  holds at this clock, e.g. a stale observation) or a full
+  predicate that fails at declare time refuses with
+  `DeclareFailed` and the record stands `VALIDATED` — exactly as
+  the kernel leaves its life untouched. The stored `compatible`
+  verdict is cross-checked, not trusted, exactly as in slice 24.
+  The sealed head does NOT move: declare marks a transition
+  committable; commit replay (a later slice) moves the head.
+- Host tests 186/186 (174 prior + 12 slice-25: declared advance
+  with the head asserted unmoved, once-only after declared,
+  wrong-stage refusal, blocked-record refusal, expired-plan
+  predicate refusal (clock 400, plan expiry — the `PLANS` mask
+  bit validate's structural check does not judge),
+  stale-observation refusal (clock 9100, record stands
+  `VALIDATED`, not re-labeled `BLOCKED`),
+  stored-verdict-mismatch refusal, incomplete prior plans,
+  incomplete prior signals, unreproducible-plan refusal,
+  unsealed refusal, parent mismatch). Clippy back to the
+  pre-existing profile (anchor macro `unexpected cfg` noise +
+  the slice-8 helper's `type_complexity` note); zero new
+  warnings.
+- `anchor build` green under the pinned toolchain (from-source
+  binary by absolute path; the AVM shim on PATH refuses with a
+  not-installed error and is not the invocation route); the IDL
+  gains the `declare_transition` instruction, the 24th error
+  (`DeclareFailed`), and the 15th event (`TransitionDeclared`)
+  — 17 instructions, 5 accounts, 24 errors, 15 events; `.so`
+  958,024 bytes (sha256 `ddc5238b…`).
+- Deliberately NOT slice 25: commit replay moving the head, and
+  CU measurement — later slices.
 
 ## Build
 
@@ -819,5 +864,5 @@ families, account inventory, and CU golden set are later step-5 slices.
 export RUSTUP_HOME=~/workspace/toolchains/rustup CARGO_HOME=~/workspace/toolchains/cargo
 export PATH=~/workspace/toolchains/cargo/bin:~/workspace/toolchains/solana/bin:$PATH
 ~/workspace/toolchains/anchor/bin/anchor build   # from this directory
-cargo test                                        # host tests, 174/174
+cargo test                                        # host tests, 186/186
 ```
