@@ -1287,11 +1287,54 @@ families, account inventory, and CU golden set are later step-5 slices.
   persistence, a revise-approval instruction, and CU
   measurement — later slices.
 
+## Slice 34 — governance-state persistence, helper level (`kernel_at_head_from_entries`)
+
+- A committed governance bundle is now replayable as a prior:
+  `GovPriorCommit` carries the transition, observation, signal,
+  and plan records plus the stored council approval records, and
+  `kernel_at_head_from_entries` replays a mixed chain of
+  ordinary and governance priors in head order, each through its
+  own commit path, under the slice-29 discipline (per-entry
+  parent linkage, refusal returns nothing, empty chain passes
+  only at genesis, short/overshooting chains refuse with
+  `ParentMismatch`). The action is decoded from the stored
+  approvals alone — every approval must name the transition,
+  decode, and agree on one action, no seat twice — and the
+  kernel's own unanimity gate at
+  `register_governance_transition` is the final judge. The
+  slice-28 honesty bound closes where replays are built: a
+  committed `SetCapacity` (exit-window 250 -> 400 in the test
+  bundle) returns a rebuilt kernel whose stock IS 400, so later
+  entries are judged against the committed rule, not genesis.
+  The prior driver judges proposer and observer gates against
+  the RUNNING kernel, not the genesis-pinned profile, so a
+  roster-changing prior is visible to later entries.
+- Host tests 259/259 (253 prior + 6 slice-34: applied
+  capacity on the rebuilt kernel with untouched sibling
+  stocks and an unwritten prior record, mixed-action refusal,
+  missing- and duplicate-seat refusals, foreign-approval
+  linkage and corrupt-action decode refusals, wrong-stage and
+  unsealed refusals, mixed-chain head discipline). Clippy back
+  to the pre-existing profile (anchor macro `unexpected cfg`
+  noise + the slice-8 test helper's `type_complexity`
+  warning); zero new warnings. No new instruction, account, or
+  error this slice, as designed: IDL counts unchanged (20
+  instructions, 6 accounts, 34 errors, 18 events); `.so`
+  1,143,960 bytes (helper code only, not yet reachable from
+  any instruction — the size barely moves until threading).
+- Deliberately NOT slice 34: threading the mixed chain
+  through the thirteen stage helpers and the instruction
+  remaining accounts (helpers and instructions still pass
+  ordinary-only priors, so on-chain instructions still refuse
+  past a governance commit), the governance replay and
+  `commit_governance` instruction, a revise-approval
+  instruction, and CU measurement — later slices.
+
 ## Build
 
 ```sh
 export RUSTUP_HOME=~/workspace/toolchains/rustup CARGO_HOME=~/workspace/toolchains/cargo
 export PATH=~/workspace/toolchains/cargo/bin:~/workspace/toolchains/solana/bin:$PATH
 ~/workspace/toolchains/anchor/bin/anchor build   # from this directory
-cargo test                                        # host tests, 253/253
+cargo test                                        # host tests, 259/259
 ```
