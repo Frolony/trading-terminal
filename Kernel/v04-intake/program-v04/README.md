@@ -496,11 +496,47 @@ families, account inventory, and CU golden set are later step-5 slices.
   reconcile/validate/declare, commit replay moving the head, and CU
   measurement — all later slices.
 
+## Slice 18 — already-selected sibling replay for select
+
+- Slice 17's "a sibling at any stage but `ELIGIBLE` refuses" is
+  amended: a sibling at stage `SELECTED` (4) is now admitted, and
+  every other non-`ELIGIBLE` stage still refuses. The stage label
+  is NOT trusted: after the merged timeline, the helper replays
+  the selected sibling's own select at the state's clock and
+  verifies its life becomes `Selected` before running the
+  target's select — call order, not a stored selection timestamp
+  (no such field exists), is what makes the sibling "already"
+  selected. Only then can the kernel's
+  `ParentAlreadyHasASelectedTransition` arm fire on the target.
+- A `SELECTED` sibling that cannot be proven selected refuses the
+  whole helper: unqualified tally, an outranking target, or a
+  window not yet closed all leave the target `ELIGIBLE`. At most
+  one `SELECTED` sibling may be supplied — a parent can have only
+  one selected transition — so two refuse at the gate, before any
+  replay. The per-sibling `signal_count` anchor still applies to
+  selected siblings.
+- Host tests 115/115 (108 prior + 7 slice-18: selected sibling
+  blocks the target, unqualified selected sibling refuses,
+  outranked selected sibling refuses, selected sibling with an
+  open window refuses, two selected siblings refuse, mixed
+  selected-plus-eligible field blocks the target, and incomplete
+  selected sibling signal set refuses).
+- `anchor build` green under the pinned toolchain; IDL unchanged
+  (12 instructions, 4 accounts, 18 errors, 10 events — no new
+  instruction, the slice-17 instruction's meaning grows); `.so`
+  712,144 bytes (sha256 `30b54f87…`).
+- Deliberately NOT slice 18: the sibling-set completeness anchor
+  (still no count anchor for siblings on `KernelState`),
+  later-stage siblings (planning onward, stages 5+, do not exist
+  in the program yet, so their `ParentAlreadyHasASelected` lives
+  are not replayable here), reconcile/validate/declare, commit
+  replay moving the head, and CU measurement — all later slices.
+
 ## Build
 
 ```sh
 export RUSTUP_HOME=~/workspace/toolchains/rustup CARGO_HOME=~/workspace/toolchains/cargo
 export PATH=~/workspace/toolchains/cargo/bin:~/workspace/toolchains/solana/bin:$PATH
 ~/workspace/toolchains/anchor/bin/anchor build   # from this directory
-cargo test                                        # host tests, 108/108
+cargo test                                        # host tests, 115/115
 ```

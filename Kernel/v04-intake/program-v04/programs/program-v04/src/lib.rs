@@ -311,6 +311,39 @@
 //! sibling field), so omitting a blocking sibling is still a caller
 //! omission the program cannot catch, and that anchor is the next
 //! slice's work after the already-selected replay.
+//!
+//! Slice 18 (this slice): the already-selected sibling replay slice
+//! 17 named. Slice 17's "a sibling at any stage but `ELIGIBLE`
+//! refuses" is amended, not contradicted silently: a sibling at
+//! stage `SELECTED` (4) is now admitted, and every other non-`ELIGIBLE`
+//! stage still refuses. A `SELECTED` stage label is NOT trusted as
+//! proof of selection — the helper replays the sibling's own select
+//! in the rebuilt kernel, at the state's clock, after the merged
+//! timeline and before the target's select, and verifies the
+//! sibling's life becomes `Selected` there. Only then can the
+//! kernel's `ParentAlreadyHasASelectedTransition` arm fire on the
+//! target's select: the sibling is no longer `Eligible`, so the
+//! sibling loop skips it, and `selected_for` already names it for
+//! this parent. A `SELECTED` sibling whose own select cannot be
+//! proven — unqualified tally, an outranking target, a window not
+//! yet closed — refuses the whole helper with `SelectFailed`, and
+//! the target stays `ELIGIBLE`: a stored stage that history cannot
+//! reproduce is an inconsistent record, not a block. At most one
+//! `SELECTED` sibling is admitted: a parent can have only one
+//! selected transition, so two supplied `SELECTED` siblings refuse
+//! before any replay. The selected sibling's select runs at the
+//! state's clock, the same clock the target's select runs at —
+//! `tick` accepts an equal time, and call order, not a stored
+//! selection timestamp (no such field exists on the record), is
+//! what makes the sibling "already" selected: its select is called
+//! first. Honesty bounds, stated not smoothed: the sibling-set
+//! completeness anchor is still open — this slice proves the
+//! comparison over the siblings supplied, selected included, not
+//! that the supplied set is complete; and later-stage siblings
+//! (planning onward, stages 5+) do not exist in the program yet,
+//! so their `ParentAlreadyHasASelected` lives (4..=8, `Blocked`,
+//! `Committed` in the kernel) are not replayable here until those
+//! stages land.
 
 extern crate alloc;
 
@@ -672,7 +705,13 @@ pub mod program_v04 {
     /// record types refuses with `RecordMismatch` before any replay.
     /// The payer is a fee payer only, as in slice 16; only the target
     /// record's stage advances, to `SELECTED`, and only on a
-    /// kernel-proven selection over the supplied field.
+    /// kernel-proven selection over the supplied field. Slice 18:
+    /// a sibling at stage `SELECTED` is replayed through its own
+    /// select at the state's clock before the target's select, so
+    /// the kernel's `ParentAlreadyHasASelectedTransition` arm can
+    /// fire; a `SELECTED` sibling that cannot be proven selected
+    /// refuses the whole instruction, and at most one `SELECTED`
+    /// sibling may be supplied.
     pub fn select_candidate_with_siblings(
         ctx: Context<SelectCandidateWithSiblings>,
         transition_id: [u8; 32],
@@ -1946,7 +1985,7 @@ fn replay_transition_chain(
 }
 
 /// Select a candidate over a supplied sibling field through the real
-/// kernel (slice 17). Pure except for the target record's stage,
+/// kernel (slices 17–18). Pure except for the target record's stage,
 /// which advances to `SELECTED` only on success — every refusal
 /// leaves every record untouched. Target gates, in order: sealed
 /// state; stage exactly `ELIGIBLE`; parent exactly the sealed head;
@@ -1956,9 +1995,9 @@ fn replay_transition_chain(
 /// matching its own `submitted_at`; no duplicated (agent, round) in
 /// the target set. Sibling gates, per sibling: an id distinct from
 /// the target and from every other supplied sibling; stage exactly
-/// `ELIGIBLE` (a `SELECTED` sibling's own select replay is the next
-/// slice's work — it refuses here rather than being silently
-/// treated as merely eligible); parent exactly the target's parent
+/// `ELIGIBLE` or `SELECTED` (slice 18: any other stage refuses, and
+/// at most one `SELECTED` sibling is admitted, since a parent can
+/// have only one selected transition); parent exactly the target's parent
 /// (hence the sealed head); observation linkage to its own
 /// observation record; a proven window; its supplied signal set
 /// numbering exactly its own `signal_count`; every sibling prior
@@ -1968,8 +2007,13 @@ fn replay_transition_chain(
 /// rebuilt sealed launch kernel under `ProgramEnv`: eligibility
 /// chains and signals interleaved in ascending time order, chains
 /// before signals at an equal time (siblings before the target on an
-/// equal `eligible_at` — the fail-closed tie rule); then kernel
-/// `select_candidate` runs on the target at the state's clock. A kernel refusal in any
+/// equal `eligible_at` — the fail-closed tie rule); then, if a
+/// `SELECTED` sibling was supplied, kernel `select_candidate` runs
+/// on that sibling at the state's clock and its life must become
+/// `Selected` — its stage label is re-proven, never trusted — and
+/// only then kernel `select_candidate` runs on the target at the
+/// state's clock, where the kernel's
+/// `ParentAlreadyHasASelectedTransition` arm can fire. A kernel refusal in any
 /// call maps to `SelectFailed`: a still-open target or sibling
 /// window, an unmet quorum, confidence below the launch threshold,
 /// an outranking sibling, an expired manifest, and a signal at or
@@ -2039,7 +2083,9 @@ pub fn select_candidate_from_records_with_siblings(
             {
                 return Err(error!(ProgramV04Error::SelectFailed));
             }
-            if srec.stage != TransitionRecord::ELIGIBLE {
+            if srec.stage != TransitionRecord::ELIGIBLE
+                && srec.stage != TransitionRecord::SELECTED
+            {
                 return Err(error!(ProgramV04Error::SelectFailed));
             }
             if srec.parent_index != transition_record.parent_index
@@ -2071,6 +2117,19 @@ pub fn select_candidate_from_records_with_siblings(
                 }
             }
         }
+    }
+    // Slice 18: a parent can have only one selected transition, so
+    // two supplied SELECTED siblings are an inconsistent field even
+    // before any replay — the first one's select would already make
+    // the second's impossible, and the kernel would refuse it there;
+    // refusing here names the inconsistency at the gate instead.
+    if siblings
+        .iter()
+        .filter(|s| s.transition_record.stage == TransitionRecord::SELECTED)
+        .count()
+        > 1
+    {
+        return Err(error!(ProgramV04Error::SelectFailed));
     }
     let mut k = sealed_launch_kernel_env().map_err(|_| error!(ProgramV04Error::KernelSeal))?;
     // One merged timeline: (time, kind rank, tie rank, index) with
@@ -2155,6 +2214,34 @@ pub fn select_candidate_from_records_with_siblings(
                 )
                 .map_err(|_| error!(ProgramV04Error::SelectFailed))?;
             }
+        }
+    }
+    // Slice 18: re-prove a supplied SELECTED sibling's own select
+    // before the target's. The sibling's chain and signals are
+    // already in the rebuilt kernel from the merged timeline above,
+    // so this call judges exactly what its stored stage claims: that
+    // it won a select. It runs at the state's clock — the same clock
+    // the target's select runs at next, `tick` accepting the equal
+    // time — and call order is what makes it "already" selected:
+    // after this call `selected_for` names the sibling, so the
+    // target's select below meets the kernel's
+    // `ParentAlreadyHasASelectedTransition` arm rather than a
+    // sibling-loop comparison against a merely eligible record. A
+    // sibling that cannot win here (unqualified tally, an outranking
+    // target, a window not yet closed) refuses the whole helper,
+    // and the target's stage is left untouched.
+    for sibling in siblings {
+        if sibling.transition_record.stage != TransitionRecord::SELECTED {
+            continue;
+        }
+        k.select_candidate(
+            &sibling.transition_record.transition_id,
+            kernel_state.clock,
+        )
+        .map_err(|_| error!(ProgramV04Error::SelectFailed))?;
+        match k.life_of(&sibling.transition_record.transition_id) {
+            Some(Life::Selected) => {}
+            _ => return Err(error!(ProgramV04Error::SelectFailed)),
         }
     }
     k.select_candidate(&transition_record.transition_id, kernel_state.clock)
@@ -4447,5 +4534,209 @@ mod tests {
         .expect("an empty sibling field must select like plain select");
         assert_eq!(life, Life::Selected);
         assert_eq!(target.stage, TransitionRecord::SELECTED);
+    }
+
+    // Slice 18 fixtures: a SELECTED sibling is an ELIGIBLE sibling
+    // whose stored stage has been advanced to 4, exactly as the
+    // slice-16 select instruction would have advanced it after its
+    // own selection — the helper must re-prove that selection from
+    // the chain and signals, not trust the stage value.
+
+    #[test]
+    fn select_with_selected_sibling_blocks_target() {
+        // Sibling eligible at 100, target at 150, both confidence
+        // 1.0, both windows closed at 250: the sibling's own select
+        // is replayed first and wins its tie (earlier eligibility),
+        // so the target's select meets the kernel's
+        // ParentAlreadyHasASelected arm and refuses. The target
+        // stays ELIGIBLE and the sibling record is untouched — the
+        // helper never writes sibling records.
+        let state = select_state_at(250);
+        let (mut sib, sib_obs) = eligible_sibling_at(100, [0xD2; 32], [0xC1; 32], [0xE2; 32], 10_100);
+        let sib_sig = sibling_signal_at(&mut sib, &sib_obs, &[], 2, SCALE, 100);
+        sib.stage = TransitionRecord::SELECTED;
+        let (mut target, target_obs) = eligible_sibling_at(150, [0xD1; 32], [0xC0; 32], [0xE1; 32], 10_100);
+        let target_sig = sibling_signal_at(&mut target, &target_obs, &[], 2, SCALE, 150);
+        let sibling = SiblingReplay {
+            transition_record: &sib,
+            observation_record: &sib_obs,
+            prior_signals: &[sib_sig],
+        };
+        let err = select_candidate_from_records_with_siblings(
+            &state, &mut target, &target_obs, &[target_sig], &[sibling],
+        )
+        .expect_err("an already-selected sibling must block the target");
+        assert!(format!("{:?}", err).contains("SelectFailed"));
+        assert_eq!(target.stage, TransitionRecord::ELIGIBLE);
+        assert_eq!(sib.stage, TransitionRecord::SELECTED);
+    }
+
+    #[test]
+    fn select_with_selected_sibling_refuses_unqualified() {
+        // A SELECTED stage label with a confidence-0 tally (one
+        // support-0 signal) cannot be proven selected: the sibling's
+        // own select fails its confidence threshold, the whole
+        // helper refuses, and the target — which would otherwise
+        // select over a merely eligible confidence-0 sibling — stays
+        // ELIGIBLE. The stage label alone never blocks.
+        let state = select_state_at(200);
+        let (_, mut target, target_obs, first) = selected_pair();
+        let (mut sib, sib_obs) = eligible_sibling_at(100, [0xD2; 32], [0xC1; 32], [0xE2; 32], 10_100);
+        let sib_sig = sibling_signal_at(&mut sib, &sib_obs, &[], 2, 0, 100);
+        sib.stage = TransitionRecord::SELECTED;
+        let sibling = SiblingReplay {
+            transition_record: &sib,
+            observation_record: &sib_obs,
+            prior_signals: &[sib_sig],
+        };
+        let err = select_candidate_from_records_with_siblings(
+            &state, &mut target, &target_obs, &[first], &[sibling],
+        )
+        .expect_err("an unqualified selected sibling must refuse");
+        assert!(format!("{:?}", err).contains("SelectFailed"));
+        assert_eq!(target.stage, TransitionRecord::ELIGIBLE);
+    }
+
+    #[test]
+    fn select_with_selected_sibling_refuses_outranked() {
+        // A SELECTED sibling at confidence 0.5 (supports 1.0 and 0)
+        // against a confidence-1.0 target: the sibling's own select
+        // fails OutrankedBySibling, so the helper refuses instead of
+        // letting the stage label block a target that genuinely
+        // outranks it.
+        let state = select_state_at(200);
+        let (_, mut target, target_obs, first) = selected_pair();
+        let (mut sib, sib_obs) = eligible_sibling_at(100, [0xD2; 32], [0xC1; 32], [0xE2; 32], 10_100);
+        let sib_first = sibling_signal_at(&mut sib, &sib_obs, &[], 2, SCALE, 100);
+        let sib_second = sibling_signal_at(&mut sib, &sib_obs, &[sib_first], 3, 0, 100);
+        sib.stage = TransitionRecord::SELECTED;
+        let sibling = SiblingReplay {
+            transition_record: &sib,
+            observation_record: &sib_obs,
+            prior_signals: &[sib_first, sib_second],
+        };
+        let err = select_candidate_from_records_with_siblings(
+            &state, &mut target, &target_obs, &[first], &[sibling],
+        )
+        .expect_err("an outranked selected sibling must refuse");
+        assert!(format!("{:?}", err).contains("SelectFailed"));
+        assert_eq!(target.stage, TransitionRecord::ELIGIBLE);
+    }
+
+    #[test]
+    fn select_with_selected_sibling_refuses_open_window() {
+        // The selected sibling's window (150/250) is still open at
+        // the select clock 200 while the target's (100/200) is
+        // closed: the sibling's own select cannot run before its
+        // deadline, so the helper refuses and the target stays
+        // ELIGIBLE.
+        let state = select_state_at(200);
+        let (_, mut target, target_obs, first) = selected_pair();
+        let (mut sib, sib_obs) = eligible_sibling_at(150, [0xD2; 32], [0xC1; 32], [0xE2; 32], 10_100);
+        let sib_sig = sibling_signal_at(&mut sib, &sib_obs, &[], 2, SCALE, 150);
+        sib.stage = TransitionRecord::SELECTED;
+        let sibling = SiblingReplay {
+            transition_record: &sib,
+            observation_record: &sib_obs,
+            prior_signals: &[sib_sig],
+        };
+        let err = select_candidate_from_records_with_siblings(
+            &state, &mut target, &target_obs, &[first], &[sibling],
+        )
+        .expect_err("a selected sibling with an open window must refuse");
+        assert!(format!("{:?}", err).contains("SelectFailed"));
+        assert_eq!(target.stage, TransitionRecord::ELIGIBLE);
+    }
+
+    #[test]
+    fn select_with_two_selected_siblings_refuses() {
+        // A parent can have only one selected transition: two
+        // supplied SELECTED siblings are an inconsistent field and
+        // refuse at the gate, before any replay, with the target
+        // left ELIGIBLE.
+        let state = select_state_at(200);
+        let (_, mut target, target_obs, first) = selected_pair();
+        let (mut sib1, sib1_obs) = eligible_sibling_at(100, [0xD2; 32], [0xC1; 32], [0xE2; 32], 10_100);
+        let sib1_sig = sibling_signal_at(&mut sib1, &sib1_obs, &[], 2, SCALE, 100);
+        sib1.stage = TransitionRecord::SELECTED;
+        let (mut sib2, sib2_obs) = eligible_sibling_at(100, [0xD3; 32], [0xC2; 32], [0xE3; 32], 10_100);
+        let sib2_sig = sibling_signal_at(&mut sib2, &sib2_obs, &[], 2, SCALE, 100);
+        sib2.stage = TransitionRecord::SELECTED;
+        let first_sibling = SiblingReplay {
+            transition_record: &sib1,
+            observation_record: &sib1_obs,
+            prior_signals: &[sib1_sig],
+        };
+        let second_sibling = SiblingReplay {
+            transition_record: &sib2,
+            observation_record: &sib2_obs,
+            prior_signals: &[sib2_sig],
+        };
+        let err = select_candidate_from_records_with_siblings(
+            &state, &mut target, &target_obs, &[first], &[first_sibling, second_sibling],
+        )
+        .expect_err("two selected siblings must refuse");
+        assert!(format!("{:?}", err).contains("SelectFailed"));
+        assert_eq!(target.stage, TransitionRecord::ELIGIBLE);
+    }
+
+    #[test]
+    fn select_with_selected_and_eligible_siblings_blocks_target() {
+        // Mixed field: a winning SELECTED sibling (eligible 100,
+        // confidence 1.0) plus a weaker ELIGIBLE sibling (confidence
+        // 0) against a confidence-1.0 target eligible at 150, all
+        // windows closed at 250. The selected sibling's own select
+        // succeeds over both, then the target meets
+        // ParentAlreadyHasASelected and refuses.
+        let state = select_state_at(250);
+        let (mut selected, selected_obs) = eligible_sibling_at(100, [0xD2; 32], [0xC1; 32], [0xE2; 32], 10_100);
+        let selected_sig = sibling_signal_at(&mut selected, &selected_obs, &[], 2, SCALE, 100);
+        selected.stage = TransitionRecord::SELECTED;
+        let (mut weaker, weaker_obs) = eligible_sibling_at(100, [0xD3; 32], [0xC2; 32], [0xE3; 32], 10_100);
+        let weaker_sig = sibling_signal_at(&mut weaker, &weaker_obs, &[], 2, 0, 100);
+        let (mut target, target_obs) = eligible_sibling_at(150, [0xD1; 32], [0xC0; 32], [0xE1; 32], 10_100);
+        let target_sig = sibling_signal_at(&mut target, &target_obs, &[], 2, SCALE, 150);
+        let selected_sibling = SiblingReplay {
+            transition_record: &selected,
+            observation_record: &selected_obs,
+            prior_signals: &[selected_sig],
+        };
+        let weaker_sibling = SiblingReplay {
+            transition_record: &weaker,
+            observation_record: &weaker_obs,
+            prior_signals: &[weaker_sig],
+        };
+        let err = select_candidate_from_records_with_siblings(
+            &state, &mut target, &target_obs, &[target_sig], &[selected_sibling, weaker_sibling],
+        )
+        .expect_err("a mixed field with a selected winner must block the target");
+        assert!(format!("{:?}", err).contains("SelectFailed"));
+        assert_eq!(target.stage, TransitionRecord::ELIGIBLE);
+    }
+
+    #[test]
+    fn select_with_selected_sibling_refuses_incomplete_set() {
+        // The selected sibling's count is 2 but only its first
+        // signal is supplied: the per-sibling completeness anchor
+        // refuses before any replay, so the target cannot select
+        // over a partially proven field.
+        let state = select_state_at(200);
+        let (_, mut target, target_obs, first) = selected_pair();
+        let (mut sib, sib_obs) = eligible_sibling_at(100, [0xD2; 32], [0xC1; 32], [0xE2; 32], 10_100);
+        let sib_first = sibling_signal_at(&mut sib, &sib_obs, &[], 2, SCALE, 100);
+        let _sib_second = sibling_signal_at(&mut sib, &sib_obs, &[sib_first], 3, 0, 100);
+        assert_eq!(sib.signal_count, 2);
+        sib.stage = TransitionRecord::SELECTED;
+        let sibling = SiblingReplay {
+            transition_record: &sib,
+            observation_record: &sib_obs,
+            prior_signals: &[sib_first],
+        };
+        let err = select_candidate_from_records_with_siblings(
+            &state, &mut target, &target_obs, &[first], &[sibling],
+        )
+        .expect_err("a short selected sibling signal set must refuse");
+        assert!(format!("{:?}", err).contains("SelectFailed"));
+        assert_eq!(target.stage, TransitionRecord::ELIGIBLE);
     }
 }
