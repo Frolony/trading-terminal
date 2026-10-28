@@ -1406,28 +1406,30 @@ function pairsPriceHeadText(){return settings&&settings.quoteCurrency==='SOL'?'P
 // is not a feed failure, and feedFailures is never touched here. Later leg,
 // NOT this item: tighter/streaming refresh of both prices (rides the
 // existing marketPoll cadence for now).
-let gtPricesByPool={},gtReq=0; // poolAddress -> GT USD price, or null when GT does not know the pool / the cycle failed; absent = not yet fetched this cycle
+let gtPricesByPool={},gtReq=0,gtMismatchByPool={}; // poolAddress -> GT USD price, or null when GT does not know the pool / the cycle failed; absent = not yet fetched this cycle; gtMismatchByPool[addr]=true when the N3.20 guard dropped GT's price for that pool (orientation mismatch or absent base id), so the pairs row also drops its GT-derived 24h range bar
 function gtMultiUrl(addresses,network){return 'https://api.geckoterminal.com/api/v2/networks/'+encodeURIComponent(network||'solana')+'/pools/multi/'+addresses.map(a=>encodeURIComponent(a)).join(',');} // one call for all rendered rows, never per-row
-// N3.9 (A84): orientation guard, GT side — base_token_price_usd prices GT's own base token, so a GT price counts only when relationships.base_token.data.id (solana_<mint>) equals the search card's base mint. A mismatched or absent base id is skipped (pools/multi carries the relationship — verified live 2026-10-26 on the orca SOL/USDC pool — so absence is anomalous, not a shape to fail open on). Without an expectation map (the N3.5 pairs-table caller) behaviour is unchanged.
-function gtParseMulti(j,expectedBaseByPool){const out={},arr=((j||{}).data||[]);if(!Array.isArray(arr))return out;arr.forEach(it=>{const at=(it||{}).attributes||{};let addr=typeof at.address==='string'&&at.address?at.address:'';if(!addr&&typeof it.id==='string'&&it.id.indexOf('_')>=0){const _suf317=it.id.slice(it.id.indexOf('_')+1);if(discIsPoolAddress(_suf317))addr=_suf317;}if(!discIsPoolAddress(addr))return;if(expectedBaseByPool&&Object.prototype.hasOwnProperty.call(expectedBaseByPool,addr)){const exp=expectedBaseByPool[addr];const rel=it&&it.relationships&&it.relationships.base_token&&it.relationships.base_token.data&&it.relationships.base_token.data.id;const relMint=discGtRelMint(rel);if(typeof relMint!=='string'||!discSameAddress(relMint,exp))return;}const v=Number(at.base_token_price_usd);out[addr]=(Number.isFinite(v)&&v>0)?v:null;});return out;}
+// N3.9 (A84): orientation guard, GT side — base_token_price_usd prices GT's own base token, so a GT price counts only when relationships.base_token.data.id (solana_<mint>) equals the search card's base mint. A mismatched or absent base id is skipped (pools/multi carries the relationship — verified live 2026-10-26 on the orca SOL/USDC pool — so absence is anomalous, not a shape to fail open on). N3.20 (A109): the N3.5 pairs-table caller now passes its own expectation map too (see refreshGtPrices), so the guard that discovery already had covers the pairs table; an optional third argument records dropped pools in mismatchOut for the range-bar suppression in pairDualPriceHtml. Without an expectation map behaviour is unchanged.
+function gtParseMulti(j,expectedBaseByPool,mismatchOut){const out={},arr=((j||{}).data||[]);if(!Array.isArray(arr))return out;arr.forEach(it=>{const at=(it||{}).attributes||{};let addr=typeof at.address==='string'&&at.address?at.address:'';if(!addr&&typeof it.id==='string'&&it.id.indexOf('_')>=0){const _suf317=it.id.slice(it.id.indexOf('_')+1);if(discIsPoolAddress(_suf317))addr=_suf317;}if(!discIsPoolAddress(addr))return;if(expectedBaseByPool&&Object.prototype.hasOwnProperty.call(expectedBaseByPool,addr)){const exp=expectedBaseByPool[addr];const rel=it&&it.relationships&&it.relationships.base_token&&it.relationships.base_token.data&&it.relationships.base_token.data.id;const relMint=discGtRelMint(rel);if(typeof relMint!=='string'||!discSameAddress(relMint,exp)){if(mismatchOut)mismatchOut[addr]=true;return;}}const v=Number(at.base_token_price_usd);out[addr]=(Number.isFinite(v)&&v>0)?v:null;});return out;}
 function gtDeltaPct(ds,gt){const a=Number(ds),b=Number(gt);if(!Number.isFinite(a)||!Number.isFinite(b)||a<=0||b<=0)return null;return (b-a)/a*100;}
 function pairDualPriceHtml(p){ // N3.5 price cell: DS price + GT comparison + signed delta, both QC-aware via formatPrice
   const ds=formatPrice(p.priceUsd);
   const gt=(p&&isPlausiblePoolAddress(p.pairAddress))?gtPricesByPool[p.pairAddress]:undefined;
-  if(gt==null||!Number.isFinite(Number(gt))||Number(gt)<=0)return 'DS '+ds+'<div class="sub">GT —</div>'+discRangeBarHtml(p.pairAddress,p.priceUsd); // N3.13: pairs rows mark the DS price on the GT day range
+  const gtMismatch=(p&&isPlausiblePoolAddress(p.pairAddress))?!!gtMismatchByPool[p.pairAddress]:false; // N3.20: a guarded-out GT price takes its GT-derived range bar with it — the day candle for an inverted pool is oriented to GT's base, so marking the DS price on it would print the same nonsense at 100%
+  if(gt==null||!Number.isFinite(Number(gt))||Number(gt)<=0)return 'DS '+ds+'<div class="sub">GT —</div>'+(gtMismatch?'':discRangeBarHtml(p.pairAddress,p.priceUsd)); // N3.13: pairs rows mark the DS price on the GT day range (unless N3.20 suppressed it)
   const d=gtDeltaPct(p.priceUsd,gt);
   return 'DS '+ds+'<div class="sub">GT '+formatPrice(gt)+' · <span class="'+(d!==null&&d<0?'negative':'positive')+'">'+(d===null?'—':(d>=0?'+':'')+fmt(d,2)+'%')+'</span></div>'+discRangeBarHtml(p.pairAddress,p.priceUsd);
 }
 async function refreshGtPrices(){ // N3.5 satellite of a successful market refresh; fire-and-forget from fetchMarket
   const my=++gtReq;
   const addrs=marketPairs.slice(0,8).map(p=>p.pairAddress).filter(a=>isPlausiblePoolAddress(a));
-  gtPricesByPool={}; // fresh cycle: a failed or unknown GT renders GT —, never a stale GT price
+  const expectedBaseByPool={};marketPairs.slice(0,8).forEach(p=>{const b=p&&p.baseToken&&p.baseToken.address;if(p&&isPlausiblePoolAddress(p.pairAddress)&&typeof b==='string'&&b)expectedBaseByPool[p.pairAddress]=b;}); // N3.20: the pairs rows state their DS base mint; the parse enforces it against GT's base_token relationship, exactly as the N3.9 discovery callers do
+  gtPricesByPool={};gtMismatchByPool={}; // fresh cycle: a failed or unknown GT renders GT —, never a stale GT price; a guarded-out pool also clears its mismatch flag
   if(!addrs.length)return;
   try{
     const controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),10000);
     let j;try{const r=await fetch(gtMultiUrl(addrs),{signal:controller.signal});if(!r.ok)throw Error('GeckoTerminal pools HTTP '+r.status);j=await r.json();}finally{clearTimeout(timeout);}
     if(my!==gtReq)return;
-    const parsed=gtParseMulti(j);
+    const parsed=gtParseMulti(j,expectedBaseByPool,gtMismatchByPool);
     addrs.forEach(a=>{gtPricesByPool[a]=Object.prototype.hasOwnProperty.call(parsed,a)?parsed[a]:null;});
   }catch(e){if(my!==gtReq)return;console.error('GeckoTerminal pools fetch failed',e);} // GT failure is not a feed failure: DS prices, feed status and backoff untouched
   if(my!==gtReq)return;
