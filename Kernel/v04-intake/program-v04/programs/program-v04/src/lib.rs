@@ -417,6 +417,45 @@
 //! Planning on a sibling field is likewise not re-judged here:
 //! selection was already proven by the select slices, and this
 //! helper's rebuilt kernel holds only this transition.
+//! Slice 21 (this slice): the first plan instruction, `submit_plan` —
+//! a `PLANNING` record gains a per-agent `PlanRecord`, and the stage
+//! stays `PLANNING` (plans do not advance it; reconcile does, later).
+//! The helper re-proves the whole chain in a rebuilt kernel (chain +
+//! priors + select + open_planning + every prior plan) and only then
+//! runs kernel `submit_plan` at the state's clock, so a stored
+//! `PLANNING` label a replay cannot reproduce never accepts a plan.
+//! Two replay clocks, not one, and the distinction is the design:
+//! select and open_planning replay at the *derived open clock*
+//! (`planning_deadline - planning_window`), because that is the
+//! clock the stored deadline was set from — replaying them at the
+//! state's clock would silently move the deadline a plan is judged
+//! against — while prior plans and the new plan run at the state's
+//! clock, which the gates require to sit strictly inside the stored
+//! window (`open_clock <= clock < planning_deadline`). The new
+//! plan's expiry is likewise judged against the *stored* deadline,
+//! not a replayed one. The plan's agent is the signing payer's agent
+//! id (the kernel's `plan.agent == caller` rule, enforced by the PDA
+//! seeds on-chain and by the helper's caller argument in replay),
+//! and unlike open_planning's anyone rule, the kernel's agent gate
+//! applies here: an unknown or inactive agent, or an agent outside
+//! the proposer's groups, refuses through the kernel, not through a
+//! program-side guess. Claims are a bounded multi-resource map
+//! (`MAX_PLAN_CLAIMS` = 8, parallel fixed arrays on the record): a
+//! longer claim list refuses rather than truncating, and a
+//! duplicated resource refuses rather than collapsing silently the
+//! way a map insert would. `plan_count` on the transition record,
+//! written on success only, is the completeness anchor the later
+//! reconcile slice checks its supplied plan set against, exactly as
+//! `signal_count` anchors select. Honesty bounds, stated not
+//! smoothed: the replay horizon is the derived open clock, so a
+//! plan submitted after the transition's manifest expiry refuses
+//! here — but the kernel would refuse it too (`not_expired` at the
+//! state's clock), so no legitimate submission is lost to the
+//! replay; and the instruction's remaining accounts split
+//! deterministically (the first `signal_count` are signals, the rest
+//! plans), so a miscounted remainder refuses at the anchor, not at
+//! a parse. Reconcile, validate, declare, and commit replay are
+//! later slices, not smuggled in here.
 
 extern crate alloc;
 
@@ -425,7 +464,7 @@ use alloc::vec;
 use anchor_lang::prelude::*;
 use coordination_kernel::{
     Amount, Config, ConstraintStatus, Env, GovAction, Kernel, KernelError, Life, Manifest, NoEnv,
-    Observation, Policy, Role, SystemState, T_GOV_ADJUSTABLE, T_GOV_CONSTITUTION,
+    Observation, Plan, Policy, Role, SystemState, T_GOV_ADJUSTABLE, T_GOV_CONSTITUTION,
     T_GOV_COUNCIL, T_GOV_REBOOT, SCALE,
 };
 
@@ -930,6 +969,70 @@ pub mod program_v04 {
         });
         Ok(())
     }
+
+    /// Submit a plan (§4.1, second planning row, v0.4 form): run
+    /// kernel `submit_plan` on a `PLANNING` record pair and persist
+    /// the new plan as a `PlanRecord` PDA, one per (transition,
+    /// agent) — a second plan from the same agent fails at account
+    /// creation before the body runs, and the kernel's `Duplicate`
+    /// arm is the second guard in replay. The transition stage does
+    /// not advance, and `plan_count` increments on success only.
+    /// Remaining accounts split deterministically: the first
+    /// `signal_count` are the transition's prior `SignalRecord`s
+    /// (the selection-chain replay needs them), and the rest are
+    /// its prior `PlanRecord`s, which must number exactly
+    /// `plan_count` — the slice-21 anchor. The payer is a fee payer
+    /// and, by the identity mapping, the plan's agent: the kernel's
+    /// agent gate (registered, active, in the proposer's groups)
+    /// applies here, unlike open_planning's anyone rule.
+    pub fn submit_plan(
+        ctx: Context<SubmitPlan>,
+        transition_id: [u8; 32],
+        observation_id: [u8; 32],
+        claims: Vec<PlanClaimArg>,
+        expires_at: u64,
+    ) -> Result<()> {
+        if ctx.accounts.transition_record.transition_id != transition_id
+            || ctx.accounts.observation_record.observation_id != observation_id
+        {
+            return Err(error!(ProgramV04Error::RecordMismatch));
+        }
+        let signal_count = ctx.accounts.transition_record.signal_count as usize;
+        if ctx.remaining_accounts.len() < signal_count {
+            return Err(error!(ProgramV04Error::PlanFailed));
+        }
+        let mut priors: alloc::vec::Vec<SignalRecord> = alloc::vec::Vec::new();
+        for acc in &ctx.remaining_accounts[..signal_count] {
+            let parsed = Account::<SignalRecord>::try_from(acc)
+                .map_err(|_| error!(ProgramV04Error::RecordMismatch))?;
+            priors.push(parsed.into_inner());
+        }
+        let mut prior_plans: alloc::vec::Vec<PlanRecord> = alloc::vec::Vec::new();
+        for acc in &ctx.remaining_accounts[signal_count..] {
+            let parsed = Account::<PlanRecord>::try_from(acc)
+                .map_err(|_| error!(ProgramV04Error::RecordMismatch))?;
+            prior_plans.push(parsed.into_inner());
+        }
+        let plan = submit_plan_from_records(
+            &ctx.accounts.kernel_state,
+            &mut ctx.accounts.transition_record,
+            &ctx.accounts.observation_record,
+            &priors,
+            &prior_plans,
+            &claims,
+            expires_at,
+            resolve_agent_id(ctx.accounts.payer.key()),
+            ctx.bumps.plan_record,
+        )?;
+        *ctx.accounts.plan_record = plan;
+        emit!(PlanSubmitted {
+            transition_id,
+            agent: ctx.accounts.payer.key(),
+            expires_at,
+            plan_count: ctx.accounts.transition_record.plan_count,
+        });
+        Ok(())
+    }
 }
 
 #[derive(Accounts)]
@@ -952,6 +1055,38 @@ pub struct OpenPlanning<'info> {
     )]
     pub observation_record: Account<'info, ObservationRecord>,
     pub payer: Signer<'info>,
+}
+
+#[derive(Accounts)]
+#[instruction(transition_id: [u8; 32], observation_id: [u8; 32], claims: Vec<PlanClaimArg>, expires_at: u64)]
+pub struct SubmitPlan<'info> {
+    #[account(
+        seeds = [b"kernel-state"],
+        bump = kernel_state.bump,
+    )]
+    pub kernel_state: Account<'info, KernelState>,
+    #[account(
+        mut,
+        seeds = [b"transition", transition_id.as_ref()],
+        bump = transition_record.bump,
+    )]
+    pub transition_record: Account<'info, TransitionRecord>,
+    #[account(
+        seeds = [b"observation", observation_id.as_ref()],
+        bump = observation_record.bump,
+    )]
+    pub observation_record: Account<'info, ObservationRecord>,
+    #[account(
+        init,
+        payer = payer,
+        space = PlanRecord::SPACE,
+        seeds = [b"plan", transition_id.as_ref(), payer.key().as_ref()],
+        bump,
+    )]
+    pub plan_record: Account<'info, PlanRecord>,
+    #[account(mut)]
+    pub payer: Signer<'info>,
+    pub system_program: Program<'info, System>,
 }
 
 #[derive(Accounts)]
@@ -1265,6 +1400,11 @@ pub struct TransitionRecord {
     /// success only — one per created record, revisions included —
     /// so the count and the record set cannot diverge on-chain.
     pub signal_count: u64,
+    /// Number of `PlanRecord`s created for this transition (slice 21:
+    /// the reconcile completeness anchor). Written by `submit_plan`
+    /// on success only — one per created record — so the count and
+    /// the plan set cannot diverge on-chain.
+    pub plan_count: u64,
     /// PDA bump for the `["transition", transition_id]` seeds.
     pub bump: u8,
 }
@@ -1282,8 +1422,8 @@ impl TransitionRecord {
     pub const SELECTED: u8 = 4;
     /// Stage value written by `open_planning` (slice 20).
     pub const PLANNING: u8 = 5;
-    /// 8 (discriminator) + 32 + 32 + 8 + 32 + 32 + 32 + 8 + 32 + 1 + 8 + 8 + 8 + 8 + 1.
-    pub const SPACE: usize = 250;
+    /// 8 (discriminator) + 32 + 32 + 8 + 32 + 32 + 32 + 8 + 32 + 1 + 8 + 8 + 8 + 8 + 8 + 1.
+    pub const SPACE: usize = 258;
 }
 
 /// Build a `TransitionRecord` against a `KernelState`, enforcing the
@@ -1322,6 +1462,7 @@ pub fn build_transition_record(
         consensus_deadline: 0,
         planning_deadline: 0,
         signal_count: 0,
+        plan_count: 0,
         bump,
     })
 }
@@ -2278,6 +2419,323 @@ pub fn open_planning_from_records(
     Ok(Life::Planning)
 }
 
+/// One claim in a submitted plan (slice 21): a kernel resource id
+/// and an amount in kernel `Amount` raw units. Instruction args
+/// only — the stored record uses parallel fixed arrays (see
+/// `PlanRecord`), so a plan's claims are bounded and borsh-stable.
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PlanClaimArg {
+    pub resource: u16,
+    pub amount_raw: u64,
+}
+
+/// The fifth §3 account (slice 21): one agent's submitted plan for a
+/// transition. One record per (transition, agent) — the PDA seeds
+/// bind it — so a second plan from the same agent cannot be created
+/// twice on-chain, and the kernel's `Duplicate` arm is the second
+/// guard in replay. Claims are parallel fixed arrays capped at
+/// `MAX_PLAN_CLAIMS`: a plan with more claims refuses rather than
+/// truncating, and a duplicated resource refuses rather than
+/// collapsing silently the way a map insert would. `claim_count`
+/// is the live length; entries at or past it are zero and ignored.
+/// A plan does not advance the transition stage: the record stays
+/// `PLANNING`, and `TransitionRecord.plan_count` (written by
+/// `submit_plan` on success only, like `signal_count`) is the
+/// completeness anchor the later reconcile slice checks its
+/// supplied plan set against.
+#[account]
+#[derive(Debug)]
+pub struct PlanRecord {
+    /// Transition this plan belongs to (the PDA seed after `"plan"`).
+    pub transition_id: [u8; 32],
+    /// Planning agent (the signer's pubkey, by the identity mapping).
+    pub agent: Pubkey,
+    /// Live number of claims in the parallel arrays below.
+    pub claim_count: u8,
+    /// Claimed resource ids, first `claim_count` entries live.
+    pub claim_resources: [u16; PlanRecord::MAX_PLAN_CLAIMS],
+    /// Claimed amounts in kernel `Amount` raw units, aligned with
+    /// `claim_resources`.
+    pub claim_amounts: [u64; PlanRecord::MAX_PLAN_CLAIMS],
+    /// Plan expiry — must exceed the stored planning deadline
+    /// (the kernel's `BadWindow` rule, judged against the stored
+    /// deadline, not a replayed one).
+    pub expires_at: u64,
+    /// PDA bump for the `["plan", transition_id, agent]` seeds.
+    pub bump: u8,
+}
+
+impl PlanRecord {
+    /// Hard cap on claims per plan (slice 21): a longer claim list
+    /// refuses rather than truncating.
+    pub const MAX_PLAN_CLAIMS: usize = 8;
+    /// 8 (discriminator) + 32 + 32 + 1 + 16 + 64 + 8 + 1.
+    pub const SPACE: usize = 162;
+}
+
+/// Submit a plan through the real kernel (slice 21). Pure except for
+/// the transition record's `plan_count`, which increments by one on
+/// success only, and the returned record: every refusal leaves both
+/// untouched, and the stage stays `PLANNING` throughout. Gates, in
+/// order: sealed state; stage exactly `PLANNING`; parent exactly the
+/// sealed head; observation linkage; a proven planning window (a
+/// nonzero stored deadline, with a derivable open clock at or before
+/// the state's clock and the state's clock strictly inside the
+/// window — at the deadline the window is closed and planning is
+/// over); the new plan's expiry strictly after the stored deadline;
+/// the prior-signal anchor (supplied signals numbering exactly
+/// `signal_count`, every prior belonging to the transition with a
+/// stored round matching its own `submitted_at`, no duplicated
+/// (agent, round)); the prior-plan anchor (supplied plans numbering
+/// exactly `plan_count`, every prior belonging to the transition,
+/// no duplicated resource inside a prior's claims); the new claim
+/// list bounded and duplicate-free. The kernel calls run against a
+/// freshly rebuilt sealed launch kernel under `ProgramEnv`: ingest,
+/// register, evaluate, and mark_eligible, all at the stored
+/// `eligible_at`, then each prior signal at its `submitted_at` in
+/// order, then select and open_planning at the *derived open
+/// clock* (so the replayed deadline equals the stored deadline, by
+/// construction — a mismatch refuses rather than overwriting it),
+/// then each prior plan at the state's clock, then the new plan at
+/// the state's clock. A kernel refusal in any call maps to
+/// `PlanFailed`: an unknown or inactive agent, an agent outside the
+/// proposer's groups, a duplicate plan, the plan cap, a plan expiry
+/// at or before the deadline, and a signal or select that no longer
+/// replays all fail here, through the kernel, not through a
+/// program-side guess about them. Replay-horizon bound, stated not
+/// smoothed: select and open_planning replay at the derived open
+/// clock, so a submission whose transition manifest already expired
+/// by that clock refuses here — but the kernel would refuse it too
+/// (`not_expired` at the state's clock, which is never earlier than
+/// the open clock), so no legitimate submission is lost to the
+/// replay.
+#[allow(clippy::too_many_arguments)]
+pub fn submit_plan_from_records(
+    kernel_state: &KernelState,
+    transition_record: &mut TransitionRecord,
+    observation_record: &ObservationRecord,
+    prior_signals: &[SignalRecord],
+    prior_plans: &[PlanRecord],
+    claims: &[PlanClaimArg],
+    expires_at: u64,
+    caller: [u8; 32],
+    bump: u8,
+) -> Result<PlanRecord> {
+    if !kernel_state.sealed {
+        return Err(error!(ProgramV04Error::NotSealed));
+    }
+    if transition_record.stage != TransitionRecord::PLANNING {
+        return Err(error!(ProgramV04Error::WrongStage));
+    }
+    if transition_record.parent_index != kernel_state.head_index
+        || transition_record.parent_hash != kernel_state.head_hash
+    {
+        return Err(error!(ProgramV04Error::ParentMismatch));
+    }
+    if transition_record.observation_id != observation_record.observation_id {
+        return Err(error!(ProgramV04Error::RecordMismatch));
+    }
+    if transition_record.planning_deadline == 0 {
+        return Err(error!(ProgramV04Error::PlanFailed));
+    }
+    let open_clock = transition_record
+        .planning_deadline
+        .checked_sub(launch_policy().planning_window)
+        .ok_or(error!(ProgramV04Error::PlanFailed))?;
+    if kernel_state.clock < open_clock || kernel_state.clock >= transition_record.planning_deadline {
+        return Err(error!(ProgramV04Error::PlanFailed));
+    }
+    if expires_at <= transition_record.planning_deadline {
+        return Err(error!(ProgramV04Error::PlanFailed));
+    }
+    if prior_signals.len() as u64 != transition_record.signal_count {
+        return Err(error!(ProgramV04Error::PlanFailed));
+    }
+    for prior in prior_signals {
+        if prior.transition_id != transition_record.transition_id {
+            return Err(error!(ProgramV04Error::RecordMismatch));
+        }
+        if signal_round(
+            transition_record.eligible_at,
+            transition_record.consensus_deadline,
+            prior.submitted_at,
+        ) != prior.round
+        {
+            return Err(error!(ProgramV04Error::RecordMismatch));
+        }
+    }
+    {
+        let mut seen: BTreeSet<([u8; 32], u64)> = BTreeSet::new();
+        for prior in prior_signals {
+            if !seen.insert((prior.agent.to_bytes(), prior.round)) {
+                return Err(error!(ProgramV04Error::PlanFailed));
+            }
+        }
+    }
+    if prior_plans.len() as u64 != transition_record.plan_count {
+        return Err(error!(ProgramV04Error::PlanFailed));
+    }
+    for prior in prior_plans {
+        if prior.transition_id != transition_record.transition_id {
+            return Err(error!(ProgramV04Error::RecordMismatch));
+        }
+        if prior.claim_count as usize > PlanRecord::MAX_PLAN_CLAIMS {
+            return Err(error!(ProgramV04Error::PlanFailed));
+        }
+        let mut seen: BTreeSet<u16> = BTreeSet::new();
+        for resource in &prior.claim_resources[..prior.claim_count as usize] {
+            if !seen.insert(*resource) {
+                return Err(error!(ProgramV04Error::PlanFailed));
+            }
+        }
+    }
+    if claims.len() > PlanRecord::MAX_PLAN_CLAIMS {
+        return Err(error!(ProgramV04Error::PlanFailed));
+    }
+    let mut claim_map: BTreeMap<u16, Amount> = BTreeMap::new();
+    for claim in claims {
+        if claim_map
+            .insert(claim.resource, Amount::from_raw(claim.amount_raw))
+            .is_some()
+        {
+            return Err(error!(ProgramV04Error::PlanFailed));
+        }
+    }
+    let proposer = resolve_proposer(kernel_state, transition_record.proposer)
+        .map_err(|_| error!(ProgramV04Error::PlanFailed))?;
+    let observer_id = resolve_agent_id(observation_record.observer);
+    let mut k = sealed_launch_kernel_env().map_err(|_| error!(ProgramV04Error::KernelSeal))?;
+    if !k.has_role(&observer_id, Role::Observer) {
+        return Err(error!(ProgramV04Error::NotObserver));
+    }
+    let relevant_groups = match k.agent(&proposer) {
+        Some(profile) => profile.groups.clone(),
+        None => return Err(error!(ProgramV04Error::UnknownProposer)),
+    };
+    let observation = Observation {
+        id: observation_record.observation_id,
+        timestamp: observation_record.timestamp,
+        expiry: observation_record.expiry,
+        confidence: Amount::from_raw(observation_record.confidence_raw),
+    };
+    let eligible_at = transition_record.eligible_at;
+    k.ingest_observation(&observer_id, observation, eligible_at)
+        .map_err(|_| error!(ProgramV04Error::PlanFailed))?;
+    let manifest = Manifest {
+        transition_type: transition_record.transition_type,
+        parent_index: transition_record.parent_index,
+        parent_hash: transition_record.parent_hash,
+        declared_next_hash: transition_record.declared_next_hash,
+        observation_id: transition_record.observation_id,
+        expires_at: transition_record.expires_at,
+        relevant_groups,
+        action: None,
+    };
+    k.register_transition(
+        &proposer,
+        transition_record.transition_id,
+        manifest,
+        BTreeSet::new(),
+        eligible_at,
+    )
+    .map_err(|_| error!(ProgramV04Error::PlanFailed))?;
+    k.evaluate_transition(&transition_record.transition_id, eligible_at)
+        .map_err(|_| error!(ProgramV04Error::PlanFailed))?;
+    k.mark_eligible(&transition_record.transition_id, eligible_at)
+        .map_err(|_| error!(ProgramV04Error::PlanFailed))?;
+    match k.life_of(&transition_record.transition_id) {
+        Some(Life::Eligible) => {}
+        _ => return Err(error!(ProgramV04Error::PlanFailed)),
+    }
+    let mut priors: alloc::vec::Vec<SignalRecord> = prior_signals.to_vec();
+    priors.sort_by_key(|s| s.submitted_at);
+    for prior in &priors {
+        let support = if prior.has_support {
+            Some(Amount::from_raw(prior.support_raw))
+        } else {
+            None
+        };
+        k.submit_round_signal(
+            &prior.agent.to_bytes(),
+            &transition_record.transition_id,
+            Amount::from_raw(prior.raw),
+            support,
+            prior.submitted_at,
+        )
+        .map_err(|_| error!(ProgramV04Error::PlanFailed))?;
+    }
+    k.select_candidate(&transition_record.transition_id, open_clock)
+        .map_err(|_| error!(ProgramV04Error::PlanFailed))?;
+    match k.life_of(&transition_record.transition_id) {
+        Some(Life::Selected) => {}
+        _ => return Err(error!(ProgramV04Error::PlanFailed)),
+    }
+    k.open_planning(&caller, &transition_record.transition_id, open_clock)
+        .map_err(|_| error!(ProgramV04Error::PlanFailed))?;
+    match k.life_of(&transition_record.transition_id) {
+        Some(Life::Planning) => {}
+        _ => return Err(error!(ProgramV04Error::PlanFailed)),
+    }
+    let deadline = open_clock
+        .checked_add(launch_policy().planning_window)
+        .ok_or(error!(ProgramV04Error::PlanFailed))?;
+    if deadline != transition_record.planning_deadline {
+        return Err(error!(ProgramV04Error::PlanFailed));
+    }
+    for prior in prior_plans {
+        let mut prior_map: BTreeMap<u16, Amount> = BTreeMap::new();
+        for (resource, amount) in prior.claim_resources[..prior.claim_count as usize]
+            .iter()
+            .zip(prior.claim_amounts[..prior.claim_count as usize].iter())
+        {
+            prior_map.insert(*resource, Amount::from_raw(*amount));
+        }
+        let prior_plan = Plan {
+            agent: prior.agent.to_bytes(),
+            claims: prior_map,
+            expires_at: prior.expires_at,
+        };
+        k.submit_plan(
+            &prior.agent.to_bytes(),
+            &transition_record.transition_id,
+            prior_plan,
+            kernel_state.clock,
+        )
+        .map_err(|_| error!(ProgramV04Error::PlanFailed))?;
+    }
+    let plan = Plan {
+        agent: caller,
+        claims: claim_map,
+        expires_at,
+    };
+    k.submit_plan(
+        &caller,
+        &transition_record.transition_id,
+        plan,
+        kernel_state.clock,
+    )
+    .map_err(|_| error!(ProgramV04Error::PlanFailed))?;
+    transition_record.plan_count = transition_record
+        .plan_count
+        .checked_add(1)
+        .ok_or(error!(ProgramV04Error::PlanFailed))?;
+    let mut claim_resources = [0u16; PlanRecord::MAX_PLAN_CLAIMS];
+    let mut claim_amounts = [0u64; PlanRecord::MAX_PLAN_CLAIMS];
+    for (i, claim) in claims.iter().enumerate() {
+        claim_resources[i] = claim.resource;
+        claim_amounts[i] = claim.amount_raw;
+    }
+    Ok(PlanRecord {
+        transition_id: transition_record.transition_id,
+        agent: Pubkey::new_from_array(caller),
+        claim_count: claims.len() as u8,
+        claim_resources,
+        claim_amounts,
+        expires_at,
+        bump,
+    })
+}
+
 /// One sibling transition offered to a sibling-aware select (slice 17):
 /// the sibling's stored transition record, its observation record, and
 /// its stored signal records. All three are read, never written: the
@@ -2745,6 +3203,14 @@ pub struct TransitionPlanningOpened {
     pub planning_deadline: u64,
 }
 
+#[event]
+pub struct PlanSubmitted {
+    pub transition_id: [u8; 32],
+    pub agent: Pubkey,
+    pub expires_at: u64,
+    pub plan_count: u64,
+}
+
 #[error_code]
 pub enum ProgramV04Error {
     #[msg("program-v04 probe: kernel construction failed")]
@@ -2785,6 +3251,8 @@ pub enum ProgramV04Error {
     SelectFailed,
     #[msg("program-v04 planning: kernel planning refused, selection unproven, or supplied signal set incomplete")]
     PlanningFailed,
+    #[msg("program-v04 plan: kernel plan refused, planning window unproven, or supplied plan set incomplete")]
+    PlanFailed,
 }
 
 // ---------------------------------------------------------------- launch genesis
@@ -3252,10 +3720,10 @@ mod tests {
         // Discriminator 8 + id 32 + type 32 + parent_index 8 +
         // parent_hash 32 + declared 32 + observation 32 + expires 8 +
         // proposer 32 + stage 1 + eligible_at 8 + consensus_deadline 8 +
-        // planning_deadline 8 + signal_count 8 + bump 1.
+        // planning_deadline 8 + signal_count 8 + plan_count 8 + bump 1.
         assert_eq!(
             TransitionRecord::SPACE,
-            8 + 32 + 32 + 8 + 32 + 32 + 32 + 8 + 32 + 1 + 8 + 8 + 8 + 8 + 1
+            8 + 32 + 32 + 8 + 32 + 32 + 32 + 8 + 32 + 1 + 8 + 8 + 8 + 8 + 8 + 1
         );
     }
 
@@ -3276,6 +3744,7 @@ mod tests {
             consensus_deadline: 300,
             planning_deadline: 400,
             signal_count: 2,
+            plan_count: 1,
             bump: 254,
         };
         let mut bytes = Vec::new();
@@ -3290,6 +3759,7 @@ mod tests {
         assert_eq!(back.eligible_at, 200);
         assert_eq!(back.consensus_deadline, 300);
         assert_eq!(back.planning_deadline, 400);
+        assert_eq!(back.plan_count, 1);
         assert_eq!(back.bump, 254);
     }
 
@@ -4841,6 +5311,7 @@ mod tests {
             consensus_deadline: 200,
             planning_deadline: 0,
             signal_count: 0,
+            plan_count: 0,
             bump: 7,
         };
         let sib_obs = ObservationRecord {
@@ -5439,5 +5910,246 @@ mod tests {
         assert!(format!("{:?}", err).contains("ParentMismatch"));
         assert_eq!(record.stage, TransitionRecord::SELECTED);
         assert_eq!(record.planning_deadline, 0);
+    }
+
+    fn planned_pair() -> (KernelState, TransitionRecord, ObservationRecord, SignalRecord) {
+        // Planning opened at clock 200, so the stored deadline is
+        // 300 and the derived open clock is 200: the replay clock
+        // for select and open_planning in every plan test below.
+        let (state, mut record, obs, first) = planning_pair();
+        let life = open_planning_from_records(&state, &mut record, &obs, &[first], ag(1))
+            .expect("planning open must succeed");
+        assert_eq!(life, Life::Planning);
+        assert_eq!(record.stage, TransitionRecord::PLANNING);
+        assert_eq!(record.planning_deadline, 300);
+        assert_eq!(record.plan_count, 0);
+        (state, record, obs, first)
+    }
+
+    fn two_claims() -> Vec<PlanClaimArg> {
+        vec![
+            PlanClaimArg { resource: RES_TREASURY_TRANCHE, amount_raw: 10 * SCALE },
+            PlanClaimArg { resource: RES_LENDING_BOOK, amount_raw: 5 * SCALE },
+        ]
+    }
+
+    #[test]
+    fn plan_record_space_accounts_for_every_field() {
+        // Discriminator 8 + transition 32 + agent 32 + count 1 +
+        // resources 16 + amounts 64 + expires 8 + bump 1.
+        assert_eq!(PlanRecord::SPACE, 8 + 32 + 32 + 1 + 16 + 64 + 8 + 1);
+    }
+
+    #[test]
+    fn plan_record_borsh_round_trips() {
+        use anchor_lang::{AccountDeserialize, AccountSerialize};
+        let record = PlanRecord {
+            transition_id: [0xD1; 32],
+            agent: Pubkey::new_from_array(ag(2)),
+            claim_count: 2,
+            claim_resources: [RES_TREASURY_TRANCHE, RES_LENDING_BOOK, 0, 0, 0, 0, 0, 0],
+            claim_amounts: [10 * SCALE, 5 * SCALE, 0, 0, 0, 0, 0, 0],
+            expires_at: 400,
+            bump: 7,
+        };
+        let mut bytes = Vec::new();
+        record.try_serialize(&mut bytes).expect("serialize must succeed");
+        assert_eq!(bytes.len(), PlanRecord::SPACE);
+        let back = <PlanRecord as AccountDeserialize>::try_deserialize(&mut &bytes[..])
+            .expect("deserialize must succeed");
+        assert_eq!(back.transition_id, [0xD1; 32]);
+        assert_eq!(back.agent.to_bytes(), ag(2));
+        assert_eq!(back.claim_count, 2);
+        assert_eq!(back.claim_resources[1], RES_LENDING_BOOK);
+        assert_eq!(back.claim_amounts[0], 10 * SCALE);
+        assert_eq!(back.expires_at, 400);
+    }
+
+    #[test]
+    fn submit_plan_advances_planning_record() {
+        // A two-resource plan from a seeded agent, expiring after
+        // the deadline: the record stays PLANNING, the deadline
+        // stands, and plan_count moves 0 -> 1 on success only.
+        let (state, mut record, obs, first) = planned_pair();
+        let plan = submit_plan_from_records(
+            &state, &mut record, &obs, &[first], &[], &two_claims(), 400, ag(2), 7,
+        )
+        .expect("a seeded agent's plan inside the window must submit");
+        assert_eq!(plan.transition_id, record.transition_id);
+        assert_eq!(plan.agent.to_bytes(), ag(2));
+        assert_eq!(plan.claim_count, 2);
+        assert_eq!(plan.claim_resources[0], RES_TREASURY_TRANCHE);
+        assert_eq!(plan.claim_amounts[0], 10 * SCALE);
+        assert_eq!(plan.claim_resources[1], RES_LENDING_BOOK);
+        assert_eq!(plan.claim_amounts[1], 5 * SCALE);
+        assert_eq!(plan.expires_at, 400);
+        assert_eq!(plan.bump, 7);
+        assert_eq!(record.stage, TransitionRecord::PLANNING);
+        assert_eq!(record.planning_deadline, 300);
+        assert_eq!(record.plan_count, 1);
+    }
+
+    #[test]
+    fn submit_plan_second_agent_replays_prior_plan() {
+        // The second agent's submission replays the first plan at
+        // the state's clock before its own: plan_count 1 -> 2, and
+        // the first plan's claims are what the kernel judged, not
+        // a fresh single-plan kernel.
+        let (state, mut record, obs, first) = planned_pair();
+        let prior = submit_plan_from_records(
+            &state, &mut record, &obs, &[first], &[], &two_claims(), 400, ag(2), 7,
+        )
+        .expect("first plan must submit");
+        assert_eq!(record.plan_count, 1);
+        let second = submit_plan_from_records(
+            &state,
+            &mut record,
+            &obs,
+            &[first],
+            &[prior],
+            &[PlanClaimArg { resource: RES_EXIT_WINDOW, amount_raw: 7 * SCALE }],
+            500,
+            ag(3),
+            8,
+        )
+        .expect("a second agent's plan must submit over the prior");
+        assert_eq!(second.agent.to_bytes(), ag(3));
+        assert_eq!(second.claim_count, 1);
+        assert_eq!(second.claim_resources[0], RES_EXIT_WINDOW);
+        assert_eq!(record.plan_count, 2);
+        assert_eq!(record.stage, TransitionRecord::PLANNING);
+    }
+
+    #[test]
+    fn submit_plan_refuses_wrong_stage() {
+        // Still ELIGIBLE, never planned: the stage gate refuses
+        // before any replay, and plan_count stays 0.
+        let (state, mut record, obs, first) = selected_pair();
+        let err = submit_plan_from_records(
+            &state, &mut record, &obs, &[first], &[], &two_claims(), 400, ag(2), 7,
+        )
+        .expect_err("an unplanned record must refuse a plan");
+        assert!(format!("{:?}", err).contains("WrongStage"));
+        assert_eq!(record.plan_count, 0);
+    }
+
+    #[test]
+    fn submit_plan_refuses_at_deadline() {
+        // At clock 300 the window is closed: the stored-deadline
+        // gate refuses, and the record is untouched.
+        let (mut state, mut record, obs, first) = planned_pair();
+        advance_clock_on_state(&mut state, 300).expect("advance to the deadline must succeed");
+        let err = submit_plan_from_records(
+            &state, &mut record, &obs, &[first], &[], &two_claims(), 400, ag(2), 7,
+        )
+        .expect_err("a plan at the deadline must refuse");
+        assert!(format!("{:?}", err).contains("PlanFailed"));
+        assert_eq!(record.stage, TransitionRecord::PLANNING);
+        assert_eq!(record.plan_count, 0);
+    }
+
+    #[test]
+    fn submit_plan_refuses_expiry_at_deadline() {
+        // Expiry equal to the deadline is not after it: the
+        // kernel's BadWindow rule, judged against the stored
+        // deadline, refuses before any plan is recorded.
+        let (state, mut record, obs, first) = planned_pair();
+        let err = submit_plan_from_records(
+            &state, &mut record, &obs, &[first], &[], &two_claims(), 300, ag(2), 7,
+        )
+        .expect_err("a plan expiring at the deadline must refuse");
+        assert!(format!("{:?}", err).contains("PlanFailed"));
+        assert_eq!(record.plan_count, 0);
+    }
+
+    #[test]
+    fn submit_plan_refuses_unknown_agent() {
+        // Unlike open_planning's anyone rule, submit_plan carries
+        // the kernel's agent gate: a fresh id that is no seeded
+        // agent refuses through the kernel, not by a program guess.
+        let (state, mut record, obs, first) = planned_pair();
+        let err = submit_plan_from_records(
+            &state, &mut record, &obs, &[first], &[], &two_claims(), 400, [0x77; 32], 7,
+        )
+        .expect_err("an unknown agent's plan must refuse");
+        assert!(format!("{:?}", err).contains("PlanFailed"));
+        assert_eq!(record.plan_count, 0);
+    }
+
+    #[test]
+    fn submit_plan_refuses_duplicate_agent() {
+        // One plan per agent: the second submission from ag(2),
+        // with its own first plan supplied as the prior set,
+        // refuses at the kernel's Duplicate arm.
+        let (state, mut record, obs, first) = planned_pair();
+        let prior = submit_plan_from_records(
+            &state, &mut record, &obs, &[first], &[], &two_claims(), 400, ag(2), 7,
+        )
+        .expect("first plan must submit");
+        let err = submit_plan_from_records(
+            &state, &mut record, &obs, &[first], &[prior], &two_claims(), 500, ag(2), 7,
+        )
+        .expect_err("a duplicate agent plan must refuse");
+        assert!(format!("{:?}", err).contains("PlanFailed"));
+        assert_eq!(record.plan_count, 1);
+    }
+
+    #[test]
+    fn submit_plan_refuses_duplicate_resource() {
+        // Two claims on the same resource would collapse silently
+        // in a map insert, so the program refuses before any replay
+        // and records nothing.
+        let (state, mut record, obs, first) = planned_pair();
+        let dup = vec![
+            PlanClaimArg { resource: RES_TREASURY_TRANCHE, amount_raw: 10 * SCALE },
+            PlanClaimArg { resource: RES_TREASURY_TRANCHE, amount_raw: 20 * SCALE },
+        ];
+        let err = submit_plan_from_records(
+            &state, &mut record, &obs, &[first], &[], &dup, 400, ag(2), 7,
+        )
+        .expect_err("a duplicated resource must refuse");
+        assert!(format!("{:?}", err).contains("PlanFailed"));
+        assert_eq!(record.plan_count, 0);
+    }
+
+    #[test]
+    fn submit_plan_refuses_incomplete_prior_plans() {
+        // The record claims a prior plan that was never supplied:
+        // the slice-21 anchor refuses before any replay.
+        let (state, mut record, obs, first) = planned_pair();
+        record.plan_count = 1;
+        let err = submit_plan_from_records(
+            &state, &mut record, &obs, &[first], &[], &two_claims(), 400, ag(2), 7,
+        )
+        .expect_err("a short prior plan set must refuse");
+        assert!(format!("{:?}", err).contains("PlanFailed"));
+        assert_eq!(record.plan_count, 1);
+    }
+
+    #[test]
+    fn submit_plan_refuses_incomplete_prior_signals() {
+        // The record claims a second signal that was never
+        // supplied: the slice-16 anchor refuses before any replay,
+        // exactly as in open_planning.
+        let (state, mut record, obs, first) = planned_pair();
+        record.signal_count = 2;
+        let err = submit_plan_from_records(
+            &state, &mut record, &obs, &[first], &[], &two_claims(), 400, ag(2), 7,
+        )
+        .expect_err("a short prior signal set must refuse a plan");
+        assert!(format!("{:?}", err).contains("PlanFailed"));
+        assert_eq!(record.plan_count, 0);
+    }
+
+    #[test]
+    fn submit_plan_refuses_unsealed() {
+        let (mut state, mut record, obs, first) = planned_pair();
+        state.sealed = false;
+        let err = submit_plan_from_records(
+            &state, &mut record, &obs, &[first], &[], &two_claims(), 400, ag(2), 7,
+        )
+        .expect_err("an unsealed state must refuse a plan");
+        assert!(format!("{:?}", err).contains("NotSealed"));
+        assert_eq!(record.plan_count, 0);
     }
 }

@@ -616,11 +616,57 @@ families, account inventory, and CU golden set are later step-5 slices.
   reconcile/validate/declare, commit replay moving the head,
   and CU measurement — later slices.
 
+## Slice 21 — submit plan (`PLANNING` gains a per-agent plan)
+
+- The `submit_plan` instruction: a `PlanRecord` PDA per
+  (transition, agent) — a second plan from the same agent fails
+  at account creation, and the kernel's `Duplicate` arm is the
+  second guard in replay. The transition stage stays `PLANNING`
+  and `plan_count` increments on success only: the completeness
+  anchor the later reconcile slice checks its supplied plan set
+  against, exactly as `signal_count` anchors select.
+  `TransitionRecord` SPACE grows 250 -> 258 for the new count.
+- Two replay clocks, not one, and the distinction is the design:
+  select and open_planning replay at the *derived open clock*
+  (`planning_deadline - planning_window`), because that is the
+  clock the stored deadline was set from — replaying them at the
+  state's clock would silently move the deadline a plan is judged
+  against — while prior plans and the new plan run at the state's
+  clock, gated strictly inside the stored window. The new plan's
+  expiry is judged against the *stored* deadline, not a replayed
+  one. The plan's agent is the signing payer's agent id, and
+  unlike open_planning's anyone rule, the kernel's agent gate
+  applies here: an unknown or inactive agent, or one outside the
+  proposer's groups, refuses through the kernel. Claims are a
+  bounded multi-resource map (`MAX_PLAN_CLAIMS` = 8, parallel
+  fixed arrays, SPACE 162): a longer list refuses rather than
+  truncating, and a duplicated resource refuses rather than
+  collapsing silently the way a map insert would. The
+  instruction's remaining accounts split deterministically (the
+  first `signal_count` are signals, the rest plans).
+- Host tests 143/143 (130 prior + 13 slice-21: record space and
+  borsh round-trip, a two-resource plan from a seeded agent with
+  stage/deadline/count asserted, a second agent's plan replaying
+  the first, wrong-stage refusal, at-deadline refusal,
+  expiry-at-deadline refusal, unknown-agent refusal, duplicate
+  agent refusal, duplicate resource refusal, incomplete prior
+  plan set refusal, incomplete prior signal set refusal, and
+  unsealed refusal).
+- `anchor build` green under the pinned toolchain; the IDL gains
+  the 14th instruction (`submit_plan`, with the `PlanClaimArg`
+  claim type), the 5th account (`PlanRecord`), the 20th error
+  (`PlanFailed`), and the 12th event (`PlanSubmitted`) — 14
+  instructions, 5 accounts, 20 errors, 12 events; `.so`
+  829,456 bytes (sha256 `b6c88fa2…`).
+- Deliberately NOT slice 21: the Blocked -> Planning re-plan
+  path, reconcile/validate/declare, commit replay moving the
+  head, and CU measurement — later slices.
+
 ## Build
 
 ```sh
 export RUSTUP_HOME=~/workspace/toolchains/rustup CARGO_HOME=~/workspace/toolchains/cargo
 export PATH=~/workspace/toolchains/cargo/bin:~/workspace/toolchains/solana/bin:$PATH
 ~/workspace/toolchains/anchor/bin/anchor build   # from this directory
-cargo test                                        # host tests, 130/130
+cargo test                                        # host tests, 143/143
 ```
