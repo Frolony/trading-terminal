@@ -755,13 +755,57 @@
 //! head move. This slice is helper + host tests only: the
 //! thirteen stage helpers and the commit instructions still
 //! rebuild from genesis, and threading this head through
-//! them is the next slice, not smuggled in here. The
+//! them is slice 30 below, not smuggled in here. The
 //! program's slice-27 ledger is untouched by this helper —
 //! the kernel's own post-commit stocks, debited by each
 //! replayed commit, are what later replays judge against —
 //! and a governance commit's applied rule still awaits the
 //! governance-state persistence slice, exactly as in
 //! slice 28.
+//!
+//! Slice 30 (this slice): threading the head through the
+//! thirteen stage helpers — replay, evaluate, mark_eligible,
+//! submit_signal, select_candidate, select_candidate_with_
+//! siblings, open_planning, submit_plan, reconcile_plans,
+//! validate_transition, declare_transition,
+//! commit_transition, and commit_governance. Each helper
+//! now takes `prior_commits: &[PriorCommit]` and builds
+//! its kernel with slice 29's `kernel_at_head_from_commits`
+//! instead of the sealed genesis kernel; empty priors are
+//! exactly the genesis case, and a moved head with empty
+//! priors refuses with `ParentMismatch` — a missing chain
+//! is never silently replayed against genesis stocks. The
+//! replay helper moves from the `NoEnv` genesis kernel to
+//! the `ProgramEnv` head kernel: ingest and register never
+//! consult the environment, so genesis behaviour is
+//! identical, and only a `ProgramEnv` kernel can drive a
+//! prior's evaluate step. The successor clock rule is
+//! slice 29's, unchanged: a target's window must open
+//! after the last prior's planning deadline, or the
+//! kernel's tick refuses the regression — a target whose
+//! window opened before the head moved is a sibling of the
+//! head, not its successor. The slice-27 ledger gate in
+//! the commit helpers is unchanged: plan sums plus the
+//! persisted ledger totals are still judged against the
+//! sealed stocks, as a cross-check on the kernel's own
+//! post-prior stocks, which judge the same sums against
+//! what prior commits already consumed. Deliberately NOT
+//! slice 30, and why (recorded, not smoothed): the
+//! thirteen instructions still call the helpers with
+//! `&[]`, so on-chain instructions still refuse at a
+//! moved head with `ParentMismatch` — threading prior
+//! bundles through instruction remaining accounts is the
+//! next slice, not smuggled in here. The genesis-profile
+//! gates are likewise untouched: `resolve_proposer` /
+//! `build_observation_record` and open_planning's seated
+//! re-plan check still judge the sealed launch profile,
+//! because a governance commit's applied rule still
+//! awaits the governance-state persistence slice — and a
+//! head moved by a governance commit still cannot be
+//! threaded at all, since `kernel_at_head_from_commits`
+//! refuses governance priors with
+//! `GovernanceCommitRequired`; governance TARGETS at an
+//! ordinary moved head do thread, and are tested.
 
 extern crate alloc;
 
@@ -924,7 +968,8 @@ pub mod program_v04 {
             &ctx.accounts.kernel_state,
             &mut ctx.accounts.transition_record,
             &ctx.accounts.observation_record,
-        )?;
+            &[],
+)?;
         emit!(TransitionReplayed {
             transition_id,
             stage: TransitionRecord::KERNEL_REGISTERED,
@@ -973,7 +1018,8 @@ pub mod program_v04 {
             &ctx.accounts.kernel_state,
             &mut ctx.accounts.transition_record,
             &ctx.accounts.observation_record,
-        )?;
+            &[],
+)?;
         emit!(TransitionEvaluated { transition_id, stage: TransitionRecord::EVALUATED });
         Ok(())
     }
@@ -1009,7 +1055,8 @@ pub mod program_v04 {
             &mut ctx.accounts.kernel_state,
             &mut ctx.accounts.transition_record,
             &ctx.accounts.observation_record,
-        )?;
+            &[],
+)?;
         emit!(TransitionMarkedEligible { transition_id, stage: TransitionRecord::ELIGIBLE });
         Ok(())
     }
@@ -1063,7 +1110,8 @@ pub mod program_v04 {
             support_raw,
             has_support,
             ctx.bumps.signal_record,
-        )?;
+            &[],
+)?;
         *ctx.accounts.signal_record = record;
         emit!(SignalSubmitted {
             transition_id,
@@ -1114,7 +1162,8 @@ pub mod program_v04 {
             &mut ctx.accounts.transition_record,
             &ctx.accounts.observation_record,
             &priors,
-        )?;
+            &[],
+)?;
         emit!(TransitionSelected { transition_id, stage: TransitionRecord::SELECTED });
         Ok(())
     }
@@ -1226,7 +1275,8 @@ pub mod program_v04 {
             &ctx.accounts.observation_record,
             &target_priors,
             &siblings,
-        )?;
+            &[],
+)?;
         emit!(TransitionSelected { transition_id, stage: TransitionRecord::SELECTED });
         Ok(())
     }
@@ -1271,7 +1321,8 @@ pub mod program_v04 {
             &ctx.accounts.observation_record,
             &priors,
             resolve_agent_id(ctx.accounts.payer.key()),
-        )?;
+            &[],
+)?;
         debug_assert_eq!(life, Life::Planning);
         emit!(TransitionPlanningOpened {
             transition_id,
@@ -1334,7 +1385,8 @@ pub mod program_v04 {
             expires_at,
             resolve_agent_id(ctx.accounts.payer.key()),
             ctx.bumps.plan_record,
-        )?;
+            &[],
+)?;
         *ctx.accounts.plan_record = plan;
         emit!(PlanSubmitted {
             transition_id,
@@ -1395,7 +1447,8 @@ pub mod program_v04 {
             &ctx.accounts.observation_record,
             &priors,
             &prior_plans,
-        )?;
+            &[],
+)?;
         debug_assert_eq!(life, Life::Reconciling);
         emit!(TransitionReconciled {
             transition_id,
@@ -1455,7 +1508,8 @@ pub mod program_v04 {
             &ctx.accounts.observation_record,
             &priors,
             &prior_plans,
-        )?;
+            &[],
+)?;
         debug_assert!(life == Life::Validated || life == Life::Blocked);
         emit!(TransitionValidated {
             transition_id,
@@ -1511,7 +1565,8 @@ pub mod program_v04 {
             &ctx.accounts.observation_record,
             &priors,
             &prior_plans,
-        )?;
+            &[],
+)?;
         debug_assert!(life == Life::Committable);
         emit!(TransitionDeclared {
             transition_id,
@@ -1566,7 +1621,8 @@ pub mod program_v04 {
             &ctx.accounts.observation_record,
             &priors,
             &prior_plans,
-        )?;
+            &[],
+)?;
         debug_assert!(life == Life::Committed);
         emit!(TransitionCommitted {
             transition_id,
@@ -2247,6 +2303,7 @@ pub fn replay_transition_from_records(
     kernel_state: &KernelState,
     transition_record: &mut TransitionRecord,
     observation_record: &ObservationRecord,
+    prior_commits: &[PriorCommit],
 ) -> Result<Life> {
     if !kernel_state.sealed {
         return Err(error!(ProgramV04Error::NotSealed));
@@ -2264,7 +2321,7 @@ pub fn replay_transition_from_records(
     }
     let proposer = resolve_proposer(kernel_state, transition_record.proposer)?;
     let observer_id = resolve_agent_id(observation_record.observer);
-    let mut k = sealed_launch_kernel().map_err(|_| error!(ProgramV04Error::KernelSeal))?;
+    let mut k = kernel_at_head_from_commits(kernel_state, prior_commits)?;
     if !k.has_role(&observer_id, Role::Observer) {
         return Err(error!(ProgramV04Error::NotObserver));
     }
@@ -2328,6 +2385,7 @@ pub fn evaluate_transition_from_records(
     kernel_state: &KernelState,
     transition_record: &mut TransitionRecord,
     observation_record: &ObservationRecord,
+    prior_commits: &[PriorCommit],
 ) -> Result<Life> {
     if !kernel_state.sealed {
         return Err(error!(ProgramV04Error::NotSealed));
@@ -2345,7 +2403,7 @@ pub fn evaluate_transition_from_records(
     }
     let proposer = resolve_proposer(kernel_state, transition_record.proposer)?;
     let observer_id = resolve_agent_id(observation_record.observer);
-    let mut k = sealed_launch_kernel_env().map_err(|_| error!(ProgramV04Error::KernelSeal))?;
+    let mut k = kernel_at_head_from_commits(kernel_state, prior_commits)?;
     if !k.has_role(&observer_id, Role::Observer) {
         return Err(error!(ProgramV04Error::NotObserver));
     }
@@ -2416,6 +2474,7 @@ pub fn mark_eligible_from_records(
     kernel_state: &mut KernelState,
     transition_record: &mut TransitionRecord,
     observation_record: &ObservationRecord,
+    prior_commits: &[PriorCommit],
 ) -> Result<Life> {
     if !kernel_state.sealed {
         return Err(error!(ProgramV04Error::NotSealed));
@@ -2433,7 +2492,7 @@ pub fn mark_eligible_from_records(
     }
     let proposer = resolve_proposer(kernel_state, transition_record.proposer)?;
     let observer_id = resolve_agent_id(observation_record.observer);
-    let mut k = sealed_launch_kernel_env().map_err(|_| error!(ProgramV04Error::KernelSeal))?;
+    let mut k = kernel_at_head_from_commits(kernel_state, prior_commits)?;
     if !k.has_role(&observer_id, Role::Observer) {
         return Err(error!(ProgramV04Error::NotObserver));
     }
@@ -2622,6 +2681,7 @@ pub fn submit_signal_from_records(
     support_raw: u64,
     has_support: bool,
     bump: u8,
+    prior_commits: &[PriorCommit],
 ) -> Result<(SignalRecord, Amount, Amount)> {
     if !kernel_state.sealed {
         return Err(error!(ProgramV04Error::NotSealed));
@@ -2665,7 +2725,7 @@ pub fn submit_signal_from_records(
     }
     let proposer = resolve_proposer(kernel_state, transition_record.proposer)?;
     let observer_id = resolve_agent_id(observation_record.observer);
-    let mut k = sealed_launch_kernel_env().map_err(|_| error!(ProgramV04Error::KernelSeal))?;
+    let mut k = kernel_at_head_from_commits(kernel_state, prior_commits)?;
     if !k.has_role(&observer_id, Role::Observer) {
         return Err(error!(ProgramV04Error::NotObserver));
     }
@@ -2799,6 +2859,7 @@ pub fn select_candidate_from_records(
     transition_record: &mut TransitionRecord,
     observation_record: &ObservationRecord,
     prior_signals: &[SignalRecord],
+    prior_commits: &[PriorCommit],
 ) -> Result<Life> {
     if !kernel_state.sealed {
         return Err(error!(ProgramV04Error::NotSealed));
@@ -2861,7 +2922,7 @@ pub fn select_candidate_from_records(
     }
     let proposer = resolve_proposer(kernel_state, transition_record.proposer)?;
     let observer_id = resolve_agent_id(observation_record.observer);
-    let mut k = sealed_launch_kernel_env().map_err(|_| error!(ProgramV04Error::KernelSeal))?;
+    let mut k = kernel_at_head_from_commits(kernel_state, prior_commits)?;
     if !k.has_role(&observer_id, Role::Observer) {
         return Err(error!(ProgramV04Error::NotObserver));
     }
@@ -2982,6 +3043,7 @@ pub fn open_planning_from_records(
     observation_record: &ObservationRecord,
     prior_signals: &[SignalRecord],
     caller: [u8; 32],
+    prior_commits: &[PriorCommit],
 ) -> Result<Life> {
     if !kernel_state.sealed {
         return Err(error!(ProgramV04Error::NotSealed));
@@ -3044,7 +3106,7 @@ pub fn open_planning_from_records(
     let proposer = resolve_proposer(kernel_state, transition_record.proposer)
         .map_err(|_| error!(ProgramV04Error::PlanningFailed))?;
     let observer_id = resolve_agent_id(observation_record.observer);
-    let mut k = sealed_launch_kernel_env().map_err(|_| error!(ProgramV04Error::KernelSeal))?;
+    let mut k = kernel_at_head_from_commits(kernel_state, prior_commits)?;
     if !k.has_role(&observer_id, Role::Observer) {
         return Err(error!(ProgramV04Error::NotObserver));
     }
@@ -3229,6 +3291,7 @@ pub fn submit_plan_from_records(
     expires_at: u64,
     caller: [u8; 32],
     bump: u8,
+    prior_commits: &[PriorCommit],
 ) -> Result<PlanRecord> {
     if !kernel_state.sealed {
         return Err(error!(ProgramV04Error::NotSealed));
@@ -3313,7 +3376,7 @@ pub fn submit_plan_from_records(
     let proposer = resolve_proposer(kernel_state, transition_record.proposer)
         .map_err(|_| error!(ProgramV04Error::PlanFailed))?;
     let observer_id = resolve_agent_id(observation_record.observer);
-    let mut k = sealed_launch_kernel_env().map_err(|_| error!(ProgramV04Error::KernelSeal))?;
+    let mut k = kernel_at_head_from_commits(kernel_state, prior_commits)?;
     if !k.has_role(&observer_id, Role::Observer) {
         return Err(error!(ProgramV04Error::NotObserver));
     }
@@ -3460,7 +3523,7 @@ pub fn submit_plan_from_records(
 /// (agent, round)); the prior-plan anchor (supplied plans numbering
 /// exactly `plan_count`, every prior belonging to the transition,
 /// no duplicated resource inside a prior's claims). The kernel
-/// calls run against a freshly rebuilt sealed launch kernel under
+/// calls run against the kernel at the program's head, rebuilt by slice 29's `kernel_at_head_from_commits` from the supplied prior commits (empty priors = the genesis head) under
 /// `ProgramEnv`: ingest, register, evaluate, and mark_eligible, all
 /// at the stored `eligible_at`, then each prior signal at its
 /// `submitted_at` in order, then select and open_planning at the
@@ -3494,6 +3557,7 @@ pub fn reconcile_plans_from_records(
     observation_record: &ObservationRecord,
     prior_signals: &[SignalRecord],
     prior_plans: &[PlanRecord],
+    prior_commits: &[PriorCommit],
 ) -> Result<Life> {
     if !kernel_state.sealed {
         return Err(error!(ProgramV04Error::NotSealed));
@@ -3563,7 +3627,7 @@ pub fn reconcile_plans_from_records(
     let proposer = resolve_proposer(kernel_state, transition_record.proposer)
         .map_err(|_| error!(ProgramV04Error::ReconcileFailed))?;
     let observer_id = resolve_agent_id(observation_record.observer);
-    let mut k = sealed_launch_kernel_env().map_err(|_| error!(ProgramV04Error::KernelSeal))?;
+    let mut k = kernel_at_head_from_commits(kernel_state, prior_commits)?;
     if !k.has_role(&observer_id, Role::Observer) {
         return Err(error!(ProgramV04Error::NotObserver));
     }
@@ -3757,6 +3821,7 @@ pub fn validate_transition_from_records(
     observation_record: &ObservationRecord,
     prior_signals: &[SignalRecord],
     prior_plans: &[PlanRecord],
+    prior_commits: &[PriorCommit],
 ) -> Result<Life> {
     if !kernel_state.sealed {
         return Err(error!(ProgramV04Error::NotSealed));
@@ -3825,7 +3890,7 @@ pub fn validate_transition_from_records(
     let proposer = resolve_proposer(kernel_state, transition_record.proposer)
         .map_err(|_| error!(ProgramV04Error::ValidateFailed))?;
     let observer_id = resolve_agent_id(observation_record.observer);
-    let mut k = sealed_launch_kernel_env().map_err(|_| error!(ProgramV04Error::KernelSeal))?;
+    let mut k = kernel_at_head_from_commits(kernel_state, prior_commits)?;
     if !k.has_role(&observer_id, Role::Observer) {
         return Err(error!(ProgramV04Error::NotObserver));
     }
@@ -4025,6 +4090,7 @@ pub fn declare_transition_from_records(
     observation_record: &ObservationRecord,
     prior_signals: &[SignalRecord],
     prior_plans: &[PlanRecord],
+    prior_commits: &[PriorCommit],
 ) -> Result<Life> {
     if !kernel_state.sealed {
         return Err(error!(ProgramV04Error::NotSealed));
@@ -4091,7 +4157,7 @@ pub fn declare_transition_from_records(
     let proposer = resolve_proposer(kernel_state, transition_record.proposer)
         .map_err(|_| error!(ProgramV04Error::DeclareFailed))?;
     let observer_id = resolve_agent_id(observation_record.observer);
-    let mut k = sealed_launch_kernel_env().map_err(|_| error!(ProgramV04Error::KernelSeal))?;
+    let mut k = kernel_at_head_from_commits(kernel_state, prior_commits)?;
     if !k.has_role(&observer_id, Role::Observer) {
         return Err(error!(ProgramV04Error::NotObserver));
     }
@@ -4296,6 +4362,7 @@ pub fn commit_transition_from_records(
     observation_record: &ObservationRecord,
     prior_signals: &[SignalRecord],
     prior_plans: &[PlanRecord],
+    prior_commits: &[PriorCommit],
 ) -> Result<Life> {
     if !kernel_state.sealed {
         return Err(error!(ProgramV04Error::NotSealed));
@@ -4365,7 +4432,7 @@ pub fn commit_transition_from_records(
     let proposer = resolve_proposer(kernel_state, transition_record.proposer)
         .map_err(|_| error!(ProgramV04Error::CommitFailed))?;
     let observer_id = resolve_agent_id(observation_record.observer);
-    let mut k = sealed_launch_kernel_env().map_err(|_| error!(ProgramV04Error::KernelSeal))?;
+    let mut k = kernel_at_head_from_commits(kernel_state, prior_commits)?;
     if !k.has_role(&observer_id, Role::Observer) {
         return Err(error!(ProgramV04Error::NotObserver));
     }
@@ -4603,6 +4670,7 @@ pub fn commit_governance_from_records(
     prior_plans: &[PlanRecord],
     action: &GovAction,
     approvals: &[[u8; 32]],
+    prior_commits: &[PriorCommit],
 ) -> Result<Life> {
     if !kernel_state.sealed {
         return Err(error!(ProgramV04Error::NotSealed));
@@ -4672,7 +4740,7 @@ pub fn commit_governance_from_records(
     let proposer = resolve_proposer(kernel_state, transition_record.proposer)
         .map_err(|_| error!(ProgramV04Error::GovernanceCommitFailed))?;
     let observer_id = resolve_agent_id(observation_record.observer);
-    let mut k = sealed_launch_kernel_env().map_err(|_| error!(ProgramV04Error::KernelSeal))?;
+    let mut k = kernel_at_head_from_commits(kernel_state, prior_commits)?;
     if !k.has_role(&observer_id, Role::Observer) {
         return Err(error!(ProgramV04Error::NotObserver));
     }
@@ -5329,6 +5397,7 @@ pub fn select_candidate_from_records_with_siblings(
     observation_record: &ObservationRecord,
     prior_signals: &[SignalRecord],
     siblings: &[SiblingReplay],
+    prior_commits: &[PriorCommit],
 ) -> Result<Life> {
     if !kernel_state.sealed {
         return Err(error!(ProgramV04Error::NotSealed));
@@ -5444,7 +5513,7 @@ pub fn select_candidate_from_records_with_siblings(
     {
         return Err(error!(ProgramV04Error::SelectFailed));
     }
-    let mut k = sealed_launch_kernel_env().map_err(|_| error!(ProgramV04Error::KernelSeal))?;
+    let mut k = kernel_at_head_from_commits(kernel_state, prior_commits)?;
     // One merged timeline: (time, kind rank, tie rank, index) with
     // kind rank 0 = eligibility chain, 1 = signal, so a chain always
     // precedes same-time signals; tie rank 0 = sibling, 1 = target,
@@ -6560,7 +6629,9 @@ mod tests {
     #[test]
     fn replay_advances_registered_record_to_kernel_registered() {
         let (state, mut record, obs) = replay_pair();
-        let life = replay_transition_from_records(&state, &mut record, &obs)
+        let life = replay_transition_from_records(&state, &mut record, &obs,
+    &[]
+)
             .expect("genesis-clock pair must replay");
         assert_eq!(life, Life::Proposed);
         assert_eq!(record.stage, TransitionRecord::KERNEL_REGISTERED);
@@ -6579,7 +6650,9 @@ mod tests {
     fn replay_refuses_unsealed() {
         let (mut state, mut record, obs) = replay_pair();
         state.sealed = false;
-        let err = replay_transition_from_records(&state, &mut record, &obs)
+        let err = replay_transition_from_records(&state, &mut record, &obs,
+    &[]
+)
             .expect_err("unsealed replay must refuse");
         assert!(format!("{:?}", err).contains("NotSealed"));
         assert_eq!(record.stage, TransitionRecord::REGISTERED, "a refused replay must not move the stage");
@@ -6588,9 +6661,13 @@ mod tests {
     #[test]
     fn replay_is_once_only() {
         let (state, mut record, obs) = replay_pair();
-        replay_transition_from_records(&state, &mut record, &obs)
+        replay_transition_from_records(&state, &mut record, &obs,
+    &[]
+)
             .expect("first replay must succeed");
-        let err = replay_transition_from_records(&state, &mut record, &obs)
+        let err = replay_transition_from_records(&state, &mut record, &obs,
+    &[]
+)
             .expect_err("second replay must refuse");
         assert!(format!("{:?}", err).contains("WrongStage"));
         assert_eq!(record.stage, TransitionRecord::KERNEL_REGISTERED);
@@ -6600,7 +6677,9 @@ mod tests {
     fn replay_refuses_parent_mismatch() {
         let (state, mut record, obs) = replay_pair();
         record.parent_index = 1;
-        let err = replay_transition_from_records(&state, &mut record, &obs)
+        let err = replay_transition_from_records(&state, &mut record, &obs,
+    &[]
+)
             .expect_err("parent off the sealed head must refuse");
         assert!(format!("{:?}", err).contains("ParentMismatch"));
         assert_eq!(record.stage, TransitionRecord::REGISTERED);
@@ -6613,7 +6692,9 @@ mod tests {
             &state, [0xC1; 32], 100, 9100, 900_000, observer_pubkey(), 7,
         )
         .expect("second observation must build");
-        let err = replay_transition_from_records(&state, &mut record, &other)
+        let err = replay_transition_from_records(&state, &mut record, &other,
+    &[]
+)
             .expect_err("observation id mismatch must refuse");
         assert!(format!("{:?}", err).contains("RecordMismatch"));
         assert_eq!(record.stage, TransitionRecord::REGISTERED);
@@ -6625,7 +6706,9 @@ mod tests {
         // record can exist — replay is where it must be refused.
         let (state, mut record, obs) = replay_pair();
         record.proposer = Pubkey::new_from_array([0x99; 32]);
-        let err = replay_transition_from_records(&state, &mut record, &obs)
+        let err = replay_transition_from_records(&state, &mut record, &obs,
+    &[]
+)
             .expect_err("unknown proposer must refuse");
         assert!(format!("{:?}", err).contains("UnknownProposer"));
         assert_eq!(record.stage, TransitionRecord::REGISTERED);
@@ -6644,7 +6727,9 @@ mod tests {
             observer: Pubkey::new_from_array(ag(1)),
             bump: 7,
         };
-        let err = replay_transition_from_records(&state, &mut record, &obs)
+        let err = replay_transition_from_records(&state, &mut record, &obs,
+    &[]
+)
             .expect_err("non-observer observation must refuse");
         assert!(format!("{:?}", err).contains("NotObserver"));
         assert_eq!(record.stage, TransitionRecord::REGISTERED);
@@ -6654,7 +6739,9 @@ mod tests {
     fn replay_refuses_expired_transition_and_overconfident_observation() {
         let (state, mut record, obs) = replay_pair();
         record.expires_at = 100;
-        let err = replay_transition_from_records(&state, &mut record, &obs)
+        let err = replay_transition_from_records(&state, &mut record, &obs,
+    &[]
+)
             .expect_err("expiry at the clock must refuse in the kernel");
         assert!(format!("{:?}", err).contains("ReplayFailed"));
         assert_eq!(record.stage, TransitionRecord::REGISTERED);
@@ -6667,7 +6754,9 @@ mod tests {
             observer: observer_pubkey(),
             bump: 7,
         };
-        let err = replay_transition_from_records(&state, &mut record, &obs)
+        let err = replay_transition_from_records(&state, &mut record, &obs,
+    &[]
+)
             .expect_err("confidence above SCALE must refuse in the kernel");
         assert!(format!("{:?}", err).contains("ReplayFailed"));
         assert_eq!(record.stage, TransitionRecord::REGISTERED);
@@ -6677,13 +6766,17 @@ mod tests {
     fn replay_refuses_governance_and_unknown_types() {
         let (state, mut record, obs) = replay_pair();
         record.transition_type = T_GOV_COUNCIL;
-        let err = replay_transition_from_records(&state, &mut record, &obs)
+        let err = replay_transition_from_records(&state, &mut record, &obs,
+    &[]
+)
             .expect_err("governance type must refuse in the kernel");
         assert!(format!("{:?}", err).contains("ReplayFailed"));
         assert_eq!(record.stage, TransitionRecord::REGISTERED);
         let (state, mut record, obs) = replay_pair();
         record.transition_type = [0x77; 32];
-        let err = replay_transition_from_records(&state, &mut record, &obs)
+        let err = replay_transition_from_records(&state, &mut record, &obs,
+    &[]
+)
             .expect_err("type without a policy must refuse in the kernel");
         assert!(format!("{:?}", err).contains("ReplayFailed"));
         assert_eq!(record.stage, TransitionRecord::REGISTERED);
@@ -6765,7 +6858,9 @@ mod tests {
             &state, [0xC0; 32], 150, 9100, 900_000, observer_pubkey(), 7,
         )
         .expect("post-genesis observation must build");
-        let life = replay_transition_from_records(&state, &mut record, &obs)
+        let life = replay_transition_from_records(&state, &mut record, &obs,
+    &[]
+)
             .expect("post-genesis pair must replay at the advanced clock");
         assert_eq!(life, Life::Proposed);
         assert_eq!(record.stage, TransitionRecord::KERNEL_REGISTERED);
@@ -6776,7 +6871,9 @@ mod tests {
         let (state, mut record, obs) = replay_pair();
         let mut advanced = state;
         advance_clock_on_state(&mut advanced, 9100).expect("advance must succeed");
-        let err = replay_transition_from_records(&advanced, &mut record, &obs)
+        let err = replay_transition_from_records(&advanced, &mut record, &obs,
+    &[]
+)
             .expect_err("observation lapsed by the advance must refuse in the kernel");
         assert!(format!("{:?}", err).contains("ReplayFailed"));
         assert_eq!(record.stage, TransitionRecord::REGISTERED);
@@ -6797,7 +6894,9 @@ mod tests {
             &state, [0xC0; 32], 250, 9100, 900_000, observer_pubkey(), 7,
         )
         .expect("observation inside the advanced window must build");
-        let life = replay_transition_from_records(&state, &mut record, &obs)
+        let life = replay_transition_from_records(&state, &mut record, &obs,
+    &[]
+)
             .expect("pair must replay after chained advances");
         assert_eq!(life, Life::Proposed);
         assert_eq!(record.stage, TransitionRecord::KERNEL_REGISTERED);
@@ -6805,7 +6904,9 @@ mod tests {
 
     fn evaluated_pair() -> (KernelState, TransitionRecord, ObservationRecord) {
         let (state, mut record, obs) = replay_pair();
-        replay_transition_from_records(&state, &mut record, &obs)
+        replay_transition_from_records(&state, &mut record, &obs,
+    &[]
+)
             .expect("pair must replay before evaluate");
         assert_eq!(record.stage, TransitionRecord::KERNEL_REGISTERED);
         (state, record, obs)
@@ -6814,7 +6915,9 @@ mod tests {
     #[test]
     fn evaluate_advances_kernel_registered_to_evaluated() {
         let (state, mut record, obs) = evaluated_pair();
-        let life = evaluate_transition_from_records(&state, &mut record, &obs)
+        let life = evaluate_transition_from_records(&state, &mut record, &obs,
+    &[]
+)
             .expect("kernel-registered pair must evaluate");
         assert_eq!(life, Life::Evaluated);
         assert_eq!(record.stage, TransitionRecord::EVALUATED);
@@ -6832,7 +6935,9 @@ mod tests {
     #[test]
     fn evaluate_refuses_registered_stage() {
         let (state, mut record, obs) = replay_pair();
-        let err = evaluate_transition_from_records(&state, &mut record, &obs)
+        let err = evaluate_transition_from_records(&state, &mut record, &obs,
+    &[]
+)
             .expect_err("a merely-registered record has nothing to evaluate");
         assert!(format!("{:?}", err).contains("WrongStage"));
         assert_eq!(record.stage, TransitionRecord::REGISTERED);
@@ -6841,9 +6946,13 @@ mod tests {
     #[test]
     fn evaluate_is_once_only() {
         let (state, mut record, obs) = evaluated_pair();
-        evaluate_transition_from_records(&state, &mut record, &obs)
+        evaluate_transition_from_records(&state, &mut record, &obs,
+    &[]
+)
             .expect("first evaluate must succeed");
-        let err = evaluate_transition_from_records(&state, &mut record, &obs)
+        let err = evaluate_transition_from_records(&state, &mut record, &obs,
+    &[]
+)
             .expect_err("second evaluate must refuse");
         assert!(format!("{:?}", err).contains("WrongStage"));
         assert_eq!(record.stage, TransitionRecord::EVALUATED);
@@ -6853,7 +6962,9 @@ mod tests {
     fn evaluate_refuses_unsealed() {
         let (mut state, mut record, obs) = evaluated_pair();
         state.sealed = false;
-        let err = evaluate_transition_from_records(&state, &mut record, &obs)
+        let err = evaluate_transition_from_records(&state, &mut record, &obs,
+    &[]
+)
             .expect_err("unsealed evaluate must refuse");
         assert!(format!("{:?}", err).contains("NotSealed"));
         assert_eq!(record.stage, TransitionRecord::KERNEL_REGISTERED);
@@ -6863,7 +6974,9 @@ mod tests {
     fn evaluate_refuses_parent_mismatch() {
         let (state, mut record, obs) = evaluated_pair();
         record.parent_index = 1;
-        let err = evaluate_transition_from_records(&state, &mut record, &obs)
+        let err = evaluate_transition_from_records(&state, &mut record, &obs,
+    &[]
+)
             .expect_err("parent off the sealed head must refuse");
         assert!(format!("{:?}", err).contains("ParentMismatch"));
         assert_eq!(record.stage, TransitionRecord::KERNEL_REGISTERED);
@@ -6876,7 +6989,9 @@ mod tests {
             &state, [0xC1; 32], 100, 9100, 900_000, observer_pubkey(), 7,
         )
         .expect("second observation must build");
-        let err = evaluate_transition_from_records(&state, &mut record, &other)
+        let err = evaluate_transition_from_records(&state, &mut record, &other,
+    &[]
+)
             .expect_err("observation id mismatch must refuse");
         assert!(format!("{:?}", err).contains("RecordMismatch"));
         assert_eq!(record.stage, TransitionRecord::KERNEL_REGISTERED);
@@ -6886,7 +7001,9 @@ mod tests {
     fn evaluate_refuses_unknown_proposer() {
         let (state, mut record, obs) = evaluated_pair();
         record.proposer = Pubkey::new_from_array([0x99; 32]);
-        let err = evaluate_transition_from_records(&state, &mut record, &obs)
+        let err = evaluate_transition_from_records(&state, &mut record, &obs,
+    &[]
+)
             .expect_err("unknown proposer must refuse");
         assert!(format!("{:?}", err).contains("UnknownProposer"));
         assert_eq!(record.stage, TransitionRecord::KERNEL_REGISTERED);
@@ -6897,7 +7014,9 @@ mod tests {
         let (state, mut record, obs) = evaluated_pair();
         let mut advanced = state;
         advance_clock_on_state(&mut advanced, 200).expect("advance must succeed");
-        let life = evaluate_transition_from_records(&advanced, &mut record, &obs)
+        let life = evaluate_transition_from_records(&advanced, &mut record, &obs,
+    &[]
+)
             .expect("pair must evaluate at the advanced clock");
         assert_eq!(life, Life::Evaluated);
         assert_eq!(record.stage, TransitionRecord::EVALUATED);
@@ -6958,7 +7077,9 @@ mod tests {
 
     fn eligible_pair() -> (KernelState, TransitionRecord, ObservationRecord) {
         let (state, mut record, obs) = evaluated_pair();
-        evaluate_transition_from_records(&state, &mut record, &obs)
+        evaluate_transition_from_records(&state, &mut record, &obs,
+    &[]
+)
             .expect("pair must evaluate before marking eligible");
         assert_eq!(record.stage, TransitionRecord::EVALUATED);
         (state, record, obs)
@@ -6967,7 +7088,9 @@ mod tests {
     #[test]
     fn mark_eligible_advances_evaluated_to_eligible() {
         let (mut state, mut record, obs) = eligible_pair();
-        let life = mark_eligible_from_records(&mut state, &mut record, &obs)
+        let life = mark_eligible_from_records(&mut state, &mut record, &obs,
+    &[]
+)
             .expect("evaluated pair must mark eligible");
         assert_eq!(life, Life::Eligible);
         assert_eq!(record.stage, TransitionRecord::ELIGIBLE);
@@ -6990,7 +7113,9 @@ mod tests {
     #[test]
     fn mark_eligible_refuses_kernel_registered_stage() {
         let (mut state, mut record, obs) = evaluated_pair();
-        let err = mark_eligible_from_records(&mut state, &mut record, &obs)
+        let err = mark_eligible_from_records(&mut state, &mut record, &obs,
+    &[]
+)
             .expect_err("a merely kernel-registered record has no evaluation to make eligible");
         assert!(format!("{:?}", err).contains("WrongStage"));
         assert_eq!(record.stage, TransitionRecord::KERNEL_REGISTERED);
@@ -6999,9 +7124,13 @@ mod tests {
     #[test]
     fn mark_eligible_is_once_only() {
         let (mut state, mut record, obs) = eligible_pair();
-        mark_eligible_from_records(&mut state, &mut record, &obs)
+        mark_eligible_from_records(&mut state, &mut record, &obs,
+    &[]
+)
             .expect("first mark_eligible must succeed");
-        let err = mark_eligible_from_records(&mut state, &mut record, &obs)
+        let err = mark_eligible_from_records(&mut state, &mut record, &obs,
+    &[]
+)
             .expect_err("second mark_eligible must refuse");
         assert!(format!("{:?}", err).contains("WrongStage"));
         assert_eq!(record.stage, TransitionRecord::ELIGIBLE);
@@ -7011,7 +7140,9 @@ mod tests {
     fn mark_eligible_refuses_unsealed() {
         let (mut state, mut record, obs) = eligible_pair();
         state.sealed = false;
-        let err = mark_eligible_from_records(&mut state, &mut record, &obs)
+        let err = mark_eligible_from_records(&mut state, &mut record, &obs,
+    &[]
+)
             .expect_err("unsealed mark_eligible must refuse");
         assert!(format!("{:?}", err).contains("NotSealed"));
         assert_eq!(record.stage, TransitionRecord::EVALUATED);
@@ -7021,7 +7152,9 @@ mod tests {
     fn mark_eligible_refuses_parent_mismatch() {
         let (mut state, mut record, obs) = eligible_pair();
         record.parent_index = 1;
-        let err = mark_eligible_from_records(&mut state, &mut record, &obs)
+        let err = mark_eligible_from_records(&mut state, &mut record, &obs,
+    &[]
+)
             .expect_err("parent off the sealed head must refuse");
         assert!(format!("{:?}", err).contains("ParentMismatch"));
         assert_eq!(record.stage, TransitionRecord::EVALUATED);
@@ -7034,7 +7167,9 @@ mod tests {
             &state, [0xC1; 32], 100, 9100, 900_000, observer_pubkey(), 7,
         )
         .expect("second observation must build");
-        let err = mark_eligible_from_records(&mut state, &mut record, &other)
+        let err = mark_eligible_from_records(&mut state, &mut record, &other,
+    &[]
+)
             .expect_err("observation id mismatch must refuse");
         assert!(format!("{:?}", err).contains("RecordMismatch"));
         assert_eq!(record.stage, TransitionRecord::EVALUATED);
@@ -7044,7 +7179,9 @@ mod tests {
     fn mark_eligible_refuses_unknown_proposer() {
         let (mut state, mut record, obs) = eligible_pair();
         record.proposer = Pubkey::new_from_array([0x99; 32]);
-        let err = mark_eligible_from_records(&mut state, &mut record, &obs)
+        let err = mark_eligible_from_records(&mut state, &mut record, &obs,
+    &[]
+)
             .expect_err("unknown proposer must refuse");
         assert!(format!("{:?}", err).contains("UnknownProposer"));
         assert_eq!(record.stage, TransitionRecord::EVALUATED);
@@ -7064,7 +7201,9 @@ mod tests {
             observer: Pubkey::new_from_array(ag(1)),
             bump: 7,
         };
-        let err = mark_eligible_from_records(&mut state, &mut record, &obs)
+        let err = mark_eligible_from_records(&mut state, &mut record, &obs,
+    &[]
+)
             .expect_err("non-observer observation must refuse");
         assert!(format!("{:?}", err).contains("NotObserver"));
         assert_eq!(record.stage, TransitionRecord::EVALUATED);
@@ -7075,7 +7214,9 @@ mod tests {
         let (state, mut record, obs) = eligible_pair();
         let mut advanced = state;
         advance_clock_on_state(&mut advanced, 200).expect("advance must succeed");
-        let life = mark_eligible_from_records(&mut advanced, &mut record, &obs)
+        let life = mark_eligible_from_records(&mut advanced, &mut record, &obs,
+    &[]
+)
             .expect("pair must mark eligible at the advanced clock");
         assert_eq!(life, Life::Eligible);
         assert_eq!(record.stage, TransitionRecord::ELIGIBLE);
@@ -7091,7 +7232,9 @@ mod tests {
         assert_eq!(record.consensus_deadline, 0);
         let mut advanced = state;
         advance_clock_on_state(&mut advanced, 200).expect("advance must succeed");
-        mark_eligible_from_records(&mut advanced, &mut record, &obs)
+        mark_eligible_from_records(&mut advanced, &mut record, &obs,
+    &[]
+)
             .expect("pair must mark eligible at the advanced clock");
         assert_eq!(record.stage, TransitionRecord::ELIGIBLE);
         assert_eq!(record.eligible_at, 200);
@@ -7105,7 +7248,9 @@ mod tests {
         let (state, mut record, obs) = eligible_pair();
         let mut advanced = state;
         advance_clock_on_state(&mut advanced, 9100).expect("advance must succeed");
-        let err = mark_eligible_from_records(&mut advanced, &mut record, &obs)
+        let err = mark_eligible_from_records(&mut advanced, &mut record, &obs,
+    &[]
+)
             .expect_err("lapsed observation must refuse eligibility in the kernel");
         assert!(format!("{:?}", err).contains("EligibleFailed"));
         assert_eq!(record.stage, TransitionRecord::EVALUATED);
@@ -7122,7 +7267,9 @@ mod tests {
         let (state, mut record, obs) = eligible_pair();
         let mut advanced = state;
         advance_clock_on_state(&mut advanced, 9100).expect("advance must succeed");
-        let err = mark_eligible_from_records(&mut advanced, &mut record, &obs)
+        let err = mark_eligible_from_records(&mut advanced, &mut record, &obs,
+    &[]
+)
             .expect_err("lapsed observation must refuse eligibility in the kernel");
         assert!(format!("{:?}", err).contains("EligibleFailed"));
         assert_eq!(record.stage, TransitionRecord::EVALUATED);
@@ -7130,7 +7277,9 @@ mod tests {
 
     fn signal_pair() -> (KernelState, TransitionRecord, ObservationRecord) {
         let (mut state, mut record, obs) = eligible_pair();
-        mark_eligible_from_records(&mut state, &mut record, &obs)
+        mark_eligible_from_records(&mut state, &mut record, &obs,
+    &[]
+)
             .expect("pair must mark eligible before signalling");
         assert_eq!(record.stage, TransitionRecord::ELIGIBLE);
         assert_eq!(record.eligible_at, 100);
@@ -7200,7 +7349,8 @@ mod tests {
         let (signal, total, confidence) = submit_signal_from_records(
             &state, &mut record, &obs, &[], Pubkey::new_from_array(ag(2)),
             0, SCALE, SCALE, true, 7,
-        )
+            &[],
+)
         .expect("first signal at the genesis clock must submit");
         assert_eq!(signal.transition_id, [0xD1; 32]);
         assert_eq!(signal.agent, Pubkey::new_from_array(ag(2)));
@@ -7229,7 +7379,8 @@ mod tests {
         let (signal, total, confidence) = submit_signal_from_records(
             &state, &mut record, &obs, &[], Pubkey::new_from_array(ag(3)),
             0, SCALE, 5, false, 7,
-        )
+            &[],
+)
         .expect("no-position signal must submit");
         assert!(!signal.has_support);
         assert_eq!(signal.support_raw, 0);
@@ -7243,7 +7394,8 @@ mod tests {
         let err = submit_signal_from_records(
             &state, &mut record, &obs, &[], Pubkey::new_from_array(ag(2)),
             0, SCALE, SCALE, true, 7,
-        )
+            &[],
+)
         .expect_err("a merely-evaluated record has no window to signal in");
         assert!(format!("{:?}", err).contains("WrongStage"));
     }
@@ -7258,7 +7410,8 @@ mod tests {
         let err = submit_signal_from_records(
             &state, &mut record, &other, &[], Pubkey::new_from_array(ag(2)),
             0, SCALE, SCALE, true, 7,
-        )
+            &[],
+)
         .expect_err("observation id mismatch must refuse");
         assert!(format!("{:?}", err).contains("RecordMismatch"));
     }
@@ -7269,13 +7422,15 @@ mod tests {
         let err = submit_signal_from_records(
             &state, &mut record, &obs, &[], Pubkey::new_from_array([0x77; 32]),
             0, SCALE, SCALE, true, 7,
-        )
+            &[],
+)
         .expect_err("unknown pubkey is no agent and must refuse in the kernel");
         assert!(format!("{:?}", err).contains("SignalFailed"));
         let err = submit_signal_from_records(
             &state, &mut record, &obs, &[], Pubkey::new_from_array(ag(2)),
             0, SCALE + 1, SCALE, true, 7,
-        )
+            &[],
+)
         .expect_err("raw above SCALE must refuse in the kernel");
         assert!(format!("{:?}", err).contains("SignalFailed"));
     }
@@ -7286,7 +7441,8 @@ mod tests {
         let err = submit_signal_from_records(
             &state, &mut record, &obs, &[], Pubkey::new_from_array(ag(2)),
             1, SCALE, SCALE, true, 7,
-        )
+            &[],
+)
         .expect_err("round 1 at clock 100 contradicts the derived round 0");
         assert!(format!("{:?}", err).contains("SignalFailed"));
     }
@@ -7307,7 +7463,8 @@ mod tests {
         let err = submit_signal_from_records(
             &state, &mut record, &obs, &[foreign], Pubkey::new_from_array(ag(3)),
             0, SCALE, SCALE, true, 7,
-        )
+            &[],
+)
         .expect_err("a prior from another transition must refuse");
         assert!(format!("{:?}", err).contains("RecordMismatch"));
     }
@@ -7320,7 +7477,8 @@ mod tests {
         let (signal, _, _) = submit_signal_from_records(
             state, record, obs, &[], Pubkey::new_from_array(ag(2)),
             0, SCALE, SCALE, true, 7,
-        )
+            &[],
+)
         .expect("first signal must submit");
         signal
     }
@@ -7332,7 +7490,8 @@ mod tests {
         let err = submit_signal_from_records(
             &state, &mut record, &obs, &[first], Pubkey::new_from_array(ag(2)),
             0, SCALE, SCALE, true, 7,
-        )
+            &[],
+)
         .expect_err("one signal per agent per round: the kernel must refuse");
         assert!(format!("{:?}", err).contains("SignalFailed"));
     }
@@ -7350,7 +7509,8 @@ mod tests {
         let (signal, total, confidence) = submit_signal_from_records(
             &advanced, &mut record, &obs, &[first], Pubkey::new_from_array(ag(2)),
             1, SCALE, SCALE, true, 7,
-        )
+            &[],
+)
         .expect("same-support revision in round 1 must submit");
         assert_eq!(signal.round, 1);
         assert_eq!(signal.submitted_at, 133);
@@ -7370,7 +7530,8 @@ mod tests {
         let err = submit_signal_from_records(
             &advanced, &mut record, &obs, &[first], Pubkey::new_from_array(ag(2)),
             1, SCALE, 0, true, 7,
-        )
+            &[],
+)
         .expect_err("revision away from the mean must refuse in the kernel");
         assert!(format!("{:?}", err).contains("SignalFailed"));
     }
@@ -7386,7 +7547,8 @@ mod tests {
         let (second, total, confidence) = submit_signal_from_records(
             &state, &mut record, &obs, &[first], Pubkey::new_from_array(ag(3)),
             0, SCALE, 0, true, 7,
-        )
+            &[],
+)
         .expect("second agent's round-0 signal must submit");
         assert_eq!(second.agent, Pubkey::new_from_array(ag(3)));
         assert_eq!(total.raw(), 4 * SCALE);
@@ -7404,7 +7566,8 @@ mod tests {
         let err = submit_signal_from_records(
             &advanced, &mut record, &obs, &[], Pubkey::new_from_array(ag(2)),
             2, SCALE, SCALE, true, 7,
-        )
+            &[],
+)
         .expect_err("signal at the deadline must refuse in the kernel");
         assert!(format!("{:?}", err).contains("SignalFailed"));
     }
@@ -7414,7 +7577,8 @@ mod tests {
         let (signal, _, _) = submit_signal_from_records(
             &state, &mut record, &obs, &[], Pubkey::new_from_array(ag(2)),
             0, SCALE, SCALE, true, 7,
-        )
+            &[],
+)
         .expect("first signal must submit");
         assert_eq!(record.signal_count, 1);
         (state, record, obs, signal)
@@ -7426,7 +7590,8 @@ mod tests {
         let (second, _, _) = submit_signal_from_records(
             &state, &mut record, &obs, &[first], Pubkey::new_from_array(ag(3)),
             0, SCALE, 0, true, 7,
-        )
+            &[],
+)
         .expect("second agent signal must submit");
         assert_eq!(record.signal_count, 2);
         (state, record, obs, first, second)
@@ -7439,7 +7604,9 @@ mod tests {
         // qualifies, so the kernel selects and the stage advances to 4.
         let (mut state, mut record, obs, first) = selected_pair();
         advance_clock_on_state(&mut state, 200).expect("advance to the deadline must succeed");
-        let life = select_candidate_from_records(&state, &mut record, &obs, &[first])
+        let life = select_candidate_from_records(&state, &mut record, &obs, &[first],
+    &[]
+)
             .expect("closed window with a qualifying tally must select");
         assert_eq!(life, Life::Selected);
         assert_eq!(record.stage, TransitionRecord::SELECTED);
@@ -7453,7 +7620,9 @@ mod tests {
         // ConsensusStillOpen must refuse, and the stage stays ELIGIBLE.
         let (mut state, mut record, obs, first) = selected_pair();
         advance_clock_on_state(&mut state, 199).expect("advance must succeed");
-        let err = select_candidate_from_records(&state, &mut record, &obs, &[first])
+        let err = select_candidate_from_records(&state, &mut record, &obs, &[first],
+    &[]
+)
             .expect_err("an open window must refuse selection");
         assert!(format!("{:?}", err).contains("SelectFailed"));
         assert_eq!(record.stage, TransitionRecord::ELIGIBLE);
@@ -7462,7 +7631,9 @@ mod tests {
     #[test]
     fn select_refuses_wrong_stage() {
         let (state, mut record, obs) = evaluated_pair();
-        let err = select_candidate_from_records(&state, &mut record, &obs, &[])
+        let err = select_candidate_from_records(&state, &mut record, &obs, &[],
+    &[]
+)
             .expect_err("a merely-evaluated record has no window to select in");
         assert!(format!("{:?}", err).contains("WrongStage"));
     }
@@ -7474,7 +7645,9 @@ mod tests {
         // omitted-record set can never prove the tally.
         let (mut state, mut record, obs, first, _) = two_signals();
         advance_clock_on_state(&mut state, 200).expect("advance must succeed");
-        let err = select_candidate_from_records(&state, &mut record, &obs, &[first])
+        let err = select_candidate_from_records(&state, &mut record, &obs, &[first],
+    &[]
+)
             .expect_err("a set short of signal_count must refuse");
         assert!(format!("{:?}", err).contains("SelectFailed"));
         assert_eq!(record.stage, TransitionRecord::ELIGIBLE);
@@ -7487,7 +7660,9 @@ mod tests {
         // reaching the count by duplication cannot pass either.
         let (mut state, mut record, obs, first, _) = two_signals();
         advance_clock_on_state(&mut state, 200).expect("advance must succeed");
-        let err = select_candidate_from_records(&state, &mut record, &obs, &[first, first])
+        let err = select_candidate_from_records(&state, &mut record, &obs, &[first, first],
+    &[]
+)
             .expect_err("a duplicated prior must refuse");
         assert!(format!("{:?}", err).contains("SelectFailed"));
         assert_eq!(record.stage, TransitionRecord::ELIGIBLE);
@@ -7502,11 +7677,14 @@ mod tests {
         let (signal, _, _) = submit_signal_from_records(
             &state, &mut record, &obs, &[], Pubkey::new_from_array(ag(2)),
             0, SCALE, 0, true, 7,
-        )
+            &[],
+)
         .expect("support-0 signal must submit");
         let mut advanced = state;
         advance_clock_on_state(&mut advanced, 200).expect("advance must succeed");
-        let err = select_candidate_from_records(&advanced, &mut record, &obs, &[signal])
+        let err = select_candidate_from_records(&advanced, &mut record, &obs, &[signal],
+    &[]
+)
             .expect_err("confidence below threshold must refuse selection");
         assert!(format!("{:?}", err).contains("SelectFailed"));
         assert_eq!(record.stage, TransitionRecord::ELIGIBLE);
@@ -7526,7 +7704,9 @@ mod tests {
             submitted_at: 100,
             bump: 7,
         };
-        let err = select_candidate_from_records(&state, &mut record, &obs, &[foreign])
+        let err = select_candidate_from_records(&state, &mut record, &obs, &[foreign],
+    &[]
+)
             .expect_err("a prior from another transition must refuse");
         assert!(format!("{:?}", err).contains("RecordMismatch"));
         assert_eq!(record.stage, TransitionRecord::ELIGIBLE);
@@ -7536,9 +7716,13 @@ mod tests {
     fn select_is_once_only() {
         let (mut state, mut record, obs, first) = selected_pair();
         advance_clock_on_state(&mut state, 200).expect("advance must succeed");
-        select_candidate_from_records(&state, &mut record, &obs, &[first])
+        select_candidate_from_records(&state, &mut record, &obs, &[first],
+    &[]
+)
             .expect("first select must succeed");
-        let err = select_candidate_from_records(&state, &mut record, &obs, &[first])
+        let err = select_candidate_from_records(&state, &mut record, &obs, &[first],
+    &[]
+)
             .expect_err("a second select must refuse on stage");
         assert!(format!("{:?}", err).contains("WrongStage"));
     }
@@ -7554,7 +7738,8 @@ mod tests {
         let err = submit_signal_from_records(
             &state, &mut record, &obs, &[first], Pubkey::new_from_array(ag(2)),
             0, SCALE, SCALE, true, 7,
-        )
+            &[],
+)
         .expect_err("same-round duplicate must refuse");
         assert!(format!("{:?}", err).contains("SignalFailed"));
         assert_eq!(record.signal_count, 1);
@@ -7563,7 +7748,8 @@ mod tests {
         let (_, _, _) = submit_signal_from_records(
             &advanced, &mut record, &obs, &[first], Pubkey::new_from_array(ag(2)),
             1, SCALE, SCALE, true, 7,
-        )
+            &[],
+)
         .expect("round-1 revision must submit");
         assert_eq!(record.signal_count, 2);
         assert_eq!(record.stage, TransitionRecord::ELIGIBLE);
@@ -7595,11 +7781,17 @@ mod tests {
             &state, obs_id, 100, 9100, 900_000, observer_pubkey(), 7,
         )
         .expect("sibling observation must build");
-        replay_transition_from_records(&state, &mut record, &obs)
+        replay_transition_from_records(&state, &mut record, &obs,
+    &[]
+)
             .expect("sibling replay must succeed");
-        evaluate_transition_from_records(&state, &mut record, &obs)
+        evaluate_transition_from_records(&state, &mut record, &obs,
+    &[]
+)
             .expect("sibling evaluate must succeed");
-        mark_eligible_from_records(&mut state, &mut record, &obs)
+        mark_eligible_from_records(&mut state, &mut record, &obs,
+    &[]
+)
             .expect("sibling mark eligible must succeed");
         assert_eq!(record.stage, TransitionRecord::ELIGIBLE);
         assert_eq!(record.eligible_at, mark_clock);
@@ -7622,7 +7814,8 @@ mod tests {
         let (sig, _, _) = submit_signal_from_records(
             &state, record, obs, priors, Pubkey::new_from_array(ag(agent_n)),
             0, SCALE, support_raw, true, 7,
-        )
+            &[],
+)
         .expect("sibling signal must submit");
         sig
     }
@@ -7652,7 +7845,8 @@ mod tests {
         };
         let life = select_candidate_from_records_with_siblings(
             &state, &mut target, &target_obs, &[first], &[sibling],
-        )
+            &[],
+)
         .expect("target outranking its sibling must select");
         assert_eq!(life, Life::Selected);
         assert_eq!(target.stage, TransitionRecord::SELECTED);
@@ -7678,7 +7872,8 @@ mod tests {
         };
         let err = select_candidate_from_records_with_siblings(
             &state, &mut target, &target_obs, &[first, second], &[sibling],
-        )
+            &[],
+)
         .expect_err("a higher-confidence sibling must refuse selection");
         assert!(format!("{:?}", err).contains("SelectFailed"));
         assert_eq!(target.stage, TransitionRecord::ELIGIBLE);
@@ -7701,7 +7896,8 @@ mod tests {
         };
         let err = select_candidate_from_records_with_siblings(
             &state, &mut target, &target_obs, &[first], &[sibling],
-        )
+            &[],
+)
         .expect_err("an open sibling window must refuse selection");
         assert!(format!("{:?}", err).contains("SelectFailed"));
         assert_eq!(target.stage, TransitionRecord::ELIGIBLE);
@@ -7725,7 +7921,8 @@ mod tests {
         };
         let err = select_candidate_from_records_with_siblings(
             &state, &mut target, &target_obs, &[target_sig], &[sibling],
-        )
+            &[],
+)
         .expect_err("an earlier equal-confidence sibling must refuse selection");
         assert!(format!("{:?}", err).contains("SelectFailed"));
         assert_eq!(target.stage, TransitionRecord::ELIGIBLE);
@@ -7748,7 +7945,8 @@ mod tests {
         };
         let life = select_candidate_from_records_with_siblings(
             &state, &mut target, &target_obs, &[first], &[sibling],
-        )
+            &[],
+)
         .expect("the earlier target must win its tie");
         assert_eq!(life, Life::Selected);
         assert_eq!(target.stage, TransitionRecord::SELECTED);
@@ -7772,7 +7970,8 @@ mod tests {
         };
         let err = select_candidate_from_records_with_siblings(
             &state, &mut target, &target_obs, &[first], &[sibling],
-        )
+            &[],
+)
         .expect_err("an equal-eligibility tie must refuse the target");
         assert!(format!("{:?}", err).contains("SelectFailed"));
         assert_eq!(target.stage, TransitionRecord::ELIGIBLE);
@@ -7797,7 +7996,8 @@ mod tests {
         };
         let life = select_candidate_from_records_with_siblings(
             &state, &mut target, &target_obs, &[target_sig], &[sibling],
-        )
+            &[],
+)
         .expect("an expired sibling must not block selection");
         assert_eq!(life, Life::Selected);
         assert_eq!(target.stage, TransitionRecord::SELECTED);
@@ -7822,7 +8022,8 @@ mod tests {
         };
         let err = select_candidate_from_records_with_siblings(
             &state, &mut target, &target_obs, &[first], &[sibling],
-        )
+            &[],
+)
         .expect_err("a short sibling signal set must refuse");
         assert!(format!("{:?}", err).contains("SelectFailed"));
         assert_eq!(target.stage, TransitionRecord::ELIGIBLE);
@@ -7869,7 +8070,8 @@ mod tests {
         };
         let err = select_candidate_from_records_with_siblings(
             &state, &mut target, &target_obs, &[first], &[sibling],
-        )
+            &[],
+)
         .expect_err("a non-sibling parent must refuse");
         assert!(format!("{:?}", err).contains("ParentMismatch"));
         assert_eq!(target.stage, TransitionRecord::ELIGIBLE);
@@ -7893,9 +8095,13 @@ mod tests {
             &eval_state, [0xC1; 32], 100, 9100, 900_000, observer_pubkey(), 7,
         )
         .expect("sibling observation must build");
-        replay_transition_from_records(&eval_state, &mut sib, &sib_obs)
+        replay_transition_from_records(&eval_state, &mut sib, &sib_obs,
+    &[]
+)
             .expect("sibling replay must succeed");
-        evaluate_transition_from_records(&eval_state, &mut sib, &sib_obs)
+        evaluate_transition_from_records(&eval_state, &mut sib, &sib_obs,
+    &[]
+)
             .expect("sibling evaluate must succeed");
         assert_eq!(sib.stage, TransitionRecord::EVALUATED);
         let sibling = SiblingReplay {
@@ -7905,7 +8111,8 @@ mod tests {
         };
         let err = select_candidate_from_records_with_siblings(
             &state, &mut target, &target_obs, &[first], &[sibling],
-        )
+            &[],
+)
         .expect_err("a non-eligible sibling must refuse");
         assert!(format!("{:?}", err).contains("SelectFailed"));
         assert_eq!(target.stage, TransitionRecord::ELIGIBLE);
@@ -7927,7 +8134,8 @@ mod tests {
         };
         let err = select_candidate_from_records_with_siblings(
             &state, &mut target, &target_obs, &[first], &[sibling, sibling],
-        )
+            &[],
+)
         .expect_err("a duplicated sibling must refuse");
         assert!(format!("{:?}", err).contains("SelectFailed"));
         assert_eq!(target.stage, TransitionRecord::ELIGIBLE);
@@ -7949,7 +8157,8 @@ mod tests {
         };
         let err = select_candidate_from_records_with_siblings(
             &state, &mut target, &target_obs, &[first], &[sibling],
-        )
+            &[],
+)
         .expect_err("a mismatched sibling observation must refuse");
         assert!(format!("{:?}", err).contains("RecordMismatch"));
         assert_eq!(target.stage, TransitionRecord::ELIGIBLE);
@@ -7964,7 +8173,8 @@ mod tests {
         let (_, mut target, target_obs, first) = selected_pair();
         let life = select_candidate_from_records_with_siblings(
             &state, &mut target, &target_obs, &[first], &[],
-        )
+            &[],
+)
         .expect("an empty sibling field must select like plain select");
         assert_eq!(life, Life::Selected);
         assert_eq!(target.stage, TransitionRecord::SELECTED);
@@ -7999,7 +8209,8 @@ mod tests {
         };
         let err = select_candidate_from_records_with_siblings(
             &state, &mut target, &target_obs, &[target_sig], &[sibling],
-        )
+            &[],
+)
         .expect_err("an already-selected sibling must block the target");
         assert!(format!("{:?}", err).contains("SelectFailed"));
         assert_eq!(target.stage, TransitionRecord::ELIGIBLE);
@@ -8027,7 +8238,8 @@ mod tests {
         };
         let err = select_candidate_from_records_with_siblings(
             &state, &mut target, &target_obs, &[first], &[sibling],
-        )
+            &[],
+)
         .expect_err("an unqualified selected sibling must refuse");
         assert!(format!("{:?}", err).contains("SelectFailed"));
         assert_eq!(target.stage, TransitionRecord::ELIGIBLE);
@@ -8054,7 +8266,8 @@ mod tests {
         };
         let err = select_candidate_from_records_with_siblings(
             &state, &mut target, &target_obs, &[first], &[sibling],
-        )
+            &[],
+)
         .expect_err("an outranked selected sibling must refuse");
         assert!(format!("{:?}", err).contains("SelectFailed"));
         assert_eq!(target.stage, TransitionRecord::ELIGIBLE);
@@ -8080,7 +8293,8 @@ mod tests {
         };
         let err = select_candidate_from_records_with_siblings(
             &state, &mut target, &target_obs, &[first], &[sibling],
-        )
+            &[],
+)
         .expect_err("a selected sibling with an open window must refuse");
         assert!(format!("{:?}", err).contains("SelectFailed"));
         assert_eq!(target.stage, TransitionRecord::ELIGIBLE);
@@ -8113,7 +8327,8 @@ mod tests {
         };
         let err = select_candidate_from_records_with_siblings(
             &state, &mut target, &target_obs, &[first], &[first_sibling, second_sibling],
-        )
+            &[],
+)
         .expect_err("two selected siblings must refuse");
         assert!(format!("{:?}", err).contains("SelectFailed"));
         assert_eq!(target.stage, TransitionRecord::ELIGIBLE);
@@ -8148,7 +8363,8 @@ mod tests {
         };
         let err = select_candidate_from_records_with_siblings(
             &state, &mut target, &target_obs, &[target_sig], &[selected_sibling, weaker_sibling],
-        )
+            &[],
+)
         .expect_err("a mixed field with a selected winner must block the target");
         assert!(format!("{:?}", err).contains("SelectFailed"));
         assert_eq!(target.stage, TransitionRecord::ELIGIBLE);
@@ -8187,7 +8403,8 @@ mod tests {
         };
         let err = select_candidate_from_records_with_siblings(
             &state, &mut target, &target_obs, &[first], &[sibling],
-        )
+            &[],
+)
         .expect_err("a short selected sibling signal set must refuse");
         assert!(format!("{:?}", err).contains("SelectFailed"));
         assert_eq!(target.stage, TransitionRecord::ELIGIBLE);
@@ -8205,7 +8422,9 @@ mod tests {
         // and leaves the census untouched, proven elsewhere).
         let (mut state, mut record, obs) = eligible_pair();
         assert_eq!(state.eligible_sibling_count, 0);
-        mark_eligible_from_records(&mut state, &mut record, &obs)
+        mark_eligible_from_records(&mut state, &mut record, &obs,
+    &[]
+)
             .expect("first mark eligible must succeed");
         assert_eq!(state.eligible_sibling_parent_index, 0);
         assert_eq!(state.eligible_sibling_parent_hash, [0; 32]);
@@ -8219,11 +8438,17 @@ mod tests {
             &state, [0xC1; 32], 100, 9100, 900_000, observer_pubkey(), 7,
         )
         .expect("second observation must build");
-        replay_transition_from_records(&state, &mut second, &second_obs)
+        replay_transition_from_records(&state, &mut second, &second_obs,
+    &[]
+)
             .expect("second replay must succeed");
-        evaluate_transition_from_records(&state, &mut second, &second_obs)
+        evaluate_transition_from_records(&state, &mut second, &second_obs,
+    &[]
+)
             .expect("second evaluate must succeed");
-        mark_eligible_from_records(&mut state, &mut second, &second_obs)
+        mark_eligible_from_records(&mut state, &mut second, &second_obs,
+    &[]
+)
             .expect("second mark eligible must succeed");
         assert_eq!(state.eligible_sibling_parent_index, 0);
         assert_eq!(state.eligible_sibling_parent_hash, [0; 32]);
@@ -8240,7 +8465,9 @@ mod tests {
         state.eligible_sibling_parent_index = 9;
         state.eligible_sibling_parent_hash = [0xAB; 32];
         state.eligible_sibling_count = 99;
-        mark_eligible_from_records(&mut state, &mut record, &obs)
+        mark_eligible_from_records(&mut state, &mut record, &obs,
+    &[]
+)
             .expect("mark eligible must succeed");
         assert_eq!(state.eligible_sibling_parent_index, 0);
         assert_eq!(state.eligible_sibling_parent_hash, [0; 32]);
@@ -8255,7 +8482,9 @@ mod tests {
         let (state, mut record, obs) = eligible_pair();
         let mut advanced = state;
         advance_clock_on_state(&mut advanced, 9100).expect("advance must succeed");
-        let err = mark_eligible_from_records(&mut advanced, &mut record, &obs)
+        let err = mark_eligible_from_records(&mut advanced, &mut record, &obs,
+    &[]
+)
             .expect_err("lapsed observation must refuse eligibility");
         assert!(format!("{:?}", err).contains("EligibleFailed"));
         assert_eq!(advanced.eligible_sibling_parent_index, 0);
@@ -8276,7 +8505,9 @@ mod tests {
         advance_clock_on_state(&mut state, 200).expect("advance must succeed");
         assert_eq!(state.eligible_sibling_count, 1);
         state.eligible_sibling_count = 2;
-        let err = select_candidate_from_records(&state, &mut record, &obs, &[first])
+        let err = select_candidate_from_records(&state, &mut record, &obs, &[first],
+    &[]
+)
             .expect_err("a census above 1 must refuse the plain select");
         assert!(format!("{:?}", err).contains("SelectFailed"));
         assert_eq!(record.stage, TransitionRecord::ELIGIBLE);
@@ -8303,7 +8534,8 @@ mod tests {
         };
         let err = select_candidate_from_records_with_siblings(
             &state, &mut target, &target_obs, &[first], &[sibling],
-        )
+            &[],
+)
         .expect_err("a field short of the census must refuse");
         assert!(format!("{:?}", err).contains("SelectFailed"));
         assert_eq!(target.stage, TransitionRecord::ELIGIBLE);
@@ -8328,7 +8560,8 @@ mod tests {
         };
         let err = select_candidate_from_records_with_siblings(
             &state, &mut target, &target_obs, &[first], &[sibling],
-        )
+            &[],
+)
         .expect_err("a census at another parent must refuse");
         assert!(format!("{:?}", err).contains("SelectFailed"));
         assert_eq!(target.stage, TransitionRecord::ELIGIBLE);
@@ -8340,7 +8573,9 @@ mod tests {
         // kernel selects and the stage advances to 4.
         let (mut state, mut record, obs, first) = selected_pair();
         advance_clock_on_state(&mut state, 200).expect("advance to the deadline must succeed");
-        let life = select_candidate_from_records(&state, &mut record, &obs, &[first])
+        let life = select_candidate_from_records(&state, &mut record, &obs, &[first],
+    &[]
+)
             .expect("closed window with a qualifying tally must select");
         assert_eq!(life, Life::Selected);
         assert_eq!(record.stage, TransitionRecord::SELECTED);
@@ -8356,7 +8591,9 @@ mod tests {
         // is "anyone", and a proposer-only reading would contradict
         // it.
         let (state, mut record, obs, first) = planning_pair();
-        let life = open_planning_from_records(&state, &mut record, &obs, &[first], [0x77; 32])
+        let life = open_planning_from_records(&state, &mut record, &obs, &[first], [0x77; 32],
+    &[]
+)
             .expect("a kernel-proven selection must open planning");
         assert_eq!(life, Life::Planning);
         assert_eq!(record.stage, TransitionRecord::PLANNING);
@@ -8370,7 +8607,9 @@ mod tests {
         // Still ELIGIBLE, never selected: the stage gate refuses
         // before any replay, and nothing on the record moves.
         let (state, mut record, obs, first) = selected_pair();
-        let err = open_planning_from_records(&state, &mut record, &obs, &[first], ag(1))
+        let err = open_planning_from_records(&state, &mut record, &obs, &[first], ag(1),
+    &[]
+)
             .expect_err("an unselected record must refuse planning");
         assert!(format!("{:?}", err).contains("WrongStage"));
         assert_eq!(record.stage, TransitionRecord::ELIGIBLE);
@@ -8380,9 +8619,13 @@ mod tests {
     #[test]
     fn open_planning_is_once_only() {
         let (state, mut record, obs, first) = planning_pair();
-        open_planning_from_records(&state, &mut record, &obs, &[first], ag(1))
+        open_planning_from_records(&state, &mut record, &obs, &[first], ag(1),
+    &[]
+)
             .expect("first planning open must succeed");
-        let err = open_planning_from_records(&state, &mut record, &obs, &[first], ag(1))
+        let err = open_planning_from_records(&state, &mut record, &obs, &[first], ag(1),
+    &[]
+)
             .expect_err("a second planning open must refuse");
         assert!(format!("{:?}", err).contains("WrongStage"));
         assert_eq!(record.stage, TransitionRecord::PLANNING);
@@ -8396,7 +8639,9 @@ mod tests {
         // and the SELECTED stage and zero deadline stand.
         let (state, mut record, obs, first) = planning_pair();
         record.signal_count = 2;
-        let err = open_planning_from_records(&state, &mut record, &obs, &[first], ag(1))
+        let err = open_planning_from_records(&state, &mut record, &obs, &[first], ag(1),
+    &[]
+)
             .expect_err("a short prior set must refuse planning");
         assert!(format!("{:?}", err).contains("PlanningFailed"));
         assert_eq!(record.stage, TransitionRecord::SELECTED);
@@ -8411,7 +8656,9 @@ mod tests {
         // stays closed with the deadline untouched.
         let (mut state, mut record, obs, first) = planning_pair();
         state.clock = 199;
-        let err = open_planning_from_records(&state, &mut record, &obs, &[first], ag(1))
+        let err = open_planning_from_records(&state, &mut record, &obs, &[first], ag(1),
+    &[]
+)
             .expect_err("an unreproducible selection must refuse planning");
         assert!(format!("{:?}", err).contains("PlanningFailed"));
         assert_eq!(record.stage, TransitionRecord::SELECTED);
@@ -8424,7 +8671,9 @@ mod tests {
         // selection ran at: at 500 the deadline is 600.
         let (mut state, mut record, obs, first) = planning_pair();
         advance_clock_on_state(&mut state, 500).expect("advance past selection must succeed");
-        open_planning_from_records(&state, &mut record, &obs, &[first], ag(1))
+        open_planning_from_records(&state, &mut record, &obs, &[first], ag(1),
+    &[]
+)
             .expect("planning at a later clock must succeed");
         assert_eq!(record.stage, TransitionRecord::PLANNING);
         assert_eq!(record.planning_deadline, 600);
@@ -8434,7 +8683,9 @@ mod tests {
     fn open_planning_refuses_unsealed() {
         let (mut state, mut record, obs, first) = planning_pair();
         state.sealed = false;
-        let err = open_planning_from_records(&state, &mut record, &obs, &[first], ag(1))
+        let err = open_planning_from_records(&state, &mut record, &obs, &[first], ag(1),
+    &[]
+)
             .expect_err("an unsealed state must refuse planning");
         assert!(format!("{:?}", err).contains("NotSealed"));
         assert_eq!(record.stage, TransitionRecord::SELECTED);
@@ -8445,7 +8696,9 @@ mod tests {
     fn open_planning_refuses_parent_mismatch() {
         let (mut state, mut record, obs, first) = planning_pair();
         state.head_index = 9;
-        let err = open_planning_from_records(&state, &mut record, &obs, &[first], ag(1))
+        let err = open_planning_from_records(&state, &mut record, &obs, &[first], ag(1),
+    &[]
+)
             .expect_err("a record off the sealed head must refuse planning");
         assert!(format!("{:?}", err).contains("ParentMismatch"));
         assert_eq!(record.stage, TransitionRecord::SELECTED);
@@ -8474,7 +8727,9 @@ mod tests {
         // BLOCKED -> PLANNING, deadline reset to clock 200 + window
         // 100 = 300, replans 0 -> 1.
         let (state, mut record, obs, first) = blocked_pair();
-        let life = open_planning_from_records(&state, &mut record, &obs, &[first], ag(1))
+        let life = open_planning_from_records(&state, &mut record, &obs, &[first], ag(1),
+    &[]
+)
             .expect("a proposer re-plan must open planning");
         assert_eq!(life, Life::Planning);
         assert_eq!(record.stage, TransitionRecord::PLANNING);
@@ -8489,7 +8744,9 @@ mod tests {
         // caller ag(2) qualifies on the seat ground alone.
         let (state, mut record, obs, first) = blocked_pair();
         record.proposer = Pubkey::new_from_array(ag(4));
-        let life = open_planning_from_records(&state, &mut record, &obs, &[first], ag(2))
+        let life = open_planning_from_records(&state, &mut record, &obs, &[first], ag(2),
+    &[]
+)
             .expect("a seat re-plan must open planning");
         assert_eq!(life, Life::Planning);
         assert_eq!(record.stage, TransitionRecord::PLANNING);
@@ -8503,7 +8760,9 @@ mod tests {
         // qualifies on the proposer ground alone.
         let (state, mut record, obs, first) = blocked_pair();
         record.proposer = Pubkey::new_from_array(ag(4));
-        let life = open_planning_from_records(&state, &mut record, &obs, &[first], ag(4))
+        let life = open_planning_from_records(&state, &mut record, &obs, &[first], ag(4),
+    &[]
+)
             .expect("a non-seat proposer re-plan must open planning");
         assert_eq!(life, Life::Planning);
         assert_eq!(record.stage, TransitionRecord::PLANNING);
@@ -8515,7 +8774,9 @@ mod tests {
         // Neither proposer nor seat: ReplanRefused, and the record
         // stands exactly as it stood — stage, deadline, count.
         let (state, mut record, obs, first) = blocked_pair();
-        let err = open_planning_from_records(&state, &mut record, &obs, &[first], [0x77; 32])
+        let err = open_planning_from_records(&state, &mut record, &obs, &[first], [0x77; 32],
+    &[]
+)
             .expect_err("a stranger re-plan must refuse");
         assert!(format!("{:?}", err).contains("ReplanRefused"));
         assert_eq!(record.stage, TransitionRecord::BLOCKED);
@@ -8529,7 +8790,9 @@ mod tests {
         // and the count does not advance past the cap.
         let (state, mut record, obs, first) = blocked_pair();
         record.replans = 3;
-        let err = open_planning_from_records(&state, &mut record, &obs, &[first], ag(1))
+        let err = open_planning_from_records(&state, &mut record, &obs, &[first], ag(1),
+    &[]
+)
             .expect_err("a capped re-plan must refuse");
         assert!(format!("{:?}", err).contains("ReplanRefused"));
         assert_eq!(record.stage, TransitionRecord::BLOCKED);
@@ -8543,9 +8806,13 @@ mod tests {
         // stage is PLANNING, so a second open refuses WrongStage
         // and the count stays at 1, not 2.
         let (state, mut record, obs, first) = blocked_pair();
-        open_planning_from_records(&state, &mut record, &obs, &[first], ag(1))
+        open_planning_from_records(&state, &mut record, &obs, &[first], ag(1),
+    &[]
+)
             .expect("first re-plan must succeed");
-        let err = open_planning_from_records(&state, &mut record, &obs, &[first], ag(1))
+        let err = open_planning_from_records(&state, &mut record, &obs, &[first], ag(1),
+    &[]
+)
             .expect_err("a second planning open must refuse");
         assert!(format!("{:?}", err).contains("WrongStage"));
         assert_eq!(record.stage, TransitionRecord::PLANNING);
@@ -8557,7 +8824,9 @@ mod tests {
     fn selected_open_leaves_replans_untouched() {
         // The Selected path is not a re-plan: replans stays 0.
         let (state, mut record, obs, first) = planning_pair();
-        open_planning_from_records(&state, &mut record, &obs, &[first], ag(1))
+        open_planning_from_records(&state, &mut record, &obs, &[first], ag(1),
+    &[]
+)
             .expect("a Selected open must succeed");
         assert_eq!(record.stage, TransitionRecord::PLANNING);
         assert_eq!(record.replans, 0);
@@ -8568,7 +8837,9 @@ mod tests {
         // 300 and the derived open clock is 200: the replay clock
         // for select and open_planning in every plan test below.
         let (state, mut record, obs, first) = planning_pair();
-        let life = open_planning_from_records(&state, &mut record, &obs, &[first], ag(1))
+        let life = open_planning_from_records(&state, &mut record, &obs, &[first], ag(1),
+    &[]
+)
             .expect("planning open must succeed");
         assert_eq!(life, Life::Planning);
         assert_eq!(record.stage, TransitionRecord::PLANNING);
@@ -8624,7 +8895,8 @@ mod tests {
         let (state, mut record, obs, first) = planned_pair();
         let plan = submit_plan_from_records(
             &state, &mut record, &obs, &[first], &[], &two_claims(), 400, ag(2), 7,
-        )
+            &[],
+)
         .expect("a seeded agent's plan inside the window must submit");
         assert_eq!(plan.transition_id, record.transition_id);
         assert_eq!(plan.agent.to_bytes(), ag(2));
@@ -8649,7 +8921,8 @@ mod tests {
         let (state, mut record, obs, first) = planned_pair();
         let prior = submit_plan_from_records(
             &state, &mut record, &obs, &[first], &[], &two_claims(), 400, ag(2), 7,
-        )
+            &[],
+)
         .expect("first plan must submit");
         assert_eq!(record.plan_count, 1);
         let second = submit_plan_from_records(
@@ -8662,7 +8935,8 @@ mod tests {
             500,
             ag(3),
             8,
-        )
+            &[],
+)
         .expect("a second agent's plan must submit over the prior");
         assert_eq!(second.agent.to_bytes(), ag(3));
         assert_eq!(second.claim_count, 1);
@@ -8678,7 +8952,8 @@ mod tests {
         let (state, mut record, obs, first) = selected_pair();
         let err = submit_plan_from_records(
             &state, &mut record, &obs, &[first], &[], &two_claims(), 400, ag(2), 7,
-        )
+            &[],
+)
         .expect_err("an unplanned record must refuse a plan");
         assert!(format!("{:?}", err).contains("WrongStage"));
         assert_eq!(record.plan_count, 0);
@@ -8692,7 +8967,8 @@ mod tests {
         advance_clock_on_state(&mut state, 300).expect("advance to the deadline must succeed");
         let err = submit_plan_from_records(
             &state, &mut record, &obs, &[first], &[], &two_claims(), 400, ag(2), 7,
-        )
+            &[],
+)
         .expect_err("a plan at the deadline must refuse");
         assert!(format!("{:?}", err).contains("PlanFailed"));
         assert_eq!(record.stage, TransitionRecord::PLANNING);
@@ -8707,7 +8983,8 @@ mod tests {
         let (state, mut record, obs, first) = planned_pair();
         let err = submit_plan_from_records(
             &state, &mut record, &obs, &[first], &[], &two_claims(), 300, ag(2), 7,
-        )
+            &[],
+)
         .expect_err("a plan expiring at the deadline must refuse");
         assert!(format!("{:?}", err).contains("PlanFailed"));
         assert_eq!(record.plan_count, 0);
@@ -8721,7 +8998,8 @@ mod tests {
         let (state, mut record, obs, first) = planned_pair();
         let err = submit_plan_from_records(
             &state, &mut record, &obs, &[first], &[], &two_claims(), 400, [0x77; 32], 7,
-        )
+            &[],
+)
         .expect_err("an unknown agent's plan must refuse");
         assert!(format!("{:?}", err).contains("PlanFailed"));
         assert_eq!(record.plan_count, 0);
@@ -8735,11 +9013,13 @@ mod tests {
         let (state, mut record, obs, first) = planned_pair();
         let prior = submit_plan_from_records(
             &state, &mut record, &obs, &[first], &[], &two_claims(), 400, ag(2), 7,
-        )
+            &[],
+)
         .expect("first plan must submit");
         let err = submit_plan_from_records(
             &state, &mut record, &obs, &[first], &[prior], &two_claims(), 500, ag(2), 7,
-        )
+            &[],
+)
         .expect_err("a duplicate agent plan must refuse");
         assert!(format!("{:?}", err).contains("PlanFailed"));
         assert_eq!(record.plan_count, 1);
@@ -8757,7 +9037,8 @@ mod tests {
         ];
         let err = submit_plan_from_records(
             &state, &mut record, &obs, &[first], &[], &dup, 400, ag(2), 7,
-        )
+            &[],
+)
         .expect_err("a duplicated resource must refuse");
         assert!(format!("{:?}", err).contains("PlanFailed"));
         assert_eq!(record.plan_count, 0);
@@ -8771,7 +9052,8 @@ mod tests {
         record.plan_count = 1;
         let err = submit_plan_from_records(
             &state, &mut record, &obs, &[first], &[], &two_claims(), 400, ag(2), 7,
-        )
+            &[],
+)
         .expect_err("a short prior plan set must refuse");
         assert!(format!("{:?}", err).contains("PlanFailed"));
         assert_eq!(record.plan_count, 1);
@@ -8786,7 +9068,8 @@ mod tests {
         record.signal_count = 2;
         let err = submit_plan_from_records(
             &state, &mut record, &obs, &[first], &[], &two_claims(), 400, ag(2), 7,
-        )
+            &[],
+)
         .expect_err("a short prior signal set must refuse a plan");
         assert!(format!("{:?}", err).contains("PlanFailed"));
         assert_eq!(record.plan_count, 0);
@@ -8798,7 +9081,8 @@ mod tests {
         state.sealed = false;
         let err = submit_plan_from_records(
             &state, &mut record, &obs, &[first], &[], &two_claims(), 400, ag(2), 7,
-        )
+            &[],
+)
         .expect_err("an unsealed state must refuse a plan");
         assert!(format!("{:?}", err).contains("NotSealed"));
         assert_eq!(record.plan_count, 0);
@@ -8817,7 +9101,8 @@ mod tests {
         let (state, mut record, obs, first) = planned_pair();
         let plan = submit_plan_from_records(
             &state, &mut record, &obs, &[first], &[], &two_claims(), 400, ag(2), 7,
-        )
+            &[],
+)
         .expect("first plan must submit");
         assert_eq!(record.plan_count, 1);
         (state, record, obs, first, plan)
@@ -8830,7 +9115,9 @@ mod tests {
         // fitting plan set records compatible true.
         let (mut state, mut record, obs, first, plan) = one_plan_pair();
         advance_clock_on_state(&mut state, 300).expect("advance to the deadline must succeed");
-        let life = reconcile_plans_from_records(&state, &mut record, &obs, &[first], &[plan])
+        let life = reconcile_plans_from_records(&state, &mut record, &obs, &[first], &[plan],
+    &[]
+)
             .expect("a kernel-proven plan set at the deadline must reconcile");
         assert_eq!(life, Life::Reconciling);
         assert_eq!(record.stage, TransitionRecord::RECONCILING);
@@ -8848,7 +9135,9 @@ mod tests {
         // instead of the call failing to happen.
         let (mut state, mut record, obs, first) = planned_pair();
         advance_clock_on_state(&mut state, 300).expect("advance to the deadline must succeed");
-        let life = reconcile_plans_from_records(&state, &mut record, &obs, &[first], &[])
+        let life = reconcile_plans_from_records(&state, &mut record, &obs, &[first], &[],
+    &[]
+)
             .expect("an empty plan set must reconcile to incompatible, not refuse");
         assert_eq!(life, Life::Reconciling);
         assert_eq!(record.stage, TransitionRecord::RECONCILING);
@@ -8867,11 +9156,13 @@ mod tests {
         let big = vec![PlanClaimArg { resource: RES_TREASURY_TRANCHE, amount_raw: 600 * SCALE }];
         let first_plan = submit_plan_from_records(
             &state, &mut record, &obs, &[first], &[], &big, 400, ag(2), 7,
-        )
+            &[],
+)
         .expect("first big plan must submit");
         let second_plan = submit_plan_from_records(
             &state, &mut record, &obs, &[first], std::slice::from_ref(&first_plan), &big, 400, ag(3), 8,
-        )
+            &[],
+)
         .expect("second big plan must submit");
         assert_eq!(record.plan_count, 2);
         advance_clock_on_state(&mut state, 300).expect("advance to the deadline must succeed");
@@ -8881,7 +9172,8 @@ mod tests {
             &obs,
             &[first],
             &[first_plan, second_plan],
-        )
+            &[],
+)
         .expect("an over-capacity set must reconcile to incompatible, not refuse");
         assert_eq!(life, Life::Reconciling);
         assert_eq!(record.stage, TransitionRecord::RECONCILING);
@@ -8895,7 +9187,9 @@ mod tests {
         // stands PLANNING with compatible still false.
         let (mut state, mut record, obs, first, plan) = one_plan_pair();
         advance_clock_on_state(&mut state, 299).expect("advance must succeed");
-        let err = reconcile_plans_from_records(&state, &mut record, &obs, &[first], &[plan])
+        let err = reconcile_plans_from_records(&state, &mut record, &obs, &[first], &[plan],
+    &[]
+)
             .expect_err("an open window must refuse reconcile");
         assert!(format!("{:?}", err).contains("ReconcileFailed"));
         assert_eq!(record.stage, TransitionRecord::PLANNING);
@@ -8910,7 +9204,9 @@ mod tests {
         // SELECTED; `selected_pair` only holds a signal and is
         // still ELIGIBLE.)
         let (state, mut record, obs, first) = planning_pair();
-        let err = reconcile_plans_from_records(&state, &mut record, &obs, &[first], &[])
+        let err = reconcile_plans_from_records(&state, &mut record, &obs, &[first], &[],
+    &[]
+)
             .expect_err("an unplanned record must refuse reconcile");
         assert!(format!("{:?}", err).contains("WrongStage"));
         assert_eq!(record.stage, TransitionRecord::SELECTED);
@@ -8921,9 +9217,13 @@ mod tests {
     fn reconcile_is_once_only() {
         let (mut state, mut record, obs, first, plan) = one_plan_pair();
         advance_clock_on_state(&mut state, 300).expect("advance to the deadline must succeed");
-        reconcile_plans_from_records(&state, &mut record, &obs, &[first], std::slice::from_ref(&plan))
+        reconcile_plans_from_records(&state, &mut record, &obs, &[first], std::slice::from_ref(&plan),
+    &[]
+)
             .expect("first reconcile must succeed");
-        let err = reconcile_plans_from_records(&state, &mut record, &obs, &[first], &[plan])
+        let err = reconcile_plans_from_records(&state, &mut record, &obs, &[first], &[plan],
+    &[]
+)
             .expect_err("a second reconcile must refuse");
         assert!(format!("{:?}", err).contains("WrongStage"));
         assert_eq!(record.stage, TransitionRecord::RECONCILING);
@@ -8937,7 +9237,9 @@ mod tests {
         let (mut state, mut record, obs, first, plan) = one_plan_pair();
         record.plan_count = 2;
         advance_clock_on_state(&mut state, 300).expect("advance to the deadline must succeed");
-        let err = reconcile_plans_from_records(&state, &mut record, &obs, &[first], &[plan])
+        let err = reconcile_plans_from_records(&state, &mut record, &obs, &[first], &[plan],
+    &[]
+)
             .expect_err("a short prior plan set must refuse reconcile");
         assert!(format!("{:?}", err).contains("ReconcileFailed"));
         assert_eq!(record.stage, TransitionRecord::PLANNING);
@@ -8952,7 +9254,9 @@ mod tests {
         let (mut state, mut record, obs, first, plan) = one_plan_pair();
         record.signal_count = 2;
         advance_clock_on_state(&mut state, 300).expect("advance to the deadline must succeed");
-        let err = reconcile_plans_from_records(&state, &mut record, &obs, &[first], &[plan])
+        let err = reconcile_plans_from_records(&state, &mut record, &obs, &[first], &[plan],
+    &[]
+)
             .expect_err("a short prior signal set must refuse reconcile");
         assert!(format!("{:?}", err).contains("ReconcileFailed"));
         assert_eq!(record.stage, TransitionRecord::PLANNING);
@@ -8968,7 +9272,9 @@ mod tests {
         let (mut state, mut record, obs, first, mut plan) = one_plan_pair();
         plan.agent = Pubkey::new_from_array([0x77; 32]);
         advance_clock_on_state(&mut state, 300).expect("advance to the deadline must succeed");
-        let err = reconcile_plans_from_records(&state, &mut record, &obs, &[first], &[plan])
+        let err = reconcile_plans_from_records(&state, &mut record, &obs, &[first], &[plan],
+    &[]
+)
             .expect_err("an unreproducible plan must refuse reconcile");
         assert!(format!("{:?}", err).contains("ReconcileFailed"));
         assert_eq!(record.stage, TransitionRecord::PLANNING);
@@ -8980,7 +9286,9 @@ mod tests {
         let (mut state, mut record, obs, first, plan) = one_plan_pair();
         advance_clock_on_state(&mut state, 300).expect("advance to the deadline must succeed");
         state.sealed = false;
-        let err = reconcile_plans_from_records(&state, &mut record, &obs, &[first], &[plan])
+        let err = reconcile_plans_from_records(&state, &mut record, &obs, &[first], &[plan],
+    &[]
+)
             .expect_err("an unsealed state must refuse reconcile");
         assert!(format!("{:?}", err).contains("NotSealed"));
         assert_eq!(record.stage, TransitionRecord::PLANNING);
@@ -8992,7 +9300,9 @@ mod tests {
         let (mut state, mut record, obs, first, plan) = one_plan_pair();
         advance_clock_on_state(&mut state, 300).expect("advance to the deadline must succeed");
         state.head_index = 9;
-        let err = reconcile_plans_from_records(&state, &mut record, &obs, &[first], &[plan])
+        let err = reconcile_plans_from_records(&state, &mut record, &obs, &[first], &[plan],
+    &[]
+)
             .expect_err("a record off the sealed head must refuse reconcile");
         assert!(format!("{:?}", err).contains("ParentMismatch"));
         assert_eq!(record.stage, TransitionRecord::PLANNING);
@@ -9011,7 +9321,9 @@ mod tests {
         // below builds from.
         let (mut state, mut record, obs, first, plan) = one_plan_pair();
         advance_clock_on_state(&mut state, 300).expect("advance to the deadline must succeed");
-        let life = reconcile_plans_from_records(&state, &mut record, &obs, &[first], std::slice::from_ref(&plan))
+        let life = reconcile_plans_from_records(&state, &mut record, &obs, &[first], std::slice::from_ref(&plan),
+    &[]
+)
             .expect("a fitting plan set at the deadline must reconcile");
         assert_eq!(life, Life::Reconciling);
         assert_eq!(record.stage, TransitionRecord::RECONCILING);
@@ -9024,7 +9336,9 @@ mod tests {
         // so validate blocks rather than validates.
         let (mut state, mut record, obs, first) = planned_pair();
         advance_clock_on_state(&mut state, 300).expect("advance to the deadline must succeed");
-        let life = reconcile_plans_from_records(&state, &mut record, &obs, &[first], &[])
+        let life = reconcile_plans_from_records(&state, &mut record, &obs, &[first], &[],
+    &[]
+)
             .expect("an empty plan set must reconcile to incompatible");
         assert_eq!(life, Life::Reconciling);
         assert_eq!(record.stage, TransitionRecord::RECONCILING);
@@ -9038,7 +9352,9 @@ mod tests {
         // fresh observation at clock 300: the predicate passes,
         // the stage advances to 8, and the stored verdict stands.
         let (state, mut record, obs, first, plan) = reconciling_pair();
-        let life = validate_transition_from_records(&state, &mut record, &obs, &[first], &[plan])
+        let life = validate_transition_from_records(&state, &mut record, &obs, &[first], &[plan],
+    &[]
+)
             .expect("a fitting reconciled chain must validate");
         assert_eq!(life, Life::Validated);
         assert_eq!(record.stage, TransitionRecord::VALIDATED);
@@ -9053,7 +9369,9 @@ mod tests {
         // record says so, so the re-plan path (slice 22) opens
         // from it instead of the call failing to happen.
         let (state, mut record, obs, first) = empty_reconciling_pair();
-        let life = validate_transition_from_records(&state, &mut record, &obs, &[first], &[])
+        let life = validate_transition_from_records(&state, &mut record, &obs, &[first], &[],
+    &[]
+)
             .expect("an incompatible set must validate to Blocked, not refuse");
         assert_eq!(life, Life::Blocked);
         assert_eq!(record.stage, TransitionRecord::BLOCKED);
@@ -9070,18 +9388,24 @@ mod tests {
         let big = vec![PlanClaimArg { resource: RES_TREASURY_TRANCHE, amount_raw: 600 * SCALE }];
         let first_plan = submit_plan_from_records(
             &state, &mut record, &obs, &[first], &[], &big, 400, ag(2), 7,
-        )
+            &[],
+)
         .expect("first big plan must submit");
         let second_plan = submit_plan_from_records(
             &state, &mut record, &obs, &[first], std::slice::from_ref(&first_plan), &big, 400, ag(3), 8,
-        )
+            &[],
+)
         .expect("second big plan must submit");
         advance_clock_on_state(&mut state, 300).expect("advance to the deadline must succeed");
         let plans = [first_plan, second_plan];
-        reconcile_plans_from_records(&state, &mut record, &obs, &[first], &plans)
+        reconcile_plans_from_records(&state, &mut record, &obs, &[first], &plans,
+    &[]
+)
             .expect("an over-capacity set must reconcile to incompatible");
         assert!(!record.compatible);
-        let life = validate_transition_from_records(&state, &mut record, &obs, &[first], &plans)
+        let life = validate_transition_from_records(&state, &mut record, &obs, &[first], &plans,
+    &[]
+)
             .expect("an incompatible set must validate to Blocked, not refuse");
         assert_eq!(life, Life::Blocked);
         assert_eq!(record.stage, TransitionRecord::BLOCKED);
@@ -9094,7 +9418,9 @@ mod tests {
         // Still PLANNING, never reconciled: the stage gate refuses
         // before any replay, and nothing on the record moves.
         let (state, mut record, obs, first, plan) = one_plan_pair();
-        let err = validate_transition_from_records(&state, &mut record, &obs, &[first], &[plan])
+        let err = validate_transition_from_records(&state, &mut record, &obs, &[first], &[plan],
+    &[]
+)
             .expect_err("an unreconciled record must refuse validate");
         assert!(format!("{:?}", err).contains("WrongStage"));
         assert_eq!(record.stage, TransitionRecord::PLANNING);
@@ -9106,10 +9432,14 @@ mod tests {
         // A validated record is past validate: the stage gate
         // refuses a second call, and the VALIDATED stage stands.
         let (state, mut record, obs, first, plan) = reconciling_pair();
-        validate_transition_from_records(&state, &mut record, &obs, &[first], std::slice::from_ref(&plan))
+        validate_transition_from_records(&state, &mut record, &obs, &[first], std::slice::from_ref(&plan),
+    &[]
+)
             .expect("first validate must succeed");
         assert_eq!(record.stage, TransitionRecord::VALIDATED);
-        let err = validate_transition_from_records(&state, &mut record, &obs, &[first], std::slice::from_ref(&plan))
+        let err = validate_transition_from_records(&state, &mut record, &obs, &[first], std::slice::from_ref(&plan),
+    &[]
+)
             .expect_err("a second validate must refuse");
         assert!(format!("{:?}", err).contains("WrongStage"));
         assert_eq!(record.stage, TransitionRecord::VALIDATED);
@@ -9123,10 +9453,14 @@ mod tests {
         // predicate inputs, so the kernel reports StillBlocked,
         // the call refuses, and the record stands BLOCKED.
         let (state, mut record, obs, first) = empty_reconciling_pair();
-        validate_transition_from_records(&state, &mut record, &obs, &[first], &[])
+        validate_transition_from_records(&state, &mut record, &obs, &[first], &[],
+    &[]
+)
             .expect("first validate must block");
         assert_eq!(record.stage, TransitionRecord::BLOCKED);
-        let err = validate_transition_from_records(&state, &mut record, &obs, &[first], &[])
+        let err = validate_transition_from_records(&state, &mut record, &obs, &[first], &[],
+    &[]
+)
             .expect_err("a still-blocked record must refuse re-validate");
         assert!(format!("{:?}", err).contains("ValidateFailed"));
         assert_eq!(record.stage, TransitionRecord::BLOCKED);
@@ -9142,7 +9476,9 @@ mod tests {
         // RECONCILING, neither validated nor blocked on a lie.
         let (state, mut record, obs, first, plan) = reconciling_pair();
         record.compatible = false;
-        let err = validate_transition_from_records(&state, &mut record, &obs, &[first], &[plan])
+        let err = validate_transition_from_records(&state, &mut record, &obs, &[first], &[plan],
+    &[]
+)
             .expect_err("a mismatched stored verdict must refuse validate");
         assert!(format!("{:?}", err).contains("ValidateFailed"));
         assert_eq!(record.stage, TransitionRecord::RECONCILING);
@@ -9157,7 +9493,9 @@ mod tests {
         // stands, so this is a verdict, not a refusal.
         let (mut state, mut record, obs, first, plan) = reconciling_pair();
         advance_clock_on_state(&mut state, 9100).expect("advance to the observation expiry must succeed");
-        let life = validate_transition_from_records(&state, &mut record, &obs, &[first], &[plan])
+        let life = validate_transition_from_records(&state, &mut record, &obs, &[first], &[plan],
+    &[]
+)
             .expect("a stale observation must validate to Blocked, not refuse");
         assert_eq!(life, Life::Blocked);
         assert_eq!(record.stage, TransitionRecord::BLOCKED);
@@ -9170,7 +9508,9 @@ mod tests {
         // the slice-21 anchor refuses before any replay.
         let (state, mut record, obs, first, plan) = reconciling_pair();
         record.plan_count = 2;
-        let err = validate_transition_from_records(&state, &mut record, &obs, &[first], &[plan])
+        let err = validate_transition_from_records(&state, &mut record, &obs, &[first], &[plan],
+    &[]
+)
             .expect_err("a short prior plan set must refuse validate");
         assert!(format!("{:?}", err).contains("ValidateFailed"));
         assert_eq!(record.stage, TransitionRecord::RECONCILING);
@@ -9184,7 +9524,9 @@ mod tests {
         // supplied: the slice-16 anchor refuses before any replay.
         let (state, mut record, obs, first, plan) = reconciling_pair();
         record.signal_count = 2;
-        let err = validate_transition_from_records(&state, &mut record, &obs, &[first], &[plan])
+        let err = validate_transition_from_records(&state, &mut record, &obs, &[first], &[plan],
+    &[]
+)
             .expect_err("a short prior signal set must refuse validate");
         assert!(format!("{:?}", err).contains("ValidateFailed"));
         assert_eq!(record.stage, TransitionRecord::RECONCILING);
@@ -9199,7 +9541,9 @@ mod tests {
         // record stands.
         let (state, mut record, obs, first, mut plan) = reconciling_pair();
         plan.agent = Pubkey::new_from_array([0x77; 32]);
-        let err = validate_transition_from_records(&state, &mut record, &obs, &[first], &[plan])
+        let err = validate_transition_from_records(&state, &mut record, &obs, &[first], &[plan],
+    &[]
+)
             .expect_err("an unreproducible plan must refuse validate");
         assert!(format!("{:?}", err).contains("ValidateFailed"));
         assert_eq!(record.stage, TransitionRecord::RECONCILING);
@@ -9210,7 +9554,9 @@ mod tests {
     fn validate_refuses_unsealed() {
         let (mut state, mut record, obs, first, plan) = reconciling_pair();
         state.sealed = false;
-        let err = validate_transition_from_records(&state, &mut record, &obs, &[first], &[plan])
+        let err = validate_transition_from_records(&state, &mut record, &obs, &[first], &[plan],
+    &[]
+)
             .expect_err("an unsealed state must refuse validate");
         assert!(format!("{:?}", err).contains("NotSealed"));
         assert_eq!(record.stage, TransitionRecord::RECONCILING);
@@ -9221,7 +9567,9 @@ mod tests {
     fn validate_refuses_parent_mismatch() {
         let (mut state, mut record, obs, first, plan) = reconciling_pair();
         state.head_index = 9;
-        let err = validate_transition_from_records(&state, &mut record, &obs, &[first], &[plan])
+        let err = validate_transition_from_records(&state, &mut record, &obs, &[first], &[plan],
+    &[]
+)
             .expect_err("a record off the sealed head must refuse validate");
         assert!(format!("{:?}", err).contains("ParentMismatch"));
         assert_eq!(record.stage, TransitionRecord::RECONCILING);
@@ -9238,7 +9586,9 @@ mod tests {
         // Validated at clock 300 with one fitting plan: the
         // declare-success fixture every slice-25 test builds from.
         let (state, mut record, obs, first, plan) = reconciling_pair();
-        let life = validate_transition_from_records(&state, &mut record, &obs, &[first], std::slice::from_ref(&plan))
+        let life = validate_transition_from_records(&state, &mut record, &obs, &[first], std::slice::from_ref(&plan),
+    &[]
+)
             .expect("a fitting reconciled chain must validate");
         assert_eq!(life, Life::Validated);
         assert_eq!(record.stage, TransitionRecord::VALIDATED);
@@ -9255,7 +9605,9 @@ mod tests {
         let (state, mut record, obs, first, plan) = validated_pair();
         let head_index = state.head_index;
         let head_hash = state.head_hash;
-        let life = declare_transition_from_records(&state, &mut record, &obs, &[first], &[plan])
+        let life = declare_transition_from_records(&state, &mut record, &obs, &[first], &[plan],
+    &[]
+)
             .expect("a fitting validated chain must declare");
         assert_eq!(life, Life::Committable);
         assert_eq!(record.stage, TransitionRecord::DECLARED);
@@ -9270,10 +9622,14 @@ mod tests {
         // A declared record is past declare: the stage gate
         // refuses a second call, and the DECLARED stage stands.
         let (state, mut record, obs, first, plan) = validated_pair();
-        declare_transition_from_records(&state, &mut record, &obs, &[first], std::slice::from_ref(&plan))
+        declare_transition_from_records(&state, &mut record, &obs, &[first], std::slice::from_ref(&plan),
+    &[]
+)
             .expect("first declare must succeed");
         assert_eq!(record.stage, TransitionRecord::DECLARED);
-        let err = declare_transition_from_records(&state, &mut record, &obs, &[first], std::slice::from_ref(&plan))
+        let err = declare_transition_from_records(&state, &mut record, &obs, &[first], std::slice::from_ref(&plan),
+    &[]
+)
             .expect_err("a second declare must refuse");
         assert!(format!("{:?}", err).contains("WrongStage"));
         assert_eq!(record.stage, TransitionRecord::DECLARED);
@@ -9286,7 +9642,9 @@ mod tests {
         // stage gate refuses before any replay, and nothing on
         // the record moves.
         let (state, mut record, obs, first, plan) = one_plan_pair();
-        let err = declare_transition_from_records(&state, &mut record, &obs, &[first], &[plan])
+        let err = declare_transition_from_records(&state, &mut record, &obs, &[first], &[plan],
+    &[]
+)
             .expect_err("an unvalidated record must refuse declare");
         assert!(format!("{:?}", err).contains("WrongStage"));
         assert_eq!(record.stage, TransitionRecord::PLANNING);
@@ -9299,10 +9657,14 @@ mod tests {
         // the stage gate refuses, and the record stands BLOCKED
         // for the re-plan path — declare never re-labels it.
         let (state, mut record, obs, first) = empty_reconciling_pair();
-        validate_transition_from_records(&state, &mut record, &obs, &[first], &[])
+        validate_transition_from_records(&state, &mut record, &obs, &[first], &[],
+    &[]
+)
             .expect("first validate must block");
         assert_eq!(record.stage, TransitionRecord::BLOCKED);
-        let err = declare_transition_from_records(&state, &mut record, &obs, &[first], &[])
+        let err = declare_transition_from_records(&state, &mut record, &obs, &[first], &[],
+    &[]
+)
             .expect_err("a blocked record must refuse declare");
         assert!(format!("{:?}", err).contains("WrongStage"));
         assert_eq!(record.stage, TransitionRecord::BLOCKED);
@@ -9321,7 +9683,9 @@ mod tests {
         // not declared.
         let (mut state, mut record, obs, first, plan) = validated_pair();
         advance_clock_on_state(&mut state, 400).expect("advance to the plan expiry must succeed");
-        let err = declare_transition_from_records(&state, &mut record, &obs, &[first], &[plan])
+        let err = declare_transition_from_records(&state, &mut record, &obs, &[first], &[plan],
+    &[]
+)
             .expect_err("an expired-plan predicate must refuse declare");
         assert!(format!("{:?}", err).contains("DeclareFailed"));
         assert_eq!(record.stage, TransitionRecord::VALIDATED);
@@ -9338,7 +9702,9 @@ mod tests {
         // declare or for the exception path to judge.
         let (mut state, mut record, obs, first, plan) = validated_pair();
         advance_clock_on_state(&mut state, 9100).expect("advance to the observation expiry must succeed");
-        let err = declare_transition_from_records(&state, &mut record, &obs, &[first], &[plan])
+        let err = declare_transition_from_records(&state, &mut record, &obs, &[first], &[plan],
+    &[]
+)
             .expect_err("a stale observation must refuse declare");
         assert!(format!("{:?}", err).contains("DeclareFailed"));
         assert_eq!(record.stage, TransitionRecord::VALIDATED);
@@ -9355,7 +9721,9 @@ mod tests {
         // declared nor blocked on a lie.
         let (state, mut record, obs, first, plan) = validated_pair();
         record.compatible = false;
-        let err = declare_transition_from_records(&state, &mut record, &obs, &[first], &[plan])
+        let err = declare_transition_from_records(&state, &mut record, &obs, &[first], &[plan],
+    &[]
+)
             .expect_err("a mismatched stored verdict must refuse declare");
         assert!(format!("{:?}", err).contains("DeclareFailed"));
         assert_eq!(record.stage, TransitionRecord::VALIDATED);
@@ -9369,7 +9737,9 @@ mod tests {
         // replay.
         let (state, mut record, obs, first, plan) = validated_pair();
         record.plan_count = 2;
-        let err = declare_transition_from_records(&state, &mut record, &obs, &[first], &[plan])
+        let err = declare_transition_from_records(&state, &mut record, &obs, &[first], &[plan],
+    &[]
+)
             .expect_err("a short prior plan set must refuse declare");
         assert!(format!("{:?}", err).contains("DeclareFailed"));
         assert_eq!(record.stage, TransitionRecord::VALIDATED);
@@ -9384,7 +9754,9 @@ mod tests {
         // replay.
         let (state, mut record, obs, first, plan) = validated_pair();
         record.signal_count = 2;
-        let err = declare_transition_from_records(&state, &mut record, &obs, &[first], &[plan])
+        let err = declare_transition_from_records(&state, &mut record, &obs, &[first], &[plan],
+    &[]
+)
             .expect_err("a short prior signal set must refuse declare");
         assert!(format!("{:?}", err).contains("DeclareFailed"));
         assert_eq!(record.stage, TransitionRecord::VALIDATED);
@@ -9399,7 +9771,9 @@ mod tests {
         // the record stands.
         let (state, mut record, obs, first, mut plan) = validated_pair();
         plan.agent = Pubkey::new_from_array([0x77; 32]);
-        let err = declare_transition_from_records(&state, &mut record, &obs, &[first], &[plan])
+        let err = declare_transition_from_records(&state, &mut record, &obs, &[first], &[plan],
+    &[]
+)
             .expect_err("an unreproducible plan must refuse declare");
         assert!(format!("{:?}", err).contains("DeclareFailed"));
         assert_eq!(record.stage, TransitionRecord::VALIDATED);
@@ -9410,7 +9784,9 @@ mod tests {
     fn declare_refuses_unsealed() {
         let (mut state, mut record, obs, first, plan) = validated_pair();
         state.sealed = false;
-        let err = declare_transition_from_records(&state, &mut record, &obs, &[first], &[plan])
+        let err = declare_transition_from_records(&state, &mut record, &obs, &[first], &[plan],
+    &[]
+)
             .expect_err("an unsealed state must refuse declare");
         assert!(format!("{:?}", err).contains("NotSealed"));
         assert_eq!(record.stage, TransitionRecord::VALIDATED);
@@ -9421,7 +9797,9 @@ mod tests {
     fn declare_refuses_parent_mismatch() {
         let (mut state, mut record, obs, first, plan) = validated_pair();
         state.head_index = 9;
-        let err = declare_transition_from_records(&state, &mut record, &obs, &[first], &[plan])
+        let err = declare_transition_from_records(&state, &mut record, &obs, &[first], &[plan],
+    &[]
+)
             .expect_err("a record off the sealed head must refuse declare");
         assert!(format!("{:?}", err).contains("ParentMismatch"));
         assert_eq!(record.stage, TransitionRecord::VALIDATED);
@@ -9437,7 +9815,9 @@ mod tests {
     ) {
         // declare-success fixture every slice-26 test builds from.
         let (state, mut record, obs, first, plan) = validated_pair();
-        let life = declare_transition_from_records(&state, &mut record, &obs, &[first], std::slice::from_ref(&plan))
+        let life = declare_transition_from_records(&state, &mut record, &obs, &[first], std::slice::from_ref(&plan),
+    &[]
+)
             .expect("a fitting validated chain must declare");
         assert_eq!(life, Life::Committable);
         assert_eq!(record.stage, TransitionRecord::DECLARED);
@@ -9457,7 +9837,9 @@ mod tests {
         let (mut state, mut record, obs, first, plan) = declared_pair();
         let old_index = state.head_index;
         let next_hash = record.declared_next_hash;
-        let life = commit_transition_from_records(&mut state, &mut record, &obs, &[first], &[plan])
+        let life = commit_transition_from_records(&mut state, &mut record, &obs, &[first], &[plan],
+    &[]
+)
             .expect("a fitting declared chain must commit");
         assert_eq!(life, Life::Committed);
         assert_eq!(record.stage, TransitionRecord::COMMITTED);
@@ -9487,12 +9869,16 @@ mod tests {
         // refuses a second call, and the stage and the head
         // stand exactly where the first commit left them.
         let (mut state, mut record, obs, first, plan) = declared_pair();
-        commit_transition_from_records(&mut state, &mut record, &obs, &[first], std::slice::from_ref(&plan))
+        commit_transition_from_records(&mut state, &mut record, &obs, &[first], std::slice::from_ref(&plan),
+    &[]
+)
             .expect("first commit must succeed");
         assert_eq!(record.stage, TransitionRecord::COMMITTED);
         let head_index = state.head_index;
         let head_hash = state.head_hash;
-        let err = commit_transition_from_records(&mut state, &mut record, &obs, &[first], std::slice::from_ref(&plan))
+        let err = commit_transition_from_records(&mut state, &mut record, &obs, &[first], std::slice::from_ref(&plan),
+    &[]
+)
             .expect_err("a second commit must refuse");
         assert!(format!("{:?}", err).contains("WrongStage"));
         assert_eq!(record.stage, TransitionRecord::COMMITTED);
@@ -9508,7 +9894,9 @@ mod tests {
         let (mut state, mut record, obs, first, plan) = validated_pair();
         let head_index = state.head_index;
         let head_hash = state.head_hash;
-        let err = commit_transition_from_records(&mut state, &mut record, &obs, &[first], &[plan])
+        let err = commit_transition_from_records(&mut state, &mut record, &obs, &[first], &[plan],
+    &[]
+)
             .expect_err("an undeclared record must refuse commit");
         assert!(format!("{:?}", err).contains("WrongStage"));
         assert_eq!(record.stage, TransitionRecord::VALIDATED);
@@ -9531,7 +9919,9 @@ mod tests {
         record.transition_type = T_GOV_COUNCIL;
         let head_index = state.head_index;
         let head_hash = state.head_hash;
-        let err = commit_transition_from_records(&mut state, &mut record, &obs, &[first], &[plan])
+        let err = commit_transition_from_records(&mut state, &mut record, &obs, &[first], &[plan],
+    &[]
+)
             .expect_err("a governance record must refuse ordinary commit");
         assert!(format!("{:?}", err).contains("GovernanceCommitRequired"));
         assert_eq!(record.stage, TransitionRecord::DECLARED);
@@ -9552,7 +9942,9 @@ mod tests {
         advance_clock_on_state(&mut state, 400).expect("advance to the plan expiry must succeed");
         let head_index = state.head_index;
         let head_hash = state.head_hash;
-        let err = commit_transition_from_records(&mut state, &mut record, &obs, &[first], &[plan])
+        let err = commit_transition_from_records(&mut state, &mut record, &obs, &[first], &[plan],
+    &[]
+)
             .expect_err("an expired-plan predicate must refuse commit");
         assert!(format!("{:?}", err).contains("CommitFailed"));
         assert_eq!(record.stage, TransitionRecord::DECLARED);
@@ -9572,7 +9964,9 @@ mod tests {
         advance_clock_on_state(&mut state, 9100).expect("advance to the observation expiry must succeed");
         let head_index = state.head_index;
         let head_hash = state.head_hash;
-        let err = commit_transition_from_records(&mut state, &mut record, &obs, &[first], &[plan])
+        let err = commit_transition_from_records(&mut state, &mut record, &obs, &[first], &[plan],
+    &[]
+)
             .expect_err("a stale observation must refuse commit");
         assert!(format!("{:?}", err).contains("CommitFailed"));
         assert_eq!(record.stage, TransitionRecord::DECLARED);
@@ -9590,7 +9984,9 @@ mod tests {
         // unmoved, neither committed nor blocked on a lie.
         let (mut state, mut record, obs, first, plan) = declared_pair();
         record.compatible = false;
-        let err = commit_transition_from_records(&mut state, &mut record, &obs, &[first], &[plan])
+        let err = commit_transition_from_records(&mut state, &mut record, &obs, &[first], &[plan],
+    &[]
+)
             .expect_err("a mismatched stored verdict must refuse commit");
         assert!(format!("{:?}", err).contains("CommitFailed"));
         assert_eq!(record.stage, TransitionRecord::DECLARED);
@@ -9605,7 +10001,9 @@ mod tests {
         // replay, and the head stands.
         let (mut state, mut record, obs, first, plan) = declared_pair();
         record.plan_count = 2;
-        let err = commit_transition_from_records(&mut state, &mut record, &obs, &[first], &[plan])
+        let err = commit_transition_from_records(&mut state, &mut record, &obs, &[first], &[plan],
+    &[]
+)
             .expect_err("a short prior plan set must refuse commit");
         assert!(format!("{:?}", err).contains("CommitFailed"));
         assert_eq!(record.stage, TransitionRecord::DECLARED);
@@ -9620,7 +10018,9 @@ mod tests {
         // replay, and the head stands.
         let (mut state, mut record, obs, first, plan) = declared_pair();
         record.signal_count = 2;
-        let err = commit_transition_from_records(&mut state, &mut record, &obs, &[first], &[plan])
+        let err = commit_transition_from_records(&mut state, &mut record, &obs, &[first], &[plan],
+    &[]
+)
             .expect_err("a short prior signal set must refuse commit");
         assert!(format!("{:?}", err).contains("CommitFailed"));
         assert_eq!(record.stage, TransitionRecord::DECLARED);
@@ -9635,7 +10035,9 @@ mod tests {
         // record and the head stand.
         let (mut state, mut record, obs, first, mut plan) = declared_pair();
         plan.agent = Pubkey::new_from_array([0x77; 32]);
-        let err = commit_transition_from_records(&mut state, &mut record, &obs, &[first], &[plan])
+        let err = commit_transition_from_records(&mut state, &mut record, &obs, &[first], &[plan],
+    &[]
+)
             .expect_err("an unreproducible plan must refuse commit");
         assert!(format!("{:?}", err).contains("CommitFailed"));
         assert_eq!(record.stage, TransitionRecord::DECLARED);
@@ -9646,7 +10048,9 @@ mod tests {
     fn commit_refuses_unsealed() {
         let (mut state, mut record, obs, first, plan) = declared_pair();
         state.sealed = false;
-        let err = commit_transition_from_records(&mut state, &mut record, &obs, &[first], &[plan])
+        let err = commit_transition_from_records(&mut state, &mut record, &obs, &[first], &[plan],
+    &[]
+)
             .expect_err("an unsealed state must refuse commit");
         assert!(format!("{:?}", err).contains("NotSealed"));
         assert_eq!(record.stage, TransitionRecord::DECLARED);
@@ -9660,7 +10064,9 @@ mod tests {
         // refuses, and commit moves the head no further.
         let (mut state, mut record, obs, first, plan) = declared_pair();
         state.head_index = 9;
-        let err = commit_transition_from_records(&mut state, &mut record, &obs, &[first], &[plan])
+        let err = commit_transition_from_records(&mut state, &mut record, &obs, &[first], &[plan],
+    &[]
+)
             .expect_err("a record off the sealed head must refuse commit");
         assert!(format!("{:?}", err).contains("ParentMismatch"));
         assert_eq!(record.stage, TransitionRecord::DECLARED);
@@ -9677,7 +10083,9 @@ mod tests {
         // at the enforcement point.
         let (mut state, mut record, obs, first, plan) = declared_pair();
         assert_eq!(state.committed_claims, [0, 0, 0]);
-        commit_transition_from_records(&mut state, &mut record, &obs, &[first], std::slice::from_ref(&plan))
+        commit_transition_from_records(&mut state, &mut record, &obs, &[first], std::slice::from_ref(&plan),
+    &[]
+)
             .expect("a fitting declared chain must commit");
         assert_eq!(record.stage, TransitionRecord::COMMITTED);
         assert_eq!(state.committed_claims, [10 * SCALE, 5 * SCALE, 0]);
@@ -9694,7 +10102,9 @@ mod tests {
         // ledger stands at the pre-seeded totals, unmoved.
         let (mut state, mut record, obs, first, plan) = declared_pair();
         state.committed_claims = [995 * SCALE, 0, 0];
-        let err = commit_transition_from_records(&mut state, &mut record, &obs, &[first], &[plan])
+        let err = commit_transition_from_records(&mut state, &mut record, &obs, &[first], &[plan],
+    &[]
+)
             .expect_err("a ledger-exhausting commit must refuse");
         assert!(format!("{:?}", err).contains("CommitFailed"));
         assert_eq!(record.stage, TransitionRecord::DECLARED);
@@ -9712,7 +10122,9 @@ mod tests {
         // positive claim on either resource must refuse.
         let (mut state, mut record, obs, first, plan) = declared_pair();
         state.committed_claims = [990 * SCALE, 495 * SCALE, 0];
-        commit_transition_from_records(&mut state, &mut record, &obs, &[first], std::slice::from_ref(&plan))
+        commit_transition_from_records(&mut state, &mut record, &obs, &[first], std::slice::from_ref(&plan),
+    &[]
+)
             .expect("an exactly-fitting ledger must commit");
         assert_eq!(record.stage, TransitionRecord::COMMITTED);
         assert_eq!(state.committed_claims, [1000 * SCALE, 500 * SCALE, 0]);
@@ -9728,7 +10140,9 @@ mod tests {
         let (mut state, mut record, obs, first, plan) = declared_pair();
         state.committed_claims = [100 * SCALE, 50 * SCALE, 25 * SCALE];
         advance_clock_on_state(&mut state, 9100).expect("advance to the observation expiry must succeed");
-        let err = commit_transition_from_records(&mut state, &mut record, &obs, &[first], &[plan])
+        let err = commit_transition_from_records(&mut state, &mut record, &obs, &[first], &[plan],
+    &[]
+)
             .expect_err("a stale-observation commit must refuse");
         assert!(format!("{:?}", err).contains("CommitFailed"));
         assert_eq!(record.stage, TransitionRecord::DECLARED);
@@ -9769,24 +10183,28 @@ mod tests {
         let (mut state, mut record, obs, first) = planned_pair();
         let plan = submit_plan_from_records(
             &state, &mut record, &obs, &[first], &[], &[], 400, ag(2), 7,
-        )
+            &[],
+)
         .expect("an empty-claims governance plan must submit");
         assert_eq!(record.plan_count, 1);
         advance_clock_on_state(&mut state, 300).expect("advance to the deadline must succeed");
         let life = reconcile_plans_from_records(
             &state, &mut record, &obs, std::slice::from_ref(&first), std::slice::from_ref(&plan),
-        )
+            &[],
+)
         .expect("an empty-claims plan set must reconcile");
         assert_eq!(life, Life::Reconciling);
         assert!(record.compatible);
         let life = validate_transition_from_records(
             &state, &mut record, &obs, std::slice::from_ref(&first), std::slice::from_ref(&plan),
-        )
+            &[],
+)
         .expect("a compatible governance-shaped chain must validate");
         assert_eq!(life, Life::Validated);
         let life = declare_transition_from_records(
             &state, &mut record, &obs, std::slice::from_ref(&first), std::slice::from_ref(&plan),
-        )
+            &[],
+)
         .expect("a validated governance-shaped chain must declare");
         assert_eq!(life, Life::Committable);
         assert_eq!(record.stage, TransitionRecord::DECLARED);
@@ -9813,7 +10231,8 @@ mod tests {
         let life = commit_governance_from_records(
             &mut state, &mut record, &obs, std::slice::from_ref(&first), std::slice::from_ref(&plan),
             &action, &approvals,
-        )
+            &[],
+)
         .expect("a unanimous governance chain must commit");
         assert_eq!(life, Life::Committed);
         assert_eq!(record.stage, TransitionRecord::COMMITTED);
@@ -9823,7 +10242,8 @@ mod tests {
         let err = commit_governance_from_records(
             &mut state, &mut record, &obs, std::slice::from_ref(&first), std::slice::from_ref(&plan),
             &action, &approvals,
-        )
+            &[],
+)
         .expect_err("a second governance commit must refuse");
         assert!(format!("{:?}", err).contains("WrongStage"));
         assert_eq!(record.stage, TransitionRecord::COMMITTED);
@@ -9842,7 +10262,8 @@ mod tests {
         let head_hash = state.head_hash;
         let err = commit_governance_from_records(
             &mut state, &mut record, &obs, &[first], &[plan], &action, &approvals,
-        )
+            &[],
+)
         .expect_err("an ordinary record must refuse the governance path");
         assert!(format!("{:?}", err).contains("NotGovernanceTransition"));
         assert_eq!(record.stage, TransitionRecord::DECLARED);
@@ -9865,7 +10286,8 @@ mod tests {
         let head_hash = state.head_hash;
         let err = commit_governance_from_records(
             &mut state, &mut record, &obs, &[first], &[plan], &action, &approvals,
-        )
+            &[],
+)
         .expect_err("a non-unanimous governance commit must refuse");
         assert!(format!("{:?}", err).contains("GovernanceCommitFailed"));
         assert_eq!(record.stage, TransitionRecord::DECLARED);
@@ -9886,7 +10308,8 @@ mod tests {
         let approvals = gov_approvals();
         let err = commit_governance_from_records(
             &mut state, &mut record, &obs, &[first], &[plan], &action, &approvals,
-        )
+            &[],
+)
         .expect_err("a wrong-category governance commit must refuse");
         assert!(format!("{:?}", err).contains("GovernanceCommitFailed"));
         assert_eq!(record.stage, TransitionRecord::DECLARED);
@@ -9900,7 +10323,8 @@ mod tests {
         let approvals = gov_approvals();
         let err = commit_governance_from_records(
             &mut state, &mut record, &obs, &[first], &[plan], &action, &approvals,
-        )
+            &[],
+)
         .expect_err("a merely-validated record must refuse governance commit");
         assert!(format!("{:?}", err).contains("WrongStage"));
         assert_eq!(record.stage, TransitionRecord::VALIDATED);
@@ -9918,7 +10342,8 @@ mod tests {
         let approvals = gov_approvals();
         let err = commit_governance_from_records(
             &mut state, &mut record, &obs, &[first], &[plan], &action, &approvals,
-        )
+            &[],
+)
         .expect_err("an expired-plan governance commit must refuse");
         assert!(format!("{:?}", err).contains("GovernanceCommitFailed"));
         assert_eq!(record.stage, TransitionRecord::DECLARED);
@@ -9938,7 +10363,8 @@ mod tests {
         let approvals = gov_approvals();
         let err = commit_governance_from_records(
             &mut state, &mut record, &obs, &[first], &[plan], &action, &approvals,
-        )
+            &[],
+)
         .expect_err("a stale-observation governance commit must refuse");
         assert!(format!("{:?}", err).contains("GovernanceCommitFailed"));
         assert_eq!(record.stage, TransitionRecord::DECLARED);
@@ -9957,7 +10383,8 @@ mod tests {
         let approvals = gov_approvals();
         let life = commit_governance_from_records(
             &mut state, &mut record, &obs, &[first], &[plan], &action, &approvals,
-        )
+            &[],
+)
         .expect("a unanimous governance chain over seeded totals must commit");
         assert_eq!(life, Life::Committed);
         assert_eq!(record.stage, TransitionRecord::COMMITTED);
@@ -9972,7 +10399,8 @@ mod tests {
         let approvals = gov_approvals();
         let err = commit_governance_from_records(
             &mut state, &mut record, &obs, &[first], &[plan], &action, &approvals,
-        )
+            &[],
+)
         .expect_err("an unsealed state must refuse governance commit");
         assert!(format!("{:?}", err).contains("NotSealed"));
         assert_eq!(record.stage, TransitionRecord::DECLARED);
@@ -9986,7 +10414,8 @@ mod tests {
         let approvals = gov_approvals();
         let err = commit_governance_from_records(
             &mut state, &mut record, &obs, &[first], &[plan], &action, &approvals,
-        )
+            &[],
+)
         .expect_err("a record off the sealed head must refuse governance commit");
         assert!(format!("{:?}", err).contains("ParentMismatch"));
         assert_eq!(record.stage, TransitionRecord::DECLARED);
@@ -10006,7 +10435,8 @@ mod tests {
         let (mut state, mut record, obs, first, plan) = declared_pair();
         let life = commit_transition_from_records(
             &mut state, &mut record, &obs, &[first], std::slice::from_ref(&plan),
-        )
+            &[],
+)
         .expect("a fitting declared chain must commit");
         assert_eq!(life, Life::Committed);
         assert_eq!(record.stage, TransitionRecord::COMMITTED);
@@ -10361,5 +10791,305 @@ mod tests {
             .err()
             .expect("a chain overshooting the program head must refuse");
         assert!(format!("{:?}", err).contains("ParentMismatch"));
+    }
+
+    // Slice 30 fixtures: a second transition at the moved head.
+    // The prior is the committed_pair chain (head 1, planning
+    // deadline 300, ledger tranche 10 / lending book 5); the
+    // second window is strictly later (eligible 400, consensus
+    // 500, planning 600, plan expiry 700, observation 400/9500)
+    // because the kernel clock never regresses — a successor's
+    // window must open after its predecessor's deadline.
+    fn second_eligible_at_head(
+        state: &mut KernelState,
+        prior: &PriorCommit,
+        id: [u8; 32],
+        obs_id: [u8; 32],
+        declared: [u8; 32],
+    ) -> (TransitionRecord, ObservationRecord) {
+        let clock = state.clock;
+        let mut record = build_transition_record(
+            state, id, TT, state.head_index, state.head_hash, declared, obs_id, 10_400,
+            Pubkey::new_from_array(ag(1)), 7,
+        )
+        .expect("a record against the moved head must build");
+        let obs = build_observation_record(
+            state, obs_id, clock, 9500, 900_000, observer_pubkey(), 7,
+        )
+        .expect("an observation at the moved-head clock must build");
+        replay_transition_from_records(state, &mut record, &obs, std::slice::from_ref(prior))
+            .expect("a second transition must replay at the moved head");
+        assert_eq!(record.stage, TransitionRecord::KERNEL_REGISTERED);
+        evaluate_transition_from_records(state, &mut record, &obs, std::slice::from_ref(prior))
+            .expect("a second transition must evaluate at the moved head");
+        assert_eq!(record.stage, TransitionRecord::EVALUATED);
+        mark_eligible_from_records(state, &mut record, &obs, std::slice::from_ref(prior))
+            .expect("a second transition must mark eligible at the moved head");
+        assert_eq!(record.stage, TransitionRecord::ELIGIBLE);
+        assert_eq!(record.eligible_at, clock);
+        assert_eq!(record.consensus_deadline, clock + 100);
+        (record, obs)
+    }
+
+    fn second_signal_at_head(
+        state: &KernelState,
+        record: &mut TransitionRecord,
+        obs: &ObservationRecord,
+        prior: &PriorCommit,
+        agent_n: u8,
+        support_raw: u64,
+    ) -> SignalRecord {
+        let (signal, _, _) = submit_signal_from_records(
+            state, record, obs, &[], Pubkey::new_from_array(ag(agent_n)),
+            0, SCALE, support_raw, true, 7, std::slice::from_ref(prior),
+        )
+        .expect("a second transition's signal must submit at the moved head");
+        assert_eq!(record.signal_count, 1);
+        signal
+    }
+
+    #[test]
+    fn head_threading_second_commit_succeeds_through_all_stages() {
+        // End-to-end two-commit sequencing through the helpers
+        // (not just the slice-29 constructor): every stage of a
+        // second transition replays from the moved head, the
+        // second commit judges its plan against the post-first
+        // stocks (tranche 990, lending book 495) and the program
+        // ledger (10/5 already committed), and the head moves
+        // to index 2 at the second declared hash.
+        let (mut state, prior_rec, prior_obs, prior_sig, prior_plan) = committed_pair();
+        let prior = PriorCommit {
+            transition_record: &prior_rec,
+            observation_record: &prior_obs,
+            prior_signals: std::slice::from_ref(&prior_sig),
+            prior_plans: std::slice::from_ref(&prior_plan),
+        };
+        advance_clock_on_state(&mut state, 400).expect("advance past the first deadline must succeed");
+        let (mut record, obs) =
+            second_eligible_at_head(&mut state, &prior, [0xD2; 32], [0xC1; 32], [0xE2; 32]);
+        let signal = second_signal_at_head(&state, &mut record, &obs, &prior, 2, SCALE);
+        advance_clock_on_state(&mut state, 500).expect("advance to the consensus deadline must succeed");
+        let life = select_candidate_from_records(
+            &state, &mut record, &obs, std::slice::from_ref(&signal), std::slice::from_ref(&prior),
+        )
+        .expect("a closed window with a qualifying tally must select at the moved head");
+        assert_eq!(life, Life::Selected);
+        let life = open_planning_from_records(
+            &state, &mut record, &obs, std::slice::from_ref(&signal), [0x77; 32],
+            std::slice::from_ref(&prior),
+        )
+        .expect("a kernel-proven selection must open planning at the moved head");
+        assert_eq!(life, Life::Planning);
+        assert_eq!(record.planning_deadline, 600);
+        let plan = submit_plan_from_records(
+            &state, &mut record, &obs, std::slice::from_ref(&signal), &[], &two_claims(), 700,
+            ag(2), 7, std::slice::from_ref(&prior),
+        )
+        .expect("a fitting plan must submit at the moved head");
+        assert_eq!(record.plan_count, 1);
+        advance_clock_on_state(&mut state, 600).expect("advance to the planning deadline must succeed");
+        let life = reconcile_plans_from_records(
+            &state, &mut record, &obs, std::slice::from_ref(&signal),
+            std::slice::from_ref(&plan), std::slice::from_ref(&prior),
+        )
+        .expect("a fitting plan set must reconcile at the moved head");
+        assert_eq!(life, Life::Reconciling);
+        assert!(record.compatible);
+        let life = validate_transition_from_records(
+            &state, &mut record, &obs, std::slice::from_ref(&signal),
+            std::slice::from_ref(&plan), std::slice::from_ref(&prior),
+        )
+        .expect("a fitting reconciled chain must validate at the moved head");
+        assert_eq!(life, Life::Validated);
+        let life = declare_transition_from_records(
+            &state, &mut record, &obs, std::slice::from_ref(&signal),
+            std::slice::from_ref(&plan), std::slice::from_ref(&prior),
+        )
+        .expect("a validated chain must declare at the moved head");
+        assert_eq!(life, Life::Committable);
+        let life = commit_transition_from_records(
+            &mut state, &mut record, &obs, std::slice::from_ref(&signal),
+            std::slice::from_ref(&plan), std::slice::from_ref(&prior),
+        )
+        .expect("a fitting declared chain must commit at the moved head");
+        assert_eq!(life, Life::Committed);
+        assert_eq!(record.stage, TransitionRecord::COMMITTED);
+        assert_eq!(state.head_index, 2);
+        assert_eq!(state.head_hash, [0xE2; 32]);
+        assert_eq!(state.committed_claims, [20 * SCALE, 10 * SCALE, 0]);
+        let prior2 = PriorCommit {
+            transition_record: &record,
+            observation_record: &obs,
+            prior_signals: std::slice::from_ref(&signal),
+            prior_plans: std::slice::from_ref(&plan),
+        };
+        let k = kernel_at_head_from_commits(&state, &[prior, prior2])
+            .expect("both priors must rebuild to index 2");
+        assert_eq!(k.declared_state().index, 2);
+        assert_eq!(
+            k.capacity_of(RES_TREASURY_TRANCHE).map(|a| a.raw()),
+            Some(980 * SCALE)
+        );
+        assert_eq!(
+            k.capacity_of(RES_LENDING_BOOK).map(|a| a.raw()),
+            Some(490 * SCALE)
+        );
+    }
+
+    #[test]
+    fn head_threading_sibling_select_succeeds() {
+        // The thirteenth helper at the moved head: target and
+        // sibling both eligible at head 1 (census 2), target
+        // confidence 1.0 against a 0-confidence sibling, both
+        // windows 400/500 — the merged timeline replays from
+        // the moved head and the target selects at 500.
+        let (mut state, prior_rec, prior_obs, prior_sig, prior_plan) = committed_pair();
+        let prior = PriorCommit {
+            transition_record: &prior_rec,
+            observation_record: &prior_obs,
+            prior_signals: std::slice::from_ref(&prior_sig),
+            prior_plans: std::slice::from_ref(&prior_plan),
+        };
+        advance_clock_on_state(&mut state, 400).expect("advance past the first deadline must succeed");
+        let (mut target, target_obs) =
+            second_eligible_at_head(&mut state, &prior, [0xD2; 32], [0xC1; 32], [0xE2; 32]);
+        let (mut sib, sib_obs) =
+            second_eligible_at_head(&mut state, &prior, [0xD3; 32], [0xC2; 32], [0xE3; 32]);
+        assert_eq!(state.eligible_sibling_count, 2);
+        let target_sig = second_signal_at_head(&state, &mut target, &target_obs, &prior, 2, SCALE);
+        let sib_sig = second_signal_at_head(&state, &mut sib, &sib_obs, &prior, 2, 0);
+        advance_clock_on_state(&mut state, 500).expect("advance to the consensus deadline must succeed");
+        let sibling = SiblingReplay {
+            transition_record: &sib,
+            observation_record: &sib_obs,
+            prior_signals: std::slice::from_ref(&sib_sig),
+        };
+        let life = select_candidate_from_records_with_siblings(
+            &state, &mut target, &target_obs, std::slice::from_ref(&target_sig),
+            std::slice::from_ref(&sibling), std::slice::from_ref(&prior),
+        )
+        .expect("target outranking its sibling must select at the moved head");
+        assert_eq!(life, Life::Selected);
+        assert_eq!(target.stage, TransitionRecord::SELECTED);
+    }
+
+    #[test]
+    fn head_threading_governance_commit_succeeds() {
+        // The governance path at the moved head: an ordinary
+        // second chain to DECLARED with an empty-claims plan,
+        // re-typed to the action's category (the slice-28
+        // flipped-type pattern), then a unanimous governance
+        // commit over the prior — head to 2, ledger untouched
+        // (governance plans claim no stock).
+        let (mut state, prior_rec, prior_obs, prior_sig, prior_plan) = committed_pair();
+        let prior = PriorCommit {
+            transition_record: &prior_rec,
+            observation_record: &prior_obs,
+            prior_signals: std::slice::from_ref(&prior_sig),
+            prior_plans: std::slice::from_ref(&prior_plan),
+        };
+        advance_clock_on_state(&mut state, 400).expect("advance past the first deadline must succeed");
+        let (mut record, obs) =
+            second_eligible_at_head(&mut state, &prior, [0xD2; 32], [0xC1; 32], [0xE2; 32]);
+        let signal = second_signal_at_head(&state, &mut record, &obs, &prior, 2, SCALE);
+        advance_clock_on_state(&mut state, 500).expect("advance to the consensus deadline must succeed");
+        select_candidate_from_records(
+            &state, &mut record, &obs, std::slice::from_ref(&signal), std::slice::from_ref(&prior),
+        )
+        .expect("a closed window with a qualifying tally must select at the moved head");
+        open_planning_from_records(
+            &state, &mut record, &obs, std::slice::from_ref(&signal), [0x77; 32],
+            std::slice::from_ref(&prior),
+        )
+        .expect("a kernel-proven selection must open planning at the moved head");
+        let plan = submit_plan_from_records(
+            &state, &mut record, &obs, std::slice::from_ref(&signal), &[], &[], 700,
+            ag(2), 7, std::slice::from_ref(&prior),
+        )
+        .expect("an empty-claims governance plan must submit at the moved head");
+        advance_clock_on_state(&mut state, 600).expect("advance to the planning deadline must succeed");
+        reconcile_plans_from_records(
+            &state, &mut record, &obs, std::slice::from_ref(&signal),
+            std::slice::from_ref(&plan), std::slice::from_ref(&prior),
+        )
+        .expect("an empty-claims plan set must reconcile at the moved head");
+        assert!(record.compatible);
+        validate_transition_from_records(
+            &state, &mut record, &obs, std::slice::from_ref(&signal),
+            std::slice::from_ref(&plan), std::slice::from_ref(&prior),
+        )
+        .expect("a compatible governance-shaped chain must validate at the moved head");
+        declare_transition_from_records(
+            &state, &mut record, &obs, std::slice::from_ref(&signal),
+            std::slice::from_ref(&plan), std::slice::from_ref(&prior),
+        )
+        .expect("a validated governance-shaped chain must declare at the moved head");
+        record.transition_type = T_GOV_ADJUSTABLE;
+        let action = gov_action();
+        let approvals = gov_approvals();
+        let life = commit_governance_from_records(
+            &mut state, &mut record, &obs, std::slice::from_ref(&signal),
+            std::slice::from_ref(&plan), &action, &approvals, std::slice::from_ref(&prior),
+        )
+        .expect("a unanimous governance chain must commit at the moved head");
+        assert_eq!(life, Life::Committed);
+        assert_eq!(record.stage, TransitionRecord::COMMITTED);
+        assert_eq!(state.head_index, 2);
+        assert_eq!(state.head_hash, [0xE2; 32]);
+        assert_eq!(state.committed_claims, [10 * SCALE, 5 * SCALE, 0]);
+    }
+
+    #[test]
+    fn head_threading_refuses_moved_head_without_history() {
+        // Empty priors at a moved head are a missing chain, not
+        // a genesis kernel: the helper refuses with
+        // ParentMismatch and the record stands REGISTERED.
+        let (mut state, _, _, _, _) = committed_pair();
+        advance_clock_on_state(&mut state, 400).expect("advance past the first deadline must succeed");
+        let mut record = build_transition_record(
+            &state, [0xD2; 32], TT, state.head_index, state.head_hash, [0xE2; 32],
+            [0xC1; 32], 10_400, Pubkey::new_from_array(ag(1)), 7,
+        )
+        .expect("a record against the moved head must build");
+        let obs = build_observation_record(
+            &state, [0xC1; 32], 400, 9500, 900_000, observer_pubkey(), 7,
+        )
+        .expect("an observation at the moved-head clock must build");
+        let err = replay_transition_from_records(&state, &mut record, &obs, &[])
+            .expect_err("a moved head with no history must refuse");
+        assert!(format!("{:?}", err).contains("ParentMismatch"));
+        assert_eq!(record.stage, TransitionRecord::REGISTERED);
+    }
+
+    #[test]
+    fn head_threading_refuses_broken_prior_link() {
+        // A prior whose parent is not the running head breaks
+        // the chain before any replay runs: the link, not the
+        // predicate, refuses, and the target stands REGISTERED.
+        let (mut state, prior_rec, prior_obs, prior_sig, prior_plan) = committed_pair();
+        let mut bad = prior_rec;
+        bad.parent_hash = [0x99; 32];
+        let bad_prior = PriorCommit {
+            transition_record: &bad,
+            observation_record: &prior_obs,
+            prior_signals: std::slice::from_ref(&prior_sig),
+            prior_plans: std::slice::from_ref(&prior_plan),
+        };
+        advance_clock_on_state(&mut state, 400).expect("advance past the first deadline must succeed");
+        let mut record = build_transition_record(
+            &state, [0xD2; 32], TT, state.head_index, state.head_hash, [0xE2; 32],
+            [0xC1; 32], 10_400, Pubkey::new_from_array(ag(1)), 7,
+        )
+        .expect("a record against the moved head must build");
+        let obs = build_observation_record(
+            &state, [0xC1; 32], 400, 9500, 900_000, observer_pubkey(), 7,
+        )
+        .expect("an observation at the moved-head clock must build");
+        let err = replay_transition_from_records(
+            &state, &mut record, &obs, std::slice::from_ref(&bad_prior),
+        )
+        .expect_err("a prior off the running head must refuse");
+        assert!(format!("{:?}", err).contains("ParentMismatch"));
+        assert_eq!(record.stage, TransitionRecord::REGISTERED);
     }
 }

@@ -1093,10 +1093,60 @@ families, account inventory, and CU golden set are later step-5 slices.
   (sha256 `ae325496…`, coincidentally the slice-28 byte size
   with different content).
 - Deliberately NOT slice 29: threading this head through
-  the thirteen stage helpers and the commit instructions
-  (the next slice), the governance-registration instruction,
+  the thirteen stage helpers (slice 30, below) and the
+  commit instructions (the next slice), the
+  governance-registration instruction,
   approval persistence, governance-state persistence, and
   CU measurement — later slices.
+
+## Slice 30 — head threading through the stage helpers
+
+- All thirteen stage helpers now take
+  `prior_commits: &[PriorCommit]` and build their kernel
+  with slice 29's `kernel_at_head_from_commits` instead of
+  the sealed genesis kernel: replay, evaluate,
+  mark_eligible, submit_signal, select_candidate,
+  select_candidate_with_siblings, open_planning,
+  submit_plan, reconcile_plans, validate_transition,
+  declare_transition, commit_transition, and
+  commit_governance. Empty priors are exactly the genesis
+  case, so every pre-existing test and every instruction
+  (which still passes `&[]`) behaves as before at genesis;
+  a moved head with empty priors refuses with
+  `ParentMismatch` — a missing chain is never silently
+  replayed against genesis stocks. The replay helper moves
+  from the `NoEnv` genesis kernel to the `ProgramEnv` head
+  kernel: ingest and register never consult the
+  environment, so genesis behaviour is identical, and only
+  a `ProgramEnv` kernel can drive a prior's evaluate step.
+  The successor clock rule is slice 29's, unchanged: a
+  target's window must open after the last prior's
+  planning deadline, or the kernel's tick refuses the
+  regression. The slice-27 ledger gate in the commit
+  helpers is unchanged, as a cross-check on the kernel's
+  own post-prior stocks.
+- Host tests 228/228 (223 prior + 5 slice-30: a second
+  commit driven through all thirteen helpers' ordinary
+  path to index 2 with the head-kernel stocks at tranche
+  980 / lending book 490 and the program ledger at
+  20/10, a sibling select at the moved head, a governance
+  commit at the moved head with the ledger untouched, a
+  moved head with no history refusing `ParentMismatch`,
+  and a broken prior link refusing `ParentMismatch`).
+  Clippy back to the pre-existing profile (anchor macro
+  `unexpected cfg` noise + the slice-8 test helper's
+  `type_complexity` warning); zero new warnings. No new
+  instruction, account, or error this slice, as designed:
+  IDL counts unchanged (18 instructions, 5 accounts, 28
+  errors, 16 events); `.so` 1,047,136 bytes
+  (sha256 `7c3a7d29…`).
+- Deliberately NOT slice 30: threading prior bundles
+  through the instruction remaining accounts (the
+  instructions still pass `&[]`, so on-chain instructions
+  still refuse at a moved head), the
+  governance-registration instruction, approval
+  persistence, governance-state persistence, and CU
+  measurement — later slices.
 
 ## Build
 
@@ -1104,5 +1154,5 @@ families, account inventory, and CU golden set are later step-5 slices.
 export RUSTUP_HOME=~/workspace/toolchains/rustup CARGO_HOME=~/workspace/toolchains/cargo
 export PATH=~/workspace/toolchains/cargo/bin:~/workspace/toolchains/solana/bin:$PATH
 ~/workspace/toolchains/anchor/bin/anchor build   # from this directory
-cargo test                                        # host tests, 223/223
+cargo test                                        # host tests, 228/228
 ```
