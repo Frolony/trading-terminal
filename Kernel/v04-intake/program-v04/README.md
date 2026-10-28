@@ -1380,11 +1380,59 @@ families, account inventory, and CU golden set are later step-5 slices.
   `commit_governance` instruction, a revise-approval
   instruction, and CU measurement — later slices.
 
+## Slice 36 — the governance replay at commit time + the `commit_governance` instruction
+
+- The slice-28 whole-chain governance re-proof, now driven
+  from stored records alone: `commit_governance_from_stored`
+  re-checks the approval count against the record, decodes
+  the action and seats through the shared
+  `gov_action_and_seats` (which the slice-34 prior driver
+  now also uses — one decode rule for history and target),
+  and calls the slice-28 helper. The decoder's gates:
+  every approval names the transition (`RecordMismatch`),
+  every stored action decodes (`GovActionDecode` for a
+  corrupt record), every approval agrees on one action and
+  no seat approves twice (`GovernanceCommitFailed`), empty
+  set refuses; unanimity stays the kernel's gate at
+  `register_governance_transition`, not a program count.
+- The `commit_governance` instruction mirrors
+  `commit_transition`: prior bundles first, then the tail
+  split by the stored counts through the pure
+  `split_gov_commit_tail` (`signal_count` signals,
+  `plan_count` plans, `approval_count` approvals), refusing
+  with `RecordMismatch` before any replay on a short, past,
+  or mis-typed run. It takes NO action argument — a
+  caller-supplied action could re-target a unanimous
+  approval set at an action the council never approved.
+  On success the record advances `DECLARED` -> `COMMITTED`,
+  the sealed head moves exactly as in slice 26, and the
+  existing `TransitionCommitted` event fires.
+- Host tests 268/268 (263 prior + 5 slice-36: the stored
+  commit success with head move and second-commit refusal,
+  the count-mismatch anchor refusal, the foreign /
+  mixed-action / duplicate-seat decoder refusals, the
+  corrupt-decode and non-unanimous refusals, and the tail
+  split success plus four parse refusals). Clippy back to
+  the pre-existing profile (anchor macro `unexpected cfg`
+  noise + the slice-8 test helper's `type_complexity`
+  warning); zero new warnings. IDL counts move by design
+  (21 instructions, 6 accounts, 34 errors, 18 events — +1
+  instruction only, the existing event reused); `.so`
+  1,255,808 bytes (sha256 `096055ec…`).
+- Deliberately NOT slice 36: the governance stage chain
+  (replay_governance through declare_governance — a
+  governance record still cannot reach `DECLARED` through
+  instructions, so this instruction completes the commit
+  half, not the chain), a revise-approval instruction (the
+  init-only divergence stands, fail-closed),
+  governance-state persistence beyond the slice-34 head
+  replay, and CU measurement — later slices.
+
 ## Build
 
 ```sh
 export RUSTUP_HOME=~/workspace/toolchains/rustup CARGO_HOME=~/workspace/toolchains/cargo
 export PATH=~/workspace/toolchains/cargo/bin:~/workspace/toolchains/solana/bin:$PATH
 ~/workspace/toolchains/anchor/bin/anchor build   # from this directory
-cargo test                                        # host tests, 263/263
+cargo test                                        # host tests, 268/268
 ```

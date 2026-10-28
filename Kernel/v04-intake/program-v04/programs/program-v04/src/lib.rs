@@ -826,9 +826,10 @@
 //! bundle before any kernel replay runs; the stage gate stays in
 //! slice 29's driver, not duplicated in the parser. Instructions
 //! with no own evidence (replay, evaluate, mark_eligible) refuse
-//! any account past the bundles. The commit_governance helper has
-//! no instruction yet, so it takes no bundles here — its
-//! instruction arrives with governance-registration. Deliberately
+//! any account past the bundles. The slice-28
+//! commit_governance helper had no instruction yet in this
+//! slice, so it took no bundles here — its instruction arrives
+//! in slice 36. Deliberately
 //! NOT slice 31: governance-registration, governance-state
 //! persistence, the cu-golden freeze, or any main-line work.
 //!
@@ -967,6 +968,53 @@
 //! arguments — consuming stored approvals at commit time rides
 //! that slice), a revise-approval instruction (the init-only
 //! divergence stands, fail-closed), and CU measurement.
+//!
+//! Slice 36 (this slice): the governance replay, at commit
+//! time, and the `commit_governance` instruction. The replay
+//! here is the slice-28 whole-chain re-proof, now driven from
+//! stored records alone: a new pure helper,
+//! `commit_governance_from_stored`, derives the action and the
+//! approving seats from the supplied `GovApprovalRecord`s —
+//! never from a caller argument — through the shared
+//! `gov_action_and_seats` decoder, which the slice-34 prior
+//! driver now also uses, so one decode rule serves both the
+//! history path and the target path. The decoder's gates, in
+//! order: every approval names this transition
+//! (`RecordMismatch` otherwise), every stored action decodes
+//! (`GovActionDecode` for a corrupt record, never a generic
+//! failure), every approval agrees on one action and no seat
+//! approves twice (`GovernanceCommitFailed` otherwise), and an
+//! empty set refuses — unanimity is then the kernel's gate at
+//! `register_governance_transition`, as in slice 28, not a
+//! program-side count of seats. The instruction mirrors
+//! `commit_transition` exactly: prior bundles first (slice
+//! 31/35 parsing), then the tail split by the stored counts —
+//! `signal_count` signals, `plan_count` plans,
+//! `approval_count` approvals — through the pure
+//! `split_gov_commit_tail`, so a tail short of, or past, any
+//! count refuses with `RecordMismatch` before any replay
+//! runs, and the stored-approval helper re-checks the approval
+//! count against the record as defense in depth. The
+//! instruction takes no action argument: a caller-supplied
+//! action could re-target a unanimous approval set at an
+//! action the council never approved, and the stored records
+//! already carry the exact action. On success the record
+//! advances `DECLARED` -> `COMMITTED`, the sealed head moves
+//! exactly as in slice 26, and the existing
+//! `TransitionCommitted` event fires — no new instruction
+//! argument, account, or error beyond the instruction itself,
+//! so the IDL moves by exactly one instruction. Honesty
+//! bound, stated not smoothed: a governance record still
+//! cannot reach `DECLARED` through instructions — the
+//! governance stage chain (replay_governance through
+//! declare_governance) does not exist yet, so this
+//! instruction's on-chain reach today is a record whose
+//! stage was advanced by the same hand-driven path the
+//! slice-28 tests use; the stage chain is the next slice,
+//! not smuggled in here. Deliberately NOT slice 36: a
+//! revise-approval instruction (the init-only divergence
+//! stands, fail-closed), governance-state persistence beyond
+//! the slice-34 head replay, and CU measurement.
 
 extern crate alloc;
 
@@ -1940,8 +1988,8 @@ pub mod program_v04 {
     /// permissionless, so no proposer, seat, or agent gate
     /// applies here. A governance-typed record refuses at
     /// the gate with `GovernanceCommitRequired` — its commit
-    /// path is the slice-28 `commit_governance_from_records` helper
-    /// (no instruction yet — see the slice-28 module note).
+    /// path is the slice-36 `commit_governance` instruction
+    /// (stored approvals only — see the slice-36 module note).
     /// Slice 31: remaining accounts begin with `prior_bundle_count` prior COMMITTED bundles (head order, self-delimited by each bundle's stored signal/plan counts (and, for a governance bundle, its stored approval count)); the tail is this instruction's own evidence, as before.
     pub fn commit_transition(
         ctx: Context<CommitTransition>,
@@ -1986,6 +2034,76 @@ pub mod program_v04 {
             &prior_plans,
             &prior_entries,
 )?;
+        debug_assert!(life == Life::Committed);
+        emit!(TransitionCommitted {
+            transition_id,
+            stage: ctx.accounts.transition_record.stage,
+            head_index: ctx.accounts.kernel_state.head_index,
+            head_hash: ctx.accounts.kernel_state.head_hash,
+        });
+        Ok(())
+    }
+
+    /// Commit a declared governance transition (slice 36):
+    /// `DECLARED` (9) -> `COMMITTED` (10), and the sealed head
+    /// moves to the kernel's returned `SystemState` — or a
+    /// refusal that leaves the record standing `DECLARED` and
+    /// the head unmoved. Remaining accounts split exactly as
+    /// in `commit_transition` for the prior bundles, then the
+    /// tail: the first `signal_count` are the prior
+    /// `SignalRecord`s, the next `plan_count` are the prior
+    /// `PlanRecord`s, and the rest are the stored
+    /// `GovApprovalRecord`s, which must number exactly
+    /// `approval_count` — the slice-35 anchor, enforced at
+    /// parse time by `split_gov_commit_tail` before any
+    /// replay runs. The action is decoded from those stored
+    /// approvals alone: this instruction takes no action
+    /// argument, so no caller can re-target a unanimous
+    /// approval set at an action the council never approved.
+    /// The payer is a fee payer only: kernel
+    /// `commit_governance` is permissionless once the chain
+    /// is proven, so no proposer, seat, or agent gate applies
+    /// here beyond the kernel's own unanimity gate. An
+    /// ordinary-typed record refuses at the helper's gate
+    /// with `NotGovernanceTransition`, mirroring
+    /// `commit_transition`'s `GovernanceCommitRequired` gate
+    /// in reverse. Honesty bound: a governance record still
+    /// cannot reach `DECLARED` through instructions (the
+    /// governance stage chain is the next slice), so this
+    /// instruction's on-chain reach today is a record whose
+    /// stage was advanced by the hand-driven path — the
+    /// instruction completes the commit half, not the chain.
+    pub fn commit_governance(
+        ctx: Context<CommitGovernance>,
+        transition_id: [u8; 32],
+        observation_id: [u8; 32],
+        prior_bundle_count: u32,
+    ) -> Result<()> {
+        if ctx.accounts.transition_record.transition_id != transition_id
+            || ctx.accounts.observation_record.observation_id != observation_id
+        {
+            return Err(error!(ProgramV04Error::RecordMismatch));
+        }
+        let (bundles, tail) = split_prior_bundles(
+            classify_remaining_accounts(ctx.remaining_accounts)?,
+            prior_bundle_count as usize,
+        )?;
+        let prior_entries = prior_entries_of(&bundles);
+        let (priors, prior_plans, approval_records) = split_gov_commit_tail(
+            tail,
+            ctx.accounts.transition_record.signal_count as usize,
+            ctx.accounts.transition_record.plan_count as usize,
+            ctx.accounts.transition_record.approval_count as usize,
+        )?;
+        let life = commit_governance_from_stored(
+            &mut ctx.accounts.kernel_state,
+            &mut ctx.accounts.transition_record,
+            &ctx.accounts.observation_record,
+            &priors,
+            &prior_plans,
+            &approval_records,
+            &prior_entries,
+        )?;
         debug_assert!(life == Life::Committed);
         emit!(TransitionCommitted {
             transition_id,
@@ -2098,6 +2216,29 @@ pub struct DeclareTransition<'info> {
 #[derive(Accounts)]
 #[instruction(transition_id: [u8; 32], observation_id: [u8; 32])]
 pub struct CommitTransition<'info> {
+    #[account(
+        mut,
+        seeds = [b"kernel-state"],
+        bump = kernel_state.bump,
+    )]
+    pub kernel_state: Account<'info, KernelState>,
+    #[account(
+        mut,
+        seeds = [b"transition", transition_id.as_ref()],
+        bump = transition_record.bump,
+    )]
+    pub transition_record: Account<'info, TransitionRecord>,
+    #[account(
+        seeds = [b"observation", observation_id.as_ref()],
+        bump = observation_record.bump,
+    )]
+    pub observation_record: Account<'info, ObservationRecord>,
+    pub payer: Signer<'info>,
+}
+
+#[derive(Accounts)]
+#[instruction(transition_id: [u8; 32], observation_id: [u8; 32])]
+pub struct CommitGovernance<'info> {
     #[account(
         mut,
         seeds = [b"kernel-state"],
@@ -5851,6 +5992,93 @@ pub fn commit_governance_from_records(
     Ok(Life::Committed)
 }
 
+/// Split a `commit_governance` instruction tail (slice 36): the
+/// first `signal_count` accounts must be the transition's
+/// `SignalRecord`s, the next `plan_count` its `PlanRecord`s,
+/// and the rest its `GovApprovalRecord`s, numbering exactly
+/// `approval_count` — the slice-35 anchor, enforced here at
+/// parse time before any replay runs, exactly as
+/// `split_prior_bundles` enforces bundle counts. Any wrong
+/// variant, short run, or over-long approval run refuses with
+/// `RecordMismatch`; linkage of each approval to the transition
+/// is the decoder's job (`gov_action_and_seats`), not this
+/// split's — the split delimits, the decoder proves. Pure: the
+/// caller owns the three vectors.
+pub fn split_gov_commit_tail(
+    tail: alloc::vec::Vec<ParsedAccount>,
+    signal_count: usize,
+    plan_count: usize,
+    approval_count: usize,
+) -> Result<(
+    alloc::vec::Vec<SignalRecord>,
+    alloc::vec::Vec<PlanRecord>,
+    alloc::vec::Vec<GovApprovalRecord>,
+)> {
+    let mut iter = tail.into_iter();
+    let mut signals: alloc::vec::Vec<SignalRecord> = alloc::vec::Vec::new();
+    for _ in 0..signal_count {
+        match iter.next() {
+            Some(ParsedAccount::Signal(sig)) => signals.push(sig),
+            _ => return Err(error!(ProgramV04Error::RecordMismatch)),
+        }
+    }
+    let mut plans: alloc::vec::Vec<PlanRecord> = alloc::vec::Vec::new();
+    for _ in 0..plan_count {
+        match iter.next() {
+            Some(ParsedAccount::Plan(plan)) => plans.push(plan),
+            _ => return Err(error!(ProgramV04Error::RecordMismatch)),
+        }
+    }
+    let mut approvals: alloc::vec::Vec<GovApprovalRecord> = alloc::vec::Vec::new();
+    for item in iter {
+        match item {
+            ParsedAccount::GovApproval(approval) => approvals.push(*approval),
+            _ => return Err(error!(ProgramV04Error::RecordMismatch)),
+        }
+    }
+    if approvals.len() != approval_count {
+        return Err(error!(ProgramV04Error::RecordMismatch));
+    }
+    Ok((signals, plans, approvals))
+}
+
+/// Commit a declared governance transition from STORED approvals
+/// (slice 36): the instruction-side entry to the slice-28
+/// helper. The approval-count anchor is re-checked here against
+/// the record as defense in depth (the instruction's parse
+/// already enforced it), the action and seats are decoded from
+/// the stored records alone through `gov_action_and_seats` —
+/// no caller argument carries either — and the slice-28 helper
+/// then re-proves the whole governance chain and moves the
+/// head, or refuses with the record standing `DECLARED`. Pure
+/// except for the record stage and the head move, exactly as
+/// the slice-28 helper is: a refusal writes neither.
+pub fn commit_governance_from_stored(
+    kernel_state: &mut KernelState,
+    transition_record: &mut TransitionRecord,
+    observation_record: &ObservationRecord,
+    prior_signals: &[SignalRecord],
+    prior_plans: &[PlanRecord],
+    approval_records: &[GovApprovalRecord],
+    prior_entries: &[PriorEntry],
+) -> Result<Life> {
+    if approval_records.len() as u64 != transition_record.approval_count {
+        return Err(error!(ProgramV04Error::RecordMismatch));
+    }
+    let (action, seats) =
+        gov_action_and_seats(approval_records, transition_record.transition_id)?;
+    commit_governance_from_records(
+        kernel_state,
+        transition_record,
+        observation_record,
+        prior_signals,
+        prior_plans,
+        &action,
+        &seats,
+        prior_entries,
+    )
+}
+
 /// One prior committed transition offered to a replay-from-head
 /// (slice 29): the stored transition record (stage `COMMITTED`),
 /// its observation record, and its stored signal and plan records.
@@ -6385,6 +6613,46 @@ fn drive_prior_commit_to_commit(
 /// later entries — judging a prior against genesis after a
 /// roster change would brick exactly the chains this slice
 /// exists to replay.
+/// Decode the one governance action and its approving seats from
+/// stored council approval records (slice 36, shared by the
+/// slice-34 prior driver and the slice-36 target commit): every
+/// approval must name this transition (`RecordMismatch`
+/// otherwise), every stored action must decode (`GovActionDecode`
+/// for a corrupt record, never a generic failure), every approval
+/// must agree on one action and no seat may approve twice
+/// (`GovernanceCommitFailed` otherwise), and an empty set
+/// refuses — unanimity itself stays the kernel's gate at
+/// `register_governance_transition`, not a program-side seat
+/// count. Pure: a refusal returns nothing, and the caller owns
+/// the decoded pair.
+pub fn gov_action_and_seats(
+    approval_records: &[GovApprovalRecord],
+    transition_id: [u8; 32],
+) -> Result<(GovAction, alloc::vec::Vec<[u8; 32]>)> {
+    let mut action: Option<GovAction> = None;
+    let mut seats: alloc::vec::Vec<[u8; 32]> = alloc::vec::Vec::new();
+    let mut seen_seats: BTreeSet<[u8; 32]> = BTreeSet::new();
+    for approval in approval_records {
+        if approval.transition_id != transition_id {
+            return Err(error!(ProgramV04Error::RecordMismatch));
+        }
+        if !seen_seats.insert(approval.seat.to_bytes()) {
+            return Err(error!(ProgramV04Error::GovernanceCommitFailed));
+        }
+        let decoded = approval.action.decode()?;
+        match &action {
+            None => action = Some(decoded),
+            Some(first) if *first == decoded => {}
+            Some(_) => return Err(error!(ProgramV04Error::GovernanceCommitFailed)),
+        }
+        seats.push(approval.seat.to_bytes());
+    }
+    match action {
+        Some(a) => Ok((a, seats)),
+        None => Err(error!(ProgramV04Error::GovernanceCommitFailed)),
+    }
+}
+
 fn drive_prior_governance_commit_to_commit(
     kernel_state: &KernelState,
     k: &mut LaunchKernelProgramEnv,
@@ -6453,31 +6721,14 @@ fn drive_prior_governance_commit_to_commit(
             }
         }
     }
-    // The action comes from the stored approvals alone: every
-    // approval names this transition, decodes, and agrees with
-    // every other, and no seat approves twice. A corrupt stored
-    // action refuses with `GovActionDecode`, not a generic
-    // failure — the record is corrupt, not merely unproven.
-    let mut action: Option<GovAction> = None;
-    let mut seen_seats: BTreeSet<[u8; 32]> = BTreeSet::new();
-    for approval in prior.approval_records {
-        if approval.transition_id != transition_record.transition_id {
-            return Err(error!(ProgramV04Error::RecordMismatch));
-        }
-        if !seen_seats.insert(approval.seat.to_bytes()) {
-            return Err(error!(ProgramV04Error::GovernanceCommitFailed));
-        }
-        let decoded = approval.action.decode()?;
-        match &action {
-            None => action = Some(decoded),
-            Some(first) if *first == decoded => {}
-            Some(_) => return Err(error!(ProgramV04Error::GovernanceCommitFailed)),
-        }
-    }
-    let action = match action {
-        Some(a) => a,
-        None => return Err(error!(ProgramV04Error::GovernanceCommitFailed)),
-    };
+    // The action comes from the stored approvals alone, through
+    // the slice-36 shared decoder: every approval names this
+    // transition, decodes, and agrees with every other, and no
+    // seat approves twice. A corrupt stored action refuses with
+    // `GovActionDecode`, not a generic failure — the record is
+    // corrupt, not merely unproven.
+    let (action, seats) =
+        gov_action_and_seats(prior.approval_records, transition_record.transition_id)?;
     let proposer_id = transition_record.proposer.to_bytes();
     let relevant_groups = match k.agent(&proposer_id) {
         Some(profile) if profile.active => profile.groups.clone(),
@@ -6495,12 +6746,12 @@ fn drive_prior_governance_commit_to_commit(
     };
     let eligible_at = transition_record.eligible_at;
     // Council approvals precede registration, exactly as the
-    // slice-28 target helper drives them: every listed seat
+    // slice-28 target helper drives them: every decoded seat
     // approves this exact (id, action) pair, and the kernel
     // refuses registration unless every sitting seat has done so.
-    for approval in prior.approval_records {
+    for seat in &seats {
         k.approve_governance(
-            &approval.seat.to_bytes(),
+            seat,
             transition_record.transition_id,
             action.clone(),
             eligible_at,
@@ -13551,6 +13802,256 @@ mod tests {
         ];
         let err = split_prior_bundles(parsed, 1)
             .expect_err("a bundle not opening with its transition must refuse");
+        assert!(format!("{:?}", err).contains("RecordMismatch"));
+    }
+
+    fn gov_declared_with_approvals() -> (
+        KernelState,
+        TransitionRecord,
+        ObservationRecord,
+        SignalRecord,
+        PlanRecord,
+        [GovApprovalRecord; 3],
+    ) {
+        // A DECLARED governance record plus the three stored
+        // council approvals that approve its exact action,
+        // built the way gov_committed_bundle builds them:
+        // against the record with its stage temporarily back
+        // at REGISTERED, the stage at which approvals are
+        // collected — then restored to DECLARED, with the
+        // slice-35 approval-count anchor set to the stored
+        // set. The commit half of slice 36 starts here: no
+        // caller-supplied action, no caller-supplied seats.
+        let (state, mut record, obs, first, plan) = gov_declared_pair();
+        let action = gov_action();
+        record.stage = TransitionRecord::REGISTERED;
+        let approvals = [
+            build_governance_approval_record(
+                &state, &record, Pubkey::new_from_array(ag(1)), &action, 1,
+            )
+            .expect("seat 1 approval must build"),
+            build_governance_approval_record(
+                &state, &record, Pubkey::new_from_array(ag(2)), &action, 1,
+            )
+            .expect("seat 2 approval must build"),
+            build_governance_approval_record(
+                &state, &record, Pubkey::new_from_array(ag(3)), &action, 1,
+            )
+            .expect("seat 3 approval must build"),
+        ];
+        record.stage = TransitionRecord::DECLARED;
+        record.approval_count = approvals.len() as u64;
+        (state, record, obs, first, plan, approvals)
+    }
+
+    #[test]
+    fn gov_stored_commit_advances_declared_to_committed_and_moves_head() {
+        // The slice-36 success path: a unanimous stored
+        // approval set, a fitting empty-claims plan set, and a
+        // fresh observation at clock 300 — the stored-approval
+        // helper commits exactly where the slice-28 helper
+        // committed with arguments, the stage advances to 10,
+        // and the sealed head moves to exactly the declared
+        // next hash at index one past the old head. A second
+        // commit refuses on stage, as in slice 28.
+        let (mut state, mut record, obs, first, plan, approvals) = gov_declared_with_approvals();
+        let old_index = state.head_index;
+        let next_hash = record.declared_next_hash;
+        let life = commit_governance_from_stored(
+            &mut state, &mut record, &obs, std::slice::from_ref(&first), std::slice::from_ref(&plan),
+            &approvals, &[],
+        )
+        .expect("a unanimous stored-approval chain must commit");
+        assert_eq!(life, Life::Committed);
+        assert_eq!(record.stage, TransitionRecord::COMMITTED);
+        assert_eq!(state.head_index, old_index + 1);
+        assert_eq!(state.head_hash, next_hash);
+        let err = commit_governance_from_stored(
+            &mut state, &mut record, &obs, std::slice::from_ref(&first), std::slice::from_ref(&plan),
+            &approvals, &[],
+        )
+        .expect_err("a second stored governance commit must refuse");
+        assert!(format!("{:?}", err).contains("WrongStage"));
+        assert_eq!(record.stage, TransitionRecord::COMMITTED);
+    }
+
+    #[test]
+    fn gov_stored_commit_refuses_count_mismatch() {
+        // The approval-count anchor, helper-side: two stored
+        // records against a count of three refuse before any
+        // decode or replay runs, and the record stands
+        // DECLARED with the head unmoved — the instruction's
+        // parse enforces the same count, and this is the
+        // defense in depth behind it.
+        let (mut state, mut record, obs, first, plan, approvals) = gov_declared_with_approvals();
+        let head_index = state.head_index;
+        let err = commit_governance_from_stored(
+            &mut state, &mut record, &obs, std::slice::from_ref(&first), std::slice::from_ref(&plan),
+            &approvals[..2], &[],
+        )
+        .expect_err("a stored set short of its count must refuse");
+        assert!(format!("{:?}", err).contains("RecordMismatch"));
+        assert_eq!(record.stage, TransitionRecord::DECLARED);
+        assert_eq!(state.head_index, head_index);
+    }
+
+    #[test]
+    fn gov_stored_commit_refuses_foreign_and_mixed_and_duplicate_approvals() {
+        // Three decoder refusals, one cause each: an approval
+        // naming another transition (linkage, not proof), an
+        // approval for a different action (exit-window 401
+        // against the approved 400 — the set agrees on
+        // nothing), and a seat approving twice (the same
+        // agent id under two records). Each leaves the record
+        // standing DECLARED with the head unmoved.
+        let (mut state, mut record, obs, first, plan, mut approvals) = gov_declared_with_approvals();
+        approvals[2].transition_id = [0x99; 32];
+        let err = commit_governance_from_stored(
+            &mut state, &mut record, &obs, std::slice::from_ref(&first), std::slice::from_ref(&plan),
+            &approvals, &[],
+        )
+        .expect_err("a foreign approval must refuse");
+        assert!(format!("{:?}", err).contains("RecordMismatch"));
+        assert_eq!(record.stage, TransitionRecord::DECLARED);
+
+        let (mut state, mut record, obs, first, plan, mut approvals) = gov_declared_with_approvals();
+        let other = GovAction::SetCapacity { resource: RES_EXIT_WINDOW, capacity: Amount::from_raw(401 * SCALE) };
+        record.stage = TransitionRecord::REGISTERED;
+        approvals[2] = build_governance_approval_record(
+            &state, &record, Pubkey::new_from_array(ag(3)), &other, 1,
+        )
+        .expect("a different-action approval must build");
+        record.stage = TransitionRecord::DECLARED;
+        let err = commit_governance_from_stored(
+            &mut state, &mut record, &obs, std::slice::from_ref(&first), std::slice::from_ref(&plan),
+            &approvals, &[],
+        )
+        .expect_err("a mixed-action approval set must refuse");
+        assert!(format!("{:?}", err).contains("GovernanceCommitFailed"));
+        assert_eq!(record.stage, TransitionRecord::DECLARED);
+
+        let (mut state, mut record, obs, first, plan, mut approvals) = gov_declared_with_approvals();
+        let action = gov_action();
+        record.stage = TransitionRecord::REGISTERED;
+        approvals[1] = build_governance_approval_record(
+            &state, &record, Pubkey::new_from_array(ag(1)), &action, 1,
+        )
+        .expect("a second record for seat 1 must build at helper level");
+        record.stage = TransitionRecord::DECLARED;
+        let err = commit_governance_from_stored(
+            &mut state, &mut record, &obs, std::slice::from_ref(&first), std::slice::from_ref(&plan),
+            &approvals, &[],
+        )
+        .expect_err("a duplicate-seat approval set must refuse");
+        assert!(format!("{:?}", err).contains("GovernanceCommitFailed"));
+        assert_eq!(record.stage, TransitionRecord::DECLARED);
+    }
+
+    #[test]
+    fn gov_stored_commit_refuses_corrupt_decode_and_non_unanimous() {
+        // A stored action whose kind byte is outside 0..=14
+        // refuses as corrupt (`GovActionDecode`), not as a
+        // predicate failure — the record is corrupt, not
+        // merely unproven. And two approvals against a count
+        // of two pass the decoder but fail the kernel's
+        // unanimity gate: the third seat never approved this
+        // action, so registration refuses and the record
+        // stands DECLARED.
+        let (mut state, mut record, obs, first, plan, mut approvals) = gov_declared_with_approvals();
+        approvals[2].action.kind = 15;
+        let err = commit_governance_from_stored(
+            &mut state, &mut record, &obs, std::slice::from_ref(&first), std::slice::from_ref(&plan),
+            &approvals, &[],
+        )
+        .expect_err("a corrupt stored action must refuse");
+        assert!(format!("{:?}", err).contains("GovActionDecode"));
+        assert_eq!(record.stage, TransitionRecord::DECLARED);
+
+        let (mut state, mut record, obs, first, plan, approvals) = gov_declared_with_approvals();
+        record.approval_count = 2;
+        let err = commit_governance_from_stored(
+            &mut state, &mut record, &obs, std::slice::from_ref(&first), std::slice::from_ref(&plan),
+            &approvals[..2], &[],
+        )
+        .expect_err("a non-unanimous stored set must refuse");
+        assert!(format!("{:?}", err).contains("GovernanceCommitFailed"));
+        assert_eq!(record.stage, TransitionRecord::DECLARED);
+    }
+
+    #[test]
+    fn gov_commit_tail_split_succeeds_and_refuses() {
+        // The instruction's tail parse, host-proven: one
+        // signal, one plan, three approvals split cleanly in
+        // order; a signal run short of its count, a plan slot
+        // holding a signal, an approval run past its count,
+        // and an approval run short of its count each refuse
+        // with RecordMismatch before any replay runs. Each
+        // case builds its own fixture — the record structs
+        // are not Clone, so nothing is reused across cases.
+        let (_state, _record, _obs, first, plan, approvals) = gov_declared_with_approvals();
+        let [a0, a1, a2] = approvals;
+        let tail = alloc::vec![
+            ParsedAccount::Signal(first),
+            ParsedAccount::Plan(plan),
+            ParsedAccount::GovApproval(Box::new(a0)),
+            ParsedAccount::GovApproval(Box::new(a1)),
+            ParsedAccount::GovApproval(Box::new(a2)),
+        ];
+        let (signals, plans, parsed_approvals) = split_gov_commit_tail(tail, 1, 1, 3)
+            .expect("a well-formed gov commit tail must split");
+        assert_eq!(signals.len(), 1);
+        assert_eq!(plans.len(), 1);
+        assert_eq!(parsed_approvals.len(), 3);
+
+        let (_state, _record, _obs, _first, plan, approvals) = gov_declared_with_approvals();
+        let [a0, a1, a2] = approvals;
+        let short = alloc::vec![
+            ParsedAccount::Plan(plan),
+            ParsedAccount::GovApproval(Box::new(a0)),
+            ParsedAccount::GovApproval(Box::new(a1)),
+            ParsedAccount::GovApproval(Box::new(a2)),
+        ];
+        let err = split_gov_commit_tail(short, 1, 1, 3)
+            .expect_err("a tail short of its signal count must refuse");
+        assert!(format!("{:?}", err).contains("RecordMismatch"));
+
+        let (_state, _record, _obs, first, _plan, approvals) = gov_declared_with_approvals();
+        let [a0, a1, a2] = approvals;
+        let wrong_slot = alloc::vec![
+            ParsedAccount::Signal(first),
+            ParsedAccount::Signal(first),
+            ParsedAccount::GovApproval(Box::new(a0)),
+            ParsedAccount::GovApproval(Box::new(a1)),
+            ParsedAccount::GovApproval(Box::new(a2)),
+        ];
+        let err = split_gov_commit_tail(wrong_slot, 1, 1, 3)
+            .expect_err("a signal in the plan slot must refuse");
+        assert!(format!("{:?}", err).contains("RecordMismatch"));
+
+        let (_state, _record, _obs, first, plan, approvals) = gov_declared_with_approvals();
+        let [a0, a1, a2] = approvals;
+        let over = alloc::vec![
+            ParsedAccount::Signal(first),
+            ParsedAccount::Plan(plan),
+            ParsedAccount::GovApproval(Box::new(a0)),
+            ParsedAccount::GovApproval(Box::new(a1)),
+            ParsedAccount::GovApproval(Box::new(a2)),
+        ];
+        let err = split_gov_commit_tail(over, 1, 1, 2)
+            .expect_err("an approval run past its count must refuse");
+        assert!(format!("{:?}", err).contains("RecordMismatch"));
+
+        let (_state, _record, _obs, first, plan, approvals) = gov_declared_with_approvals();
+        let [a0, a1, a2] = approvals;
+        let under = alloc::vec![
+            ParsedAccount::Signal(first),
+            ParsedAccount::Plan(plan),
+            ParsedAccount::GovApproval(Box::new(a0)),
+            ParsedAccount::GovApproval(Box::new(a1)),
+            ParsedAccount::GovApproval(Box::new(a2)),
+        ];
+        let err = split_gov_commit_tail(under, 1, 1, 4)
+            .expect_err("an approval run short of its count must refuse");
         assert!(format!("{:?}", err).contains("RecordMismatch"));
     }
 
