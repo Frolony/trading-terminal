@@ -22,9 +22,19 @@
 //   api.geckoterminal.com keyless 401s from Vercel egress IPs. Upgrade path:
 //   set the GECKO_DEMO_API_KEY env var (free CoinGecko demo key) and the
 //   endpoint switches to the keyed api.coingecko.com/api/v3/onchain base.
+// - N7.16 (2026-10-27): with a demo key present, the Gecko path attempts
+//   BOTH keyed bases in order — CoinGecko onchain first, then
+//   api.geckoterminal.com/api/v2 — sending the demo-key header to each, and
+//   caches per process (OnceLock + Mutex) whichever base answers so later
+//   requests try it first. If every attempted base fails, the
+//   UPSTREAM_BLOCKED error names each attempted base + its HTTP status (or
+//   failure kind); the key value, or any fragment of it, is never logged or
+//   returned. With no key present, the keyless single-base behavior and its
+//   messages are unchanged.
 
 use serde_json::Value;
 use std::env;
+use std::sync::{Mutex, OnceLock};
 
 const GECKO_BASE: &str = "https://api.geckoterminal.com/api/v2/networks/solana/pools";
 const COINGECKO_ONCHAIN_BASE: &str = "https://api.coingecko.com/api/v3/onchain/networks/solana/pools";
@@ -137,35 +147,93 @@ async fn fetch_kraken(client: &reqwest::Client) -> Result<Vec<RawBar>, Value> {
     Ok(out)
 }
 
-async fn fetch_gecko(client: &reqwest::Client, pool_addr: &str, agg: u32, target_days: u32) -> Result<Vec<RawBar>, Value> {
-    // Keyed upgrade path: a free CoinGecko demo key unlocks the onchain base,
-    // which does not 401 server IPs the way api.geckoterminal.com keyless does.
-    let demo_key = env::var("GECKO_DEMO_API_KEY").ok().filter(|k| !k.trim().is_empty());
-    let base = if demo_key.is_some() { COINGECKO_ONCHAIN_BASE } else { GECKO_BASE };
+/// N7.16 keyed attempt bases, in spec order: CoinGecko onchain first,
+/// GeckoTerminal second. Each entry is (URL prefix for the pool OHLCV path,
+/// human-readable base label for error text — host + path only, never a key).
+const KEYED_BASES: &[(&str, &str)] = &[
+    (COINGECKO_ONCHAIN_BASE, "api.coingecko.com/api/v3/onchain"),
+    (GECKO_BASE, "api.geckoterminal.com/api/v2"),
+];
+
+/// Per-process cache of the keyed base that last answered (N7.16). A later
+/// failure on the cached base falls through to the other base, which then
+/// becomes the cached one — the cache only ever records a base that fully
+/// answered, never a base that merely was tried.
+static PREFERRED_KEYED_BASE: OnceLock<Mutex<Option<usize>>> = OnceLock::new();
+fn preferred_keyed_base() -> &'static Mutex<Option<usize>> {
+    PREFERRED_KEYED_BASE.get_or_init(|| Mutex::new(None))
+}
+
+/// Why one upstream attempt failed, without any key material.
+enum GeckoFail {
+    Transport,
+    Status(u16),
+    Parse,
+    NoList,
+}
+
+impl GeckoFail {
+    fn describe(&self) -> String {
+        match self {
+            GeckoFail::Transport => "request failed (no HTTP response)".to_string(),
+            GeckoFail::Status(c) => format!("HTTP {}", c),
+            GeckoFail::Parse => "unparseable response".to_string(),
+            GeckoFail::NoList => "response has no ohlcv_list".to_string(),
+        }
+    }
+}
+
+/// Attempt order for the keyed bases (N7.16): the cached answering base
+/// first when there is one, otherwise spec order. Pure, for tests.
+fn keyed_attempt_order(cached: Option<usize>) -> Vec<usize> {
+    match cached {
+        Some(c) if c < KEYED_BASES.len() => {
+            let mut v = vec![c];
+            v.extend((0..KEYED_BASES.len()).filter(|i| *i != c));
+            v
+        }
+        _ => (0..KEYED_BASES.len()).collect(),
+    }
+}
+
+/// UPSTREAM_BLOCKED message for the keyed path (N7.16): names every
+/// attempted base + its failure, and points at the key VALUE as the thing
+/// to verify — without ever carrying the value itself.
+fn keyed_blocked_message(attempts: &[(&str, &str)]) -> String {
+    let parts: Vec<String> = attempts.iter().map(|(label, desc)| format!("{} returned {}", label, desc)).collect();
+    format!(
+        "Server-side DEX ingestion was rejected by every attempted upstream: {}. Neither upstream accepted the server-side request; verify GECKO_DEMO_API_KEY holds a bare CoinGecko demo key (the key value itself is never logged or returned here).",
+        parts.join("; ")
+    )
+}
+
+/// One paginated OHLCV fetch against a single base prefix. A 2xx page that
+/// parses counts as the base answering (even an empty first page, which ends
+/// pagination exactly as before); any transport failure, non-success status,
+/// or unparseable/missing-list body fails the whole attempt, discarding
+/// partial pages, so a keyed caller can try the next base from scratch.
+async fn fetch_gecko_from_base(client: &reqwest::Client, base: &str, demo_key: Option<&str>, pool_addr: &str, agg: u32, target_days: u32) -> Result<Vec<RawBar>, GeckoFail> {
     let mut raw: Vec<RawBar> = Vec::new();
     let mut before: Option<u64> = None;
     for _ in 0..MAX_PAGES {
         let mut url = format!("{}/{}/ohlcv/day?aggregate={}&limit={}", base, pool_addr, agg, UPSTREAM_LIMIT);
         if let Some(b) = before { url = format!("{}&before_timestamp={}", url, b); }
         let mut req = client.get(&url).header("User-Agent", BROWSER_UA).header("Accept", "application/json");
-        if let Some(k) = demo_key.as_deref() { req = req.header("x-cg-demo-api-key", k); }
+        if let Some(k) = demo_key { req = req.header("x-cg-demo-api-key", k); }
         let resp = match req.send().await {
             Ok(r) => r,
-            Err(_) => return Err(crate::common::api_error("UPSTREAM_ERROR", "GeckoTerminal OHLCV request failed.")),
+            Err(_) => return Err(GeckoFail::Transport),
         };
-        if resp.status().as_u16() == 401 {
-            return Err(crate::common::api_error("UPSTREAM_BLOCKED", "GeckoTerminal rejected the server-side request (HTTP 401). Its keyless API serves browsers but blocks datacenter IPs; set the GECKO_DEMO_API_KEY env var (free CoinGecko demo key) to enable server-side DEX ingestion."));
-        }
         if !resp.status().is_success() {
-            return Err(crate::common::api_error("UPSTREAM_ERROR", &format!("GeckoTerminal OHLCV returned HTTP {}.", resp.status().as_u16())));
+            return Err(GeckoFail::Status(resp.status().as_u16()));
         }
         let body: Value = match resp.json().await {
             Ok(v) => v,
-            Err(_) => return Err(crate::common::api_error("UPSTREAM_ERROR", "Could not parse the GeckoTerminal OHLCV response.")),
+            Err(_) => return Err(GeckoFail::Parse),
         };
         let rows = match body.pointer("/data/attributes/ohlcv_list").and_then(|v| v.as_array()) {
             Some(r) => r,
-            None => return Err(crate::common::api_error("UPSTREAM_ERROR", "GeckoTerminal OHLCV response has no ohlcv_list.")),
+            None => return Err(GeckoFail::NoList),
         };
         if rows.is_empty() { break; }
         let mut oldest: Option<u64> = None;
@@ -183,6 +251,86 @@ async fn fetch_gecko(client: &reqwest::Client, pool_addr: &str, agg: u32, target
     raw.sort_by_key(|b| b.0);
     raw.dedup_by_key(|b| b.0);
     Ok(raw)
+}
+
+async fn fetch_gecko(client: &reqwest::Client, pool_addr: &str, agg: u32, target_days: u32) -> Result<Vec<RawBar>, Value> {
+    // Keyed upgrade path: a free CoinGecko demo key unlocks the onchain base,
+    // which does not 401 server IPs the way api.geckoterminal.com keyless does.
+    // N7.16: with a key, attempt BOTH keyed bases (CoinGecko onchain first,
+    // GeckoTerminal second), each with the demo-key header; the first base
+    // that answers wins and is cached per process for later requests.
+    let demo_key = env::var("GECKO_DEMO_API_KEY").ok().filter(|k| !k.trim().is_empty());
+    match demo_key {
+        None => {
+            // No key: today's keyless single-base behavior, messages verbatim.
+            match fetch_gecko_from_base(client, GECKO_BASE, None, pool_addr, agg, target_days).await {
+                Ok(bars) => Ok(bars),
+                Err(GeckoFail::Status(401)) => Err(crate::common::api_error("UPSTREAM_BLOCKED", "GeckoTerminal rejected the server-side request (HTTP 401). Its keyless API serves browsers but blocks datacenter IPs; set the GECKO_DEMO_API_KEY env var (free CoinGecko demo key) to enable server-side DEX ingestion.")),
+                Err(GeckoFail::Status(c)) => Err(crate::common::api_error("UPSTREAM_ERROR", &format!("GeckoTerminal OHLCV returned HTTP {}.", c))),
+                Err(GeckoFail::Transport) => Err(crate::common::api_error("UPSTREAM_ERROR", "GeckoTerminal OHLCV request failed.")),
+                Err(GeckoFail::Parse) => Err(crate::common::api_error("UPSTREAM_ERROR", "Could not parse the GeckoTerminal OHLCV response.")),
+                Err(GeckoFail::NoList) => Err(crate::common::api_error("UPSTREAM_ERROR", "GeckoTerminal OHLCV response has no ohlcv_list.")),
+            }
+        }
+        Some(key) => {
+            let cached = preferred_keyed_base().lock().ok().and_then(|g| *g);
+            let mut attempts: Vec<(&str, String)> = Vec::new();
+            for idx in keyed_attempt_order(cached) {
+                let (base, label) = KEYED_BASES[idx];
+                match fetch_gecko_from_base(client, base, Some(key.as_str()), pool_addr, agg, target_days).await {
+                    Ok(bars) => {
+                        if let Ok(mut guard) = preferred_keyed_base().lock() { *guard = Some(idx); }
+                        return Ok(bars);
+                    }
+                    Err(f) => attempts.push((label, f.describe())),
+                }
+            }
+            let refs: Vec<(&str, &str)> = attempts.iter().map(|(l, d)| (*l, d.as_str())).collect();
+            Err(crate::common::api_error("UPSTREAM_BLOCKED", &keyed_blocked_message(&refs)))
+        }
+    }
+}
+
+#[cfg(test)]
+mod n716_tests {
+    use super::*;
+
+    #[test]
+    fn order_without_cache_is_spec_order() {
+        assert_eq!(keyed_attempt_order(None), vec![0, 1]);
+        assert_eq!(KEYED_BASES[0].1, "api.coingecko.com/api/v3/onchain");
+        assert_eq!(KEYED_BASES[1].1, "api.geckoterminal.com/api/v2");
+    }
+
+    #[test]
+    fn order_with_cache_tries_cached_base_first() {
+        assert_eq!(keyed_attempt_order(Some(1)), vec![1, 0]);
+        assert_eq!(keyed_attempt_order(Some(0)), vec![0, 1]);
+    }
+
+    #[test]
+    fn order_with_invalid_cache_falls_back_to_spec_order() {
+        assert_eq!(keyed_attempt_order(Some(9)), vec![0, 1]);
+    }
+
+    #[test]
+    fn blocked_message_names_every_attempted_base_and_status() {
+        let m = keyed_blocked_message(&[
+            ("api.coingecko.com/api/v3/onchain", "HTTP 401"),
+            ("api.geckoterminal.com/api/v2", "HTTP 429"),
+        ]);
+        assert!(m.contains("api.coingecko.com/api/v3/onchain returned HTTP 401"), "{}", m);
+        assert!(m.contains("api.geckoterminal.com/api/v2 returned HTTP 429"), "{}", m);
+        assert!(!m.contains("x-cg-demo-api-key"), "{}", m);
+    }
+
+    #[test]
+    fn fail_descriptions_carry_status_without_key_material() {
+        assert_eq!(GeckoFail::Status(401).describe(), "HTTP 401");
+        assert_eq!(GeckoFail::Transport.describe(), "request failed (no HTTP response)");
+        assert_eq!(GeckoFail::Parse.describe(), "unparseable response");
+        assert_eq!(GeckoFail::NoList.describe(), "response has no ohlcv_list");
+    }
 }
 
 /// Fetch + validate daily bars for a resolved source.

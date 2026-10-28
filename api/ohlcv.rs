@@ -15,8 +15,10 @@
 //   pool OHLCV (DEX-native daily bars, before_timestamp pagination). BLOCKED
 //   server-side as of 2026-10-22: api.geckoterminal.com keyless 401s from
 //   Vercel egress IPs (works from browsers and this sandbox). Upgrade path:
-//   set the GECKO_DEMO_API_KEY env var (free CoinGecko demo key) and the
-//   endpoint switches to the keyed api.coingecko.com/api/v3/onchain base.
+//   set the GECKO_DEMO_API_KEY env var (free CoinGecko demo key) and, per
+//   N7.16, the endpoint attempts BOTH keyed bases in order (CoinGecko
+//   onchain, then api.geckoterminal.com/api/v2), caching per process the
+//   base that answers; a total failure names each attempted base + status.
 //
 // Contract: GET /api/ohlcv?pair=sol-usd
 //           GET /api/ohlcv?pair=sol-usdc | ?pool=<geckoterminal pool address>
