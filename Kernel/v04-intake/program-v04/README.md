@@ -532,11 +532,61 @@ families, account inventory, and CU golden set are later step-5 slices.
   are not replayable here), reconcile/validate/declare, commit
   replay moving the head, and CU measurement — all later slices.
 
+## Slice 19 — sibling-set completeness anchor for select
+
+- `KernelState` gains the census slice 17 named and slice 18 left
+  open: `eligible_sibling_parent_index` / `eligible_sibling_parent_hash`
+  plus `eligible_sibling_count` (SPACE 58 -> 106). `mark_eligible`
+  writes it on success only — the same instruction advances the
+  stage and the census or neither, so count and eligible set cannot
+  diverge, exactly as slice 16's `signal_count` is written by
+  `submit_signal`. A transition becoming eligible at the census
+  parent increments the count; the first eligible transition at a
+  new parent resets the census to that parent with count 1. The
+  `mark_eligible` instruction's `kernel_state` account is now `mut`;
+  the IDL gains no instruction (12 instructions, 4 accounts,
+  18 errors, 10 events, unchanged), only that account's writability.
+- Both select helpers gate on the census before any replay. The
+  plain select requires count exactly 1 at the target's parent —
+  otherwise a second eligible transition exists and the plain path,
+  which rebuilds a kernel holding only the target, would silently
+  bypass the comparison. The sibling select requires supplied
+  siblings + target to equal the count at the target's parent, so
+  an omitted eligible competitor refuses instead of passing
+  unjudged. The census parent must equal the target's parent in
+  both: a count recorded at another parent authorizes nothing, and
+  the next `mark_eligible` at the new parent resets it lazily, so
+  the future commit-replay slice that moves the head need not
+  reset it and must not trust it across the move either. The
+  census counts every transition that ever became eligible at this
+  parent — selected or still eligible, expired or not — because
+  the kernel's sibling loop judges only `Eligible` siblings at the
+  parent (plus the `selected_for` record, itself formerly
+  eligible), and an omitted expired sibling is indistinguishable
+  on-chain from an omitted live one.
+- Host tests 122/122 (115 prior + 7 slice-19: genesis census empty
+  at the genesis head, census advances 1 -> 2 across two
+  eligibilities, census resets at a new parent, refused
+  eligibility leaves the census, plain select refuses when the
+  census reports another eligible transition, sibling select
+  refuses an omitted sibling, sibling select refuses a census at
+  another parent). All 20 prior sibling tests now set the census
+  to their supplied field size, so their kernel arms are still
+  what is proven, not the gate.
+- `anchor build` green under the pinned toolchain; `.so`
+  721,744 bytes (sha256 `751d44b2…`).
+- Deliberately NOT slice 19: later-stage siblings (planning
+  onward — the with-siblings gate still admits only `ELIGIBLE` /
+  `SELECTED`, so a sibling advanced past selection cannot be
+  supplied, though that select must fail anyway since
+  `selected_for` already names it), reconcile/validate/declare,
+  commit replay moving the head, and CU measurement — later slices.
+
 ## Build
 
 ```sh
 export RUSTUP_HOME=~/workspace/toolchains/rustup CARGO_HOME=~/workspace/toolchains/cargo
 export PATH=~/workspace/toolchains/cargo/bin:~/workspace/toolchains/solana/bin:$PATH
 ~/workspace/toolchains/anchor/bin/anchor build   # from this directory
-cargo test                                        # host tests, 115/115
+cargo test                                        # host tests, 122/122
 ```
