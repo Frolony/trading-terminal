@@ -1330,11 +1330,61 @@ families, account inventory, and CU golden set are later step-5 slices.
   `commit_governance` instruction, a revise-approval
   instruction, and CU measurement — later slices.
 
+## Slice 35 — threading the mixed prior chain through helpers and instructions
+
+- The thirteen stage helpers now take `prior_entries:
+  &[PriorEntry]` and build their kernel with
+  `kernel_at_head_from_entries` (empty entries = the genesis
+  case; an incomplete chain at a moved head still refuses with
+  `ParentMismatch`), and the twelve stage instructions parse
+  their remaining accounts through `split_prior_bundles` +
+  `prior_entries_of` — so on-chain instructions now replay past
+  a governance commit instead of refusing at it. The delimiting
+  rule extends the slice-16/21 anchor pattern:
+  `TransitionRecord` gains `approval_count` (SPACE 263 ->
+  271), written by `approve_governance` on success only via
+  the pure `note_governance_approval` helper, so a governance
+  bundle is self-delimiting by its stored signal, plan, and
+  approval counts; a bundle short of its approval count, or
+  carrying a foreign approval, refuses at parse time with
+  `RecordMismatch`. The classifier gains a boxed fifth variant,
+  `GovApproval` (boxing keeps clippy's large-variant lint
+  quiet: the approval record is ~1600 bytes against ~264 for
+  the next-largest variant); the sibling instruction's tail
+  match refuses the new variant, as it already refuses `Plan`.
+  Design decisions for Carlos's audit: a count field, not a
+  scan-until-next-transition rule (the anchor catches an
+  omitted approval at parse time, where the other anchors
+  live, rather than leaving it to the kernel's unanimity gate),
+  and the count on the transition record itself, preserving
+  the one-instruction-one-anchor invariant.
+- Host tests 263/263 (259 prior + 4 slice-35: the approval-count
+  anchor increment and overflow refusal, mixed ordinary +
+  governance bundle parsing with entry-kind split, short and
+  foreign approval parse refusals, and the end-to-end mixed
+  chain — ordinary commit to head 1, governance commit to head
+  2, target replayed from the mixed head, and the same target
+  with the governance prior omitted refusing with
+  `ParentMismatch`). Clippy back to the pre-existing profile
+  (anchor macro `unexpected cfg` noise + the slice-8 test
+  helper's `type_complexity` warning); zero new warnings — the
+  large-variant warning the unboxed variant raised was fixed
+  by boxing, not suppressed. No new instruction, account, or
+  error this slice, as designed: IDL counts unchanged (20
+  instructions, 6 accounts, 34 errors, 18 events); `.so`
+  1,211,832 bytes (sha256 `7eb6114b…`, re-measured this run — the
+  interrupted slice-35 draft's recorded `c7db9a1a…` did not reproduce
+  from the current tree; a forced rebuild reproduces `7eb6114b…`
+  exactly, size and IDL counts unchanged).
+- Deliberately NOT slice 35: the governance replay and
+  `commit_governance` instruction, a revise-approval
+  instruction, and CU measurement — later slices.
+
 ## Build
 
 ```sh
 export RUSTUP_HOME=~/workspace/toolchains/rustup CARGO_HOME=~/workspace/toolchains/cargo
 export PATH=~/workspace/toolchains/cargo/bin:~/workspace/toolchains/solana/bin:$PATH
 ~/workspace/toolchains/anchor/bin/anchor build   # from this directory
-cargo test                                        # host tests, 259/259
+cargo test                                        # host tests, 263/263
 ```

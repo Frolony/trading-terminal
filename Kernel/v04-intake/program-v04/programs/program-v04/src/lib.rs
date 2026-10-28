@@ -923,6 +923,50 @@
 //! genesis-pinned profile while this prior driver resolves
 //! against the running kernel — reconciling that pair rides the
 //! governance-replay slice. CU measurement is still a later slice.
+//!
+//! Slice 35 (this slice): threading the mixed prior chain
+//! through the thirteen stage helpers and the instruction
+//! remaining accounts — the slice-34 bound, closed on-chain.
+//! Every stage helper now takes `prior_entries: &[PriorEntry]`
+//! and builds its kernel with `kernel_at_head_from_entries`
+//! instead of the ordinary-only `kernel_at_head_from_commits`;
+//! empty entries are exactly the genesis case, and a moved head
+//! with an incomplete chain still refuses with `ParentMismatch`.
+//! The twelve stage instructions parse their remaining accounts
+//! through the same `split_prior_bundles` + `prior_entries_of`
+//! path, so an on-chain instruction now replays past a
+//! governance commit instead of refusing at it. The delimiting
+//! rule is the slice-16/21 anchor pattern, extended, not a new
+//! mechanism: `TransitionRecord` gains `approval_count`
+//! (SPACE 263 -> 271), written by `approve_governance` on
+//! success only via the pure `note_governance_approval`
+//! helper — one per created approval record — so a governance
+//! bundle is self-delimiting by its stored signal, plan, and
+//! approval counts, and a bundle short of its approval count,
+//! or carrying a foreign approval, refuses at parse time with
+//! `RecordMismatch` before any kernel replay runs. The
+//! classifier gains a fifth variant, `GovApproval`, boxed: the
+//! approval record is ~1600 bytes against ~264 for the
+//! next-largest variant, and an unboxed variant trips clippy's
+//! large-variant lint on every parse. The sibling instruction's
+//! tail match gains the new variant as a refusal, exactly as
+//! `Plan` already is there; every other tail match refuses it
+//! through its wildcard. Design decisions, recorded for
+//! Carlos's audit (delegation rule): the anchor is a count
+//! field, not a scan-until-next-transition rule — a scan would
+//! parse a bundle that omits an approval (the kernel's
+//! unanimity gate would catch it later, but the anchor catches
+//! it at parse time, where the other completeness anchors
+//! live); and the count lives on the transition record rather
+//! than in a new account, because the creating instruction
+//! already mutates that record for signal/plan counts and the
+//! one-instruction-one-anchor invariant is what keeps counts
+//! and record sets from diverging. Deliberately NOT slice 35:
+//! the governance replay and `commit_governance` instruction
+//! (the slice-28 helper still takes action and approvals as
+//! arguments — consuming stored approvals at commit time rides
+//! that slice), a revise-approval instruction (the init-only
+//! divergence stands, fail-closed), and CU measurement.
 
 extern crate alloc;
 
@@ -1106,6 +1150,11 @@ pub mod program_v04 {
         )?;
         let action_kind = record.action.kind;
         *ctx.accounts.approval_record = record;
+        // Slice 35: the approval-count anchor moves here, after
+        // the record is stored — a refused approval leaves the
+        // count untouched, and the count increments exactly once
+        // per created record, exactly as signal/plan counts do.
+        note_governance_approval(&mut ctx.accounts.transition_record)?;
         emit!(GovernanceApproved {
             transition_id,
             seat: ctx.accounts.payer.key(),
@@ -1156,7 +1205,7 @@ pub mod program_v04 {
     /// the relevant-groups derivation and the genesis-head-only scope).
     /// The payer is a fee payer only — replay executes steps the stored
     /// records already authorized and creates no new authority.
-    /// Slice 31: remaining accounts begin with `prior_bundle_count` prior COMMITTED bundles (head order, self-delimited by each bundle's stored signal/plan counts); the tail is this instruction's own evidence, as before.
+    /// Slice 31: remaining accounts begin with `prior_bundle_count` prior COMMITTED bundles (head order, self-delimited by each bundle's stored signal/plan counts (and, for a governance bundle, its stored approval count)); the tail is this instruction's own evidence, as before.
     pub fn replay_transition(
         ctx: Context<ReplayTransition>,
         transition_id: [u8; 32],
@@ -1172,7 +1221,7 @@ pub mod program_v04 {
             classify_remaining_accounts(ctx.remaining_accounts)?,
             prior_bundle_count as usize,
         )?;
-        let prior_commits = prior_commits_of(&bundles);
+        let prior_entries = prior_entries_of(&bundles);
         if !tail.is_empty() {
             return Err(error!(ProgramV04Error::RecordMismatch));
         }
@@ -1180,7 +1229,7 @@ pub mod program_v04 {
             &ctx.accounts.kernel_state,
             &mut ctx.accounts.transition_record,
             &ctx.accounts.observation_record,
-            &prior_commits,
+            &prior_entries,
 )?;
         emit!(TransitionReplayed {
             transition_id,
@@ -1216,7 +1265,7 @@ pub mod program_v04 {
     /// (see module docs for why NoEnv cannot serve this step). The
     /// payer is a fee payer only — evaluation executes steps the
     /// stored records already authorized and creates no new authority.
-    /// Slice 31: remaining accounts begin with `prior_bundle_count` prior COMMITTED bundles (head order, self-delimited by each bundle's stored signal/plan counts); the tail is this instruction's own evidence, as before.
+    /// Slice 31: remaining accounts begin with `prior_bundle_count` prior COMMITTED bundles (head order, self-delimited by each bundle's stored signal/plan counts (and, for a governance bundle, its stored approval count)); the tail is this instruction's own evidence, as before.
     pub fn evaluate_transition(
         ctx: Context<EvaluateTransition>,
         transition_id: [u8; 32],
@@ -1232,7 +1281,7 @@ pub mod program_v04 {
             classify_remaining_accounts(ctx.remaining_accounts)?,
             prior_bundle_count as usize,
         )?;
-        let prior_commits = prior_commits_of(&bundles);
+        let prior_entries = prior_entries_of(&bundles);
         if !tail.is_empty() {
             return Err(error!(ProgramV04Error::RecordMismatch));
         }
@@ -1240,7 +1289,7 @@ pub mod program_v04 {
             &ctx.accounts.kernel_state,
             &mut ctx.accounts.transition_record,
             &ctx.accounts.observation_record,
-            &prior_commits,
+            &prior_entries,
 )?;
         emit!(TransitionEvaluated { transition_id, stage: TransitionRecord::EVALUATED });
         Ok(())
@@ -1263,7 +1312,7 @@ pub mod program_v04 {
     /// caller assertion. The payer is a fee payer only — eligibility
     /// executes steps the stored records already authorized and
     /// creates no new authority.
-    /// Slice 31: remaining accounts begin with `prior_bundle_count` prior COMMITTED bundles (head order, self-delimited by each bundle's stored signal/plan counts); the tail is this instruction's own evidence, as before.
+    /// Slice 31: remaining accounts begin with `prior_bundle_count` prior COMMITTED bundles (head order, self-delimited by each bundle's stored signal/plan counts (and, for a governance bundle, its stored approval count)); the tail is this instruction's own evidence, as before.
     pub fn mark_eligible(
         ctx: Context<MarkEligible>,
         transition_id: [u8; 32],
@@ -1279,7 +1328,7 @@ pub mod program_v04 {
             classify_remaining_accounts(ctx.remaining_accounts)?,
             prior_bundle_count as usize,
         )?;
-        let prior_commits = prior_commits_of(&bundles);
+        let prior_entries = prior_entries_of(&bundles);
         if !tail.is_empty() {
             return Err(error!(ProgramV04Error::RecordMismatch));
         }
@@ -1287,7 +1336,7 @@ pub mod program_v04 {
             &mut ctx.accounts.kernel_state,
             &mut ctx.accounts.transition_record,
             &ctx.accounts.observation_record,
-            &prior_commits,
+            &prior_entries,
 )?;
         emit!(TransitionMarkedEligible { transition_id, stage: TransitionRecord::ELIGIBLE });
         Ok(())
@@ -1311,7 +1360,7 @@ pub mod program_v04 {
     /// and the signal's agent in one: the identity mapping means the
     /// signer proves the agent by signing, and no other agent's signal
     /// can be submitted through this instruction.
-    /// Slice 31: remaining accounts begin with `prior_bundle_count` prior COMMITTED bundles (head order, self-delimited by each bundle's stored signal/plan counts); the tail is this instruction's own evidence, as before.
+    /// Slice 31: remaining accounts begin with `prior_bundle_count` prior COMMITTED bundles (head order, self-delimited by each bundle's stored signal/plan counts (and, for a governance bundle, its stored approval count)); the tail is this instruction's own evidence, as before.
     #[allow(clippy::too_many_arguments)]
     pub fn submit_signal(
         ctx: Context<SubmitSignal>,
@@ -1332,7 +1381,7 @@ pub mod program_v04 {
             classify_remaining_accounts(ctx.remaining_accounts)?,
             prior_bundle_count as usize,
         )?;
-        let prior_commits = prior_commits_of(&bundles);
+        let prior_entries = prior_entries_of(&bundles);
         let mut priors: alloc::vec::Vec<SignalRecord> = alloc::vec::Vec::new();
         for item in tail {
             match item {
@@ -1351,7 +1400,7 @@ pub mod program_v04 {
             support_raw,
             has_support,
             ctx.bumps.signal_record,
-            &prior_commits,
+            &prior_entries,
 )?;
         *ctx.accounts.signal_record = record;
         emit!(SignalSubmitted {
@@ -1382,7 +1431,7 @@ pub mod program_v04 {
     /// rebuilt kernel holds only this transition, so this
     /// instruction proves own qualification and window closure, and
     /// the census proves no competitor exists to judge.
-    /// Slice 31: remaining accounts begin with `prior_bundle_count` prior COMMITTED bundles (head order, self-delimited by each bundle's stored signal/plan counts); the tail is this instruction's own evidence, as before.
+    /// Slice 31: remaining accounts begin with `prior_bundle_count` prior COMMITTED bundles (head order, self-delimited by each bundle's stored signal/plan counts (and, for a governance bundle, its stored approval count)); the tail is this instruction's own evidence, as before.
     pub fn select_candidate(
         ctx: Context<SelectCandidate>,
         transition_id: [u8; 32],
@@ -1398,7 +1447,7 @@ pub mod program_v04 {
             classify_remaining_accounts(ctx.remaining_accounts)?,
             prior_bundle_count as usize,
         )?;
-        let prior_commits = prior_commits_of(&bundles);
+        let prior_entries = prior_entries_of(&bundles);
         let mut priors: alloc::vec::Vec<SignalRecord> = alloc::vec::Vec::new();
         for item in tail {
             match item {
@@ -1411,7 +1460,7 @@ pub mod program_v04 {
             &mut ctx.accounts.transition_record,
             &ctx.accounts.observation_record,
             &priors,
-            &prior_commits,
+            &prior_entries,
 )?;
         emit!(TransitionSelected { transition_id, stage: TransitionRecord::SELECTED });
         Ok(())
@@ -1441,7 +1490,7 @@ pub mod program_v04 {
     /// census at the target's parent, or the instruction refuses
     /// before any replay — an omitted eligible competitor can no
     /// longer pass unjudged.
-    /// Slice 31: remaining accounts begin with `prior_bundle_count` prior COMMITTED bundles (head order, self-delimited by each bundle's stored signal/plan counts); the tail is this instruction's own evidence, as before.
+    /// Slice 31: remaining accounts begin with `prior_bundle_count` prior COMMITTED bundles (head order, self-delimited by each bundle's stored signal/plan counts (and, for a governance bundle, its stored approval count)); the tail is this instruction's own evidence, as before.
     pub fn select_candidate_with_siblings(
         ctx: Context<SelectCandidateWithSiblings>,
         transition_id: [u8; 32],
@@ -1457,7 +1506,7 @@ pub mod program_v04 {
             classify_remaining_accounts(ctx.remaining_accounts)?,
             prior_bundle_count as usize,
         )?;
-        let prior_commits = prior_commits_of(&bundles);
+        let prior_entries = prior_entries_of(&bundles);
         let mut sibling_transitions: alloc::vec::Vec<TransitionRecord> = alloc::vec::Vec::new();
         let mut sibling_observations: alloc::vec::Vec<ObservationRecord> = alloc::vec::Vec::new();
         let mut all_signals: alloc::vec::Vec<SignalRecord> = alloc::vec::Vec::new();
@@ -1467,6 +1516,9 @@ pub mod program_v04 {
                 ParsedAccount::Observation(obs) => sibling_observations.push(obs),
                 ParsedAccount::Signal(sig) => all_signals.push(sig),
                 ParsedAccount::Plan(_) => {
+                    return Err(error!(ProgramV04Error::RecordMismatch))
+                }
+                ParsedAccount::GovApproval(_) => {
                     return Err(error!(ProgramV04Error::RecordMismatch))
                 }
             }
@@ -1528,7 +1580,7 @@ pub mod program_v04 {
             &ctx.accounts.observation_record,
             &target_priors,
             &siblings,
-            &prior_commits,
+            &prior_entries,
 )?;
         emit!(TransitionSelected { transition_id, stage: TransitionRecord::SELECTED });
         Ok(())
@@ -1552,7 +1604,7 @@ pub mod program_v04 {
     /// taken — enforced by this helper from the stored record
     /// (see the helper's honesty bound: the replay proves
     /// selection, not Blocked-ness, until reconcile/validate land).
-    /// Slice 31: remaining accounts begin with `prior_bundle_count` prior COMMITTED bundles (head order, self-delimited by each bundle's stored signal/plan counts); the tail is this instruction's own evidence, as before.
+    /// Slice 31: remaining accounts begin with `prior_bundle_count` prior COMMITTED bundles (head order, self-delimited by each bundle's stored signal/plan counts (and, for a governance bundle, its stored approval count)); the tail is this instruction's own evidence, as before.
     pub fn open_planning(
         ctx: Context<OpenPlanning>,
         transition_id: [u8; 32],
@@ -1568,7 +1620,7 @@ pub mod program_v04 {
             classify_remaining_accounts(ctx.remaining_accounts)?,
             prior_bundle_count as usize,
         )?;
-        let prior_commits = prior_commits_of(&bundles);
+        let prior_entries = prior_entries_of(&bundles);
         let mut priors: alloc::vec::Vec<SignalRecord> = alloc::vec::Vec::new();
         for item in tail {
             match item {
@@ -1582,7 +1634,7 @@ pub mod program_v04 {
             &ctx.accounts.observation_record,
             &priors,
             resolve_agent_id(ctx.accounts.payer.key()),
-            &prior_commits,
+            &prior_entries,
 )?;
         debug_assert_eq!(life, Life::Planning);
         emit!(TransitionPlanningOpened {
@@ -1608,7 +1660,7 @@ pub mod program_v04 {
     /// and, by the identity mapping, the plan's agent: the kernel's
     /// agent gate (registered, active, in the proposer's groups)
     /// applies here, unlike open_planning's anyone rule.
-    /// Slice 31: remaining accounts begin with `prior_bundle_count` prior COMMITTED bundles (head order, self-delimited by each bundle's stored signal/plan counts); the tail is this instruction's own evidence, as before.
+    /// Slice 31: remaining accounts begin with `prior_bundle_count` prior COMMITTED bundles (head order, self-delimited by each bundle's stored signal/plan counts (and, for a governance bundle, its stored approval count)); the tail is this instruction's own evidence, as before.
     pub fn submit_plan(
         ctx: Context<SubmitPlan>,
         transition_id: [u8; 32],
@@ -1626,7 +1678,7 @@ pub mod program_v04 {
             classify_remaining_accounts(ctx.remaining_accounts)?,
             prior_bundle_count as usize,
         )?;
-        let prior_commits = prior_commits_of(&bundles);
+        let prior_entries = prior_entries_of(&bundles);
         let signal_count = ctx.accounts.transition_record.signal_count as usize;
         if tail.len() < signal_count {
             return Err(error!(ProgramV04Error::PlanFailed));
@@ -1656,7 +1708,7 @@ pub mod program_v04 {
             expires_at,
             resolve_agent_id(ctx.accounts.payer.key()),
             ctx.bumps.plan_record,
-            &prior_commits,
+            &prior_entries,
 )?;
         *ctx.accounts.plan_record = plan;
         emit!(PlanSubmitted {
@@ -1686,7 +1738,7 @@ pub mod program_v04 {
     /// later validate slice judges it; only a window still open,
     /// an unreproducible chain, or an incomplete prior set
     /// refuses, and then the record stands exactly as it stood.
-    /// Slice 31: remaining accounts begin with `prior_bundle_count` prior COMMITTED bundles (head order, self-delimited by each bundle's stored signal/plan counts); the tail is this instruction's own evidence, as before.
+    /// Slice 31: remaining accounts begin with `prior_bundle_count` prior COMMITTED bundles (head order, self-delimited by each bundle's stored signal/plan counts (and, for a governance bundle, its stored approval count)); the tail is this instruction's own evidence, as before.
     pub fn reconcile_plans(
         ctx: Context<ReconcilePlans>,
         transition_id: [u8; 32],
@@ -1702,7 +1754,7 @@ pub mod program_v04 {
             classify_remaining_accounts(ctx.remaining_accounts)?,
             prior_bundle_count as usize,
         )?;
-        let prior_commits = prior_commits_of(&bundles);
+        let prior_entries = prior_entries_of(&bundles);
         let signal_count = ctx.accounts.transition_record.signal_count as usize;
         if tail.len() < signal_count {
             return Err(error!(ProgramV04Error::ReconcileFailed));
@@ -1728,7 +1780,7 @@ pub mod program_v04 {
             &ctx.accounts.observation_record,
             &priors,
             &prior_plans,
-            &prior_commits,
+            &prior_entries,
 )?;
         debug_assert_eq!(life, Life::Reconciling);
         emit!(TransitionReconciled {
@@ -1757,7 +1809,7 @@ pub mod program_v04 {
     /// an incomplete prior set, a stored verdict the supplied
     /// set does not reproduce, or a still-blocked record
     /// refuses, and then the record stands exactly as it stood.
-    /// Slice 31: remaining accounts begin with `prior_bundle_count` prior COMMITTED bundles (head order, self-delimited by each bundle's stored signal/plan counts); the tail is this instruction's own evidence, as before.
+    /// Slice 31: remaining accounts begin with `prior_bundle_count` prior COMMITTED bundles (head order, self-delimited by each bundle's stored signal/plan counts (and, for a governance bundle, its stored approval count)); the tail is this instruction's own evidence, as before.
     pub fn validate_transition(
         ctx: Context<ValidateTransition>,
         transition_id: [u8; 32],
@@ -1773,7 +1825,7 @@ pub mod program_v04 {
             classify_remaining_accounts(ctx.remaining_accounts)?,
             prior_bundle_count as usize,
         )?;
-        let prior_commits = prior_commits_of(&bundles);
+        let prior_entries = prior_entries_of(&bundles);
         let signal_count = ctx.accounts.transition_record.signal_count as usize;
         if tail.len() < signal_count {
             return Err(error!(ProgramV04Error::ValidateFailed));
@@ -1799,7 +1851,7 @@ pub mod program_v04 {
             &ctx.accounts.observation_record,
             &priors,
             &prior_plans,
-            &prior_commits,
+            &prior_entries,
 )?;
         debug_assert!(life == Life::Validated || life == Life::Blocked);
         emit!(TransitionValidated {
@@ -1824,7 +1876,7 @@ pub mod program_v04 {
     /// time, refuses — the record stands `VALIDATED` for a
     /// later declare at a clock where the predicate holds, or
     /// for the exception path to judge it.
-    /// Slice 31: remaining accounts begin with `prior_bundle_count` prior COMMITTED bundles (head order, self-delimited by each bundle's stored signal/plan counts); the tail is this instruction's own evidence, as before.
+    /// Slice 31: remaining accounts begin with `prior_bundle_count` prior COMMITTED bundles (head order, self-delimited by each bundle's stored signal/plan counts (and, for a governance bundle, its stored approval count)); the tail is this instruction's own evidence, as before.
     pub fn declare_transition(
         ctx: Context<DeclareTransition>,
         transition_id: [u8; 32],
@@ -1840,7 +1892,7 @@ pub mod program_v04 {
             classify_remaining_accounts(ctx.remaining_accounts)?,
             prior_bundle_count as usize,
         )?;
-        let prior_commits = prior_commits_of(&bundles);
+        let prior_entries = prior_entries_of(&bundles);
         let signal_count = ctx.accounts.transition_record.signal_count as usize;
         if tail.len() < signal_count {
             return Err(error!(ProgramV04Error::DeclareFailed));
@@ -1866,7 +1918,7 @@ pub mod program_v04 {
             &ctx.accounts.observation_record,
             &priors,
             &prior_plans,
-            &prior_commits,
+            &prior_entries,
 )?;
         debug_assert!(life == Life::Committable);
         emit!(TransitionDeclared {
@@ -1890,7 +1942,7 @@ pub mod program_v04 {
     /// the gate with `GovernanceCommitRequired` — its commit
     /// path is the slice-28 `commit_governance_from_records` helper
     /// (no instruction yet — see the slice-28 module note).
-    /// Slice 31: remaining accounts begin with `prior_bundle_count` prior COMMITTED bundles (head order, self-delimited by each bundle's stored signal/plan counts); the tail is this instruction's own evidence, as before.
+    /// Slice 31: remaining accounts begin with `prior_bundle_count` prior COMMITTED bundles (head order, self-delimited by each bundle's stored signal/plan counts (and, for a governance bundle, its stored approval count)); the tail is this instruction's own evidence, as before.
     pub fn commit_transition(
         ctx: Context<CommitTransition>,
         transition_id: [u8; 32],
@@ -1906,7 +1958,7 @@ pub mod program_v04 {
             classify_remaining_accounts(ctx.remaining_accounts)?,
             prior_bundle_count as usize,
         )?;
-        let prior_commits = prior_commits_of(&bundles);
+        let prior_entries = prior_entries_of(&bundles);
         let signal_count = ctx.accounts.transition_record.signal_count as usize;
         if tail.len() < signal_count {
             return Err(error!(ProgramV04Error::CommitFailed));
@@ -1932,7 +1984,7 @@ pub mod program_v04 {
             &ctx.accounts.observation_record,
             &priors,
             &prior_plans,
-            &prior_commits,
+            &prior_entries,
 )?;
         debug_assert!(life == Life::Committed);
         emit!(TransitionCommitted {
@@ -2314,6 +2366,7 @@ pub struct ApproveGovernance<'info> {
     )]
     pub kernel_state: Account<'info, KernelState>,
     #[account(
+        mut,
         seeds = [b"transition", transition_id.as_ref()],
         bump = transition_record.bump,
     )]
@@ -2462,6 +2515,16 @@ pub struct TransitionRecord {
     /// on success only — one per created record — so the count and
     /// the plan set cannot diverge on-chain.
     pub plan_count: u64,
+    /// Number of `GovApprovalRecord`s created for this transition
+    /// (slice 35: the governance-bundle completeness anchor).
+    /// Written by `approve_governance` on success only — one per
+    /// created record, so the count and the approval set cannot
+    /// diverge on-chain, and a prior governance bundle is
+    /// self-delimiting exactly as an ordinary bundle is by its
+    /// signal/plan counts. 0 until an approval is stored; a
+    /// governance bundle with count 0 carries no approvals and
+    /// its replay refuses for want of unanimity.
+    pub approval_count: u64,
     /// Number of Blocked re-plans already taken on this transition
     /// (slice 22: the kernel's `MAX_REPLANS` cap, persisted here
     /// because the rebuilt replay kernel starts every replay at
@@ -2504,8 +2567,8 @@ impl TransitionRecord {
     pub const DECLARED: u8 = 9;
     /// Stage value written by `commit_transition` (slice 26).
     pub const COMMITTED: u8 = 10;
-    /// 8 (discriminator) + 32 + 32 + 8 + 32 + 32 + 32 + 8 + 32 + 1 + 8 + 8 + 8 + 8 + 8 + 4 + 1 + 1.
-    pub const SPACE: usize = 263;
+    /// 8 (discriminator) + 32 + 32 + 8 + 32 + 32 + 32 + 8 + 32 + 1 + 8 + 8 + 8 + 8 + 8 + 8 + 4 + 1 + 1.
+    pub const SPACE: usize = 271;
 }
 
 /// The ungated `TransitionRecord` constructor both builders below
@@ -2538,6 +2601,7 @@ fn new_transition_record(
         planning_deadline: 0,
         signal_count: 0,
         plan_count: 0,
+        approval_count: 0,
         replans: 0,
         compatible: false,
         bump,
@@ -3008,6 +3072,23 @@ pub fn build_governance_approval_record(
     })
 }
 
+/// Record one stored governance approval on its transition
+/// (slice 35): the `approval_count` anchor for prior governance
+/// bundles. Pure except for the count, which increments by exactly
+/// one on success — the instruction calls this only after the
+/// approval record itself is stored, so a refusal leaves the count
+/// untouched. Overflow refuses with `GovernanceCommitFailed`;
+/// it is unreachable in practice (approvals are one per council
+/// seat, and seats are capped by the kernel's `MAX_SEATS`), but
+/// the count must never wrap silently into a shorter bundle.
+pub fn note_governance_approval(transition_record: &mut TransitionRecord) -> Result<()> {
+    transition_record.approval_count = transition_record
+        .approval_count
+        .checked_add(1)
+        .ok_or(error!(ProgramV04Error::GovernanceCommitFailed))?;
+    Ok(())
+}
+
 /// The third §3 account: one stored observation. This is the record the
 /// later replay slice feeds to kernel `ingest_observation` — the fields
 /// are exactly the kernel's `Observation` fields plus the observing
@@ -3118,7 +3199,7 @@ pub fn replay_transition_from_records(
     kernel_state: &KernelState,
     transition_record: &mut TransitionRecord,
     observation_record: &ObservationRecord,
-    prior_commits: &[PriorCommit],
+    prior_entries: &[PriorEntry],
 ) -> Result<Life> {
     if !kernel_state.sealed {
         return Err(error!(ProgramV04Error::NotSealed));
@@ -3136,7 +3217,7 @@ pub fn replay_transition_from_records(
     }
     let proposer = resolve_proposer(kernel_state, transition_record.proposer)?;
     let observer_id = resolve_agent_id(observation_record.observer);
-    let mut k = kernel_at_head_from_commits(kernel_state, prior_commits)?;
+    let mut k = kernel_at_head_from_entries(kernel_state, prior_entries)?;
     if !k.has_role(&observer_id, Role::Observer) {
         return Err(error!(ProgramV04Error::NotObserver));
     }
@@ -3200,7 +3281,7 @@ pub fn evaluate_transition_from_records(
     kernel_state: &KernelState,
     transition_record: &mut TransitionRecord,
     observation_record: &ObservationRecord,
-    prior_commits: &[PriorCommit],
+    prior_entries: &[PriorEntry],
 ) -> Result<Life> {
     if !kernel_state.sealed {
         return Err(error!(ProgramV04Error::NotSealed));
@@ -3218,7 +3299,7 @@ pub fn evaluate_transition_from_records(
     }
     let proposer = resolve_proposer(kernel_state, transition_record.proposer)?;
     let observer_id = resolve_agent_id(observation_record.observer);
-    let mut k = kernel_at_head_from_commits(kernel_state, prior_commits)?;
+    let mut k = kernel_at_head_from_entries(kernel_state, prior_entries)?;
     if !k.has_role(&observer_id, Role::Observer) {
         return Err(error!(ProgramV04Error::NotObserver));
     }
@@ -3289,7 +3370,7 @@ pub fn mark_eligible_from_records(
     kernel_state: &mut KernelState,
     transition_record: &mut TransitionRecord,
     observation_record: &ObservationRecord,
-    prior_commits: &[PriorCommit],
+    prior_entries: &[PriorEntry],
 ) -> Result<Life> {
     if !kernel_state.sealed {
         return Err(error!(ProgramV04Error::NotSealed));
@@ -3307,7 +3388,7 @@ pub fn mark_eligible_from_records(
     }
     let proposer = resolve_proposer(kernel_state, transition_record.proposer)?;
     let observer_id = resolve_agent_id(observation_record.observer);
-    let mut k = kernel_at_head_from_commits(kernel_state, prior_commits)?;
+    let mut k = kernel_at_head_from_entries(kernel_state, prior_entries)?;
     if !k.has_role(&observer_id, Role::Observer) {
         return Err(error!(ProgramV04Error::NotObserver));
     }
@@ -3496,7 +3577,7 @@ pub fn submit_signal_from_records(
     support_raw: u64,
     has_support: bool,
     bump: u8,
-    prior_commits: &[PriorCommit],
+    prior_entries: &[PriorEntry],
 ) -> Result<(SignalRecord, Amount, Amount)> {
     if !kernel_state.sealed {
         return Err(error!(ProgramV04Error::NotSealed));
@@ -3540,7 +3621,7 @@ pub fn submit_signal_from_records(
     }
     let proposer = resolve_proposer(kernel_state, transition_record.proposer)?;
     let observer_id = resolve_agent_id(observation_record.observer);
-    let mut k = kernel_at_head_from_commits(kernel_state, prior_commits)?;
+    let mut k = kernel_at_head_from_entries(kernel_state, prior_entries)?;
     if !k.has_role(&observer_id, Role::Observer) {
         return Err(error!(ProgramV04Error::NotObserver));
     }
@@ -3674,7 +3755,7 @@ pub fn select_candidate_from_records(
     transition_record: &mut TransitionRecord,
     observation_record: &ObservationRecord,
     prior_signals: &[SignalRecord],
-    prior_commits: &[PriorCommit],
+    prior_entries: &[PriorEntry],
 ) -> Result<Life> {
     if !kernel_state.sealed {
         return Err(error!(ProgramV04Error::NotSealed));
@@ -3737,7 +3818,7 @@ pub fn select_candidate_from_records(
     }
     let proposer = resolve_proposer(kernel_state, transition_record.proposer)?;
     let observer_id = resolve_agent_id(observation_record.observer);
-    let mut k = kernel_at_head_from_commits(kernel_state, prior_commits)?;
+    let mut k = kernel_at_head_from_entries(kernel_state, prior_entries)?;
     if !k.has_role(&observer_id, Role::Observer) {
         return Err(error!(ProgramV04Error::NotObserver));
     }
@@ -3858,7 +3939,7 @@ pub fn open_planning_from_records(
     observation_record: &ObservationRecord,
     prior_signals: &[SignalRecord],
     caller: [u8; 32],
-    prior_commits: &[PriorCommit],
+    prior_entries: &[PriorEntry],
 ) -> Result<Life> {
     if !kernel_state.sealed {
         return Err(error!(ProgramV04Error::NotSealed));
@@ -3921,7 +4002,7 @@ pub fn open_planning_from_records(
     let proposer = resolve_proposer(kernel_state, transition_record.proposer)
         .map_err(|_| error!(ProgramV04Error::PlanningFailed))?;
     let observer_id = resolve_agent_id(observation_record.observer);
-    let mut k = kernel_at_head_from_commits(kernel_state, prior_commits)?;
+    let mut k = kernel_at_head_from_entries(kernel_state, prior_entries)?;
     if !k.has_role(&observer_id, Role::Observer) {
         return Err(error!(ProgramV04Error::NotObserver));
     }
@@ -4106,7 +4187,7 @@ pub fn submit_plan_from_records(
     expires_at: u64,
     caller: [u8; 32],
     bump: u8,
-    prior_commits: &[PriorCommit],
+    prior_entries: &[PriorEntry],
 ) -> Result<PlanRecord> {
     if !kernel_state.sealed {
         return Err(error!(ProgramV04Error::NotSealed));
@@ -4191,7 +4272,7 @@ pub fn submit_plan_from_records(
     let proposer = resolve_proposer(kernel_state, transition_record.proposer)
         .map_err(|_| error!(ProgramV04Error::PlanFailed))?;
     let observer_id = resolve_agent_id(observation_record.observer);
-    let mut k = kernel_at_head_from_commits(kernel_state, prior_commits)?;
+    let mut k = kernel_at_head_from_entries(kernel_state, prior_entries)?;
     if !k.has_role(&observer_id, Role::Observer) {
         return Err(error!(ProgramV04Error::NotObserver));
     }
@@ -4372,7 +4453,7 @@ pub fn reconcile_plans_from_records(
     observation_record: &ObservationRecord,
     prior_signals: &[SignalRecord],
     prior_plans: &[PlanRecord],
-    prior_commits: &[PriorCommit],
+    prior_entries: &[PriorEntry],
 ) -> Result<Life> {
     if !kernel_state.sealed {
         return Err(error!(ProgramV04Error::NotSealed));
@@ -4442,7 +4523,7 @@ pub fn reconcile_plans_from_records(
     let proposer = resolve_proposer(kernel_state, transition_record.proposer)
         .map_err(|_| error!(ProgramV04Error::ReconcileFailed))?;
     let observer_id = resolve_agent_id(observation_record.observer);
-    let mut k = kernel_at_head_from_commits(kernel_state, prior_commits)?;
+    let mut k = kernel_at_head_from_entries(kernel_state, prior_entries)?;
     if !k.has_role(&observer_id, Role::Observer) {
         return Err(error!(ProgramV04Error::NotObserver));
     }
@@ -4636,7 +4717,7 @@ pub fn validate_transition_from_records(
     observation_record: &ObservationRecord,
     prior_signals: &[SignalRecord],
     prior_plans: &[PlanRecord],
-    prior_commits: &[PriorCommit],
+    prior_entries: &[PriorEntry],
 ) -> Result<Life> {
     if !kernel_state.sealed {
         return Err(error!(ProgramV04Error::NotSealed));
@@ -4705,7 +4786,7 @@ pub fn validate_transition_from_records(
     let proposer = resolve_proposer(kernel_state, transition_record.proposer)
         .map_err(|_| error!(ProgramV04Error::ValidateFailed))?;
     let observer_id = resolve_agent_id(observation_record.observer);
-    let mut k = kernel_at_head_from_commits(kernel_state, prior_commits)?;
+    let mut k = kernel_at_head_from_entries(kernel_state, prior_entries)?;
     if !k.has_role(&observer_id, Role::Observer) {
         return Err(error!(ProgramV04Error::NotObserver));
     }
@@ -4905,7 +4986,7 @@ pub fn declare_transition_from_records(
     observation_record: &ObservationRecord,
     prior_signals: &[SignalRecord],
     prior_plans: &[PlanRecord],
-    prior_commits: &[PriorCommit],
+    prior_entries: &[PriorEntry],
 ) -> Result<Life> {
     if !kernel_state.sealed {
         return Err(error!(ProgramV04Error::NotSealed));
@@ -4972,7 +5053,7 @@ pub fn declare_transition_from_records(
     let proposer = resolve_proposer(kernel_state, transition_record.proposer)
         .map_err(|_| error!(ProgramV04Error::DeclareFailed))?;
     let observer_id = resolve_agent_id(observation_record.observer);
-    let mut k = kernel_at_head_from_commits(kernel_state, prior_commits)?;
+    let mut k = kernel_at_head_from_entries(kernel_state, prior_entries)?;
     if !k.has_role(&observer_id, Role::Observer) {
         return Err(error!(ProgramV04Error::NotObserver));
     }
@@ -5177,7 +5258,7 @@ pub fn commit_transition_from_records(
     observation_record: &ObservationRecord,
     prior_signals: &[SignalRecord],
     prior_plans: &[PlanRecord],
-    prior_commits: &[PriorCommit],
+    prior_entries: &[PriorEntry],
 ) -> Result<Life> {
     if !kernel_state.sealed {
         return Err(error!(ProgramV04Error::NotSealed));
@@ -5247,7 +5328,7 @@ pub fn commit_transition_from_records(
     let proposer = resolve_proposer(kernel_state, transition_record.proposer)
         .map_err(|_| error!(ProgramV04Error::CommitFailed))?;
     let observer_id = resolve_agent_id(observation_record.observer);
-    let mut k = kernel_at_head_from_commits(kernel_state, prior_commits)?;
+    let mut k = kernel_at_head_from_entries(kernel_state, prior_entries)?;
     if !k.has_role(&observer_id, Role::Observer) {
         return Err(error!(ProgramV04Error::NotObserver));
     }
@@ -5485,7 +5566,7 @@ pub fn commit_governance_from_records(
     prior_plans: &[PlanRecord],
     action: &GovAction,
     approvals: &[[u8; 32]],
-    prior_commits: &[PriorCommit],
+    prior_entries: &[PriorEntry],
 ) -> Result<Life> {
     if !kernel_state.sealed {
         return Err(error!(ProgramV04Error::NotSealed));
@@ -5555,7 +5636,7 @@ pub fn commit_governance_from_records(
     let proposer = resolve_proposer(kernel_state, transition_record.proposer)
         .map_err(|_| error!(ProgramV04Error::GovernanceCommitFailed))?;
     let observer_id = resolve_agent_id(observation_record.observer);
-    let mut k = kernel_at_head_from_commits(kernel_state, prior_commits)?;
+    let mut k = kernel_at_head_from_entries(kernel_state, prior_entries)?;
     if !k.has_role(&observer_id, Role::Observer) {
         return Err(error!(ProgramV04Error::NotObserver));
     }
@@ -5810,8 +5891,10 @@ pub struct GovPriorCommit<'a> {
 /// drives each entry through its own commit path, so a governance
 /// action committed mid-chain changes the stocks and rules the
 /// later entries are judged against — the slice-28 honesty bound,
-/// closed at helper level. Threading through the stage helpers and
-/// the instruction remaining accounts is the next slice.
+/// closed at helper level. Slice 35 threads this mixed chain
+/// through the thirteen stage helpers and the instruction
+/// remaining accounts, so on-chain instructions replay past a
+/// governance commit instead of refusing at it.
 #[derive(Clone, Copy)]
 pub enum PriorEntry<'a> {
     Ordinary(PriorCommit<'a>),
@@ -5830,10 +5913,15 @@ pub enum ParsedAccount {
     Observation(ObservationRecord),
     Signal(SignalRecord),
     Plan(PlanRecord),
+    /// Boxed (slice 35): the approval record is ~1600 bytes
+    /// against ~264 for the next-largest variant, and an
+    /// unboxed variant trips clippy's large-variant lint on
+    /// every parse — the box keeps the parsed list small.
+    GovApproval(Box<GovApprovalRecord>),
 }
 
 /// Classify every remaining account, in order, into its record type.
-/// An account that is none of the four record types refuses — there
+/// An account that is none of the five record types refuses — there
 /// is no "skip unknown" path, because an unparsed bundle member would
 /// silently shorten a chain.
 pub fn classify_remaining_accounts<'a>(
@@ -5853,6 +5941,10 @@ pub fn classify_remaining_accounts<'a>(
             parsed.push(ParsedAccount::Signal(p.into_inner()));
             continue;
         }
+        if let Ok(p) = Account::<GovApprovalRecord>::try_from(acc) {
+            parsed.push(ParsedAccount::GovApproval(Box::new(p.into_inner())));
+            continue;
+        }
         let p = Account::<PlanRecord>::try_from(acc)
             .map_err(|_| error!(ProgramV04Error::RecordMismatch))?;
         parsed.push(ParsedAccount::Plan(p.into_inner()));
@@ -5863,12 +5955,16 @@ pub fn classify_remaining_accounts<'a>(
 /// One prior commit bundle, owned (slice 31): the stored records a
 /// prior `COMMITTED` transition's replay needs — its transition and
 /// observation records plus its signal and plan sets, in chain order.
+/// Slice 35: a governance bundle additionally carries its stored
+/// council approval records (empty for an ordinary bundle), so the
+/// owned bundle is the full input to either commit path.
 #[derive(Debug)]
 pub struct OwnedPriorBundle {
     pub transition_record: TransitionRecord,
     pub observation_record: ObservationRecord,
     pub signals: alloc::vec::Vec<SignalRecord>,
     pub plans: alloc::vec::Vec<PlanRecord>,
+    pub approvals: alloc::vec::Vec<GovApprovalRecord>,
 }
 
 /// Split the first `count` prior bundles off the head of a classified
@@ -5876,7 +5972,12 @@ pub struct OwnedPriorBundle {
 /// target's own evidence, which the caller parses exactly as before.
 /// A bundle is self-delimiting: the transition record, then the
 /// observation it names, then exactly its stored `signal_count`
-/// signals, then exactly its stored `plan_count` plans. Every linkage
+/// signals, then exactly its stored `plan_count` plans — and, for a
+/// governance-typed bundle, then exactly its stored
+/// `approval_count` council approvals, each naming the bundle's
+/// transition. An ordinary bundle consumes no approvals: an
+/// approval account where the next bundle's transition record is
+/// expected refuses as a mis-linked bundle, not as tail. Every linkage
 /// is checked at parse time: the observation id must equal the
 /// transition's, and every signal and plan must name the bundle's
 /// transition — a bundle that mis-links refuses with `RecordMismatch`
@@ -5925,11 +6026,25 @@ pub fn split_prior_bundles(
                 _ => return Err(error!(ProgramV04Error::RecordMismatch)),
             }
         }
+        let mut approvals = alloc::vec::Vec::new();
+        if is_gov_type(&transition_record.transition_type) {
+            for _ in 0..transition_record.approval_count as usize {
+                match iter.next() {
+                    Some(ParsedAccount::GovApproval(approval))
+                        if approval.transition_id == transition_record.transition_id =>
+                    {
+                        approvals.push(*approval)
+                    }
+                    _ => return Err(error!(ProgramV04Error::RecordMismatch)),
+                }
+            }
+        }
         bundles.push(OwnedPriorBundle {
             transition_record,
             observation_record,
             signals,
             plans,
+            approvals,
         });
     }
     Ok((bundles, iter.collect()))
@@ -5947,6 +6062,40 @@ pub fn prior_commits_of(bundles: &[OwnedPriorBundle]) -> alloc::vec::Vec<PriorCo
             observation_record: &b.observation_record,
             prior_signals: &b.signals,
             prior_plans: &b.plans,
+        })
+        .collect()
+}
+
+/// Build the helper-side mixed `PriorEntry` views over owned bundles
+/// (slice 35): the transition type decides the entry kind — a
+/// governance-typed bundle becomes a `Governance` entry carrying its
+/// stored approvals, any other bundle an `Ordinary` entry. The views
+/// borrow the bundles, so they live only as long as the instruction
+/// body that holds them — the helper call runs inside that body,
+/// never past it. A governance bundle whose approval set the
+/// driver cannot prove unanimous on refuses in the driver, not
+/// here: the parser's job is delimiting and linkage, the
+/// kernel's unanimity gate is the proof.
+pub fn prior_entries_of(bundles: &[OwnedPriorBundle]) -> alloc::vec::Vec<PriorEntry<'_>> {
+    bundles
+        .iter()
+        .map(|b| {
+            if is_gov_type(&b.transition_record.transition_type) {
+                PriorEntry::Governance(GovPriorCommit {
+                    transition_record: &b.transition_record,
+                    observation_record: &b.observation_record,
+                    prior_signals: &b.signals,
+                    prior_plans: &b.plans,
+                    approval_records: &b.approvals,
+                })
+            } else {
+                PriorEntry::Ordinary(PriorCommit {
+                    transition_record: &b.transition_record,
+                    observation_record: &b.observation_record,
+                    prior_signals: &b.signals,
+                    prior_plans: &b.plans,
+                })
+            }
         })
         .collect()
 }
@@ -6564,10 +6713,10 @@ pub fn kernel_at_head_from_commits(
 /// is APPLIED to the rebuilt kernel as its entry drives, so the
 /// stocks, policies, and roster later entries are judged against
 /// are the post-governance ones — the kernel's own state, not a
-/// program-side restatement of it. Threading this mixed chain
-/// through the stage helpers and the instruction remaining
-/// accounts is the next slice; until then this helper is the
-/// replay builders call.
+/// program-side restatement of it. Slice 35 threads this mixed
+/// chain through the thirteen stage helpers and the instruction
+/// remaining accounts, so this helper is what every replay
+/// builder calls, not only the test builders.
 pub fn kernel_at_head_from_entries(
     kernel_state: &KernelState,
     entries: &[PriorEntry],
@@ -6725,7 +6874,7 @@ pub fn select_candidate_from_records_with_siblings(
     observation_record: &ObservationRecord,
     prior_signals: &[SignalRecord],
     siblings: &[SiblingReplay],
-    prior_commits: &[PriorCommit],
+    prior_entries: &[PriorEntry],
 ) -> Result<Life> {
     if !kernel_state.sealed {
         return Err(error!(ProgramV04Error::NotSealed));
@@ -6841,7 +6990,7 @@ pub fn select_candidate_from_records_with_siblings(
     {
         return Err(error!(ProgramV04Error::SelectFailed));
     }
-    let mut k = kernel_at_head_from_commits(kernel_state, prior_commits)?;
+    let mut k = kernel_at_head_from_entries(kernel_state, prior_entries)?;
     // One merged timeline: (time, kind rank, tie rank, index) with
     // kind rank 0 = eligibility chain, 1 = signal, so a chain always
     // precedes same-time signals; tie rank 0 = sibling, 1 = target,
@@ -7679,10 +7828,10 @@ mod tests {
         // Discriminator 8 + id 32 + type 32 + parent_index 8 +
         // parent_hash 32 + declared 32 + observation 32 + expires 8 +
         // proposer 32 + stage 1 + eligible_at 8 + consensus_deadline 8 +
-        // planning_deadline 8 + signal_count 8 + plan_count 8 + replans 4 + compatible 1 + bump 1.
+        // planning_deadline 8 + signal_count 8 + plan_count 8 + approval_count 8 + replans 4 + compatible 1 + bump 1.
         assert_eq!(
             TransitionRecord::SPACE,
-            8 + 32 + 32 + 8 + 32 + 32 + 32 + 8 + 32 + 1 + 8 + 8 + 8 + 8 + 8 + 4 + 1 + 1
+            8 + 32 + 32 + 8 + 32 + 32 + 32 + 8 + 32 + 1 + 8 + 8 + 8 + 8 + 8 + 8 + 4 + 1 + 1
         );
     }
 
@@ -7704,6 +7853,7 @@ mod tests {
             planning_deadline: 400,
             signal_count: 2,
             plan_count: 1,
+            approval_count: 2,
             replans: 2,
             compatible: false,
             bump: 254,
@@ -7721,6 +7871,7 @@ mod tests {
         assert_eq!(back.consensus_deadline, 300);
         assert_eq!(back.planning_deadline, 400);
         assert_eq!(back.plan_count, 1);
+        assert_eq!(back.approval_count, 2);
         assert_eq!(back.bump, 254);
     }
 
@@ -9758,6 +9909,7 @@ mod tests {
             planning_deadline: 0,
             signal_count: 0,
             plan_count: 0,
+            approval_count: 0,
             replans: 0,
             compatible: false,
             bump: 7,
@@ -12171,6 +12323,11 @@ mod tests {
             .expect("seat 3 approval must build"),
         ];
         record.stage = TransitionRecord::COMMITTED;
+        // Slice 35: the committed bundle carries the approval-count
+        // anchor the on-chain approve instructions wrote — one per
+        // stored approval — so the bundle parses as a
+        // self-delimiting governance bundle.
+        record.approval_count = approval_records.len() as u64;
         (state, record, obs, first, plan, approval_records)
     }
 
@@ -12741,7 +12898,7 @@ mod tests {
     // window must open after its predecessor's deadline.
     fn second_eligible_at_head(
         state: &mut KernelState,
-        prior: &PriorCommit,
+        prior: &PriorEntry,
         id: [u8; 32],
         obs_id: [u8; 32],
         declared: [u8; 32],
@@ -12774,7 +12931,7 @@ mod tests {
         state: &KernelState,
         record: &mut TransitionRecord,
         obs: &ObservationRecord,
-        prior: &PriorCommit,
+        prior: &PriorEntry,
         agent_n: u8,
         support_raw: u64,
     ) -> SignalRecord {
@@ -12797,12 +12954,13 @@ mod tests {
         // ledger (10/5 already committed), and the head moves
         // to index 2 at the second declared hash.
         let (mut state, prior_rec, prior_obs, prior_sig, prior_plan) = committed_pair();
-        let prior = PriorCommit {
+        let prior_commit = PriorCommit {
             transition_record: &prior_rec,
             observation_record: &prior_obs,
             prior_signals: std::slice::from_ref(&prior_sig),
             prior_plans: std::slice::from_ref(&prior_plan),
         };
+        let prior = PriorEntry::Ordinary(prior_commit);
         advance_clock_on_state(&mut state, 400).expect("advance past the first deadline must succeed");
         let (mut record, obs) =
             second_eligible_at_head(&mut state, &prior, [0xD2; 32], [0xC1; 32], [0xE2; 32]);
@@ -12862,7 +13020,7 @@ mod tests {
             prior_signals: std::slice::from_ref(&signal),
             prior_plans: std::slice::from_ref(&plan),
         };
-        let k = kernel_at_head_from_commits(&state, &[prior, prior2])
+        let k = kernel_at_head_from_commits(&state, &[prior_commit, prior2])
             .expect("both priors must rebuild to index 2");
         assert_eq!(k.declared_state().index, 2);
         assert_eq!(
@@ -12883,12 +13041,13 @@ mod tests {
         // windows 400/500 — the merged timeline replays from
         // the moved head and the target selects at 500.
         let (mut state, prior_rec, prior_obs, prior_sig, prior_plan) = committed_pair();
-        let prior = PriorCommit {
+        let prior_commit = PriorCommit {
             transition_record: &prior_rec,
             observation_record: &prior_obs,
             prior_signals: std::slice::from_ref(&prior_sig),
             prior_plans: std::slice::from_ref(&prior_plan),
         };
+        let prior = PriorEntry::Ordinary(prior_commit);
         advance_clock_on_state(&mut state, 400).expect("advance past the first deadline must succeed");
         let (mut target, target_obs) =
             second_eligible_at_head(&mut state, &prior, [0xD2; 32], [0xC1; 32], [0xE2; 32]);
@@ -12921,12 +13080,13 @@ mod tests {
         // commit over the prior — head to 2, ledger untouched
         // (governance plans claim no stock).
         let (mut state, prior_rec, prior_obs, prior_sig, prior_plan) = committed_pair();
-        let prior = PriorCommit {
+        let prior_commit = PriorCommit {
             transition_record: &prior_rec,
             observation_record: &prior_obs,
             prior_signals: std::slice::from_ref(&prior_sig),
             prior_plans: std::slice::from_ref(&prior_plan),
         };
+        let prior = PriorEntry::Ordinary(prior_commit);
         advance_clock_on_state(&mut state, 400).expect("advance past the first deadline must succeed");
         let (mut record, obs) =
             second_eligible_at_head(&mut state, &prior, [0xD2; 32], [0xC1; 32], [0xE2; 32]);
@@ -13025,7 +13185,10 @@ mod tests {
         )
         .expect("an observation at the moved-head clock must build");
         let err = replay_transition_from_records(
-            &state, &mut record, &obs, std::slice::from_ref(&bad_prior),
+            &state,
+            &mut record,
+            &obs,
+            std::slice::from_ref(&PriorEntry::Ordinary(bad_prior)),
         )
         .expect_err("a prior off the running head must refuse");
         assert!(format!("{:?}", err).contains("ParentMismatch"));
@@ -13058,6 +13221,227 @@ mod tests {
         assert_eq!(priors.len(), 1);
         assert_eq!(priors[0].prior_signals.len(), 1);
         assert_eq!(priors[0].prior_plans.len(), 1);
+    }
+
+    #[test]
+    fn note_governance_approval_increments_and_refuses_overflow() {
+        // The slice-35 anchor, host-proven: one count per stored
+        // approval, and a wrapping count refuses rather than
+        // silently shortening a later bundle.
+        let mut record = gov_record(T_GOV_ADJUSTABLE);
+        assert_eq!(record.approval_count, 0);
+        note_governance_approval(&mut record).expect("first approval must count");
+        note_governance_approval(&mut record).expect("second approval must count");
+        assert_eq!(record.approval_count, 2);
+        record.approval_count = u64::MAX;
+        let err = note_governance_approval(&mut record)
+            .expect_err("a wrapping count must refuse");
+        assert!(format!("{:?}", err).contains("GovernanceCommitFailed"));
+        assert_eq!(record.approval_count, u64::MAX);
+    }
+
+    #[test]
+    fn bundle_split_parses_mixed_ordinary_and_governance_bundles() {
+        // Slice 35's parser proof: an ordinary bundle followed by
+        // a governance bundle, then a tail signal — the ordinary
+        // bundle carries no approvals, the governance bundle
+        // carries exactly its stored approval count, the tail is
+        // untouched, and the entry views split by transition type.
+        let (_s1, rec1, obs1, sig1, plan1) = committed_pair();
+        let (_s2, gov_rec, gov_obs, gov_sig, gov_plan, approvals) = gov_committed_bundle();
+        assert_eq!(gov_rec.approval_count, 3);
+        let tail_sig = sig1;
+        let mut parsed = alloc::vec![
+            ParsedAccount::Transition(rec1),
+            ParsedAccount::Observation(obs1),
+            ParsedAccount::Signal(sig1),
+            ParsedAccount::Plan(plan1),
+            ParsedAccount::Transition(gov_rec),
+            ParsedAccount::Observation(gov_obs),
+            ParsedAccount::Signal(gov_sig),
+            ParsedAccount::Plan(gov_plan),
+        ];
+        for a in approvals {
+            parsed.push(ParsedAccount::GovApproval(Box::new(a)));
+        }
+        parsed.push(ParsedAccount::Signal(tail_sig));
+        let (bundles, tail) =
+            split_prior_bundles(parsed, 2).expect("mixed bundles must parse");
+        assert_eq!(bundles.len(), 2);
+        assert_eq!(bundles[0].approvals.len(), 0);
+        assert_eq!(bundles[1].approvals.len(), 3);
+        assert_eq!(tail.len(), 1);
+        assert!(matches!(tail[0], ParsedAccount::Signal(_)));
+        let entries = prior_entries_of(&bundles);
+        assert!(matches!(entries[0], PriorEntry::Ordinary(_)));
+        assert!(matches!(entries[1], PriorEntry::Governance(_)));
+        if let PriorEntry::Governance(g) = entries[1] {
+            assert_eq!(g.approval_records.len(), 3);
+        }
+    }
+
+    #[test]
+    fn bundle_split_refuses_governance_bundle_short_and_foreign_approvals() {
+        // Short of the stored approval count, the bundle refuses
+        // at parse time — the count is an anchor, not a hint —
+        // and an approval naming another transition refuses on
+        // linkage, not on a later kernel step.
+        let (_s, gov_rec, gov_obs, gov_sig, gov_plan, approvals) = gov_committed_bundle();
+        let [a0, a1, _a2] = approvals;
+        let parsed = alloc::vec![
+            ParsedAccount::Transition(gov_rec),
+            ParsedAccount::Observation(gov_obs),
+            ParsedAccount::Signal(gov_sig),
+            ParsedAccount::Plan(gov_plan),
+            ParsedAccount::GovApproval(Box::new(a0)),
+            ParsedAccount::GovApproval(Box::new(a1)),
+        ];
+        let err = split_prior_bundles(parsed, 1)
+            .expect_err("a bundle short of its approval count must refuse");
+        assert!(format!("{:?}", err).contains("RecordMismatch"));
+        let (_s2, gov_rec2, gov_obs2, gov_sig2, gov_plan2, approvals2) = gov_committed_bundle();
+        let [b0, b1, mut foreign] = approvals2;
+        foreign.transition_id = [0xFF; 32];
+        let parsed2 = alloc::vec![
+            ParsedAccount::Transition(gov_rec2),
+            ParsedAccount::Observation(gov_obs2),
+            ParsedAccount::Signal(gov_sig2),
+            ParsedAccount::Plan(gov_plan2),
+            ParsedAccount::GovApproval(Box::new(b0)),
+            ParsedAccount::GovApproval(Box::new(b1)),
+            ParsedAccount::GovApproval(Box::new(foreign)),
+        ];
+        let err2 = split_prior_bundles(parsed2, 1)
+            .expect_err("a foreign approval must refuse on linkage");
+        assert!(format!("{:?}", err2).contains("RecordMismatch"));
+    }
+
+    #[test]
+    fn head_threading_mixed_ordinary_and_governance_chain_replays_target() {
+        // Slice 35's core proof, end to end through a stage
+        // helper: an ordinary commit (head 1) followed by a
+        // governance commit (head 2), then a target replayed
+        // from the mixed head — the governance prior's applied
+        // rule is in the rebuilt kernel, and the same target
+        // with the governance prior omitted refuses with
+        // ParentMismatch, because the chain stops at head 1.
+        let (mut state, prior_rec, prior_obs, prior_sig, prior_plan) = committed_pair();
+        let prior_commit = PriorCommit {
+            transition_record: &prior_rec,
+            observation_record: &prior_obs,
+            prior_signals: std::slice::from_ref(&prior_sig),
+            prior_plans: std::slice::from_ref(&prior_plan),
+        };
+        let prior = PriorEntry::Ordinary(prior_commit);
+        advance_clock_on_state(&mut state, 400)
+            .expect("advance past the first deadline must succeed");
+        let (mut record, obs) =
+            second_eligible_at_head(&mut state, &prior, [0xD2; 32], [0xC1; 32], [0xE2; 32]);
+        let signal = second_signal_at_head(&state, &mut record, &obs, &prior, 2, SCALE);
+        advance_clock_on_state(&mut state, 500)
+            .expect("advance to the consensus deadline must succeed");
+        select_candidate_from_records(
+            &state, &mut record, &obs, std::slice::from_ref(&signal), std::slice::from_ref(&prior),
+        )
+        .expect("a closed window with a qualifying tally must select at the moved head");
+        open_planning_from_records(
+            &state, &mut record, &obs, std::slice::from_ref(&signal), [0x77; 32],
+            std::slice::from_ref(&prior),
+        )
+        .expect("a kernel-proven selection must open planning at the moved head");
+        let plan = submit_plan_from_records(
+            &state, &mut record, &obs, std::slice::from_ref(&signal), &[], &[], 700,
+            ag(2), 7, std::slice::from_ref(&prior),
+        )
+        .expect("an empty-claims governance plan must submit at the moved head");
+        advance_clock_on_state(&mut state, 600)
+            .expect("advance to the planning deadline must succeed");
+        reconcile_plans_from_records(
+            &state, &mut record, &obs, std::slice::from_ref(&signal),
+            std::slice::from_ref(&plan), std::slice::from_ref(&prior),
+        )
+        .expect("an empty-claims plan set must reconcile at the moved head");
+        validate_transition_from_records(
+            &state, &mut record, &obs, std::slice::from_ref(&signal),
+            std::slice::from_ref(&plan), std::slice::from_ref(&prior),
+        )
+        .expect("a compatible governance-shaped chain must validate at the moved head");
+        declare_transition_from_records(
+            &state, &mut record, &obs, std::slice::from_ref(&signal),
+            std::slice::from_ref(&plan), std::slice::from_ref(&prior),
+        )
+        .expect("a validated governance-shaped chain must declare at the moved head");
+        record.transition_type = T_GOV_ADJUSTABLE;
+        let action = gov_action();
+        let approvals = gov_approvals();
+        let life = commit_governance_from_records(
+            &mut state, &mut record, &obs, std::slice::from_ref(&signal),
+            std::slice::from_ref(&plan), &action, &approvals, std::slice::from_ref(&prior),
+        )
+        .expect("a unanimous governance chain must commit at the moved head");
+        assert_eq!(life, Life::Committed);
+        assert_eq!(state.head_index, 2);
+        assert_eq!(state.head_hash, [0xE2; 32]);
+        // Stored approval records for the committed governance
+        // bundle, built the way gov_committed_bundle builds them:
+        // against the record with its stage temporarily back at
+        // REGISTERED, the stage at which approvals are collected.
+        record.stage = TransitionRecord::REGISTERED;
+        let approval_records = [
+            build_governance_approval_record(
+                &state, &record, Pubkey::new_from_array(ag(1)), &action, 1,
+            )
+            .expect("seat 1 approval must build"),
+            build_governance_approval_record(
+                &state, &record, Pubkey::new_from_array(ag(2)), &action, 1,
+            )
+            .expect("seat 2 approval must build"),
+            build_governance_approval_record(
+                &state, &record, Pubkey::new_from_array(ag(3)), &action, 1,
+            )
+            .expect("seat 3 approval must build"),
+        ];
+        record.stage = TransitionRecord::COMMITTED;
+        record.approval_count = approval_records.len() as u64;
+        let gov_prior = GovPriorCommit {
+            transition_record: &record,
+            observation_record: &obs,
+            prior_signals: std::slice::from_ref(&signal),
+            prior_plans: std::slice::from_ref(&plan),
+            approval_records: &approval_records,
+        };
+        let mut target = build_transition_record(
+            &state, [0xD4; 32], TT, state.head_index, state.head_hash, [0xE4; 32],
+            [0xC4; 32], 10_400, Pubkey::new_from_array(ag(1)), 7,
+        )
+        .expect("a record against the mixed head must build");
+        let target_obs = build_observation_record(
+            &state, [0xC4; 32], state.clock, 9500, 900_000, observer_pubkey(), 7,
+        )
+        .expect("an observation at the mixed-head clock must build");
+        let life = replay_transition_from_records(
+            &state,
+            &mut target,
+            &target_obs,
+            &[prior, PriorEntry::Governance(gov_prior)],
+        )
+        .expect("a target must replay from the mixed ordinary+governance head");
+        assert_eq!(life, Life::Proposed);
+        assert_eq!(target.stage, TransitionRecord::KERNEL_REGISTERED);
+        let mut target2 = build_transition_record(
+            &state, [0xD5; 32], TT, state.head_index, state.head_hash, [0xE5; 32],
+            [0xC4; 32], 10_400, Pubkey::new_from_array(ag(1)), 7,
+        )
+        .expect("a second record against the mixed head must build");
+        let err = replay_transition_from_records(
+            &state,
+            &mut target2,
+            &target_obs,
+            std::slice::from_ref(&prior),
+        )
+        .expect_err("a chain stopping at head 1 must refuse at head 2");
+        assert!(format!("{:?}", err).contains("ParentMismatch"));
+        assert_eq!(target2.stage, TransitionRecord::REGISTERED);
     }
 
     #[test]
