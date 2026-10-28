@@ -241,6 +241,40 @@
 //! supplied set IS the full set; a count anchored on the transition
 //! record, or an equivalent, is the select slice's work, named here
 //! rather than claimed here.
+//!
+//! Slice 16 (this slice): the select instruction, `select_candidate`,
+//! and the completeness anchor slice 15 named. The anchor is a
+//! `signal_count` field on `TransitionRecord`, written by the same
+//! instruction that creates a `SignalRecord` — `submit_signal` now
+//! increments it on success only, so on-chain the count and the record
+//! set cannot diverge: one instruction creates both or neither (a
+//! failed instruction persists nothing), and a refusal leaves the count
+//! untouched. Slice 15's "the transition record is not mutated" is
+//! amended by this slice, not contradicted silently: signals still do
+//! not advance the stage and still do not touch the window — only the
+//! count moves, by exactly one per created record, revisions included
+//! (a new round is a new record). Select's completeness proof is two
+//! layers: the supplied prior set must number exactly `signal_count`,
+//! and every supplied record must be genuine and distinct — a set that
+//! omits a real record can only reach the count by duplicating one,
+//! and a duplicated (agent, round) is refused explicitly before the
+//! replay and again by the kernel's `AlreadySignalledThisRound` on
+//! replay, so no omitted-record set can pass. The helper replays the
+//! full chain — ingest + register + evaluate + mark_eligible at the
+//! stored `eligible_at`, then every supplied prior at its own
+//! `submitted_at` in order — and runs kernel `select_candidate` at
+//! the state's clock, so the window-closure and quorum/confidence
+//! gates are the kernel's, not a program-side sum. Honesty bound,
+//! stated not smoothed: the rebuilt kernel holds only this transition,
+//! so select proves this transition's own qualification and window
+//! closure, not the kernel's sibling comparison — a higher-confidence
+//! sibling that exists on-chain but is not replayed here cannot be
+//! judged, and `OutrankedBySibling` / `SiblingsStillOpen` /
+//! `ParentAlreadyHasASelectedTransition` are unreachable in this
+//! slice. Sibling replay is the next slice's work, named here rather
+//! than claimed here. Select is permissionless, as the kernel's is:
+//! the payer is a fee payer only, and the stage advances to
+//! `SELECTED` (4) only on a kernel-proven selection.
 
 extern crate alloc;
 
@@ -500,8 +534,10 @@ pub mod program_v04 {
     /// signal against the same tally history the chain holds — a
     /// same-round duplicate and a revision away from the last round's
     /// mean are refused by the kernel, not by a program-side guess.
-    /// The transition record is not mutated: signals do not advance
-    /// its stage, and its window is untouched. The payer is a fee payer
+    /// Signals do not advance the transition record's stage, and its
+    /// window is untouched; slice 16 adds exactly one mutation — the
+    /// record's `signal_count` increments on success, the completeness
+    /// anchor the select slice reads. The payer is a fee payer
     /// and the signal's agent in one: the identity mapping means the
     /// signer proves the agent by signing, and no other agent's signal
     /// can be submitted through this instruction.
@@ -527,7 +563,7 @@ pub mod program_v04 {
         }
         let (record, total, confidence) = submit_signal_from_records(
             &ctx.accounts.kernel_state,
-            &ctx.accounts.transition_record,
+            &mut ctx.accounts.transition_record,
             &ctx.accounts.observation_record,
             &priors,
             ctx.accounts.payer.key(),
@@ -547,11 +583,72 @@ pub mod program_v04 {
         });
         Ok(())
     }
+
+    /// Select a candidate (§4.1, fifth replay row, v0.4 form): run
+    /// kernel `select_candidate` on an `ELIGIBLE` record pair and
+    /// advance the transition record's stage to `SELECTED`. Prior
+    /// signals for the transition arrive as remaining accounts and
+    /// must number exactly the record's `signal_count` — the slice-16
+    /// completeness anchor — or the instruction refuses before any
+    /// replay; a set that omits a real record can only reach the
+    /// count by duplicating one, and duplicates are refused. The
+    /// payer is a fee payer only: selection is permissionless once
+    /// the consensus window has closed, exactly as the kernel's is.
+    /// Sibling competition is NOT proven here (see module docs):
+    /// the rebuilt kernel holds only this transition, so this
+    /// instruction proves own qualification and window closure.
+    pub fn select_candidate(
+        ctx: Context<SelectCandidate>,
+        transition_id: [u8; 32],
+        observation_id: [u8; 32],
+    ) -> Result<()> {
+        if ctx.accounts.transition_record.transition_id != transition_id
+            || ctx.accounts.observation_record.observation_id != observation_id
+        {
+            return Err(error!(ProgramV04Error::RecordMismatch));
+        }
+        let mut priors: alloc::vec::Vec<SignalRecord> = alloc::vec::Vec::new();
+        for acc in ctx.remaining_accounts {
+            let parsed = Account::<SignalRecord>::try_from(acc)
+                .map_err(|_| error!(ProgramV04Error::RecordMismatch))?;
+            priors.push(parsed.into_inner());
+        }
+        select_candidate_from_records(
+            &ctx.accounts.kernel_state,
+            &mut ctx.accounts.transition_record,
+            &ctx.accounts.observation_record,
+            &priors,
+        )?;
+        emit!(TransitionSelected { transition_id, stage: TransitionRecord::SELECTED });
+        Ok(())
+    }
 }
 
 #[derive(Accounts)]
 #[instruction(transition_id: [u8; 32], observation_id: [u8; 32])]
 pub struct EvaluateTransition<'info> {
+    #[account(
+        seeds = [b"kernel-state"],
+        bump = kernel_state.bump,
+    )]
+    pub kernel_state: Account<'info, KernelState>,
+    #[account(
+        mut,
+        seeds = [b"transition", transition_id.as_ref()],
+        bump = transition_record.bump,
+    )]
+    pub transition_record: Account<'info, TransitionRecord>,
+    #[account(
+        seeds = [b"observation", observation_id.as_ref()],
+        bump = observation_record.bump,
+    )]
+    pub observation_record: Account<'info, ObservationRecord>,
+    pub payer: Signer<'info>,
+}
+
+#[derive(Accounts)]
+#[instruction(transition_id: [u8; 32], observation_id: [u8; 32])]
+pub struct SelectCandidate<'info> {
     #[account(
         seeds = [b"kernel-state"],
         bump = kernel_state.bump,
@@ -580,6 +677,7 @@ pub struct SubmitSignal<'info> {
     )]
     pub kernel_state: Account<'info, KernelState>,
     #[account(
+        mut,
         seeds = [b"transition", transition_id.as_ref()],
         bump = transition_record.bump,
     )]
@@ -783,7 +881,7 @@ pub struct TransitionRecord {
     pub proposer: Pubkey,
     /// Lifecycle stage: 0 = Registered, 1 = Kernel-registered (slice 10
     /// advances it), 2 = Evaluated (slice 12 advances it), 3 = Eligible
-    /// (slice 13 advances it; no instruction moves it past 3 in this slice).
+    /// (slice 13 advances it), 4 = Selected (slice 16 advances it).
     pub stage: u8,
     /// Kernel clock at which `mark_eligible` proved eligibility (slice 14
     /// persists it; 0 until eligibility is proven). This is the
@@ -795,6 +893,11 @@ pub struct TransitionRecord {
     /// launch policy (slice 14 persists it alongside `eligible_at`).
     /// 0 until eligibility is proven.
     pub consensus_deadline: u64,
+    /// Number of `SignalRecord`s created for this transition (slice 16:
+    /// the select completeness anchor). Written by `submit_signal` on
+    /// success only — one per created record, revisions included —
+    /// so the count and the record set cannot diverge on-chain.
+    pub signal_count: u64,
     /// PDA bump for the `["transition", transition_id]` seeds.
     pub bump: u8,
 }
@@ -808,8 +911,10 @@ impl TransitionRecord {
     pub const EVALUATED: u8 = 2;
     /// Stage value written by `mark_eligible` (slice 13).
     pub const ELIGIBLE: u8 = 3;
-    /// 8 (discriminator) + 32 + 32 + 8 + 32 + 32 + 32 + 8 + 32 + 1 + 8 + 8 + 1.
-    pub const SPACE: usize = 234;
+    /// Stage value written by `select_candidate` (slice 16).
+    pub const SELECTED: u8 = 4;
+    /// 8 (discriminator) + 32 + 32 + 8 + 32 + 32 + 32 + 8 + 32 + 1 + 8 + 8 + 8 + 1.
+    pub const SPACE: usize = 242;
 }
 
 /// Build a `TransitionRecord` against a `KernelState`, enforcing the
@@ -846,6 +951,7 @@ pub fn build_transition_record(
         stage: TransitionRecord::REGISTERED,
         eligible_at: 0,
         consensus_deadline: 0,
+        signal_count: 0,
         bump,
     })
 }
@@ -1265,10 +1371,11 @@ pub fn signal_round(eligible_at: u64, consensus_deadline: u64, now: u64) -> u64 
     }
 }
 
-/// Submit a signal through the real kernel (slice 15). Pure except for
-/// the returned record: the transition record is not mutated (signals
-/// do not advance its stage) and every refusal leaves everything
-/// untouched. Gates, in order: sealed state; stage exactly `ELIGIBLE`
+/// Submit a signal through the real kernel (slice 15; slice 16 amends
+/// the mutation rule). Pure except for the returned record and the
+/// record's `signal_count`, which increments by one on success only:
+/// signals do not advance the stage and do not touch the window, and
+/// every refusal leaves everything untouched. Gates, in order: sealed state; stage exactly `ELIGIBLE`
 /// (a merely-evaluated record has no consensus window to signal in,
 /// and signalling never moves the stage); parent exactly the sealed
 /// head; observation linkage; a proven window (`eligible_at` nonzero
@@ -1298,13 +1405,13 @@ pub fn signal_round(eligible_at: u64, consensus_deadline: u64, now: u64) -> u64 
 /// `support_raw` 0. Completeness bound, stated not smoothed: this
 /// helper replays the priors it is given; a record that could only
 /// pass by omitting a prior can never survive the select replay,
-/// which replays the full set — but proving a supplied set IS the full
-/// set needs a count anchored on the transition record, and that is
-/// the select slice's work (see module docs).
+/// which replays the full set — and slice 16's `signal_count` on the
+/// record is the anchor select checks that set against (see module
+/// docs).
 #[allow(clippy::too_many_arguments)]
 pub fn submit_signal_from_records(
     kernel_state: &KernelState,
-    transition_record: &TransitionRecord,
+    transition_record: &mut TransitionRecord,
     observation_record: &ObservationRecord,
     prior_signals: &[SignalRecord],
     agent: Pubkey,
@@ -1446,7 +1553,164 @@ pub fn submit_signal_from_records(
         submitted_at: kernel_state.clock,
         bump,
     };
+    // Slice 16: the completeness anchor moves here, after the kernel
+    // has proven the signal — a refusal above leaves the count
+    // untouched, and the count increments exactly once per created
+    // record. The kernel object is local and discarded on error, so a
+    // count failure here cannot strand a half-created signal.
+    transition_record.signal_count = transition_record
+        .signal_count
+        .checked_add(1)
+        .ok_or_else(|| error!(ProgramV04Error::SignalFailed))?;
     Ok((record, total, confidence))
+}
+
+/// Select a candidate through the real kernel (slice 16). Pure except
+/// for the record's stage, which advances to `SELECTED` only on
+/// success — every refusal leaves the record untouched. Gates, in
+/// order: sealed state; stage exactly `ELIGIBLE` (select runs only on
+/// a proven eligibility window); parent exactly the sealed head;
+/// observation linkage; a proven window (`eligible_at` nonzero and
+/// the deadline after it); the completeness anchor — the supplied
+/// prior set must number exactly `signal_count`, or the select
+/// refuses before any replay, since an incomplete set can never prove
+/// the kernel's tally; every prior belonging to this transition with
+/// a stored round matching its own `submitted_at`; no duplicated
+/// (agent, round) in the supplied set. The kernel calls run against a
+/// freshly rebuilt sealed launch kernel under `ProgramEnv`: ingest,
+/// register, evaluate, and mark_eligible, all at the stored
+/// `eligible_at` (so the rebuilt kernel's window IS the stored
+/// window), then each prior signal at its `submitted_at` in order,
+/// then kernel `select_candidate` at the state's clock. A kernel
+/// refusal in any call maps to `SelectFailed`: a still-open window,
+/// an unmet quorum, confidence below the launch threshold, an
+/// expired manifest, and a signal at or past the deadline during the
+/// prior replay all fail here, through the kernel, not through a
+/// program-side guess about them. Only a `Life::Selected` life
+/// advances the stage. Sibling competition is NOT proven here: the
+/// rebuilt kernel holds only this transition, so the kernel's
+/// sibling arms cannot fire in this slice — a later slice must replay
+/// sibling transitions before select can claim the full comparison
+/// (see module docs).
+pub fn select_candidate_from_records(
+    kernel_state: &KernelState,
+    transition_record: &mut TransitionRecord,
+    observation_record: &ObservationRecord,
+    prior_signals: &[SignalRecord],
+) -> Result<Life> {
+    if !kernel_state.sealed {
+        return Err(error!(ProgramV04Error::NotSealed));
+    }
+    if transition_record.stage != TransitionRecord::ELIGIBLE {
+        return Err(error!(ProgramV04Error::WrongStage));
+    }
+    if transition_record.parent_index != kernel_state.head_index
+        || transition_record.parent_hash != kernel_state.head_hash
+    {
+        return Err(error!(ProgramV04Error::ParentMismatch));
+    }
+    if transition_record.observation_id != observation_record.observation_id {
+        return Err(error!(ProgramV04Error::RecordMismatch));
+    }
+    if transition_record.eligible_at == 0
+        || transition_record.consensus_deadline <= transition_record.eligible_at
+    {
+        return Err(error!(ProgramV04Error::SelectFailed));
+    }
+    if prior_signals.len() as u64 != transition_record.signal_count {
+        return Err(error!(ProgramV04Error::SelectFailed));
+    }
+    for prior in prior_signals {
+        if prior.transition_id != transition_record.transition_id {
+            return Err(error!(ProgramV04Error::RecordMismatch));
+        }
+        if signal_round(
+            transition_record.eligible_at,
+            transition_record.consensus_deadline,
+            prior.submitted_at,
+        ) != prior.round
+        {
+            return Err(error!(ProgramV04Error::RecordMismatch));
+        }
+    }
+    {
+        let mut seen: BTreeSet<([u8; 32], u64)> = BTreeSet::new();
+        for prior in prior_signals {
+            if !seen.insert((prior.agent.to_bytes(), prior.round)) {
+                return Err(error!(ProgramV04Error::SelectFailed));
+            }
+        }
+    }
+    let proposer = resolve_proposer(kernel_state, transition_record.proposer)?;
+    let observer_id = resolve_agent_id(observation_record.observer);
+    let mut k = sealed_launch_kernel_env().map_err(|_| error!(ProgramV04Error::KernelSeal))?;
+    if !k.has_role(&observer_id, Role::Observer) {
+        return Err(error!(ProgramV04Error::NotObserver));
+    }
+    let relevant_groups = match k.agent(&proposer) {
+        Some(profile) => profile.groups.clone(),
+        None => return Err(error!(ProgramV04Error::UnknownProposer)),
+    };
+    let observation = Observation {
+        id: observation_record.observation_id,
+        timestamp: observation_record.timestamp,
+        expiry: observation_record.expiry,
+        confidence: Amount::from_raw(observation_record.confidence_raw),
+    };
+    let eligible_at = transition_record.eligible_at;
+    k.ingest_observation(&observer_id, observation, eligible_at)
+        .map_err(|_| error!(ProgramV04Error::SelectFailed))?;
+    let manifest = Manifest {
+        transition_type: transition_record.transition_type,
+        parent_index: transition_record.parent_index,
+        parent_hash: transition_record.parent_hash,
+        declared_next_hash: transition_record.declared_next_hash,
+        observation_id: transition_record.observation_id,
+        expires_at: transition_record.expires_at,
+        relevant_groups,
+        action: None,
+    };
+    k.register_transition(
+        &proposer,
+        transition_record.transition_id,
+        manifest,
+        BTreeSet::new(),
+        eligible_at,
+    )
+    .map_err(|_| error!(ProgramV04Error::SelectFailed))?;
+    k.evaluate_transition(&transition_record.transition_id, eligible_at)
+        .map_err(|_| error!(ProgramV04Error::SelectFailed))?;
+    k.mark_eligible(&transition_record.transition_id, eligible_at)
+        .map_err(|_| error!(ProgramV04Error::SelectFailed))?;
+    match k.life_of(&transition_record.transition_id) {
+        Some(Life::Eligible) => {}
+        _ => return Err(error!(ProgramV04Error::SelectFailed)),
+    }
+    let mut priors: alloc::vec::Vec<SignalRecord> = prior_signals.to_vec();
+    priors.sort_by_key(|s| s.submitted_at);
+    for prior in &priors {
+        let support = if prior.has_support {
+            Some(Amount::from_raw(prior.support_raw))
+        } else {
+            None
+        };
+        k.submit_round_signal(
+            &prior.agent.to_bytes(),
+            &transition_record.transition_id,
+            Amount::from_raw(prior.raw),
+            support,
+            prior.submitted_at,
+        )
+        .map_err(|_| error!(ProgramV04Error::SelectFailed))?;
+    }
+    k.select_candidate(&transition_record.transition_id, kernel_state.clock)
+        .map_err(|_| error!(ProgramV04Error::SelectFailed))?;
+    let life = match k.life_of(&transition_record.transition_id) {
+        Some(Life::Selected) => Life::Selected,
+        _ => return Err(error!(ProgramV04Error::SelectFailed)),
+    };
+    transition_record.stage = TransitionRecord::SELECTED;
+    Ok(life)
 }
 
 /// Advance a `KernelState`'s clock (slice 11). Pure except for the
@@ -1536,6 +1800,12 @@ pub struct SignalSubmitted {
     pub confidence_raw: u64,
 }
 
+#[event]
+pub struct TransitionSelected {
+    pub transition_id: [u8; 32],
+    pub stage: u8,
+}
+
 #[error_code]
 pub enum ProgramV04Error {
     #[msg("program-v04 probe: kernel construction failed")]
@@ -1572,6 +1842,8 @@ pub enum ProgramV04Error {
     EligibleFailed,
     #[msg("program-v04 signal: kernel signal refused, window unproven, or round mismatch")]
     SignalFailed,
+    #[msg("program-v04 select: kernel selection refused, window unproven, or supplied signal set incomplete")]
+    SelectFailed,
 }
 
 // ---------------------------------------------------------------- launch genesis
@@ -2031,10 +2303,11 @@ mod tests {
     fn transition_record_space_accounts_for_every_field() {
         // Discriminator 8 + id 32 + type 32 + parent_index 8 +
         // parent_hash 32 + declared 32 + observation 32 + expires 8 +
-        // proposer 32 + stage 1 + eligible_at 8 + consensus_deadline 8 + bump 1.
+        // proposer 32 + stage 1 + eligible_at 8 + consensus_deadline 8 +
+        // signal_count 8 + bump 1.
         assert_eq!(
             TransitionRecord::SPACE,
-            8 + 32 + 32 + 8 + 32 + 32 + 32 + 8 + 32 + 1 + 8 + 8 + 1
+            8 + 32 + 32 + 8 + 32 + 32 + 32 + 8 + 32 + 1 + 8 + 8 + 8 + 1
         );
     }
 
@@ -2053,6 +2326,7 @@ mod tests {
             stage: TransitionRecord::ELIGIBLE,
             eligible_at: 200,
             consensus_deadline: 300,
+            signal_count: 2,
             bump: 254,
         };
         let mut bytes = Vec::new();
@@ -2964,9 +3238,9 @@ mod tests {
         // 2.0, which clears the 1.0 quorum alone; support 1.0 gives
         // confidence 1.0. The tally comes from the kernel, not from a
         // program-side sum.
-        let (state, record, obs) = signal_pair();
+        let (state, mut record, obs) = signal_pair();
         let (signal, total, confidence) = submit_signal_from_records(
-            &state, &record, &obs, &[], Pubkey::new_from_array(ag(2)),
+            &state, &mut record, &obs, &[], Pubkey::new_from_array(ag(2)),
             0, SCALE, SCALE, true, 7,
         )
         .expect("first signal at the genesis clock must submit");
@@ -2984,6 +3258,8 @@ mod tests {
         assert_eq!(record.stage, TransitionRecord::ELIGIBLE);
         assert_eq!(record.eligible_at, 100);
         assert_eq!(record.consensus_deadline, 200);
+        // Slice 16: the one mutation signals do make — the count anchor.
+        assert_eq!(record.signal_count, 1);
     }
 
     #[test]
@@ -2991,9 +3267,9 @@ mod tests {
         // support == None is recorded and classified but adds no
         // weight: the tally stays zero, and a caller-supplied
         // support_raw with has_support false normalizes to 0.
-        let (state, record, obs) = signal_pair();
+        let (state, mut record, obs) = signal_pair();
         let (signal, total, confidence) = submit_signal_from_records(
-            &state, &record, &obs, &[], Pubkey::new_from_array(ag(3)),
+            &state, &mut record, &obs, &[], Pubkey::new_from_array(ag(3)),
             0, SCALE, 5, false, 7,
         )
         .expect("no-position signal must submit");
@@ -3005,9 +3281,9 @@ mod tests {
 
     #[test]
     fn submit_signal_refuses_wrong_stage() {
-        let (state, record, obs) = evaluated_pair();
+        let (state, mut record, obs) = evaluated_pair();
         let err = submit_signal_from_records(
-            &state, &record, &obs, &[], Pubkey::new_from_array(ag(2)),
+            &state, &mut record, &obs, &[], Pubkey::new_from_array(ag(2)),
             0, SCALE, SCALE, true, 7,
         )
         .expect_err("a merely-evaluated record has no window to signal in");
@@ -3016,13 +3292,13 @@ mod tests {
 
     #[test]
     fn submit_signal_refuses_observation_mismatch() {
-        let (state, record, _) = signal_pair();
+        let (state, mut record, _) = signal_pair();
         let other = build_observation_record(
             &state, [0xC1; 32], 100, 9100, 900_000, observer_pubkey(), 7,
         )
         .expect("second observation must build");
         let err = submit_signal_from_records(
-            &state, &record, &other, &[], Pubkey::new_from_array(ag(2)),
+            &state, &mut record, &other, &[], Pubkey::new_from_array(ag(2)),
             0, SCALE, SCALE, true, 7,
         )
         .expect_err("observation id mismatch must refuse");
@@ -3031,15 +3307,15 @@ mod tests {
 
     #[test]
     fn submit_signal_refuses_unknown_agent_and_over_range_raw() {
-        let (state, record, obs) = signal_pair();
+        let (state, mut record, obs) = signal_pair();
         let err = submit_signal_from_records(
-            &state, &record, &obs, &[], Pubkey::new_from_array([0x77; 32]),
+            &state, &mut record, &obs, &[], Pubkey::new_from_array([0x77; 32]),
             0, SCALE, SCALE, true, 7,
         )
         .expect_err("unknown pubkey is no agent and must refuse in the kernel");
         assert!(format!("{:?}", err).contains("SignalFailed"));
         let err = submit_signal_from_records(
-            &state, &record, &obs, &[], Pubkey::new_from_array(ag(2)),
+            &state, &mut record, &obs, &[], Pubkey::new_from_array(ag(2)),
             0, SCALE + 1, SCALE, true, 7,
         )
         .expect_err("raw above SCALE must refuse in the kernel");
@@ -3048,9 +3324,9 @@ mod tests {
 
     #[test]
     fn submit_signal_refuses_wrong_round_arg() {
-        let (state, record, obs) = signal_pair();
+        let (state, mut record, obs) = signal_pair();
         let err = submit_signal_from_records(
-            &state, &record, &obs, &[], Pubkey::new_from_array(ag(2)),
+            &state, &mut record, &obs, &[], Pubkey::new_from_array(ag(2)),
             1, SCALE, SCALE, true, 7,
         )
         .expect_err("round 1 at clock 100 contradicts the derived round 0");
@@ -3059,7 +3335,7 @@ mod tests {
 
     #[test]
     fn submit_signal_refuses_foreign_prior() {
-        let (state, record, obs) = signal_pair();
+        let (state, mut record, obs) = signal_pair();
         let foreign = SignalRecord {
             transition_id: [0xD9; 32],
             agent: Pubkey::new_from_array(ag(2)),
@@ -3071,7 +3347,7 @@ mod tests {
             bump: 7,
         };
         let err = submit_signal_from_records(
-            &state, &record, &obs, &[foreign], Pubkey::new_from_array(ag(3)),
+            &state, &mut record, &obs, &[foreign], Pubkey::new_from_array(ag(3)),
             0, SCALE, SCALE, true, 7,
         )
         .expect_err("a prior from another transition must refuse");
@@ -3080,7 +3356,7 @@ mod tests {
 
     fn first_signal_at_genesis(
         state: &KernelState,
-        record: &TransitionRecord,
+        record: &mut TransitionRecord,
         obs: &ObservationRecord,
     ) -> SignalRecord {
         let (signal, _, _) = submit_signal_from_records(
@@ -3093,10 +3369,10 @@ mod tests {
 
     #[test]
     fn submit_signal_refuses_same_round_duplicate() {
-        let (state, record, obs) = signal_pair();
-        let first = first_signal_at_genesis(&state, &record, &obs);
+        let (state, mut record, obs) = signal_pair();
+        let first = first_signal_at_genesis(&state, &mut record, &obs);
         let err = submit_signal_from_records(
-            &state, &record, &obs, &[first], Pubkey::new_from_array(ag(2)),
+            &state, &mut record, &obs, &[first], Pubkey::new_from_array(ag(2)),
             0, SCALE, SCALE, true, 7,
         )
         .expect_err("one signal per agent per round: the kernel must refuse");
@@ -3109,12 +3385,12 @@ mod tests {
         // support sits exactly on the last round's mean, so the
         // monotone rule admits it; the tally replaces, not adds, the
         // agent's earlier weight.
-        let (state, record, obs) = signal_pair();
-        let first = first_signal_at_genesis(&state, &record, &obs);
+        let (state, mut record, obs) = signal_pair();
+        let first = first_signal_at_genesis(&state, &mut record, &obs);
         let mut advanced = state;
         advance_clock_on_state(&mut advanced, 133).expect("advance must succeed");
         let (signal, total, confidence) = submit_signal_from_records(
-            &advanced, &record, &obs, &[first], Pubkey::new_from_array(ag(2)),
+            &advanced, &mut record, &obs, &[first], Pubkey::new_from_array(ag(2)),
             1, SCALE, SCALE, true, 7,
         )
         .expect("same-support revision in round 1 must submit");
@@ -3129,12 +3405,12 @@ mod tests {
         // Single agent, so the last round's mean IS the agent's own
         // support: moving to 0 moves strictly away from it, and the
         // kernel's monotone rule must refuse.
-        let (state, record, obs) = signal_pair();
-        let first = first_signal_at_genesis(&state, &record, &obs);
+        let (state, mut record, obs) = signal_pair();
+        let first = first_signal_at_genesis(&state, &mut record, &obs);
         let mut advanced = state;
         advance_clock_on_state(&mut advanced, 133).expect("advance must succeed");
         let err = submit_signal_from_records(
-            &advanced, &record, &obs, &[first], Pubkey::new_from_array(ag(2)),
+            &advanced, &mut record, &obs, &[first], Pubkey::new_from_array(ag(2)),
             1, SCALE, 0, true, 7,
         )
         .expect_err("revision away from the mean must refuse in the kernel");
@@ -3147,10 +3423,10 @@ mod tests {
         // weight 4.0, weighted 2.0, confidence exactly 0.5 — the launch
         // policy's threshold. This proves the helper's prior replay
         // accumulates across agents, not just the submitting one.
-        let (state, record, obs) = signal_pair();
-        let first = first_signal_at_genesis(&state, &record, &obs);
+        let (state, mut record, obs) = signal_pair();
+        let first = first_signal_at_genesis(&state, &mut record, &obs);
         let (second, total, confidence) = submit_signal_from_records(
-            &state, &record, &obs, &[first], Pubkey::new_from_array(ag(3)),
+            &state, &mut record, &obs, &[first], Pubkey::new_from_array(ag(3)),
             0, SCALE, 0, true, 7,
         )
         .expect("second agent's round-0 signal must submit");
@@ -3164,14 +3440,174 @@ mod tests {
         // The window is 100/200: at clock 200 the round derives to the
         // capped last round (2), but the kernel's consensus window is
         // closed at the deadline itself, so the signal must refuse.
-        let (state, record, obs) = signal_pair();
+        let (state, mut record, obs) = signal_pair();
         let mut advanced = state;
         advance_clock_on_state(&mut advanced, 200).expect("advance must succeed");
         let err = submit_signal_from_records(
-            &advanced, &record, &obs, &[], Pubkey::new_from_array(ag(2)),
+            &advanced, &mut record, &obs, &[], Pubkey::new_from_array(ag(2)),
             2, SCALE, SCALE, true, 7,
         )
         .expect_err("signal at the deadline must refuse in the kernel");
         assert!(format!("{:?}", err).contains("SignalFailed"));
+    }
+
+    fn selected_pair() -> (KernelState, TransitionRecord, ObservationRecord, SignalRecord) {
+        let (state, mut record, obs) = signal_pair();
+        let (signal, _, _) = submit_signal_from_records(
+            &state, &mut record, &obs, &[], Pubkey::new_from_array(ag(2)),
+            0, SCALE, SCALE, true, 7,
+        )
+        .expect("first signal must submit");
+        assert_eq!(record.signal_count, 1);
+        (state, record, obs, signal)
+    }
+
+    fn two_signals() -> (KernelState, TransitionRecord, ObservationRecord, SignalRecord, SignalRecord)
+    {
+        let (state, mut record, obs, first) = selected_pair();
+        let (second, _, _) = submit_signal_from_records(
+            &state, &mut record, &obs, &[first], Pubkey::new_from_array(ag(3)),
+            0, SCALE, 0, true, 7,
+        )
+        .expect("second agent signal must submit");
+        assert_eq!(record.signal_count, 2);
+        (state, record, obs, first, second)
+    }
+
+    #[test]
+    fn select_advances_eligible_to_selected() {
+        // One qualifying signal (weight 2.0, confidence 1.0) at clock 100;
+        // at the deadline 200 the window is closed and the tally
+        // qualifies, so the kernel selects and the stage advances to 4.
+        let (mut state, mut record, obs, first) = selected_pair();
+        advance_clock_on_state(&mut state, 200).expect("advance to the deadline must succeed");
+        let life = select_candidate_from_records(&state, &mut record, &obs, &[first])
+            .expect("closed window with a qualifying tally must select");
+        assert_eq!(life, Life::Selected);
+        assert_eq!(record.stage, TransitionRecord::SELECTED);
+        assert_eq!(record.stage, 4);
+        assert_eq!(record.signal_count, 1);
+    }
+
+    #[test]
+    fn select_refuses_before_deadline() {
+        // At clock 199 the window is still open: the kernel's
+        // ConsensusStillOpen must refuse, and the stage stays ELIGIBLE.
+        let (mut state, mut record, obs, first) = selected_pair();
+        advance_clock_on_state(&mut state, 199).expect("advance must succeed");
+        let err = select_candidate_from_records(&state, &mut record, &obs, &[first])
+            .expect_err("an open window must refuse selection");
+        assert!(format!("{:?}", err).contains("SelectFailed"));
+        assert_eq!(record.stage, TransitionRecord::ELIGIBLE);
+    }
+
+    #[test]
+    fn select_refuses_wrong_stage() {
+        let (state, mut record, obs) = evaluated_pair();
+        let err = select_candidate_from_records(&state, &mut record, &obs, &[])
+            .expect_err("a merely-evaluated record has no window to select in");
+        assert!(format!("{:?}", err).contains("WrongStage"));
+    }
+
+    #[test]
+    fn select_refuses_incomplete_prior_set() {
+        // Two records exist (count 2) but only the first is supplied:
+        // the completeness anchor refuses before any replay, so an
+        // omitted-record set can never prove the tally.
+        let (mut state, mut record, obs, first, _) = two_signals();
+        advance_clock_on_state(&mut state, 200).expect("advance must succeed");
+        let err = select_candidate_from_records(&state, &mut record, &obs, &[first])
+            .expect_err("a set short of signal_count must refuse");
+        assert!(format!("{:?}", err).contains("SelectFailed"));
+        assert_eq!(record.stage, TransitionRecord::ELIGIBLE);
+    }
+
+    #[test]
+    fn select_refuses_duplicate_prior() {
+        // Supplied 2 equals count 2, but the set is one record twice:
+        // the duplicate (agent, round) is refused explicitly, so
+        // reaching the count by duplication cannot pass either.
+        let (mut state, mut record, obs, first, _) = two_signals();
+        advance_clock_on_state(&mut state, 200).expect("advance must succeed");
+        let err = select_candidate_from_records(&state, &mut record, &obs, &[first, first])
+            .expect_err("a duplicated prior must refuse");
+        assert!(format!("{:?}", err).contains("SelectFailed"));
+        assert_eq!(record.stage, TransitionRecord::ELIGIBLE);
+    }
+
+    #[test]
+    fn select_refuses_unqualified_tally() {
+        // A single support-0 signal: total weight 2.0 clears the 1.0
+        // quorum, but confidence 0 is below the 0.5 threshold, so the
+        // kernel refuses and the stage stays ELIGIBLE.
+        let (state, mut record, obs) = signal_pair();
+        let (signal, _, _) = submit_signal_from_records(
+            &state, &mut record, &obs, &[], Pubkey::new_from_array(ag(2)),
+            0, SCALE, 0, true, 7,
+        )
+        .expect("support-0 signal must submit");
+        let mut advanced = state;
+        advance_clock_on_state(&mut advanced, 200).expect("advance must succeed");
+        let err = select_candidate_from_records(&advanced, &mut record, &obs, &[signal])
+            .expect_err("confidence below threshold must refuse selection");
+        assert!(format!("{:?}", err).contains("SelectFailed"));
+        assert_eq!(record.stage, TransitionRecord::ELIGIBLE);
+    }
+
+    #[test]
+    fn select_refuses_foreign_prior() {
+        let (mut state, mut record, obs, _) = selected_pair();
+        advance_clock_on_state(&mut state, 200).expect("advance must succeed");
+        let foreign = SignalRecord {
+            transition_id: [0xD9; 32],
+            agent: Pubkey::new_from_array(ag(2)),
+            round: 0,
+            raw: SCALE,
+            support_raw: SCALE,
+            has_support: true,
+            submitted_at: 100,
+            bump: 7,
+        };
+        let err = select_candidate_from_records(&state, &mut record, &obs, &[foreign])
+            .expect_err("a prior from another transition must refuse");
+        assert!(format!("{:?}", err).contains("RecordMismatch"));
+        assert_eq!(record.stage, TransitionRecord::ELIGIBLE);
+    }
+
+    #[test]
+    fn select_is_once_only() {
+        let (mut state, mut record, obs, first) = selected_pair();
+        advance_clock_on_state(&mut state, 200).expect("advance must succeed");
+        select_candidate_from_records(&state, &mut record, &obs, &[first])
+            .expect("first select must succeed");
+        let err = select_candidate_from_records(&state, &mut record, &obs, &[first])
+            .expect_err("a second select must refuse on stage");
+        assert!(format!("{:?}", err).contains("WrongStage"));
+    }
+
+    #[test]
+    fn signal_count_increments_per_record_and_refusal_leaves_it() {
+        // Slice 16's amendment to submit, proven directly: the count
+        // moves by exactly one per created record, and a refused
+        // signal leaves it untouched.
+        let (state, mut record, obs) = signal_pair();
+        let first = first_signal_at_genesis(&state, &mut record, &obs);
+        assert_eq!(record.signal_count, 1);
+        let err = submit_signal_from_records(
+            &state, &mut record, &obs, &[first], Pubkey::new_from_array(ag(2)),
+            0, SCALE, SCALE, true, 7,
+        )
+        .expect_err("same-round duplicate must refuse");
+        assert!(format!("{:?}", err).contains("SignalFailed"));
+        assert_eq!(record.signal_count, 1);
+        let mut advanced = state;
+        advance_clock_on_state(&mut advanced, 133).expect("advance must succeed");
+        let (_, _, _) = submit_signal_from_records(
+            &advanced, &mut record, &obs, &[first], Pubkey::new_from_array(ag(2)),
+            1, SCALE, SCALE, true, 7,
+        )
+        .expect("round-1 revision must submit");
+        assert_eq!(record.signal_count, 2);
+        assert_eq!(record.stage, TransitionRecord::ELIGIBLE);
     }
 }

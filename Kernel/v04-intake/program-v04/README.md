@@ -400,11 +400,59 @@ families, account inventory, and CU golden set are later step-5 slices.
   here. Select/reconcile/validate/declare, commit replay moving the
   head, and CU measurement are later slices.
 
+## Slice 16 — the select instruction slice 15 named
+
+- The completeness anchor: `signal_count` on `TransitionRecord`
+  (SPACE 234 → 242), written by `submit_signal` on success only —
+  one per created record, revisions included — so on-chain the count
+  and the record set cannot diverge: one instruction creates both or
+  neither, and a refusal leaves the count untouched. Slice 15's "the
+  transition record is not mutated" is amended here, not contradicted
+  silently: signals still do not advance the stage and still do not
+  touch the window; only the count moves.
+- The `select_candidate` instruction: prior signals arrive as
+  remaining accounts and must number exactly `signal_count`, or the
+  instruction refuses before any replay; a set that omits a real
+  record can only reach the count by duplicating one, and a
+  duplicated (agent, round) is refused explicitly before the replay
+  and again by the kernel's `AlreadySignalledThisRound` on replay.
+  The helper replays the full chain — ingest + register + evaluate
+  + mark_eligible at the stored `eligible_at`, then every supplied
+  prior at its own `submitted_at` — and runs kernel
+  `select_candidate` at the state's clock, so window closure and the
+  quorum/confidence gates are the kernel's. Only a `Life::Selected`
+  life advances the stage, to `SELECTED` (4). The payer is a fee payer
+  only: selection is permissionless once the window has closed.
+- Honesty bound, stated not smoothed: the rebuilt kernel holds only
+  this transition, so this slice proves own qualification and window
+  closure, NOT the kernel's sibling comparison — a higher-confidence
+  sibling that exists on-chain but is not replayed here cannot be
+  judged, and `OutrankedBySibling` / `SiblingsStillOpen` /
+  `ParentAlreadyHasASelectedTransition` are unreachable here.
+  Sibling replay is the next slice's work.
+- Host tests 95/95 (86 prior + 9 slice-16: selection advancing an
+  eligible record to stage 4, refusal before the deadline, wrong-stage
+  refusal, incomplete-set refusal (count 2, supplied 1), duplicate-set
+  refusal (count 2, supplied one record twice), unqualified-tally
+  refusal (confidence 0 below the 0.5 threshold), foreign-prior
+  refusal, once-only select, and the count rule itself — +1 per
+  created record, unchanged by a refused signal).
+- `anchor build` green under the pinned toolchain; IDL now 11
+  instructions (adds `select_candidate`), 4 accounts (unchanged),
+  18 errors (6000–6017, adds `SelectFailed`), 10 events (adds
+  `TransitionSelected`); `.so` 667,352 bytes (sha256
+  `74047e44…`); `TransitionRecord` fields in order with
+  `signal_count` before `bump`.
+- Deliberately NOT slice 16: sibling replay (the select
+  completeness bound above covers this transition's signals, not its
+  siblings), reconcile/validate/declare, commit replay moving the
+  head, and CU measurement — all later slices.
+
 ## Build
 
 ```sh
 export RUSTUP_HOME=~/workspace/toolchains/rustup CARGO_HOME=~/workspace/toolchains/cargo
 export PATH=~/workspace/toolchains/cargo/bin:~/workspace/toolchains/solana/bin:$PATH
 ~/workspace/toolchains/anchor/bin/anchor build   # from this directory
-cargo test                                        # host tests, 86/86
+cargo test                                        # host tests, 95/95
 ```
