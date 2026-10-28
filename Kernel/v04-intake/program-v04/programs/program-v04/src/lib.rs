@@ -595,9 +595,56 @@
 //! `declare_commit` is permissionless — the predicate is the
 //! gate, not a person — so no proposer, seat, or agent gate
 //! applies here. The sealed head does NOT move: declare marks
-//! a transition committable; commit replay (a later slice)
-//! moves the head. Commit replay is still a later slice, not
-//! smuggled in here.
+//! a transition committable; commit replay (slice 26) moves
+//! the head.
+//! Slice 26 (this slice): the first commit instruction,
+//! `commit_transition` — `DECLARED` (9) -> `COMMITTED` (10,
+//! a new program stage value; program stage numbers are the
+//! program's own sequence, not the kernel's `Life`
+//! discriminants — kernel `Committed` is 9, program `DECLARED`
+//! is 9, program `COMMITTED` is 10). The helper re-proves the
+//! whole chain in a rebuilt kernel (chain + priors + select +
+//! open_planning + every prior plan + reconcile + validate +
+//! declare at the state's clock) and only then runs kernel
+//! `commit` at the state's clock, so a stored `DECLARED` label
+//! a replay cannot reproduce never commits. The commit itself
+//! re-runs the entire predicate a third time (`commit_check`
+//! inside `commit`): a predicate that no longer holds at this
+//! clock — a plan expiry reached since declare, a stale
+//! observation, a capacity stock the claims no longer fit —
+//! refuses with `CommitFailed` and the record stands
+//! `DECLARED` with the sealed head unmoved, exactly as the
+//! kernel leaves its life `Committable` (commit's check is
+//! non-mutating; nothing moves until the check passes). On
+//! success the program writes the kernel's returned
+//! `SystemState` into `KernelState` — head index one past the
+//! old head, head hash exactly the record's declared next
+//! hash, both asserted before any write — and the record's
+//! stage advances to `COMMITTED`. The payer is a fee payer
+//! only: kernel `commit` is permissionless, so no proposer,
+//! seat, or agent gate applies here. Governance transitions
+//! refuse at the gate with `GovernanceCommitRequired`: kernel
+//! `commit` itself refuses them (`UseGovernanceCommit`) and
+//! their commit path is `commit_governance`, a later slice —
+//! and the gate is defense in depth today, stated plainly:
+//! no governance record can reach `DECLARED` through the
+//! ordinary chain, because kernel `register_transition`
+//! refuses governance types outright, so the gate guards a
+//! record whose type field was written by a future
+//! governance-registration slice, never a live path this
+//! slice invents. Honesty bound, stated not smoothed: the
+//! capacity debit and the dialect effects of `commit_apply`
+//! run in the rebuilt kernel, which is discarded — the
+//! program persists the head move, not the post-commit
+//! capacity stocks — so until a committed-claims ledger
+//! lands (a later slice), each commit is judged against the
+//! sealed launch stocks, not against post-commit stocks, and
+//! two successive commits are not capacity-checked against
+//! each other. The head move is real and usable — a new
+//! record registers against the new head — but the capacity
+//! ledger is the next slice's work, not this one's claim.
+//! CU measurement is still a later slice, not smuggled in
+//! here.
 
 extern crate alloc;
 
@@ -605,7 +652,8 @@ use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec;
 use anchor_lang::prelude::*;
 use coordination_kernel::{
-    Amount, Config, ConstraintStatus, Env, GovAction, Kernel, KernelError, Life, Manifest, NoEnv,
+    Amount, Config, ConstraintStatus, Env, GovAction, is_gov_type, Kernel, KernelError, Life,
+    Manifest, NoEnv,
     Observation, Plan, Policy, Role, SystemState, T_GOV_ADJUSTABLE, T_GOV_CONSTITUTION,
     T_GOV_COUNCIL, T_GOV_REBOOT, MAX_REPLANS, SCALE,
 };
@@ -1354,6 +1402,62 @@ pub mod program_v04 {
         });
         Ok(())
     }
+
+    /// Commit a declared transition (slice 26): `DECLARED`
+    /// (9) -> `COMMITTED` (10), and the sealed head moves to
+    /// the kernel's returned `SystemState` — or a refusal that
+    /// leaves the record standing `DECLARED` and the head
+    /// unmoved. Remaining accounts split exactly as in
+    /// `declare_transition`: the first `signal_count` are
+    /// the prior `SignalRecord`s and the rest are the prior
+    /// `PlanRecord`s, which must number exactly `plan_count`.
+    /// The payer is a fee payer only: kernel `commit` is
+    /// permissionless, so no proposer, seat, or agent gate
+    /// applies here. A governance-typed record refuses at
+    /// the gate with `GovernanceCommitRequired` — its commit
+    /// path is `commit_governance`, a later slice.
+    pub fn commit_transition(
+        ctx: Context<CommitTransition>,
+        transition_id: [u8; 32],
+        observation_id: [u8; 32],
+    ) -> Result<()> {
+        if ctx.accounts.transition_record.transition_id != transition_id
+            || ctx.accounts.observation_record.observation_id != observation_id
+        {
+            return Err(error!(ProgramV04Error::RecordMismatch));
+        }
+        let signal_count = ctx.accounts.transition_record.signal_count as usize;
+        if ctx.remaining_accounts.len() < signal_count {
+            return Err(error!(ProgramV04Error::CommitFailed));
+        }
+        let mut priors: alloc::vec::Vec<SignalRecord> = alloc::vec::Vec::new();
+        for acc in &ctx.remaining_accounts[..signal_count] {
+            let parsed = Account::<SignalRecord>::try_from(acc)
+                .map_err(|_| error!(ProgramV04Error::RecordMismatch))?;
+            priors.push(parsed.into_inner());
+        }
+        let mut prior_plans: alloc::vec::Vec<PlanRecord> = alloc::vec::Vec::new();
+        for acc in &ctx.remaining_accounts[signal_count..] {
+            let parsed = Account::<PlanRecord>::try_from(acc)
+                .map_err(|_| error!(ProgramV04Error::RecordMismatch))?;
+            prior_plans.push(parsed.into_inner());
+        }
+        let life = commit_transition_from_records(
+            &mut ctx.accounts.kernel_state,
+            &mut ctx.accounts.transition_record,
+            &ctx.accounts.observation_record,
+            &priors,
+            &prior_plans,
+        )?;
+        debug_assert!(life == Life::Committed);
+        emit!(TransitionCommitted {
+            transition_id,
+            stage: ctx.accounts.transition_record.stage,
+            head_index: ctx.accounts.kernel_state.head_index,
+            head_hash: ctx.accounts.kernel_state.head_hash,
+        });
+        Ok(())
+    }
 }
 
 #[derive(Accounts)]
@@ -1436,6 +1540,29 @@ pub struct ValidateTransition<'info> {
 #[instruction(transition_id: [u8; 32], observation_id: [u8; 32])]
 pub struct DeclareTransition<'info> {
     #[account(
+        seeds = [b"kernel-state"],
+        bump = kernel_state.bump,
+    )]
+    pub kernel_state: Account<'info, KernelState>,
+    #[account(
+        mut,
+        seeds = [b"transition", transition_id.as_ref()],
+        bump = transition_record.bump,
+    )]
+    pub transition_record: Account<'info, TransitionRecord>,
+    #[account(
+        seeds = [b"observation", observation_id.as_ref()],
+        bump = observation_record.bump,
+    )]
+    pub observation_record: Account<'info, ObservationRecord>,
+    pub payer: Signer<'info>,
+}
+
+#[derive(Accounts)]
+#[instruction(transition_id: [u8; 32], observation_id: [u8; 32])]
+pub struct CommitTransition<'info> {
+    #[account(
+        mut,
         seeds = [b"kernel-state"],
         bump = kernel_state.bump,
     )]
@@ -1837,6 +1964,8 @@ impl TransitionRecord {
     pub const VALIDATED: u8 = 8;
     /// Stage value written by `declare_transition` (slice 25).
     pub const DECLARED: u8 = 9;
+    /// Stage value written by `commit_transition` (slice 26).
+    pub const COMMITTED: u8 = 10;
     /// 8 (discriminator) + 32 + 32 + 8 + 32 + 32 + 32 + 8 + 32 + 1 + 8 + 8 + 8 + 8 + 8 + 4 + 1 + 1.
     pub const SPACE: usize = 263;
 }
@@ -3762,8 +3891,8 @@ pub fn validate_transition_from_records(
 /// validate cannot see is a plan expiry reached since validate
 /// (the `PLANS` bit), since validate's structural check does not
 /// judge plan expiry. A successful declare leaves the sealed head
-/// untouched: the head moves only when commit replay lands, in a
-/// later slice. The payer is a fee payer only: kernel
+/// untouched: the head moves only when commit replay lands, in
+/// slice 26. The payer is a fee payer only: kernel
 /// `declare_commit` is permissionless, so no proposer, seat, or
 /// agent gate applies here.
 pub fn declare_transition_from_records(
@@ -3992,6 +4121,300 @@ pub fn declare_transition_from_records(
         }
         _ => Err(error!(ProgramV04Error::DeclareFailed)),
     }
+}
+
+/// Commit a declared transition and move the sealed head (slice 26).
+/// Pure except for the record's stage and the state's head, which
+/// advance only on success — every refusal leaves both exactly as
+/// they stood. Gates, in order: sealed state; stage exactly
+/// `DECLARED`; parent exactly the sealed head; observation
+/// linkage; the governance gate — a governance-typed record
+/// refuses with `GovernanceCommitRequired` before any replay,
+/// because its commit path is `commit_governance`, not the
+/// ordinary commit (kernel `commit` would refuse it the same
+/// way, with `UseGovernanceCommit`); a proven planning
+/// deadline; the completeness anchors — the supplied prior
+/// signal set numbering exactly `signal_count` and the
+/// supplied prior plan set numbering exactly `plan_count`,
+/// each prior belonging to the transition with a stored round
+/// matching its own `submitted_at` and no duplicated (agent,
+/// round) in the signal set. Replay then re-proves the whole
+/// chain in a rebuilt kernel at the derived open clock
+/// (ingest, register, evaluate, mark_eligible; signals sorted
+/// by `submitted_at`; select; open planning; prior plans) and
+/// reconciles, validates, and declares at the state's clock;
+/// the stored `compatible` verdict is cross-checked against
+/// slice 23's exact mirror recomputed over the supplied plan
+/// set, exactly as in slices 24/25, and a stored verdict the
+/// set does not reproduce refuses before any kernel validate
+/// runs. Only then kernel `commit` runs at the state's clock:
+/// it re-runs the entire predicate a third time, and a
+/// non-clear mask refuses with `CommitFailed` — the kernel
+/// leaves its life `Committable`, and the program mirrors it:
+/// the record stands `DECLARED`, not committed, not blocked.
+/// On success the kernel's returned `SystemState` is asserted
+/// against the program's own expectation — index exactly one
+/// past the old head, hash exactly the record's declared next
+/// hash — before any write; only then does the stage advance
+/// to `COMMITTED` and the sealed head move. The capacity
+/// debit and dialect effects of `commit_apply` run in the
+/// rebuilt kernel, which is discarded: the program persists
+/// the head move, not the post-commit capacity stocks (see
+/// the slice-26 module docs — the committed-claims ledger is
+/// a later slice). The payer is a fee payer only: kernel
+/// `commit` is permissionless, so no proposer, seat, or agent
+/// gate applies here.
+pub fn commit_transition_from_records(
+    kernel_state: &mut KernelState,
+    transition_record: &mut TransitionRecord,
+    observation_record: &ObservationRecord,
+    prior_signals: &[SignalRecord],
+    prior_plans: &[PlanRecord],
+) -> Result<Life> {
+    if !kernel_state.sealed {
+        return Err(error!(ProgramV04Error::NotSealed));
+    }
+    if transition_record.stage != TransitionRecord::DECLARED {
+        return Err(error!(ProgramV04Error::WrongStage));
+    }
+    if transition_record.parent_index != kernel_state.head_index
+        || transition_record.parent_hash != kernel_state.head_hash
+    {
+        return Err(error!(ProgramV04Error::ParentMismatch));
+    }
+    if transition_record.observation_id != observation_record.observation_id {
+        return Err(error!(ProgramV04Error::RecordMismatch));
+    }
+    if is_gov_type(&transition_record.transition_type) {
+        return Err(error!(ProgramV04Error::GovernanceCommitRequired));
+    }
+    if transition_record.planning_deadline == 0 {
+        return Err(error!(ProgramV04Error::CommitFailed));
+    }
+    let open_clock = transition_record
+        .planning_deadline
+        .checked_sub(launch_policy().planning_window)
+        .ok_or(error!(ProgramV04Error::CommitFailed))?;
+    if prior_signals.len() as u64 != transition_record.signal_count {
+        return Err(error!(ProgramV04Error::CommitFailed));
+    }
+    for prior in prior_signals {
+        if prior.transition_id != transition_record.transition_id {
+            return Err(error!(ProgramV04Error::RecordMismatch));
+        }
+        if signal_round(
+            transition_record.eligible_at,
+            transition_record.consensus_deadline,
+            prior.submitted_at,
+        ) != prior.round
+        {
+            return Err(error!(ProgramV04Error::RecordMismatch));
+        }
+    }
+    {
+        let mut seen: BTreeSet<([u8; 32], u64)> = BTreeSet::new();
+        for prior in prior_signals {
+            if !seen.insert((prior.agent.to_bytes(), prior.round)) {
+                return Err(error!(ProgramV04Error::CommitFailed));
+            }
+        }
+    }
+    if prior_plans.len() as u64 != transition_record.plan_count {
+        return Err(error!(ProgramV04Error::CommitFailed));
+    }
+    for prior in prior_plans {
+        if prior.transition_id != transition_record.transition_id {
+            return Err(error!(ProgramV04Error::RecordMismatch));
+        }
+        if prior.claim_count as usize > PlanRecord::MAX_PLAN_CLAIMS {
+            return Err(error!(ProgramV04Error::CommitFailed));
+        }
+        let mut seen: BTreeSet<u16> = BTreeSet::new();
+        for resource in &prior.claim_resources[..prior.claim_count as usize] {
+            if !seen.insert(*resource) {
+                return Err(error!(ProgramV04Error::CommitFailed));
+            }
+        }
+    }
+    let proposer = resolve_proposer(kernel_state, transition_record.proposer)
+        .map_err(|_| error!(ProgramV04Error::CommitFailed))?;
+    let observer_id = resolve_agent_id(observation_record.observer);
+    let mut k = sealed_launch_kernel_env().map_err(|_| error!(ProgramV04Error::KernelSeal))?;
+    if !k.has_role(&observer_id, Role::Observer) {
+        return Err(error!(ProgramV04Error::NotObserver));
+    }
+    let relevant_groups = match k.agent(&proposer) {
+        Some(profile) => profile.groups.clone(),
+        None => return Err(error!(ProgramV04Error::UnknownProposer)),
+    };
+    let observation = Observation {
+        id: observation_record.observation_id,
+        timestamp: observation_record.timestamp,
+        expiry: observation_record.expiry,
+        confidence: Amount::from_raw(observation_record.confidence_raw),
+    };
+    let eligible_at = transition_record.eligible_at;
+    k.ingest_observation(&observer_id, observation, eligible_at)
+        .map_err(|_| error!(ProgramV04Error::CommitFailed))?;
+    let manifest = Manifest {
+        transition_type: transition_record.transition_type,
+        parent_index: transition_record.parent_index,
+        parent_hash: transition_record.parent_hash,
+        declared_next_hash: transition_record.declared_next_hash,
+        observation_id: transition_record.observation_id,
+        expires_at: transition_record.expires_at,
+        relevant_groups,
+        action: None,
+    };
+    k.register_transition(
+        &proposer,
+        transition_record.transition_id,
+        manifest,
+        BTreeSet::new(),
+        eligible_at,
+    )
+    .map_err(|_| error!(ProgramV04Error::CommitFailed))?;
+    k.evaluate_transition(&transition_record.transition_id, eligible_at)
+        .map_err(|_| error!(ProgramV04Error::CommitFailed))?;
+    k.mark_eligible(&transition_record.transition_id, eligible_at)
+        .map_err(|_| error!(ProgramV04Error::CommitFailed))?;
+    match k.life_of(&transition_record.transition_id) {
+        Some(Life::Eligible) => {}
+        _ => return Err(error!(ProgramV04Error::CommitFailed)),
+    }
+    let mut priors: alloc::vec::Vec<SignalRecord> = prior_signals.to_vec();
+    priors.sort_by_key(|s| s.submitted_at);
+    for prior in &priors {
+        let support = if prior.has_support {
+            Some(Amount::from_raw(prior.support_raw))
+        } else {
+            None
+        };
+        k.submit_round_signal(
+            &prior.agent.to_bytes(),
+            &transition_record.transition_id,
+            Amount::from_raw(prior.raw),
+            support,
+            prior.submitted_at,
+        )
+        .map_err(|_| error!(ProgramV04Error::CommitFailed))?;
+    }
+    k.select_candidate(&transition_record.transition_id, open_clock)
+        .map_err(|_| error!(ProgramV04Error::CommitFailed))?;
+    match k.life_of(&transition_record.transition_id) {
+        Some(Life::Selected) => {}
+        _ => return Err(error!(ProgramV04Error::CommitFailed)),
+    }
+    k.open_planning(&proposer, &transition_record.transition_id, open_clock)
+        .map_err(|_| error!(ProgramV04Error::CommitFailed))?;
+    match k.life_of(&transition_record.transition_id) {
+        Some(Life::Planning) => {}
+        _ => return Err(error!(ProgramV04Error::CommitFailed)),
+    }
+    let deadline = open_clock
+        .checked_add(launch_policy().planning_window)
+        .ok_or(error!(ProgramV04Error::CommitFailed))?;
+    if deadline != transition_record.planning_deadline {
+        return Err(error!(ProgramV04Error::CommitFailed));
+    }
+    for prior in prior_plans {
+        let mut prior_map: BTreeMap<u16, Amount> = BTreeMap::new();
+        for (resource, amount) in prior.claim_resources[..prior.claim_count as usize]
+            .iter()
+            .zip(prior.claim_amounts[..prior.claim_count as usize].iter())
+        {
+            prior_map.insert(*resource, Amount::from_raw(*amount));
+        }
+        let prior_plan = Plan {
+            agent: prior.agent.to_bytes(),
+            claims: prior_map,
+            expires_at: prior.expires_at,
+        };
+        k.submit_plan(
+            &prior.agent.to_bytes(),
+            &transition_record.transition_id,
+            prior_plan,
+            open_clock,
+        )
+        .map_err(|_| error!(ProgramV04Error::CommitFailed))?;
+    }
+    k.reconcile_plans(&transition_record.transition_id, kernel_state.clock)
+        .map_err(|_| error!(ProgramV04Error::CommitFailed))?;
+    match k.life_of(&transition_record.transition_id) {
+        Some(Life::Reconciling) => {}
+        _ => return Err(error!(ProgramV04Error::CommitFailed)),
+    }
+    // Slice 23's exact mirror, recomputed over the supplied set:
+    // a stored verdict the set does not reproduce refuses here,
+    // before the kernel's own validate runs, exactly as in
+    // slices 24/25 — neither the stored verdict nor the replay
+    // is trusted alone.
+    let mut sums: BTreeMap<u16, Amount> = BTreeMap::new();
+    let mut fits = !prior_plans.is_empty();
+    for prior in prior_plans {
+        for (resource, amount) in prior.claim_resources[..prior.claim_count as usize]
+            .iter()
+            .zip(prior.claim_amounts[..prior.claim_count as usize].iter())
+        {
+            let entry = sums.entry(*resource).or_insert(Amount::ZERO);
+            match entry.checked_add(Amount::from_raw(*amount)) {
+                Ok(v) => *entry = v,
+                Err(_) => fits = false,
+            }
+        }
+    }
+    if fits {
+        for (resource, total) in &sums {
+            if !k.capacity_of(*resource).is_some_and(|cap| *total <= cap) {
+                fits = false;
+            }
+        }
+    }
+    if fits != transition_record.compatible {
+        return Err(error!(ProgramV04Error::CommitFailed));
+    }
+    k.validate_transition(&transition_record.transition_id, kernel_state.clock)
+        .map_err(|_| error!(ProgramV04Error::CommitFailed))?;
+    match k.life_of(&transition_record.transition_id) {
+        Some(Life::Validated) => {}
+        // Commit is not a verdict writer either: a replay
+        // validate that yields Blocked means the stored
+        // DECLARED label no longer holds at this clock, and
+        // the record stands DECLARED — it is not re-labeled
+        // BLOCKED by commit.
+        Some(Life::Blocked) => return Err(error!(ProgramV04Error::CommitFailed)),
+        _ => return Err(error!(ProgramV04Error::CommitFailed)),
+    }
+    k.declare_commit(&transition_record.transition_id, kernel_state.clock)
+        .map_err(|_| error!(ProgramV04Error::CommitFailed))?;
+    match k.life_of(&transition_record.transition_id) {
+        Some(Life::Committable) => {}
+        _ => return Err(error!(ProgramV04Error::CommitFailed)),
+    }
+    let new_state = k
+        .commit(&transition_record.transition_id, kernel_state.clock)
+        .map_err(|_| error!(ProgramV04Error::CommitFailed))?;
+    match k.life_of(&transition_record.transition_id) {
+        Some(Life::Committed) => {}
+        _ => return Err(error!(ProgramV04Error::CommitFailed)),
+    }
+    // The head moves only on a kernel-proven commit whose
+    // returned state matches the program's own expectation:
+    // one past the old head, exactly the declared next hash.
+    // Both are asserted before any program state is written,
+    // so a mismatch refuses with the head and the record
+    // exactly as they stood.
+    let expected_index = kernel_state
+        .head_index
+        .checked_add(1)
+        .ok_or(error!(ProgramV04Error::CommitFailed))?;
+    if new_state.index != expected_index || new_state.hash != transition_record.declared_next_hash {
+        return Err(error!(ProgramV04Error::CommitFailed));
+    }
+    transition_record.stage = TransitionRecord::COMMITTED;
+    kernel_state.head_index = new_state.index;
+    kernel_state.head_hash = new_state.hash;
+    Ok(Life::Committed)
 }
 
 /// One sibling transition offered to a sibling-aware select (slice 17):
@@ -4490,6 +4913,14 @@ pub struct TransitionDeclared {
     pub stage: u8,
 }
 
+#[event]
+pub struct TransitionCommitted {
+    pub transition_id: [u8; 32],
+    pub stage: u8,
+    pub head_index: u64,
+    pub head_hash: [u8; 32],
+}
+
 #[error_code]
 pub enum ProgramV04Error {
     #[msg("program-v04 probe: kernel construction failed")]
@@ -4540,6 +4971,10 @@ pub enum ProgramV04Error {
     ValidateFailed,
     #[msg("program-v04 declare: kernel declare refused, validated chain unproven, stored verdict unreproduced, or full predicate failed at declare time")]
     DeclareFailed,
+    #[msg("program-v04 commit: kernel commit refused, declared chain unproven, stored verdict unreproduced, or full predicate failed at commit time")]
+    CommitFailed,
+    #[msg("program-v04 commit: governance transitions commit through commit_governance, not the ordinary commit path")]
+    GovernanceCommitRequired,
 }
 
 // ---------------------------------------------------------------- launch genesis
@@ -8177,5 +8612,244 @@ mod tests {
         assert!(format!("{:?}", err).contains("ParentMismatch"));
         assert_eq!(record.stage, TransitionRecord::VALIDATED);
         assert!(record.compatible);
+    }
+
+    fn declared_pair() -> (
+        KernelState,
+        TransitionRecord,
+        ObservationRecord,
+        SignalRecord,
+        PlanRecord,
+    ) {
+        // declare-success fixture every slice-26 test builds from.
+        let (state, mut record, obs, first, plan) = validated_pair();
+        let life = declare_transition_from_records(&state, &mut record, &obs, &[first], std::slice::from_ref(&plan))
+            .expect("a fitting validated chain must declare");
+        assert_eq!(life, Life::Committable);
+        assert_eq!(record.stage, TransitionRecord::DECLARED);
+        (state, record, obs, first, plan)
+    }
+
+    #[test]
+    fn commit_advances_declared_to_committed_and_moves_head() {
+        // A kernel-proven chain with a fitting plan set and a
+        // fresh observation at clock 300: the full predicate
+        // passes a third time, the stage advances to 10, and —
+        // the slice's head discipline, the mirror of declare's
+        // — the sealed head DOES move, to exactly the record's
+        // declared next hash at index one past the old head.
+        // And the move is usable: a new record registers
+        // against the new head.
+        let (mut state, mut record, obs, first, plan) = declared_pair();
+        let old_index = state.head_index;
+        let next_hash = record.declared_next_hash;
+        let life = commit_transition_from_records(&mut state, &mut record, &obs, &[first], &[plan])
+            .expect("a fitting declared chain must commit");
+        assert_eq!(life, Life::Committed);
+        assert_eq!(record.stage, TransitionRecord::COMMITTED);
+        assert_eq!(record.stage, 10);
+        assert_eq!(state.head_index, old_index + 1);
+        assert_eq!(state.head_hash, next_hash);
+        let next = build_transition_record(
+            &state,
+            [0x55; 32],
+            TT,
+            state.head_index,
+            state.head_hash,
+            [0x66; 32],
+            obs.observation_id,
+            record.expires_at,
+            record.proposer,
+            0,
+        )
+        .expect("a record against the new head must build");
+        assert_eq!(next.parent_index, state.head_index);
+        assert_eq!(next.parent_hash, state.head_hash);
+    }
+
+    #[test]
+    fn commit_is_once_only_after_committed() {
+        // A committed record is past commit: the stage gate
+        // refuses a second call, and the stage and the head
+        // stand exactly where the first commit left them.
+        let (mut state, mut record, obs, first, plan) = declared_pair();
+        commit_transition_from_records(&mut state, &mut record, &obs, &[first], std::slice::from_ref(&plan))
+            .expect("first commit must succeed");
+        assert_eq!(record.stage, TransitionRecord::COMMITTED);
+        let head_index = state.head_index;
+        let head_hash = state.head_hash;
+        let err = commit_transition_from_records(&mut state, &mut record, &obs, &[first], std::slice::from_ref(&plan))
+            .expect_err("a second commit must refuse");
+        assert!(format!("{:?}", err).contains("WrongStage"));
+        assert_eq!(record.stage, TransitionRecord::COMMITTED);
+        assert_eq!(state.head_index, head_index);
+        assert_eq!(state.head_hash, head_hash);
+    }
+
+    #[test]
+    fn commit_refuses_wrong_stage() {
+        // Still VALIDATED, never declared: the stage gate
+        // refuses before any replay, and nothing moves — the
+        // record stands VALIDATED and the head stands.
+        let (mut state, mut record, obs, first, plan) = validated_pair();
+        let head_index = state.head_index;
+        let head_hash = state.head_hash;
+        let err = commit_transition_from_records(&mut state, &mut record, &obs, &[first], &[plan])
+            .expect_err("an undeclared record must refuse commit");
+        assert!(format!("{:?}", err).contains("WrongStage"));
+        assert_eq!(record.stage, TransitionRecord::VALIDATED);
+        assert_eq!(state.head_index, head_index);
+        assert_eq!(state.head_hash, head_hash);
+    }
+
+    #[test]
+    fn commit_refuses_governance_type() {
+        // The slice's gate, proven in isolation: a DECLARED
+        // record whose type is a governance type refuses with
+        // the governance error — not a predicate failure — and
+        // the record stands DECLARED with the head unmoved, for
+        // the commit_governance slice to judge. (No governance
+        // record reaches DECLARED through the ordinary chain
+        // today, since kernel register refuses governance
+        // types; the flipped type stands in for the future
+        // governance-registration slice's output.)
+        let (mut state, mut record, obs, first, plan) = declared_pair();
+        record.transition_type = T_GOV_COUNCIL;
+        let head_index = state.head_index;
+        let head_hash = state.head_hash;
+        let err = commit_transition_from_records(&mut state, &mut record, &obs, &[first], &[plan])
+            .expect_err("a governance record must refuse ordinary commit");
+        assert!(format!("{:?}", err).contains("GovernanceCommitRequired"));
+        assert_eq!(record.stage, TransitionRecord::DECLARED);
+        assert_eq!(state.head_index, head_index);
+        assert_eq!(state.head_hash, head_hash);
+    }
+
+    #[test]
+    fn commit_refuses_expired_plan_predicate() {
+        // At clock 400 the plan (expiry 400) has expired, so
+        // the full predicate fails on the PLANS mask bit at
+        // commit time — while the replay validate still
+        // passes. The kernel leaves its life Committable, and
+        // the program mirrors it: the record stands DECLARED
+        // and the head stands, for a later commit or for the
+        // exception path to judge.
+        let (mut state, mut record, obs, first, plan) = declared_pair();
+        advance_clock_on_state(&mut state, 400).expect("advance to the plan expiry must succeed");
+        let head_index = state.head_index;
+        let head_hash = state.head_hash;
+        let err = commit_transition_from_records(&mut state, &mut record, &obs, &[first], &[plan])
+            .expect_err("an expired-plan predicate must refuse commit");
+        assert!(format!("{:?}", err).contains("CommitFailed"));
+        assert_eq!(record.stage, TransitionRecord::DECLARED);
+        assert_eq!(state.head_index, head_index);
+        assert_eq!(state.head_hash, head_hash);
+    }
+
+    #[test]
+    fn commit_refuses_stale_observation() {
+        // At clock 9100 the observation (expiry 9100) is no
+        // longer fresh: the replay validate yields Blocked, so
+        // commit refuses — and, exactly as declare is not a
+        // verdict writer, commit is not one either: the record
+        // stands DECLARED, not re-labeled BLOCKED, and the head
+        // stands.
+        let (mut state, mut record, obs, first, plan) = declared_pair();
+        advance_clock_on_state(&mut state, 9100).expect("advance to the observation expiry must succeed");
+        let head_index = state.head_index;
+        let head_hash = state.head_hash;
+        let err = commit_transition_from_records(&mut state, &mut record, &obs, &[first], &[plan])
+            .expect_err("a stale observation must refuse commit");
+        assert!(format!("{:?}", err).contains("CommitFailed"));
+        assert_eq!(record.stage, TransitionRecord::DECLARED);
+        assert_eq!(state.head_index, head_index);
+        assert_eq!(state.head_hash, head_hash);
+    }
+
+    #[test]
+    fn commit_refuses_stored_verdict_mismatch() {
+        // The slice-24 promise, carried into commit: a stored
+        // verdict the supplied plan set does not reproduce
+        // refuses before any kernel validate runs — here a
+        // fitting set whose stored verdict was flipped to
+        // false — and the record stands DECLARED with the head
+        // unmoved, neither committed nor blocked on a lie.
+        let (mut state, mut record, obs, first, plan) = declared_pair();
+        record.compatible = false;
+        let err = commit_transition_from_records(&mut state, &mut record, &obs, &[first], &[plan])
+            .expect_err("a mismatched stored verdict must refuse commit");
+        assert!(format!("{:?}", err).contains("CommitFailed"));
+        assert_eq!(record.stage, TransitionRecord::DECLARED);
+        assert!(!record.compatible);
+        assert_eq!(state.head_index, 0);
+    }
+
+    #[test]
+    fn commit_refuses_incomplete_prior_plans() {
+        // The record claims a prior plan that was never
+        // supplied: the slice-21 anchor refuses before any
+        // replay, and the head stands.
+        let (mut state, mut record, obs, first, plan) = declared_pair();
+        record.plan_count = 2;
+        let err = commit_transition_from_records(&mut state, &mut record, &obs, &[first], &[plan])
+            .expect_err("a short prior plan set must refuse commit");
+        assert!(format!("{:?}", err).contains("CommitFailed"));
+        assert_eq!(record.stage, TransitionRecord::DECLARED);
+        assert_eq!(record.plan_count, 2);
+        assert_eq!(state.head_index, 0);
+    }
+
+    #[test]
+    fn commit_refuses_incomplete_prior_signals() {
+        // The record claims a second signal that was never
+        // supplied: the slice-16 anchor refuses before any
+        // replay, and the head stands.
+        let (mut state, mut record, obs, first, plan) = declared_pair();
+        record.signal_count = 2;
+        let err = commit_transition_from_records(&mut state, &mut record, &obs, &[first], &[plan])
+            .expect_err("a short prior signal set must refuse commit");
+        assert!(format!("{:?}", err).contains("CommitFailed"));
+        assert_eq!(record.stage, TransitionRecord::DECLARED);
+        assert_eq!(state.head_index, 0);
+    }
+
+    #[test]
+    fn commit_refuses_unreproducible_plan() {
+        // A prior plan whose agent is no seeded agent cannot be
+        // replayed: the kernel's agent gate refuses, so the
+        // stored DECLARED label alone commits nothing, and the
+        // record and the head stand.
+        let (mut state, mut record, obs, first, mut plan) = declared_pair();
+        plan.agent = Pubkey::new_from_array([0x77; 32]);
+        let err = commit_transition_from_records(&mut state, &mut record, &obs, &[first], &[plan])
+            .expect_err("an unreproducible plan must refuse commit");
+        assert!(format!("{:?}", err).contains("CommitFailed"));
+        assert_eq!(record.stage, TransitionRecord::DECLARED);
+        assert_eq!(state.head_index, 0);
+    }
+
+    #[test]
+    fn commit_refuses_unsealed() {
+        let (mut state, mut record, obs, first, plan) = declared_pair();
+        state.sealed = false;
+        let err = commit_transition_from_records(&mut state, &mut record, &obs, &[first], &[plan])
+            .expect_err("an unsealed state must refuse commit");
+        assert!(format!("{:?}", err).contains("NotSealed"));
+        assert_eq!(record.stage, TransitionRecord::DECLARED);
+        assert_eq!(state.head_index, 0);
+    }
+
+    #[test]
+    fn commit_refuses_parent_mismatch() {
+        // The head moved out from under the record (a sibling
+        // committed first, in program terms): the parent gate
+        // refuses, and commit moves the head no further.
+        let (mut state, mut record, obs, first, plan) = declared_pair();
+        state.head_index = 9;
+        let err = commit_transition_from_records(&mut state, &mut record, &obs, &[first], &[plan])
+            .expect_err("a record off the sealed head must refuse commit");
+        assert!(format!("{:?}", err).contains("ParentMismatch"));
+        assert_eq!(record.stage, TransitionRecord::DECLARED);
+        assert_eq!(state.head_index, 9);
     }
 }

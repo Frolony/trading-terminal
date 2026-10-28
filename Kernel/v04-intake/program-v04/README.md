@@ -855,8 +855,65 @@ families, account inventory, and CU golden set are later step-5 slices.
   (`DeclareFailed`), and the 15th event (`TransitionDeclared`)
   — 17 instructions, 5 accounts, 24 errors, 15 events; `.so`
   958,024 bytes (sha256 `ddc5238b…`).
-- Deliberately NOT slice 25: commit replay moving the head, and
-  CU measurement — later slices.
+- Deliberately NOT slice 25: CU measurement — later slices.
+  (Commit replay moving the head is slice 26, below.)
+
+## Slice 26 — commit (`DECLARED` -> `COMMITTED`, the head moves)
+
+- The `commit_transition` instruction re-proves the whole chain
+  in a rebuilt kernel (chain + priors + select + open_planning +
+  every prior plan + reconcile + validate + declare at the
+  state's clock) and only then runs kernel `commit` at the
+  state's clock, advancing a `DECLARED` record to `COMMITTED`
+  (stage 10, a new program stage value; kernel `Committed` is
+  9, program `DECLARED` is 9) when the full 13-bit predicate
+  passes a third time. On success the kernel's returned
+  `SystemState` is written into `KernelState` — head index one
+  past the old head, head hash exactly the record's declared
+  next hash, both asserted before any write — so the head move
+  is real and usable: a new record registers against the new
+  head. The payer is a fee payer only: kernel `commit` is
+  permissionless — the predicate is the gate, not a person.
+- The slice's design points: commit is NOT a verdict writer
+  either — a predicate that fails at commit time (a plan expiry
+  reached since declare, a stale observation) refuses with
+  `CommitFailed` and the record stands `DECLARED` with the head
+  unmoved, exactly as the kernel leaves its life `Committable`.
+  Governance-typed records refuse at the gate with
+  `GovernanceCommitRequired` (their path is `commit_governance`,
+  a later slice); the gate is defense in depth today, stated
+  plainly — no governance record reaches `DECLARED` through the
+  ordinary chain, since kernel `register_transition` refuses
+  governance types outright. Honesty bound: the capacity debit
+  and dialect effects of `commit_apply` run in the rebuilt
+  kernel, which is discarded — the program persists the head
+  move, not the post-commit capacity stocks — so until a
+  committed-claims ledger lands (a later slice), each commit is
+  judged against the sealed launch stocks, not against
+  post-commit stocks.
+- Host tests 198/198 (186 prior + 12 slice-26: committed advance
+  with the head asserted moved to the declared next hash and a
+  new record registering against it, once-only after committed,
+  wrong-stage refusal, governance-type refusal, expired-plan
+  predicate refusal (clock 400, plan expiry — the `PLANS` mask
+  bit), stale-observation refusal (clock 9100, record stands
+  `DECLARED`, not re-labeled `BLOCKED`),
+  stored-verdict-mismatch refusal, incomplete prior plans,
+  incomplete prior signals, unreproducible-plan refusal,
+  unsealed refusal, parent mismatch). Clippy back to the
+  pre-existing profile (anchor macro `unexpected cfg` noise +
+  the slice-8 helper's `type_complexity` note); zero new
+  warnings — a doc-wrap fix (a `+ register` line start parsed
+  as a rustdoc list marker) was needed to keep it there.
+- `anchor build` green under the pinned toolchain (from-source
+  binary by absolute path); the IDL gains the
+  `commit_transition` instruction, the 25th/26th errors
+  (`CommitFailed` 6024, `GovernanceCommitRequired` 6025), and
+  the 16th event (`TransitionCommitted`) — 18 instructions, 5
+  accounts, 26 errors, 16 events; `.so` 1,012,952 bytes
+  (sha256 `7ba84086…`).
+- Deliberately NOT slice 26: the committed-claims ledger, the
+  `commit_governance` path, and CU measurement — later slices.
 
 ## Build
 
@@ -864,5 +921,5 @@ families, account inventory, and CU golden set are later step-5 slices.
 export RUSTUP_HOME=~/workspace/toolchains/rustup CARGO_HOME=~/workspace/toolchains/cargo
 export PATH=~/workspace/toolchains/cargo/bin:~/workspace/toolchains/solana/bin:$PATH
 ~/workspace/toolchains/anchor/bin/anchor build   # from this directory
-cargo test                                        # host tests, 186/186
+cargo test                                        # host tests, 198/198
 ```
