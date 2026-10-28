@@ -148,6 +148,11 @@ th[data-pairs-col]{cursor:pointer;white-space:nowrap}
 .mktcond-bar .bull{background:var(--green)}
 .mktcond-bar .neu{background:var(--muted)}
 .mktcond-bar .bear{background:var(--red)}
+/* N5.28 (2026-10-27, A104): stablecoin supply rows — same row language as .mktcond-check, scoped to .stablesupply-row only. */
+.stablesupply-row{display:flex;justify-content:space-between;gap:12px;padding:6px 0;border-top:1px solid var(--rowline);font-size:13px}
+.stablesupply-row:first-child{border-top:0}
+.stablesupply-row .mint{color:var(--muted);font-size:11px;word-break:break-all}
+.stablesupply-row .supply{font-weight:700;white-space:nowrap}
 .disctable .discpair .jupstrip>span.juplabel{flex-basis:100%}
 /* N3.11 budget (measured 2026-10-26, 1440x900, Lab wrap 904px): strip-in-Pair-Info alone left the table at 1000px — TXNS would have hidden behind the sticky Action column instead of Token Info. Two scoped cuts close it: discovery cell side padding 14px→6px and sparkline 90px→64px. Overflow threshold by the plateau method (n311-threshold.py: shrink the wrap until scrollWidth stops shrinking): 846px at 6px padding = 58px slack; 878px at 8px (26px slack); 910px at 10px (overflows by 6px even on fixture rows) — so 6px sides, not 8px, is the honest choice for real-row variance. The 100%-width table reads 904px whenever it fits, so the plateau figure, not the stretched figure, is the slack evidence. Pairs table and search cards untouched (padding rule scoped to .disctable; the sparkline renders only in discovery rows). */
 .disctable th,.disctable td{padding:10px 6px}
@@ -470,6 +475,7 @@ the brief outline flash marks the landing panel without touching its copy.*/
 <section class="panel" data-panel="pairs"><div class="panelhead" data-drag-handle><h2>Solana market pairs</h2><div style="display:flex;align-items:center;gap:8px"><button type="button" class="action" id="retryFeed" data-testid="retry-btn">Retry feed</button><span class="pill" id="pairCount">DISCOVERING</span></div></div><div class="tablewrap"><table><thead><tr><th data-pairs-col="pair" aria-sort="none" title="Sort by Pair">Pair / DEX</th><th id="pairsPriceHead" data-pairs-col="price" aria-sort="none" title="Sort by Price">Price USD</th><th data-pairs-col="chg24" aria-sort="none" title="Sort by 24H %">24H</th><th data-pairs-col="liq" aria-sort="none" title="Sort by Liquidity">Liquidity</th><th data-pairs-col="volume" aria-sort="none" title="Sort by 24H volume">24H volume</th><th>Trade</th></tr></thead><tbody id="pairs" data-testid="pairs-table"><tr><td colspan="6" class="empty">Loading live pairs from DexScreener…</td></tr></tbody></table></div><div class="sub" id="pairsSortNote" hidden style="padding:8px 16px 0"></div><div class="sub" style="padding:8px 16px 12px">DS = DexScreener (the live feed) · GT = GeckoTerminal (comparison only — hero, watchlist values and the ticket still use DexScreener prices).</div></section>
 <section class="panel" data-panel="dashboard" id="dashboardPanel"><div class="panelhead" data-drag-handle><h2>Dashboard</h2><span class="pill pill-simulated" id="dashModePill">SIMULATED</span></div><div class="panelbody"><div class="amounts" id="dashModeChips" role="group" aria-label="Dashboard mode"><button type="button" data-dm="paper" class="on">Paper</button><button type="button" data-dm="live">Live</button></div><div id="dashContent" style="margin-top:12px"><div class="empty">Loading dashboard…</div></div><div class="sub" style="margin-top:10px">P&amp;L uses FIFO cost basis from your paper fills. Paper figures are simulated — no blockchain transaction is ever sent. The dashboard is a read view: it is derived, never stored.</div></div></section>
 <section class="panel" data-panel="mktcond"><div class="panelhead" data-drag-handle><h2>Solana market conditions</h2><span class="eyebrow">TRENDING SAMPLE · NOT A PREDICTION</span></div><div class="panelbody"><div id="mktCondBody"><div class="empty">Loading market conditions…</div></div><div class="sub" style="margin-top:10px">Computed from public feed data — context, not a prediction. The breadth sample is the trending table's rows, never "the market" as a whole.</div></div></section>
+<section class="panel" data-panel="stablesupply"><div class="panelhead" data-drag-handle><h2>Solana stablecoin supply</h2><span class="eyebrow">CURRENT SUPPLY · VIA PROXY</span></div><div class="panelbody"><div id="stableSupplyBody"><div class="empty">Loading stablecoin supply…</div></div><div class="sub" style="margin-top:10px">Current token supply on Solana, via the server-side proxy — never a client-side RPC call. Supply is each token's total minted supply, not a market, liquidity, or holdings figure.</div></div></section>
 <section class="panel" data-panel="discovery"><div class="panelhead" data-drag-handle><h2>Token discovery</h2><span class="eyebrow">LIVE DISCOVERY</span></div><div class="panelbody"><div class="searchrow"><input id="tokenSearch" placeholder="Search token, ticker or mint address" value="SOL"><button id="searchBtn">Search</button></div><div id="searchResults" class="results" data-testid="search-results"><div class="empty">Search live Solana pairs and add candidates to your watchlist.</div></div></div></section>
 <section class="panel" data-panel="discoveryLab"><div class="panelhead" data-drag-handle><h2>Token discovery</h2><span class="eyebrow">LIVE DISCOVERY · STRATEGY LAB</span></div><div class="panelbody"><div class="searchrow"><input id="tokenSearchLab" placeholder="Search token, ticker or mint address" value="SOL"><button id="searchBtnLab">Search</button></div><div id="searchResultsLab" class="results"><div class="empty">Search live Solana pairs and add candidates to your watchlist.</div></div></div></section>
 </main><aside class="sidecol" data-layout-root data-root-key="sidecol">
@@ -1283,7 +1289,7 @@ function paintDashboard(force){
    nor duplicate (one DOM node, display toggled). A workspace that hid the
    card keeps it hidden on its new page; hide composes with page. */
 const PAGE_KEY='gecko-terminal:page-v1';
-const PANEL_PAGE={pairs:'terminal',watchlist:'dashboard',execpath:'terminal',solstat:'terminal',chgstat:'terminal',dashboard:'dashboard',mktcond:'dashboard',discovery:'dashboard',chart:'dashboard',history:'dashboard',lab:'lab',portfolio:'lab',orders:'lab',limits:'lab',equitystat:'lab',ticket:'lab',ticketLive:'terminal',discoveryLab:'lab'};
+const PANEL_PAGE={pairs:'terminal',watchlist:'dashboard',execpath:'terminal',solstat:'terminal',chgstat:'terminal',dashboard:'dashboard',mktcond:'dashboard',stablesupply:'dashboard',discovery:'dashboard',chart:'dashboard',history:'dashboard',lab:'lab',portfolio:'lab',orders:'lab',limits:'lab',equitystat:'lab',ticket:'lab',ticketLive:'terminal',discoveryLab:'lab'};
 const PAGE_LABEL={terminal:'Terminal',dashboard:'Dashboard',lab:'Strategy Lab'};
 const PAGE_IDS=['terminal','dashboard','lab'];
 function pageLoad(){try{const p=localStorage.getItem(PAGE_KEY);if(PAGE_IDS.includes(p))return p;}catch(_){}return 'terminal';}
@@ -1297,7 +1303,7 @@ function setPage(page){
   Object.keys(btns).forEach(k=>{const b=btns[k];if(!b)return;b.classList.toggle('active',k===page);b.setAttribute('aria-selected',k===page?'true':'false');});
   const ws=layout?activeWorkspace():null;
   if(ws)applyPanelVisibility(ws.hidden);
-  if(page==='dashboard'){try{if(typeof paintDashboard==='function')paintDashboard(true);}catch(_){}try{if(typeof renderCandles==='function')renderCandles();}catch(_){}try{if(typeof paintMktCond==='function')paintMktCond();}catch(_){}}
+  if(page==='dashboard'){try{if(typeof paintDashboard==='function')paintDashboard(true);}catch(_){}try{if(typeof renderCandles==='function')renderCandles();}catch(_){}try{if(typeof paintMktCond==='function')paintMktCond();}catch(_){}try{if(typeof paintStableSupply==='function')paintStableSupply();}catch(_){}}
   return page;
 }
 function setViewTab(dash){setPage(dash?'dashboard':'terminal');}
@@ -1911,7 +1917,12 @@ const LAYOUT_KEY='gecko-terminal:layout-v1';
    enters stored workspaces VISIBLE, not hidden. It is brand-new, so
    no pre-migration hidden entry can be a deliberate hide of it, and
    a hide made AFTER this migration is saved at v6 and survives. */
-const LAYOUT_VERSION=6;
+/* N5.28 (2026-10-27, A104): LAYOUT_VERSION 7 — stored workspaces unhide
+   stablesupply ONCE at migration, same A79/N5.20 rule as mktcond: the card
+   ships at the user's explicit request (KCEX candidate K7), it is brand-new,
+   so no pre-migration hidden entry can be a deliberate hide of it, and a
+   hide made AFTER this migration is saved at v7 and survives. */
+const LAYOUT_VERSION=7;
 /* N5.9 ids unhidden by the v1/v2 migration (see above). */
 const N59_MIGRATED_IDS=['lab','discovery','portfolio','orders','limits','execpath'];
 /* N5.9 part-2 ids: unhidden by the v1/v2/v3 migrations (see above). */
@@ -1920,6 +1931,8 @@ const N59B_MIGRATED_IDS=['history','solstat','chgstat','equitystat'];
 const N520_MIGRATED_IDS=['discoveryLab'];
 /* N5.25 id: unhidden by the v1/v2/v3/v4/v5 → v6 migration (see below). */
 const N525_MIGRATED_IDS=['mktcond'];
+/* N5.28 id: unhidden by the v1/v2/v3/v4/v5/v6 → v7 migration (see below). */
+const N528_MIGRATED_IDS=['stablesupply'];
 const ROOT_KEYS=['stats','maincol','sidecol'];
 /* N5.6: true home containers, grounded in the shipped DOM (the prep pack's
    "watchlist,dashboard → stats" line was a slip — dashboard ships in maincol).
@@ -1930,15 +1943,15 @@ const ROOT_KEYS=['stats','maincol','sidecol'];
    discovery, discoveryLab; sidecol: ticket, portfolio, orders, limits, history, execpath;
    stats: solstat, chgstat, equitystat, watchlist) or renderPanelPlacement's
    rank sort will reorder the page on boot. */
-const PANEL_HOME={chart:'maincol',lab:'maincol',pairs:'maincol',dashboard:'maincol',mktcond:'maincol',discovery:'maincol',discoveryLab:'maincol',ticket:'sidecol',ticketLive:'maincol',portfolio:'sidecol',orders:'sidecol',limits:'sidecol',history:'sidecol',execpath:'sidecol',solstat:'stats',chgstat:'stats',equitystat:'stats',watchlist:'stats'};
-const PANEL_IDS=['chart','lab','pairs','dashboard','mktcond','discovery','discoveryLab','ticket','ticketLive','portfolio','orders','limits','history','execpath','solstat','chgstat','equitystat','watchlist'];
-const PANEL_LABELS={chart:'Chart',lab:'Strategy Lab',pairs:'Market pairs',dashboard:'Dashboard',mktcond:'Solana market conditions',discovery:'Token discovery',discoveryLab:'Token discovery (Lab)',ticket:'Order ticket',ticketLive:'Order ticket — Live',portfolio:'Paper portfolio',orders:'Recent orders',limits:'Open limit orders',history:'Trade history',execpath:'Execution path',solstat:'SOL/USD stat',chgstat:'24H change stat',equitystat:'Paper equity stat',watchlist:'Watchlist card'};
+const PANEL_HOME={chart:'maincol',lab:'maincol',pairs:'maincol',dashboard:'maincol',mktcond:'maincol',stablesupply:'maincol',discovery:'maincol',discoveryLab:'maincol',ticket:'sidecol',ticketLive:'maincol',portfolio:'sidecol',orders:'sidecol',limits:'sidecol',history:'sidecol',execpath:'sidecol',solstat:'stats',chgstat:'stats',equitystat:'stats',watchlist:'stats'};
+const PANEL_IDS=['chart','lab','pairs','dashboard','mktcond','stablesupply','discovery','discoveryLab','ticket','ticketLive','portfolio','orders','limits','history','execpath','solstat','chgstat','equitystat','watchlist'];
+const PANEL_LABELS={chart:'Chart',lab:'Strategy Lab',pairs:'Market pairs',dashboard:'Dashboard',mktcond:'Solana market conditions',stablesupply:'Solana stablecoin supply',discovery:'Token discovery',discoveryLab:'Token discovery (Lab)',ticket:'Order ticket',ticketLive:'Order ticket — Live',portfolio:'Paper portfolio',orders:'Recent orders',limits:'Open limit orders',history:'Trade history',execpath:'Execution path',solstat:'SOL/USD stat',chgstat:'24H change stat',equitystat:'Paper equity stat',watchlist:'Watchlist card'};
 /* Pack §1.4: the Trader built-in matches the page's shipped order (chart first in the
    main column, ticket top of the side column); Watcher swaps pairs above chart and
    hides the ticket. */
 const BUILT_IN_WORKSPACES=Object.freeze([
-  {id:'builtin-trader',name:'Trader',builtIn:true,order:['dashboard','mktcond','chart','lab','pairs','discovery','discoveryLab','ticket','ticketLive','portfolio','orders','limits','history','execpath','solstat','chgstat','equitystat','watchlist'],hidden:['dashboard'],place:{chart:'maincol',lab:'maincol',pairs:'maincol',dashboard:'maincol',mktcond:'maincol',discovery:'maincol',discoveryLab:'maincol',ticket:'sidecol',ticketLive:'maincol',portfolio:'sidecol',orders:'sidecol',limits:'sidecol',history:'sidecol',execpath:'sidecol',solstat:'stats',chgstat:'stats',equitystat:'stats',watchlist:'stats'}},
-  {id:'builtin-watcher',name:'Watcher',builtIn:true,order:['dashboard','mktcond','pairs','lab','chart','discovery','discoveryLab','ticket','ticketLive','portfolio','orders','limits','history','execpath','solstat','chgstat','equitystat','watchlist'],hidden:['ticket','ticketLive','dashboard'],place:{chart:'maincol',lab:'maincol',pairs:'maincol',dashboard:'maincol',mktcond:'maincol',discovery:'maincol',discoveryLab:'maincol',ticket:'sidecol',ticketLive:'maincol',portfolio:'sidecol',orders:'sidecol',limits:'sidecol',history:'sidecol',execpath:'sidecol',solstat:'stats',chgstat:'stats',equitystat:'stats',watchlist:'stats'}},
+  {id:'builtin-trader',name:'Trader',builtIn:true,order:['dashboard','mktcond','stablesupply','chart','lab','pairs','discovery','discoveryLab','ticket','ticketLive','portfolio','orders','limits','history','execpath','solstat','chgstat','equitystat','watchlist'],hidden:['dashboard'],place:{chart:'maincol',lab:'maincol',pairs:'maincol',dashboard:'maincol',mktcond:'maincol',stablesupply:'maincol',discovery:'maincol',discoveryLab:'maincol',ticket:'sidecol',ticketLive:'maincol',portfolio:'sidecol',orders:'sidecol',limits:'sidecol',history:'sidecol',execpath:'sidecol',solstat:'stats',chgstat:'stats',equitystat:'stats',watchlist:'stats'}},
+  {id:'builtin-watcher',name:'Watcher',builtIn:true,order:['dashboard','mktcond','stablesupply','pairs','lab','chart','discovery','discoveryLab','ticket','ticketLive','portfolio','orders','limits','history','execpath','solstat','chgstat','equitystat','watchlist'],hidden:['ticket','ticketLive','dashboard'],place:{chart:'maincol',lab:'maincol',pairs:'maincol',dashboard:'maincol',mktcond:'maincol',stablesupply:'maincol',discovery:'maincol',discoveryLab:'maincol',ticket:'sidecol',ticketLive:'maincol',portfolio:'sidecol',orders:'sidecol',limits:'sidecol',history:'sidecol',execpath:'sidecol',solstat:'stats',chgstat:'stats',equitystat:'stats',watchlist:'stats'}},
 ]);
 function sanitizeWorkspace(ws){
   ws=ws||{};
@@ -1981,21 +1994,24 @@ function loadLayout(raw){
      as a v3 hide of a part-1 id survived the v4 migration.
      N5.25: v6 stores load natively; every migrating store (v1–v5) also
      unhides mktcond once (brand-new panel: no stored workspace could
-     have hidden it deliberately, same one-time discipline as N5.20). */
+     have hidden it deliberately, same one-time discipline as N5.20).
+     N5.28: v7 stores load natively; every migrating store (v1–v6) also
+     unhides stablesupply once, same discipline. */
   /* N5.20: the v4 branch is explicit — bumping LAYOUT_VERSION to 5 must not
      drop v4 stores from the gate (version===LAYOUT_VERSION alone would
      cover only v5, and a v4 store falling through would lose its custom
      workspaces to the built-ins fallback). */
-  if(parsed&&(parsed.version===LAYOUT_VERSION||parsed.version===5||parsed.version===4||parsed.version===3||parsed.version===2||parsed.version===1)){
+  if(parsed&&(parsed.version===LAYOUT_VERSION||parsed.version===6||parsed.version===5||parsed.version===4||parsed.version===3||parsed.version===2||parsed.version===1)){
     const migrate=parsed.version!==LAYOUT_VERSION;
     const migrateV1=parsed.version===1;
     custom=(Array.isArray(parsed.workspaces)?parsed.workspaces:[]).map(ws=>{
       const clean=sanitizeWorkspace(migrateV1?Object.assign({},ws,{place:migrateV1Place()}):ws);
       if(migrate){
-        /* N5.25: version-aware unhide — v5 stores get ONLY mktcond; v4 stores get
-           discoveryLab + mktcond; v3 stores get part-2 + discoveryLab +
-           mktcond; v1/v2 stores get all ten + discoveryLab + mktcond. */
-        const unhide=parsed.version===5?N525_MIGRATED_IDS:parsed.version===4?N520_MIGRATED_IDS.concat(N525_MIGRATED_IDS):parsed.version===3?N59B_MIGRATED_IDS.concat(N520_MIGRATED_IDS,N525_MIGRATED_IDS):N59_MIGRATED_IDS.concat(N59B_MIGRATED_IDS,N520_MIGRATED_IDS,N525_MIGRATED_IDS);
+        /* N5.28: version-aware unhide — v6 stores get ONLY stablesupply; v5 stores get
+           mktcond + stablesupply; v4 stores get discoveryLab + mktcond +
+           stablesupply; v3 stores get part-2 + discoveryLab + mktcond +
+           stablesupply; v1/v2 stores get all ten + discoveryLab + mktcond + stablesupply. */
+        const unhide=parsed.version===6?N528_MIGRATED_IDS:parsed.version===5?N525_MIGRATED_IDS.concat(N528_MIGRATED_IDS):parsed.version===4?N520_MIGRATED_IDS.concat(N525_MIGRATED_IDS,N528_MIGRATED_IDS):parsed.version===3?N59B_MIGRATED_IDS.concat(N520_MIGRATED_IDS,N525_MIGRATED_IDS,N528_MIGRATED_IDS):N59_MIGRATED_IDS.concat(N59B_MIGRATED_IDS,N520_MIGRATED_IDS,N525_MIGRATED_IDS,N528_MIGRATED_IDS);
         clean.hidden=clean.hidden.filter(id=>!unhide.includes(id));
       }
       return clean;
@@ -2298,7 +2314,7 @@ function applyLayoutBoot(){
    paper-account reset pattern so it cannot fire by accident. */
 /* N5.9: Reset UI restores all 18 panels, in shipped order, all visible. */
 /* N5.12: the shipped default order starts with the dashboard (the pin's home). */
-const SHIPPED_LAYOUT_ORDER=['dashboard','mktcond','chart','lab','pairs','discovery','discoveryLab','ticket','ticketLive','portfolio','orders','limits','history','execpath','solstat','chgstat','equitystat','watchlist'];
+const SHIPPED_LAYOUT_ORDER=['dashboard','mktcond','stablesupply','chart','lab','pairs','discovery','discoveryLab','ticket','ticketLive','portfolio','orders','limits','history','execpath','solstat','chgstat','equitystat','watchlist'];
 let resetUiArmUntil=0,resetUiLabel=null;
 /* N5.14: Reset restores place+order+visibility; the panel→page assignment lives
    in PANEL_PAGE (code, not workspace state), so a reset can never move a panel
@@ -3628,6 +3644,58 @@ function mktSolPool(){const hp=(typeof heroPair!=='undefined'&&heroPair)?heroPai
 function mktSolFresh(){return !!mktSolCache&&Date.now()-mktSolCache.at<DISC_SPARK_TTL_MS;}
 async function mktFetchSolCandles(){const pool=mktSolPool();if(!pool||mktSolInflight||mktSolFresh())return;mktSolInflight=true;try{const candles=await fetchOhlcv(pool,'30D',51);const closes=candles.map(c=>c&&c.c).filter(n=>n!=null&&Number.isFinite(Number(n))).map(Number);if(candles.length>=2&&closes.length>=2){mktSolCache={at:Date.now(),pool:pool,candles:candles};mktCondSolStampText=new Date(mktSolCache.at).toLocaleTimeString();}}catch(e){/* N5.25: a failed SOL candle fetch leaves no entry — Trend renders no data, never an invented average; the next trending refresh retries */}finally{mktSolInflight=false;}paintMktCond();}
 function paintMktCond(){const body=$('mktCondBody');if(!body)return;try{const rows=discVisibleTrendRows(mktCondSolRows||(discChainState()==='solana'?discoveryTrend:[]));const solChg=(typeof price!=='undefined'&&price>0&&typeof change!=='undefined')?change:null;const d=mktCondData(rows,solChg,mktSolCache);body.innerHTML=mktCondHtml(d,mktCondStampText,mktCondSolStampText);}catch(e){body.innerHTML='<div class="empty">Market conditions unavailable.</div>';}}
+
+/* N5.28 (2026-10-27, A104): Solana stablecoin supply card. Data comes ONLY
+   from the N4.18 proxy route (/api/balances?supply=1), which calls
+   getTokenSupply server-side — the client never touches an RPC endpoint for
+   this card, so the mainnet-beta Origin refusal cannot fire here. A null
+   supply is an unanswered read, never a zero: a failed row renders '—' with
+   its error, and a wholly-failed fetch renders the honest error state with
+   Retry — never a stale figure, never a zero, never a 'dry powder' verdict. */
+const STABLE_SUPPLY_TOKENS=[
+  {sym:'USDC',name:'USD Coin',mint:'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'},
+  {sym:'USDT',name:'Tether USD',mint:'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB'},
+];
+function stableSupplyFmt(v){if(v==null)return '—';const n=Number(v);if(!Number.isFinite(n))return '—';return n.toLocaleString('en-US',{maximumFractionDigits:0});}
+function stableSupplyParse(j){
+  if(!j||j.ok!==true||!j.supplies||typeof j.supplies!=='object')return{ok:false,usdc:null,usdt:null,errors:(j&&j.errors)||null};
+  const num=k=>{const v=j.supplies[k];return (typeof v==='number'&&Number.isFinite(v))?v:null;};
+  return{ok:true,usdc:num('usdc'),usdt:num('usdt'),errors:j.errors||null};
+}
+function stableSupplyHtml(st){
+  if(!st||st.status==='loading')return '<div class="empty">Loading stablecoin supply…</div>';
+  if(st.status==='error'){
+    const detail=(st.errors&&(st.errors.usdc||st.errors.usdt))?'<div class="sub" style="margin-top:8px">'+esc(String(st.errors.usdc||st.errors.usdt))+'</div>':'';
+    return '<div class="empty">Stablecoin supply unavailable — the proxy route could not answer. No figure is shown rather than a stale or zero value.<br><br><button type="button" class="action" data-stable-retry>Retry supply</button></div>'+detail;
+  }
+  const rows=STABLE_SUPPLY_TOKENS.map(t=>{
+    const v=t.sym==='USDC'?st.usdc:st.usdt;
+    const err=st.errors&&st.errors[t.sym.toLowerCase()];
+    const val=v==null?'—':stableSupplyFmt(v);
+    const note=v==null?'<div class="sub">read failed'+(err?' — '+esc(String(err)):'')+' · <button type="button" class="action" data-stable-retry>Retry</button></div>':'';
+    return '<div class="stablesupply-row"><span><b>'+esc(t.sym)+'</b> · current supply<br><span class="mint">'+esc(t.name)+' · mint '+esc(t.mint)+'</span></span><span class="supply">'+esc(val)+'</span></div>'+note;
+  }).join('');
+  return rows+'<div class="sub" style="margin-top:8px">Read '+(st.stampText||'—')+' via /api/balances?supply=1 (server-side proxy, getTokenSupply) · figures are total minted supply on Solana.</div>';
+}
+let stableSupplyState={status:'loading',usdc:null,usdt:null,errors:null,stampText:null};
+let stableSupplyInflight=false,stableSupplyAt=0;
+function paintStableSupply(){const body=$('stableSupplyBody');if(!body)return;body.innerHTML=stableSupplyHtml(stableSupplyState);}
+async function stableSupplyFetch(force){
+  if(stableSupplyInflight)return;
+  if(!force&&stableSupplyState.status==='done'&&stableSupplyAt&&Date.now()-stableSupplyAt<300000){paintStableSupply();return;}
+  stableSupplyInflight=true;
+  try{
+    const controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),10000);
+    let j;try{const r=await fetch('/api/balances?supply=1',{signal:controller.signal});if(!r.ok)throw Error('Supply HTTP '+r.status);j=await r.json();}finally{clearTimeout(timeout);}
+    const parsed=stableSupplyParse(j);
+    if(!parsed.ok)throw Error('Supply route did not answer');
+    stableSupplyState={status:'done',usdc:parsed.usdc,usdt:parsed.usdt,errors:parsed.errors,stampText:new Date().toLocaleString()};
+    stableSupplyAt=Date.now();
+  }catch(e){
+    stableSupplyState={status:'error',usdc:null,usdt:null,errors:null,stampText:null};
+  }finally{stableSupplyInflight=false;paintStableSupply();}
+}
+function wireStableSupply(){const body=$('stableSupplyBody');if(!body)return;body.addEventListener('click',ev=>{const b=ev.target&&ev.target.closest?ev.target.closest('[data-stable-retry]'):null;if(b)stableSupplyFetch(true);});}
 async function loadTrendingDiscovery(opts){opts=opts||{};if(!opts.force&&discoveryTrend.length&&Date.now()-discoveryTrendAt<20000)return;discoveryMode='trending';if(!opts.silent||!discoveryTrend.length){discoveryTrendStatus='loading';paintDiscovery();}try{const controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),10000);let j;try{const r=await fetch('https://api.geckoterminal.com/api/v2/networks/'+discChainRecord().gtNetwork+'/trending_pools?include=base_token,quote_token,dex',{signal:controller.signal});if(!r.ok)throw Error('Trending HTTP '+r.status);j=await r.json();}finally{clearTimeout(timeout);}const inc={tokens:{},dexes:{}};(j.included||[]).forEach(it=>{if(it.type==='token')inc.tokens[it.id]={address:it.attributes.address,symbol:it.attributes.symbol,name:it.attributes.name,imageUrl:it.attributes.image_url||null};else if(it.type==='dex')inc.dexes[it.id]={name:it.attributes.name};});const rows=(j.data||[]).map(d=>{const _r317=gtTrendToRow(d,inc);_r317.chain=discChainState();return _r317;}).filter(r=>r.mint&&r.pairAddress);if(!rows.length)throw Error('Trending returned no usable pools');discoveryTrend=rows;discoveryTrendAt=Date.now();discoveryTrendStatus='done';discoveryTrendStale=false;rows.forEach(r=>{if(r.chain!=='solana')return;try{wlFeedMap.set(r.mint,{priceUsd:r.priceUsd||0,change24h:r.windows.h24?r.windows.h24.change:null});}catch(_){}});discFetchDsPrices(discVisibleTrendRows(rows));paintDiscovery();discFetchSparklines(discVisibleTrendRows(rows));discFetchRangeBars(discVisibleTrendRows(rows),function(){try{paintDiscovery();}catch(_){}});discFetchJupMints(rows.filter(r=>r.chain==='solana').map(r=>r.mint));if(discChainState()==='solana'){mktCondSolRows=rows;mktCondStampText=new Date().toLocaleTimeString();mktFetchSolCandles();}paintMktCond();}catch(e){if(discoveryTrend.length){discoveryTrendStale=true;discoveryTrendStatus='done';paintDiscovery();}else{discoveryTrendStatus='error';paintDiscovery();}console.error('Trending feed request failed',e);}}
 function discBackToTrending(){discoveryQuery='';['tokenSearch','tokenSearchLab'].forEach(id=>{const el=$(id);if(el)el.value='';});loadTrendingDiscovery({force:true});}
 /* N3.7 (2026-10-26, A80): quick-buy presets + Jupiter Token Info strip + X post
@@ -3679,7 +3747,7 @@ async function searchTokensFrom(inputId){const input=$(inputId);const q=input?in
 function searchTokens(){return searchTokensFrom('tokenSearch');}
 function onDiscoveryInput(e){const src=e&&e.target?e.target:null;if(!src)return;const other=$(src.id==='tokenSearchLab'?'tokenSearch':'tokenSearchLab');if(other&&document.activeElement!==other)other.value=src.value;discoveryQuery=String(src.value||'').slice(0,100);saveState();}
 $('searchBtn').onclick=searchTokens;$('searchBtnLab').onclick=()=>searchTokensFrom('tokenSearchLab');$('tokenSearch').onkeydown=e=>{if(e.key==='Enter')searchTokens()};$('tokenSearchLab').onkeydown=e=>{if(e.key==='Enter')searchTokensFrom('tokenSearchLab')};document.querySelectorAll('[data-range]').forEach(b=>{b.classList.toggle('active',b.dataset.range===chartRange);b.onclick=()=>{document.querySelectorAll('[data-range]').forEach(x=>x.classList.remove('active'));b.classList.add('active');chartRange=b.dataset.range||'1H';tickFails=0;tickSkipUntil=0;saveState();toast('Chart range saved. Loading real candles…');loadCandles('range')}});
-wireChartHover();wireChartTools();chartSyncTools();renderOrders();renderWatchlist();document.querySelectorAll('[data-range]').forEach(b=>b.classList.toggle('active',b.dataset.range===chartRange));document.querySelectorAll('#slipPresets button').forEach(b=>b.onclick=()=>onSlipPreset(Number(b.dataset.slip)));$('slippageInput').value=String(slipLoad());$('slippageInput').addEventListener('change',onSlipCustom);paintSlipPresets();applySettingsBoot();applyLayoutBoot();wireWatchlistDrawer();wireDashboard();wireExecPathLink();paintDashboard(true); // N5.1: theme/density attrs, default size, drawer wiring; N5.2: layout panels + workspaces; N5.3: watchlist drawer + header card trigger; N5.4: dashboard tabs + first paint; N5.7: header "How this works" link
+wireChartHover();wireChartTools();chartSyncTools();renderOrders();renderWatchlist();document.querySelectorAll('[data-range]').forEach(b=>b.classList.toggle('active',b.dataset.range===chartRange));document.querySelectorAll('#slipPresets button').forEach(b=>b.onclick=()=>onSlipPreset(Number(b.dataset.slip)));$('slippageInput').value=String(slipLoad());$('slippageInput').addEventListener('change',onSlipCustom);paintSlipPresets();applySettingsBoot();applyLayoutBoot();wireWatchlistDrawer();wireDashboard();wireExecPathLink();paintDashboard(true);wireStableSupply();stableSupplyFetch(); // N5.1: theme/density attrs, default size, drawer wiring; N5.2: layout panels + workspaces; N5.3: watchlist drawer + header card trigger; N5.4: dashboard tabs + first paint; N5.7: header "How this works" link
 $('retryFeed').onclick=fetchMarket;$('chartFeedStatus').onclick=()=>{if(candleStatus==='stale'||candleStatus==='error'){tickFails=0;tickSkipUntil=0;loadCandles('retry')}};document.addEventListener('visibilitychange',()=>{if(document.hidden)return;if(price>0)fetchMarket();if(wallet.connected)refreshWalletBalances();});$('tokenSearch').oninput=onDiscoveryInput;$('tokenSearchLab').oninput=onDiscoveryInput;setPrice(0,0);discoveryQuery='';$('tokenSearch').value='';$('tokenSearchLab').value='';loadTrendingDiscovery();marketPoll();
 
 /* N4.4: ticket slippage UI + paper review sheet (DOM wiring). */

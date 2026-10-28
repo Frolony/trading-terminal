@@ -23,8 +23,14 @@
 // Read-only public chain data: no keys, no signing, no custody. The owner
 // is echoed back only because it is public address data, never a secret.
 //
-// N5.28 will extend this route (getTokenSupply for the stablecoin card);
-// this file's balances path is unchanged by that extension.
+// N5.28 (2026-10-27, A104): this route also serves the stablecoin supply
+// card (GET /api/balances?supply=1, no owner): getTokenSupply for the USDC
+// and USDT mints, same server-side mainnet-beta path, same honesty rules —
+// a null supply is an unanswered read, never a zero; both failing answers
+// ok:false so the card renders its honest error state. The balances path
+// below is unchanged by this extension; the two paths share only the
+// RPC helper, the cache discipline (fully-successful only, 30 s), and
+// the client-safe error strings.
 #[path = "../src/raydium_common.rs"]
 mod common;
 
@@ -64,6 +70,21 @@ fn url_decode(s: &str) -> String {
         }
     }
     out
+}
+
+fn query_supply(req: &Request) -> bool {
+    let qs = match req.uri().query() {
+        Some(q) => q,
+        None => return false,
+    };
+    qs.split('&').any(|kv| {
+        let mut it = kv.splitn(2, '=');
+        match (it.next(), it.next()) {
+            (Some("supply"), Some("1")) => true,
+            (Some("mode"), Some("supply")) => true,
+            _ => false,
+        }
+    })
 }
 
 fn query_owner(req: &Request) -> Option<String> {
@@ -160,12 +181,116 @@ fn parse_spl(result: &Value) -> Result<f64, String> {
     Ok(total)
 }
 
+/// N5.28 supply branch: same cache discipline as balances (fully-
+/// successful responses only, 30 s), under its own cache key so a
+/// supply response can never be served as a balance response.
+async fn supply_handler(_req: &Request) -> Result<Value, Error> {
+    if let Ok(guard) = cache().lock() {
+        if let Some((at, val)) = guard.get("supply") {
+            if at.elapsed() < CACHE_TTL {
+                let mut hit = val.clone();
+                if let Some(obj) = hit.as_object_mut() {
+                    obj.insert("cached".to_string(), json!(true));
+                }
+                return Ok(hit);
+            }
+        }
+    }
+    let client = match common::client() {
+        Ok(c) => c,
+        Err(_) => {
+            return Ok(common::api_error(
+                "UPSTREAM_FAILED",
+                "Could not build the upstream RPC client.",
+            ))
+        }
+    };
+    let (usdc_r, usdt_r) = tokio::join!(
+        async {
+            match rpc_call(&client, "getTokenSupply", json!([common::USDC_MINT])).await {
+                Ok(v) => parse_supply(&v),
+                Err(e) => Err(e),
+            }
+        },
+        async {
+            match rpc_call(&client, "getTokenSupply", json!([common::USDT_MINT])).await {
+                Ok(v) => parse_supply(&v),
+                Err(e) => Err(e),
+            }
+        },
+    );
+    let supplies = json!({
+        "usdc": usdc_r.as_ref().ok().copied(),
+        "usdt": usdt_r.as_ref().ok().copied(),
+    });
+    let errors = json!({
+        "usdc": usdc_r.as_ref().err().cloned(),
+        "usdt": usdt_r.as_ref().err().cloned(),
+    });
+    if usdc_r.is_err() && usdt_r.is_err() {
+        return Ok(json!({
+            "ok": false,
+            "error": "UPSTREAM_FAILED",
+            "message": "Both token-supply reads failed upstream; the card renders its honest error state.",
+            "errors": errors,
+        }));
+    }
+    let out = json!({
+        "ok": true,
+        "source": RPC_URL,
+        "supplies": supplies,
+        "errors": errors,
+        "mints": {"usdc": common::USDC_MINT, "usdt": common::USDT_MINT},
+        "cached": false,
+    });
+    if usdc_r.is_ok() && usdt_r.is_ok() {
+        if let Ok(mut guard) = cache().lock() {
+            guard.insert("supply".to_string(), (Instant::now(), out.clone()));
+        }
+    }
+    Ok(out)
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Error> {
     run(service_fn(handler)).await
 }
 
+/// getTokenSupply result.value.uiAmount is the supply in whole tokens.
+/// Fallback: amount (base units, string) / 10^decimals. A missing value,
+/// a null uiAmount with no usable amount/decimals, or a non-finite
+/// result is a failed read, never 0 — a token with genuinely zero supply
+/// answers uiAmount 0, which parses cleanly.
+fn parse_supply(result: &Value) -> Result<f64, String> {
+    let v = match result.get("value") {
+        Some(v) => v,
+        None => return Err("malformed upstream response (getTokenSupply)".to_string()),
+    };
+    if let Some(ui) = v.get("uiAmount").and_then(|u| u.as_f64()) {
+        if ui.is_finite() {
+            return Ok(ui);
+        }
+    }
+    let amount: f64 = match v.get("amount").and_then(|a| a.as_str()).and_then(|s| s.parse().ok()) {
+        Some(a) => a,
+        None => return Err("malformed upstream response (getTokenSupply)".to_string()),
+    };
+    let decimals: i32 = match v.get("decimals").and_then(|d| d.as_i64()) {
+        Some(d) if (0..=18).contains(&d) => d as i32,
+        _ => return Err("malformed upstream response (getTokenSupply)".to_string()),
+    };
+    let out = amount / 10f64.powi(decimals);
+    if out.is_finite() {
+        Ok(out)
+    } else {
+        Err("malformed upstream response (getTokenSupply)".to_string())
+    }
+}
+
 async fn handler(req: Request) -> Result<Value, Error> {
+    if query_supply(&req) {
+        return supply_handler(&req).await;
+    }
     let owner = match query_owner(&req) {
         Some(o) => o,
         None => {
@@ -311,6 +436,30 @@ mod n418_tests {
     fn spl_missing_array_is_failure_not_zero() {
         assert!(parse_spl(&json!({})).is_err());
         assert!(parse_spl(&json!({"value": null})).is_err());
+    }
+
+    #[test]
+    fn supply_ui_amount_is_used() {
+        let v = json!({"value": {"amount": "123456789000000", "decimals": 6, "uiAmount": 123456789.0}});
+        assert_eq!(parse_supply(&v).unwrap(), 123456789.0);
+    }
+
+    #[test]
+    fn supply_amount_decimals_fallback_when_ui_amount_null() {
+        let v = json!({"value": {"amount": "2500000000000", "decimals": 6, "uiAmount": null}});
+        assert!((parse_supply(&v).unwrap() - 2500000.0).abs() < 1e-6); // 2.5e12 base units / 1e6 = 2.5e6 tokens
+    }
+
+    #[test]
+    fn supply_genuine_zero_parses_as_zero_not_failure() {
+        let v = json!({"value": {"amount": "0", "decimals": 6, "uiAmount": 0.0}});
+        assert_eq!(parse_supply(&v).unwrap(), 0.0);
+    }
+
+    #[test]
+    fn supply_missing_value_is_failure_not_zero() {
+        assert!(parse_supply(&json!({})).is_err());
+        assert!(parse_supply(&json!({"value": {"amount": null, "decimals": 6, "uiAmount": null}})).is_err());
     }
 
     #[test]
