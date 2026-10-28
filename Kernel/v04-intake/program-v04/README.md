@@ -964,11 +964,78 @@ families, account inventory, and CU golden set are later step-5 slices.
 - Deliberately NOT slice 27: the `commit_governance` path,
   CU measurement, and replay-from-head — later slices.
 
+## Slice 28 — the governance commit path (`commit_governance_from_records`)
+
+- The `commit_governance_from_records` helper mirrors the
+  slice-26 ordinary commit helper step for step, for a
+  governance-typed record: `DECLARED` (9) -> `COMMITTED`
+  (10), with the sealed head moving to the kernel's
+  returned `SystemState` (index one past the old head, hash
+  exactly the declared next hash, both asserted before any
+  write). The governance differences: council approvals
+  precede registration (each listed seat approves the exact
+  action at the stored `eligible_at`; the kernel's unanimity
+  gate judges whether every sitting seat did — a seat
+  approving a different action is, to that gate, a seat that
+  did not approve this one), registration runs through
+  kernel `register_governance_transition`, and the commit
+  itself runs kernel `commit_governance`, which checks the
+  action and applies it atomically with the commit. A
+  non-governance record refuses at the gate with the new
+  `NotGovernanceTransition` error (the mirror of the
+  ordinary helper's `GovernanceCommitRequired`); other
+  governance-commit failures refuse with the new
+  `GovernanceCommitFailed` error, the record standing
+  `DECLARED` with the head unmoved.
+- Helper + host tests only, deliberately: `TransitionRecord`
+  carries no action, and no program instruction yet
+  produces a `DECLARED` governance record (kernel
+  `register_transition` refuses governance types), so the
+  action and the approvals are helper arguments and the
+  tests prove the path with hand-crafted `DECLARED`
+  governance records whose labels the helper never trusts
+  (it re-proves the whole governance chain from the stored
+  records, the action, and the approvals). The
+  governance-registration instruction, the approval
+  persistence, and the instruction calling this helper are
+  later slices. Honesty bound, stated not smoothed: the
+  kernel's action application runs in the rebuilt kernel,
+  which is discarded — the program persists the stage
+  advance and the head move, not the applied rule, so a
+  committed `SetCapacity` does not yet change the stocks
+  later sealed replays judge against; governance-state
+  persistence is the slice that closes that gap. The slice-27
+  ledger gate runs over the supplied plan sums exactly as
+  in slice 27 (governance plans claim no stock in the
+  bridge shape, so it is a no-op there — but a
+  claims-carrying governance plan would be ledger-bound
+  identically, not passed through unchecked).
+- Host tests 212/212 (202 prior + 10 slice-28: unanimous
+  commit advancing the head with the ledger at zeros and
+  once-only after committed, non-governance type,
+  non-unanimous approvals, wrong category, wrong stage,
+  expired-plan predicate, stale-observation refusal leaving
+  a pre-seeded ledger untouched, success over pre-seeded
+  totals leaving the ledger untouched, unsealed, parent
+  mismatch). Clippy back to the pre-existing profile
+  (anchor macro `unexpected cfg` noise + the slice-8
+  helper's `type_complexity` note); zero new warnings.
+- `anchor build` green under the pinned toolchain; IDL
+  counts move only on errors (18 instructions, 5 accounts,
+  28 errors incl. `NotGovernanceTransition` and
+  `GovernanceCommitFailed`, 16 events — no new instruction
+  or account this slice, as designed); `.so` 1,025,352
+  bytes (sha256 `a50da0bd…`).
+- Deliberately NOT slice 28: the governance-registration
+  instruction, approval persistence, governance-state
+  persistence, CU measurement, and replay-from-head —
+  later slices.
+
 ## Build
 
 ```sh
 export RUSTUP_HOME=~/workspace/toolchains/rustup CARGO_HOME=~/workspace/toolchains/cargo
 export PATH=~/workspace/toolchains/cargo/bin:~/workspace/toolchains/solana/bin:$PATH
 ~/workspace/toolchains/anchor/bin/anchor build   # from this directory
-cargo test                                        # host tests, 202/202
+cargo test                                        # host tests, 212/212
 ```

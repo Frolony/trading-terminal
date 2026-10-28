@@ -625,8 +625,8 @@
 //! seat, or agent gate applies here. Governance transitions
 //! refuse at the gate with `GovernanceCommitRequired`: kernel
 //! `commit` itself refuses them (`UseGovernanceCommit`) and
-//! their commit path is `commit_governance`, a later slice —
-//! and the gate is defense in depth today, stated plainly:
+//! their commit path is the slice-28 `commit_governance`
+//! helper — and the gate is defense in depth today, stated plainly:
 //! no governance record can reach `DECLARED` through the
 //! ordinary chain, because kernel `register_transition`
 //! refuses governance types outright, so the gate guards a
@@ -675,6 +675,47 @@
 //! needs a replay-from-head slice (recorded, not built
 //! here); the ledger gate is tested at its enforcement point
 //! with pre-seeded totals standing in for prior commits.
+//!
+//! Slice 28 (this slice): the governance commit path,
+//! `commit_governance_from_records` — `DECLARED` (9) ->
+//! `COMMITTED` (10), the sealed head moving exactly as in
+//! slice 26, but for a governance-typed record. The helper
+//! mirrors the ordinary commit helper step for step, with
+//! two governance differences: council approvals precede
+//! registration (each listed seat approves this exact action
+//! at the stored `eligible_at`; the kernel's unanimity gate,
+//! not the program, judges whether every sitting seat did),
+//! and registration runs through kernel
+//! `register_governance_transition`, ending in kernel
+//! `commit_governance`, which checks the action and applies
+//! it atomically with the commit. The action is a helper
+//! argument, not a stored field: `TransitionRecord` carries
+//! no action, and no program instruction yet produces a
+//! `DECLARED` governance record (kernel `register_transition`
+//! refuses governance types, so the ordinary chain cannot
+//! declare one) — so this slice is helper + host tests only,
+//! proven with hand-crafted `DECLARED` governance records
+//! whose labels the helper never trusts (it re-proves the
+//! whole governance chain from the stored records, the
+//! action, and the approvals). The governance-registration
+//! instruction, the approval persistence, and the
+//! instruction that calls this helper are later slices, not
+//! smuggled in here. Honesty bound, stated not smoothed:
+//! the kernel's action application runs in the rebuilt
+//! kernel, which is discarded — the program persists the
+//! stage advance and the head move, not the applied rule.
+//! A committed `SetCapacity` therefore does not yet change
+//! the stocks later sealed replays judge against (they
+//! rebuild from the genesis constants); governance-state
+//! persistence is the slice that closes that gap, and until
+//! it lands, a governance commit's rule effect is recorded
+//! by the head move alone, not enacted in later replays.
+//! The ledger gate runs over the supplied plan sums exactly
+//! as in slice 27 (governance plans claim no stock in the
+//! bridge shape, so the gate is a no-op there — but a
+//! claims-carrying governance plan would be ledger-bound
+//! identically, not passed through unchecked). CU
+//! measurement is still a later slice, not smuggled in here.
 
 extern crate alloc;
 
@@ -1445,7 +1486,8 @@ pub mod program_v04 {
     /// permissionless, so no proposer, seat, or agent gate
     /// applies here. A governance-typed record refuses at
     /// the gate with `GovernanceCommitRequired` — its commit
-    /// path is `commit_governance`, a later slice.
+    /// path is the slice-28 `commit_governance_from_records` helper
+    /// (no instruction yet — see the slice-28 module note).
     pub fn commit_transition(
         ctx: Context<CommitTransition>,
         transition_id: [u8; 32],
@@ -4483,6 +4525,322 @@ pub fn commit_transition_from_records(
     Ok(Life::Committed)
 }
 
+/// Commit a declared governance transition (slice 28): `DECLARED`
+/// (9) -> `COMMITTED` (10), and the sealed head moves to the
+/// kernel's returned `SystemState` — or a refusal that leaves
+/// the record standing `DECLARED` and the head unmoved. This
+/// mirrors `commit_transition_from_records` step for step,
+/// with the governance differences: `action` is the exact rule
+/// change being committed (a helper argument, because no
+/// stored field carries it yet), and `approvals` is the list
+/// of council seats approving exactly that action — each seat
+/// is approved at the stored `eligible_at` before registration,
+/// and the kernel's unanimity gate judges whether every
+/// sitting seat approved this exact (id, action) pair. A seat
+/// approving a different action is, to that gate, a seat that
+/// did not approve this one, so the missing-seat refusal
+/// covers it. A non-governance record refuses at the gate
+/// with `NotGovernanceTransition`, mirroring the ordinary
+/// helper's `GovernanceCommitRequired` gate in reverse. The
+/// action's application runs in the rebuilt kernel, which is
+/// discarded: this helper persists the stage advance and the
+/// head move, not the applied rule (see the slice-28 module
+/// note — governance-state persistence is a later slice).
+/// The ledger gate runs over the supplied plan sums exactly
+/// as in slice 27.
+#[allow(clippy::too_many_arguments)]
+pub fn commit_governance_from_records(
+    kernel_state: &mut KernelState,
+    transition_record: &mut TransitionRecord,
+    observation_record: &ObservationRecord,
+    prior_signals: &[SignalRecord],
+    prior_plans: &[PlanRecord],
+    action: &GovAction,
+    approvals: &[[u8; 32]],
+) -> Result<Life> {
+    if !kernel_state.sealed {
+        return Err(error!(ProgramV04Error::NotSealed));
+    }
+    if transition_record.stage != TransitionRecord::DECLARED {
+        return Err(error!(ProgramV04Error::WrongStage));
+    }
+    if transition_record.parent_index != kernel_state.head_index
+        || transition_record.parent_hash != kernel_state.head_hash
+    {
+        return Err(error!(ProgramV04Error::ParentMismatch));
+    }
+    if transition_record.observation_id != observation_record.observation_id {
+        return Err(error!(ProgramV04Error::RecordMismatch));
+    }
+    if !is_gov_type(&transition_record.transition_type) {
+        return Err(error!(ProgramV04Error::NotGovernanceTransition));
+    }
+    if transition_record.planning_deadline == 0 {
+        return Err(error!(ProgramV04Error::GovernanceCommitFailed));
+    }
+    let open_clock = transition_record
+        .planning_deadline
+        .checked_sub(launch_policy().planning_window)
+        .ok_or(error!(ProgramV04Error::GovernanceCommitFailed))?;
+    if prior_signals.len() as u64 != transition_record.signal_count {
+        return Err(error!(ProgramV04Error::GovernanceCommitFailed));
+    }
+    for prior in prior_signals {
+        if prior.transition_id != transition_record.transition_id {
+            return Err(error!(ProgramV04Error::RecordMismatch));
+        }
+        if signal_round(
+            transition_record.eligible_at,
+            transition_record.consensus_deadline,
+            prior.submitted_at,
+        ) != prior.round
+        {
+            return Err(error!(ProgramV04Error::RecordMismatch));
+        }
+    }
+    {
+        let mut seen: BTreeSet<([u8; 32], u64)> = BTreeSet::new();
+        for prior in prior_signals {
+            if !seen.insert((prior.agent.to_bytes(), prior.round)) {
+                return Err(error!(ProgramV04Error::GovernanceCommitFailed));
+            }
+        }
+    }
+    if prior_plans.len() as u64 != transition_record.plan_count {
+        return Err(error!(ProgramV04Error::GovernanceCommitFailed));
+    }
+    for prior in prior_plans {
+        if prior.transition_id != transition_record.transition_id {
+            return Err(error!(ProgramV04Error::RecordMismatch));
+        }
+        if prior.claim_count as usize > PlanRecord::MAX_PLAN_CLAIMS {
+            return Err(error!(ProgramV04Error::GovernanceCommitFailed));
+        }
+        let mut seen: BTreeSet<u16> = BTreeSet::new();
+        for resource in &prior.claim_resources[..prior.claim_count as usize] {
+            if !seen.insert(*resource) {
+                return Err(error!(ProgramV04Error::GovernanceCommitFailed));
+            }
+        }
+    }
+    let proposer = resolve_proposer(kernel_state, transition_record.proposer)
+        .map_err(|_| error!(ProgramV04Error::GovernanceCommitFailed))?;
+    let observer_id = resolve_agent_id(observation_record.observer);
+    let mut k = sealed_launch_kernel_env().map_err(|_| error!(ProgramV04Error::KernelSeal))?;
+    if !k.has_role(&observer_id, Role::Observer) {
+        return Err(error!(ProgramV04Error::NotObserver));
+    }
+    let relevant_groups = match k.agent(&proposer) {
+        Some(profile) => profile.groups.clone(),
+        None => return Err(error!(ProgramV04Error::UnknownProposer)),
+    };
+    let observation = Observation {
+        id: observation_record.observation_id,
+        timestamp: observation_record.timestamp,
+        expiry: observation_record.expiry,
+        confidence: Amount::from_raw(observation_record.confidence_raw),
+    };
+    let eligible_at = transition_record.eligible_at;
+    // Council approvals precede registration, exactly as the
+    // bridge's governance replay drives them: every listed
+    // seat approves this exact (id, action) pair, and the
+    // kernel refuses registration unless every sitting seat
+    // has done so.
+    for seat in approvals {
+        k.approve_governance(seat, transition_record.transition_id, action.clone(), eligible_at)
+            .map_err(|_| error!(ProgramV04Error::GovernanceCommitFailed))?;
+    }
+    k.ingest_observation(&observer_id, observation, eligible_at)
+        .map_err(|_| error!(ProgramV04Error::GovernanceCommitFailed))?;
+    let manifest = Manifest {
+        transition_type: transition_record.transition_type,
+        parent_index: transition_record.parent_index,
+        parent_hash: transition_record.parent_hash,
+        declared_next_hash: transition_record.declared_next_hash,
+        observation_id: transition_record.observation_id,
+        expires_at: transition_record.expires_at,
+        relevant_groups,
+        action: None,
+    };
+    k.register_governance_transition(
+        &proposer,
+        transition_record.transition_id,
+        manifest,
+        action.clone(),
+        eligible_at,
+    )
+    .map_err(|_| error!(ProgramV04Error::GovernanceCommitFailed))?;
+    k.evaluate_transition(&transition_record.transition_id, eligible_at)
+        .map_err(|_| error!(ProgramV04Error::GovernanceCommitFailed))?;
+    k.mark_eligible(&transition_record.transition_id, eligible_at)
+        .map_err(|_| error!(ProgramV04Error::GovernanceCommitFailed))?;
+    match k.life_of(&transition_record.transition_id) {
+        Some(Life::Eligible) => {}
+        _ => return Err(error!(ProgramV04Error::GovernanceCommitFailed)),
+    }
+    let mut priors: alloc::vec::Vec<SignalRecord> = prior_signals.to_vec();
+    priors.sort_by_key(|s| s.submitted_at);
+    for prior in &priors {
+        let support = if prior.has_support {
+            Some(Amount::from_raw(prior.support_raw))
+        } else {
+            None
+        };
+        k.submit_round_signal(
+            &prior.agent.to_bytes(),
+            &transition_record.transition_id,
+            Amount::from_raw(prior.raw),
+            support,
+            prior.submitted_at,
+        )
+        .map_err(|_| error!(ProgramV04Error::GovernanceCommitFailed))?;
+    }
+    k.select_candidate(&transition_record.transition_id, open_clock)
+        .map_err(|_| error!(ProgramV04Error::GovernanceCommitFailed))?;
+    match k.life_of(&transition_record.transition_id) {
+        Some(Life::Selected) => {}
+        _ => return Err(error!(ProgramV04Error::GovernanceCommitFailed)),
+    }
+    k.open_planning(&proposer, &transition_record.transition_id, open_clock)
+        .map_err(|_| error!(ProgramV04Error::GovernanceCommitFailed))?;
+    match k.life_of(&transition_record.transition_id) {
+        Some(Life::Planning) => {}
+        _ => return Err(error!(ProgramV04Error::GovernanceCommitFailed)),
+    }
+    let deadline = open_clock
+        .checked_add(launch_policy().planning_window)
+        .ok_or(error!(ProgramV04Error::GovernanceCommitFailed))?;
+    if deadline != transition_record.planning_deadline {
+        return Err(error!(ProgramV04Error::GovernanceCommitFailed));
+    }
+    for prior in prior_plans {
+        let mut prior_map: BTreeMap<u16, Amount> = BTreeMap::new();
+        for (resource, amount) in prior.claim_resources[..prior.claim_count as usize]
+            .iter()
+            .zip(prior.claim_amounts[..prior.claim_count as usize].iter())
+        {
+            prior_map.insert(*resource, Amount::from_raw(*amount));
+        }
+        let prior_plan = Plan {
+            agent: prior.agent.to_bytes(),
+            claims: prior_map,
+            expires_at: prior.expires_at,
+        };
+        k.submit_plan(
+            &prior.agent.to_bytes(),
+            &transition_record.transition_id,
+            prior_plan,
+            open_clock,
+        )
+        .map_err(|_| error!(ProgramV04Error::GovernanceCommitFailed))?;
+    }
+    k.reconcile_plans(&transition_record.transition_id, kernel_state.clock)
+        .map_err(|_| error!(ProgramV04Error::GovernanceCommitFailed))?;
+    match k.life_of(&transition_record.transition_id) {
+        Some(Life::Reconciling) => {}
+        _ => return Err(error!(ProgramV04Error::GovernanceCommitFailed)),
+    }
+    // Slice 23's exact mirror, recomputed over the supplied set,
+    // exactly as in the ordinary commit helper: a stored verdict
+    // the set does not reproduce refuses here, before the
+    // kernel's own validate runs.
+    let mut sums: BTreeMap<u16, Amount> = BTreeMap::new();
+    let mut fits = !prior_plans.is_empty();
+    for prior in prior_plans {
+        for (resource, amount) in prior.claim_resources[..prior.claim_count as usize]
+            .iter()
+            .zip(prior.claim_amounts[..prior.claim_count as usize].iter())
+        {
+            let entry = sums.entry(*resource).or_insert(Amount::ZERO);
+            match entry.checked_add(Amount::from_raw(*amount)) {
+                Ok(v) => *entry = v,
+                Err(_) => fits = false,
+            }
+        }
+    }
+    if fits {
+        for (resource, total) in &sums {
+            if !k.capacity_of(*resource).is_some_and(|cap| *total <= cap) {
+                fits = false;
+            }
+        }
+    }
+    if fits != transition_record.compatible {
+        return Err(error!(ProgramV04Error::GovernanceCommitFailed));
+    }
+    k.validate_transition(&transition_record.transition_id, kernel_state.clock)
+        .map_err(|_| error!(ProgramV04Error::GovernanceCommitFailed))?;
+    match k.life_of(&transition_record.transition_id) {
+        Some(Life::Validated) => {}
+        // Governance commit is not a verdict writer either: a
+        // replay validate that yields Blocked means the stored
+        // DECLARED label no longer holds at this clock, and
+        // the record stands DECLARED.
+        Some(Life::Blocked) => return Err(error!(ProgramV04Error::GovernanceCommitFailed)),
+        _ => return Err(error!(ProgramV04Error::GovernanceCommitFailed)),
+    }
+    k.declare_commit(&transition_record.transition_id, kernel_state.clock)
+        .map_err(|_| error!(ProgramV04Error::GovernanceCommitFailed))?;
+    match k.life_of(&transition_record.transition_id) {
+        Some(Life::Committable) => {}
+        _ => return Err(error!(ProgramV04Error::GovernanceCommitFailed)),
+    }
+    // Slice 27 ledger gate, unchanged: the rebuilt kernel
+    // judges the new claims against the sealed stocks, but
+    // the program's live capacity is the sealed stocks minus
+    // prior committed claims. Governance plans claim no stock
+    // in the bridge shape, so the gate is a no-op there; it
+    // still runs, so a claims-carrying governance plan is
+    // ledger-bound identically rather than passed unchecked.
+    let mut new_committed = kernel_state.committed_claims;
+    for (resource, total) in &sums {
+        let slot = committed_ledger_index(*resource)
+            .ok_or(error!(ProgramV04Error::GovernanceCommitFailed))?;
+        let cap = k
+            .capacity_of(*resource)
+            .ok_or(error!(ProgramV04Error::GovernanceCommitFailed))?;
+        let already = Amount::from_raw(new_committed[slot]);
+        let next = already
+            .checked_add(*total)
+            .map_err(|_| error!(ProgramV04Error::GovernanceCommitFailed))?;
+        if next > cap {
+            return Err(error!(ProgramV04Error::GovernanceCommitFailed));
+        }
+        new_committed[slot] = next.raw();
+    }
+    // The governance commit itself: the kernel checks the
+    // action and applies it atomically with the commit, in
+    // the rebuilt kernel. A failure here — an action that
+    // does not check out at commit time, or a predicate that
+    // no longer holds — refuses with the record standing
+    // DECLARED, exactly as the ordinary commit's check.
+    let new_state = k
+        .commit_governance(&transition_record.transition_id, kernel_state.clock)
+        .map_err(|_| error!(ProgramV04Error::GovernanceCommitFailed))?;
+    match k.life_of(&transition_record.transition_id) {
+        Some(Life::Committed) => {}
+        _ => return Err(error!(ProgramV04Error::GovernanceCommitFailed)),
+    }
+    // The head moves only on a kernel-proven commit whose
+    // returned state matches the program's own expectation:
+    // one past the old head, exactly the declared next hash.
+    // Both are asserted before any program state is written,
+    // so a mismatch refuses with the head and the record
+    // exactly as they stood.
+    let expected_index = kernel_state
+        .head_index
+        .checked_add(1)
+        .ok_or(error!(ProgramV04Error::GovernanceCommitFailed))?;
+    if new_state.index != expected_index || new_state.hash != transition_record.declared_next_hash {
+        return Err(error!(ProgramV04Error::GovernanceCommitFailed));
+    }
+    transition_record.stage = TransitionRecord::COMMITTED;
+    kernel_state.head_index = new_state.index;
+    kernel_state.head_hash = new_state.hash;
+    kernel_state.committed_claims = new_committed;
+    Ok(Life::Committed)
+}
+
 /// One sibling transition offered to a sibling-aware select (slice 17):
 /// the sibling's stored transition record, its observation record, and
 /// its stored signal records. All three are read, never written: the
@@ -5042,6 +5400,10 @@ pub enum ProgramV04Error {
     CommitFailed,
     #[msg("program-v04 commit: governance transitions commit through commit_governance, not the ordinary commit path")]
     GovernanceCommitRequired,
+    #[msg("program-v04 governance commit: transition is not a governance transition")]
+    NotGovernanceTransition,
+    #[msg("program-v04 governance commit: kernel governance commit refused, declared chain unproven, stored verdict unreproduced, action check failed, or full predicate failed at commit time")]
+    GovernanceCommitFailed,
 }
 
 // ---------------------------------------------------------------- launch genesis
@@ -8792,11 +9154,11 @@ mod tests {
         // record whose type is a governance type refuses with
         // the governance error — not a predicate failure — and
         // the record stands DECLARED with the head unmoved, for
-        // the commit_governance slice to judge. (No governance
-        // record reaches DECLARED through the ordinary chain
-        // today, since kernel register refuses governance
-        // types; the flipped type stands in for the future
-        // governance-registration slice's output.)
+        // the slice-28 commit_governance helper to judge. (No
+        // governance record reaches DECLARED through the
+        // ordinary chain today, since kernel register refuses
+        // governance types; the flipped type stands in for the
+        // future governance-registration slice's output.)
         let (mut state, mut record, obs, first, plan) = declared_pair();
         record.transition_type = T_GOV_COUNCIL;
         let head_index = state.head_index;
@@ -9003,5 +9365,262 @@ mod tests {
         assert!(format!("{:?}", err).contains("CommitFailed"));
         assert_eq!(record.stage, TransitionRecord::DECLARED);
         assert_eq!(state.committed_claims, [100 * SCALE, 50 * SCALE, 25 * SCALE]);
+    }
+
+    fn gov_action() -> GovAction {
+        // The bridge's governance shape: a capacity rule change,
+        // exit-window stock 250 -> 400 in the sealed profile.
+        GovAction::SetCapacity { resource: RES_EXIT_WINDOW, capacity: Amount::from_raw(400 * SCALE) }
+    }
+
+    fn gov_approvals() -> [[u8; 32]; 3] {
+        [ag(1), ag(2), ag(3)]
+    }
+
+    fn gov_declared_pair() -> (
+        KernelState,
+        TransitionRecord,
+        ObservationRecord,
+        SignalRecord,
+        PlanRecord,
+    ) {
+        // A DECLARED record with the bridge's governance shape:
+        // planning opened at clock 200, deadline 300, one
+        // qualifying signal, one empty-claims plan — a rule
+        // change claims no stock. The chain is driven through
+        // the ordinary helpers to DECLARED and then re-typed
+        // to the action's category: the slice-26 flipped-type
+        // pattern, and the label is never trusted — the
+        // slice-28 helper re-proves the whole chain as
+        // governance (approvals + register_governance +
+        // evaluate + eligible + signals + select + planning +
+        // reconcile + validate + declare + commit_governance)
+        // from the stored records, the action, and the
+        // approvals, so a label earned as ordinary proves
+        // nothing the helper does not re-prove itself.
+        let (mut state, mut record, obs, first) = planned_pair();
+        let plan = submit_plan_from_records(
+            &state, &mut record, &obs, &[first], &[], &[], 400, ag(2), 7,
+        )
+        .expect("an empty-claims governance plan must submit");
+        assert_eq!(record.plan_count, 1);
+        advance_clock_on_state(&mut state, 300).expect("advance to the deadline must succeed");
+        let life = reconcile_plans_from_records(
+            &state, &mut record, &obs, std::slice::from_ref(&first), std::slice::from_ref(&plan),
+        )
+        .expect("an empty-claims plan set must reconcile");
+        assert_eq!(life, Life::Reconciling);
+        assert!(record.compatible);
+        let life = validate_transition_from_records(
+            &state, &mut record, &obs, std::slice::from_ref(&first), std::slice::from_ref(&plan),
+        )
+        .expect("a compatible governance-shaped chain must validate");
+        assert_eq!(life, Life::Validated);
+        let life = declare_transition_from_records(
+            &state, &mut record, &obs, std::slice::from_ref(&first), std::slice::from_ref(&plan),
+        )
+        .expect("a validated governance-shaped chain must declare");
+        assert_eq!(life, Life::Committable);
+        assert_eq!(record.stage, TransitionRecord::DECLARED);
+        record.transition_type = T_GOV_ADJUSTABLE;
+        (state, record, obs, first, plan)
+    }
+
+    #[test]
+    fn gov_commit_advances_declared_to_committed_and_moves_head() {
+        // Unanimous council approval of the exact action, a
+        // fitting empty-claims plan set, and a fresh observation
+        // at clock 300: the full governance predicate passes,
+        // the stage advances to 10, and the sealed head moves
+        // to exactly the record's declared next hash at index
+        // one past the old head — the slice-26 head discipline,
+        // on the governance path. Governance plans claim no
+        // stock, so the ledger stands at zeros through the
+        // commit; and a committed record is past commit.
+        let (mut state, mut record, obs, first, plan) = gov_declared_pair();
+        let action = gov_action();
+        let approvals = gov_approvals();
+        let old_index = state.head_index;
+        let next_hash = record.declared_next_hash;
+        let life = commit_governance_from_records(
+            &mut state, &mut record, &obs, std::slice::from_ref(&first), std::slice::from_ref(&plan),
+            &action, &approvals,
+        )
+        .expect("a unanimous governance chain must commit");
+        assert_eq!(life, Life::Committed);
+        assert_eq!(record.stage, TransitionRecord::COMMITTED);
+        assert_eq!(state.head_index, old_index + 1);
+        assert_eq!(state.head_hash, next_hash);
+        assert_eq!(state.committed_claims, [0, 0, 0]);
+        let err = commit_governance_from_records(
+            &mut state, &mut record, &obs, std::slice::from_ref(&first), std::slice::from_ref(&plan),
+            &action, &approvals,
+        )
+        .expect_err("a second governance commit must refuse");
+        assert!(format!("{:?}", err).contains("WrongStage"));
+        assert_eq!(record.stage, TransitionRecord::COMMITTED);
+    }
+
+    #[test]
+    fn gov_commit_refuses_non_governance_type() {
+        // The reverse of the ordinary helper's gate: an
+        // ordinary DECLARED record refuses the governance path
+        // with the distinct type error — not a predicate
+        // failure — and stands DECLARED with the head unmoved.
+        let (mut state, mut record, obs, first, plan) = declared_pair();
+        let action = gov_action();
+        let approvals = gov_approvals();
+        let head_index = state.head_index;
+        let head_hash = state.head_hash;
+        let err = commit_governance_from_records(
+            &mut state, &mut record, &obs, &[first], &[plan], &action, &approvals,
+        )
+        .expect_err("an ordinary record must refuse the governance path");
+        assert!(format!("{:?}", err).contains("NotGovernanceTransition"));
+        assert_eq!(record.stage, TransitionRecord::DECLARED);
+        assert_eq!(state.head_index, head_index);
+        assert_eq!(state.head_hash, head_hash);
+    }
+
+    #[test]
+    fn gov_commit_refuses_non_unanimous_approvals() {
+        // Two of three seats approve the exact action: the
+        // kernel's unanimity gate refuses registration, the
+        // record stands DECLARED, and the head stands. A seat
+        // approving a different action is the same refusal —
+        // to the gate, it is a seat that did not approve this
+        // action — so the missing seat covers that shape too.
+        let (mut state, mut record, obs, first, plan) = gov_declared_pair();
+        let action = gov_action();
+        let approvals = [ag(1), ag(2)];
+        let head_index = state.head_index;
+        let head_hash = state.head_hash;
+        let err = commit_governance_from_records(
+            &mut state, &mut record, &obs, &[first], &[plan], &action, &approvals,
+        )
+        .expect_err("a non-unanimous governance commit must refuse");
+        assert!(format!("{:?}", err).contains("GovernanceCommitFailed"));
+        assert_eq!(record.stage, TransitionRecord::DECLARED);
+        assert_eq!(state.head_index, head_index);
+        assert_eq!(state.head_hash, head_hash);
+    }
+
+    #[test]
+    fn gov_commit_refuses_wrong_category() {
+        // A governance-typed record whose type is not the
+        // action's category (a council-typed record carrying
+        // an adjustable SetCapacity action): kernel
+        // register_governance refuses with WrongGovCategory,
+        // and the record stands DECLARED with the head unmoved.
+        let (mut state, mut record, obs, first, plan) = gov_declared_pair();
+        record.transition_type = T_GOV_COUNCIL;
+        let action = gov_action();
+        let approvals = gov_approvals();
+        let err = commit_governance_from_records(
+            &mut state, &mut record, &obs, &[first], &[plan], &action, &approvals,
+        )
+        .expect_err("a wrong-category governance commit must refuse");
+        assert!(format!("{:?}", err).contains("GovernanceCommitFailed"));
+        assert_eq!(record.stage, TransitionRecord::DECLARED);
+    }
+
+    #[test]
+    fn gov_commit_refuses_wrong_stage() {
+        let (mut state, mut record, obs, first, plan) = gov_declared_pair();
+        record.stage = TransitionRecord::VALIDATED;
+        let action = gov_action();
+        let approvals = gov_approvals();
+        let err = commit_governance_from_records(
+            &mut state, &mut record, &obs, &[first], &[plan], &action, &approvals,
+        )
+        .expect_err("a merely-validated record must refuse governance commit");
+        assert!(format!("{:?}", err).contains("WrongStage"));
+        assert_eq!(record.stage, TransitionRecord::VALIDATED);
+    }
+
+    #[test]
+    fn gov_commit_refuses_expired_plan_predicate() {
+        // At clock 400 the plan (expiry 400) has expired, so
+        // the full predicate fails at declare time inside the
+        // replay, and the record stands DECLARED — the mirror
+        // of the ordinary commit's expired-plan refusal.
+        let (mut state, mut record, obs, first, plan) = gov_declared_pair();
+        advance_clock_on_state(&mut state, 400).expect("advance to the plan expiry must succeed");
+        let action = gov_action();
+        let approvals = gov_approvals();
+        let err = commit_governance_from_records(
+            &mut state, &mut record, &obs, &[first], &[plan], &action, &approvals,
+        )
+        .expect_err("an expired-plan governance commit must refuse");
+        assert!(format!("{:?}", err).contains("GovernanceCommitFailed"));
+        assert_eq!(record.stage, TransitionRecord::DECLARED);
+    }
+
+    #[test]
+    fn gov_commit_refusal_leaves_preseeded_ledger_untouched() {
+        // A refusal on a different gate must not partially
+        // write the ledger either: with pre-seeded totals, a
+        // stale-observation refusal (clock 9100) leaves the
+        // ledger exactly as seeded, alongside the standing
+        // `DECLARED` record and head.
+        let (mut state, mut record, obs, first, plan) = gov_declared_pair();
+        state.committed_claims = [100 * SCALE, 50 * SCALE, 25 * SCALE];
+        advance_clock_on_state(&mut state, 9100).expect("advance to the observation expiry must succeed");
+        let action = gov_action();
+        let approvals = gov_approvals();
+        let err = commit_governance_from_records(
+            &mut state, &mut record, &obs, &[first], &[plan], &action, &approvals,
+        )
+        .expect_err("a stale-observation governance commit must refuse");
+        assert!(format!("{:?}", err).contains("GovernanceCommitFailed"));
+        assert_eq!(record.stage, TransitionRecord::DECLARED);
+        assert_eq!(state.committed_claims, [100 * SCALE, 50 * SCALE, 25 * SCALE]);
+    }
+
+    #[test]
+    fn gov_commit_success_leaves_preseeded_ledger_untouched() {
+        // The success-side mirror: governance plans claim no
+        // stock, so a commit over pre-seeded totals advances
+        // the head and the stage and leaves the ledger exactly
+        // as seeded — the gate ran, and found nothing to add.
+        let (mut state, mut record, obs, first, plan) = gov_declared_pair();
+        state.committed_claims = [100 * SCALE, 50 * SCALE, 25 * SCALE];
+        let action = gov_action();
+        let approvals = gov_approvals();
+        let life = commit_governance_from_records(
+            &mut state, &mut record, &obs, &[first], &[plan], &action, &approvals,
+        )
+        .expect("a unanimous governance chain over seeded totals must commit");
+        assert_eq!(life, Life::Committed);
+        assert_eq!(record.stage, TransitionRecord::COMMITTED);
+        assert_eq!(state.committed_claims, [100 * SCALE, 50 * SCALE, 25 * SCALE]);
+    }
+
+    #[test]
+    fn gov_commit_refuses_unsealed() {
+        let (mut state, mut record, obs, first, plan) = gov_declared_pair();
+        state.sealed = false;
+        let action = gov_action();
+        let approvals = gov_approvals();
+        let err = commit_governance_from_records(
+            &mut state, &mut record, &obs, &[first], &[plan], &action, &approvals,
+        )
+        .expect_err("an unsealed state must refuse governance commit");
+        assert!(format!("{:?}", err).contains("NotSealed"));
+        assert_eq!(record.stage, TransitionRecord::DECLARED);
+    }
+
+    #[test]
+    fn gov_commit_refuses_parent_mismatch() {
+        let (mut state, mut record, obs, first, plan) = gov_declared_pair();
+        state.head_index = 9;
+        let action = gov_action();
+        let approvals = gov_approvals();
+        let err = commit_governance_from_records(
+            &mut state, &mut record, &obs, &[first], &[plan], &action, &approvals,
+        )
+        .expect_err("a record off the sealed head must refuse governance commit");
+        assert!(format!("{:?}", err).contains("ParentMismatch"));
+        assert_eq!(record.stage, TransitionRecord::DECLARED);
     }
 }
