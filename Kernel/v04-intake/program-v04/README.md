@@ -1236,11 +1236,62 @@ families, account inventory, and CU golden set are later step-5 slices.
   governance-state persistence, and CU measurement — later
   slices.
 
+## Slice 33 — governance approval persistence (`approve_governance`)
+
+- One `GovApprovalRecord` per (transition, seat), PDA seeds
+  `["gov-approval", transition_id, seat]`, storing the seat's
+  approval as a bounded `StoredGovAction` — a fixed-size,
+  lossless encoding of every kernel `GovAction` variant (kinds
+  0–14 in kernel declaration order; full `Policy` for
+  `SetPolicy`; fixed arrays + counts for the set, group,
+  capability-pair, and council-seat lists), so the later
+  governance replay rebuilds the exact approved action from
+  chain state instead of trusting a caller-supplied argument.
+  Gates mirror the kernel plus the registration
+  preconditions: sealed state, governance-typed `REGISTERED`
+  record, seated council signer in the pinned profile
+  (`NotCouncilSeat` otherwise), and action category equal to
+  the record's type (`GovActionCategoryMismatch` otherwise —
+  the kernel's `WrongGovCategory` gate, moved to approval
+  time). Caps, decided here for Carlos's audit: id sets 16
+  (kernel `MAX_GROUPS` pattern), capability pairs 8
+  (`MAX_PLAN_CLAIMS` precedent), council seats 15 (kernel
+  `MAX_SEATS`); over-cap refuses with `GovActionTooLarge`,
+  never truncates. A new `GovernanceApproved` event carries
+  the id, the seat, and the action kind.
+- Honesty bounds, stated not smoothed: approval records are
+  `init`-only, so a seat's first approval stands — the kernel
+  permits re-approval (map insert overwrites) before
+  registration, and the program does not yet mirror that; a
+  seat that approved the wrong action cannot re-approve this
+  transition id, and the proposal then fails unanimity
+  (fail-closed; a fresh id is the remedy). A revise-approval
+  instruction is a later slice's decision. The slice-28
+  `commit_governance_from_records` helper still takes its
+  action and approvals as arguments: consuming stored
+  approvals at commit time rides the governance-replay slice.
+- Host tests 253/253 (242 prior + 11 slice-33: every-variant
+  round-trip with distinct kinds, seat acceptance with
+  matching category, non-gov-record refusal, non-seat-agent
+  refusal, unknown-approver refusal, unsealed refusal,
+  wrong-stage refusal, category-mismatch refusal,
+  over-cap encode refusals, corrupt-decode refusals, space
+  accounting). Clippy back to the pre-existing profile
+  (anchor macro `unexpected cfg` noise + the slice-8 test
+  helper's `type_complexity` warning); zero new warnings. IDL
+  counts move by design (20 instructions, 6 accounts, 34
+  errors, 18 events — +1 instruction, +1 account, +3 errors,
+  +1 event); `.so` 1,143,992 bytes (sha256 `bb790cc8…`).
+- Deliberately NOT slice 33: the governance replay and
+  `commit_governance` instruction, governance-state
+  persistence, a revise-approval instruction, and CU
+  measurement — later slices.
+
 ## Build
 
 ```sh
 export RUSTUP_HOME=~/workspace/toolchains/rustup CARGO_HOME=~/workspace/toolchains/cargo
 export PATH=~/workspace/toolchains/cargo/bin:~/workspace/toolchains/solana/bin:$PATH
 ~/workspace/toolchains/anchor/bin/anchor build   # from this directory
-cargo test                                        # host tests, 242/242
+cargo test                                        # host tests, 253/253
 ```

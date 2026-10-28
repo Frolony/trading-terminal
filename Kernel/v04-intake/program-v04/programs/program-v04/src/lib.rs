@@ -866,6 +866,40 @@
 //! `commit_governance` instruction still awaits stored action
 //! and approvals, and is not smuggled in here. CU measurement
 //! is still a later slice, not smuggled in here.
+//!
+//! Slice 33 (this slice): governance approval persistence —
+//! the `approve_governance` instruction and the `GovApprovalRecord`
+//! account. One record per (transition, seat): the PDA seeds are
+//! `["gov-approval", transition_id, seat]`, and the record stores
+//! the seat's approval as a bounded `StoredGovAction` — a fixed-size,
+//! lossless encoding of every kernel `GovAction` variant, so the
+//! later governance replay can rebuild the exact action from
+//! stored records instead of trusting a caller-supplied argument.
+//! The builder gates mirror the kernel's `approve_governance` plus
+//! the registration preconditions: the kernel state must be sealed,
+//! the record must be governance-typed and still `REGISTERED`,
+//! the signer must be a seated council member of the pinned
+//! profile (`NotCouncilSeat` otherwise), and the action's category
+//! must equal the record's type (`GovActionCategoryMismatch`
+//! otherwise — the kernel's `WrongGovCategory` gate, moved to
+//! approval time so a stored approval can never be for an action
+//! its record's type cannot carry). Bounded lists carry program
+//! caps, decided here for Carlos's audit: id sets cap 16 (the
+//! kernel's `MAX_GROUPS`/`MAX_SIBLINGS` pattern), capability pairs
+//! cap 8 (the `MAX_PLAN_CLAIMS` precedent), council seats cap 15
+//! (the kernel's `MAX_SEATS`); an over-cap action refuses with
+//! `GovActionTooLarge` rather than truncating. Honesty bounds,
+//! stated not smoothed: approval records are `init`-only, so a
+//! seat's first approval stands — the kernel permits re-approval
+//! (its map insert overwrites) before registration, and the
+//! program does not yet mirror that; a seat that approved the
+//! wrong action cannot re-approve this transition id, and the
+//! proposal then fails unanimity (fail-closed; a fresh id is the
+//! remedy). A revise-approval instruction is a later slice's
+//! decision, not smuggled in here. And the slice-28
+//! `commit_governance_from_records` helper still takes its action
+//! and approvals as arguments: consuming stored approvals at
+//! commit time rides the governance-replay slice, not this one.
 
 extern crate alloc;
 
@@ -876,7 +910,7 @@ use coordination_kernel::{
     Amount, Config, ConstraintStatus, Env, GovAction, is_gov_type, Kernel, KernelError, Life,
     Manifest, NoEnv,
     Observation, Plan, Policy, Role, SystemState, T_GOV_ADJUSTABLE, T_GOV_CONSTITUTION,
-    T_GOV_COUNCIL, T_GOV_REBOOT, MAX_REPLANS, SCALE,
+    T_GOV_COUNCIL, T_GOV_REBOOT, MAX_GROUPS, MAX_REPLANS, MAX_SEATS, SCALE,
 };
 
 declare_id!("FzxnCtig4asxnCxGhjcbCDY5zkfcpfTb5GcXNL9UaGg6");
@@ -1016,6 +1050,43 @@ pub mod program_v04 {
             transition_id,
             parent_index,
             proposer: ctx.accounts.payer.key(),
+        });
+        Ok(())
+    }
+
+    /// Approve governance (§4.1, governance lifecycle row, slice 33):
+    /// store one seated council member's approval of one exact
+    /// action as a `GovApprovalRecord` PDA, gated on the sealed
+    /// state, a governance-typed `REGISTERED` record, the signer's
+    /// council seat in the pinned profile, and the action's
+    /// category matching the record's type. A second record for
+    /// the same seat is refused by the `init` constraint, so a
+    /// seat's first approval stands. This stores the approval —
+    /// it does not run kernel `approve_governance` (the kernel
+    /// object is not persisted); the later governance replay
+    /// runs the kernel call from these stored records.
+    pub fn approve_governance(
+        ctx: Context<ApproveGovernance>,
+        transition_id: [u8; 32],
+        action: StoredGovAction,
+    ) -> Result<()> {
+        if ctx.accounts.transition_record.transition_id != transition_id {
+            return Err(error!(ProgramV04Error::RecordMismatch));
+        }
+        let decoded = action.decode()?;
+        let record = build_governance_approval_record(
+            &ctx.accounts.kernel_state,
+            &ctx.accounts.transition_record,
+            ctx.accounts.payer.key(),
+            &decoded,
+            ctx.bumps.approval_record,
+        )?;
+        let action_kind = record.action.kind;
+        *ctx.accounts.approval_record = record;
+        emit!(GovernanceApproved {
+            transition_id,
+            seat: ctx.accounts.payer.key(),
+            action_kind,
         });
         Ok(())
     }
@@ -2212,6 +2283,32 @@ pub struct RegisterGovernanceTransition<'info> {
 }
 
 #[derive(Accounts)]
+#[instruction(transition_id: [u8; 32])]
+pub struct ApproveGovernance<'info> {
+    #[account(
+        seeds = [b"kernel-state"],
+        bump = kernel_state.bump,
+    )]
+    pub kernel_state: Account<'info, KernelState>,
+    #[account(
+        seeds = [b"transition", transition_id.as_ref()],
+        bump = transition_record.bump,
+    )]
+    pub transition_record: Account<'info, TransitionRecord>,
+    #[account(
+        init,
+        payer = payer,
+        space = GovApprovalRecord::SPACE,
+        seeds = [b"gov-approval", transition_id.as_ref(), payer.key().as_ref()],
+        bump,
+    )]
+    pub approval_record: Account<'info, GovApprovalRecord>,
+    #[account(mut)]
+    pub payer: Signer<'info>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
 pub struct SealKernel<'info> {
     #[account(
         mut,
@@ -2515,6 +2612,377 @@ pub fn build_governance_transition_record(
         proposer,
         bump,
     ))
+}
+
+/// Program caps for the bounded `StoredGovAction` lists (slice 33):
+/// id sets cap at the kernel's `MAX_GROUPS`, capability pairs at
+/// the `MAX_PLAN_CLAIMS` precedent, council seats at the kernel's
+/// `MAX_SEATS`. An action over any cap refuses with
+/// `GovActionTooLarge` — it is never truncated, because a truncated
+/// action would be a different action than the one approved.
+pub const GOV_ACTION_MAX_SET: usize = MAX_GROUPS;
+pub const GOV_ACTION_MAX_CAP_PAIRS: usize = 8;
+pub const GOV_ACTION_MAX_COUNCIL: usize = MAX_SEATS as usize;
+
+/// A fixed-size, lossless encoding of a kernel `GovAction` (slice 33),
+/// stored on a `GovApprovalRecord` so the later governance replay
+/// rebuilds the exact approved action from chain state. Every variant
+/// occupies the same layout: `kind` selects the variant (0..=14 in
+/// kernel declaration order) and only the fields that variant uses
+/// are meaningful — the rest are zeros. `Policy` is stored in full
+/// (its ten fields); unbounded kernel collections are stored as
+/// fixed arrays plus a count, bounded by the caps above. `role` uses
+/// the kernel's declaration order (Guardian 0, Observer 1, Executor 2,
+/// Settler 3, OutcomeRecorder 4). Encoding and decoding are exact
+/// inverses on every in-cap action; decoding a corrupt stored value
+/// (unknown kind, over-cap count) refuses with `GovActionDecode`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, AnchorSerialize, AnchorDeserialize)]
+pub struct StoredGovAction {
+    /// Variant discriminant, 0..=14 in kernel declaration order.
+    pub kind: u8,
+    /// Target transition type (SetPolicy, SetRequired*, SetGroupMultiplier).
+    pub ttype: [u8; 32],
+    /// Target agent (Grant/RevokeRole, SetAgentCapability, SetAgentActive, RegisterAgent).
+    pub agent: [u8; 32],
+    /// Role code (Grant/RevokeRole only).
+    pub role: u8,
+    /// Target resource id (SetCapacity).
+    pub resource: u16,
+    /// Target group id (SetGroupMultiplier).
+    pub group: u16,
+    /// Target capability id (SetAgentCapability).
+    pub cap_id: [u8; 32],
+    /// Amount raw units (SetCapacity, SetGroupMultiplier, SetMaxInfluenceShare, RegisterAgent).
+    pub amount_raw: u64,
+    /// Boolean payload (SetAgentCapability held, SetAgentActive active).
+    pub flag: bool,
+    /// Seat count (SetCouncilSeats).
+    pub seats_u32: u32,
+    /// Policy quorum (SetPolicy).
+    pub policy_quorum_raw: u64,
+    /// Policy confidence threshold (SetPolicy).
+    pub policy_confidence_raw: u64,
+    /// Policy minimum observation confidence (SetPolicy).
+    pub policy_min_obs_raw: u64,
+    /// Policy objective requirement (SetPolicy).
+    pub policy_require_objectives: bool,
+    /// Policy consensus window (SetPolicy).
+    pub policy_consensus_window: u64,
+    /// Policy planning window (SetPolicy).
+    pub policy_planning_window: u64,
+    /// Policy execution window (SetPolicy).
+    pub policy_execution_window: u64,
+    /// Policy max plans (SetPolicy).
+    pub policy_max_plans: u32,
+    /// Policy settlement threshold (SetPolicy).
+    pub policy_settlement_threshold: u32,
+    /// Policy max rounds (SetPolicy).
+    pub policy_max_rounds: u32,
+    /// Id list (SetRequiredConstraints, SetRequiredObjectives).
+    pub set_ids: [[u8; 32]; GOV_ACTION_MAX_SET],
+    /// Length of `set_ids`.
+    pub set_count: u8,
+    /// Group list (RegisterAgent).
+    pub group_ids: [u16; GOV_ACTION_MAX_SET],
+    /// Length of `group_ids`.
+    pub group_count: u8,
+    /// Capability list (SetRequiredCapabilities).
+    pub cap_ids: [[u8; 32]; GOV_ACTION_MAX_CAP_PAIRS],
+    /// Capability amounts, parallel to `cap_ids`.
+    pub cap_amounts: [u64; GOV_ACTION_MAX_CAP_PAIRS],
+    /// Length of `cap_ids`/`cap_amounts`.
+    pub cap_count: u8,
+    /// Council seat list (InstallCouncil).
+    pub council_seats: [[u8; 32]; GOV_ACTION_MAX_COUNCIL],
+    /// Length of `council_seats`.
+    pub council_count: u8,
+}
+
+fn role_code(role: Role) -> u8 {
+    match role {
+        Role::Guardian => 0,
+        Role::Observer => 1,
+        Role::Executor => 2,
+        Role::Settler => 3,
+        Role::OutcomeRecorder => 4,
+    }
+}
+
+fn role_of(code: u8) -> Result<Role> {
+    match code {
+        0 => Ok(Role::Guardian),
+        1 => Ok(Role::Observer),
+        2 => Ok(Role::Executor),
+        3 => Ok(Role::Settler),
+        4 => Ok(Role::OutcomeRecorder),
+        _ => Err(error!(ProgramV04Error::GovActionDecode)),
+    }
+}
+
+impl StoredGovAction {
+    /// Encode a kernel action into fixed-size storage. Over-cap
+    /// collections refuse with `GovActionTooLarge`.
+    pub fn encode(action: &GovAction) -> Result<Self> {
+        let mut s = StoredGovAction::default();
+        match action {
+            GovAction::GrantRole { who, role } => {
+                s.kind = 0;
+                s.agent = *who;
+                s.role = role_code(*role);
+            }
+            GovAction::RevokeRole { who, role } => {
+                s.kind = 1;
+                s.agent = *who;
+                s.role = role_code(*role);
+            }
+            GovAction::SetPolicy { ttype, policy } => {
+                s.kind = 2;
+                s.ttype = *ttype;
+                s.policy_quorum_raw = policy.quorum_required.raw();
+                s.policy_confidence_raw = policy.confidence_threshold.raw();
+                s.policy_min_obs_raw = policy.min_obs_confidence.raw();
+                s.policy_require_objectives = policy.require_objectives;
+                s.policy_consensus_window = policy.consensus_window;
+                s.policy_planning_window = policy.planning_window;
+                s.policy_execution_window = policy.execution_window;
+                s.policy_max_plans = policy.max_plans;
+                s.policy_settlement_threshold = policy.settlement_threshold;
+                s.policy_max_rounds = policy.max_rounds;
+            }
+            GovAction::SetRequiredConstraints { ttype, set } => {
+                s.kind = 3;
+                s.ttype = *ttype;
+                if set.len() > GOV_ACTION_MAX_SET {
+                    return Err(error!(ProgramV04Error::GovActionTooLarge));
+                }
+                s.set_count = set.len() as u8;
+                for (i, id) in set.iter().enumerate() {
+                    s.set_ids[i] = *id;
+                }
+            }
+            GovAction::SetRequiredObjectives { ttype, set } => {
+                s.kind = 4;
+                s.ttype = *ttype;
+                if set.len() > GOV_ACTION_MAX_SET {
+                    return Err(error!(ProgramV04Error::GovActionTooLarge));
+                }
+                s.set_count = set.len() as u8;
+                for (i, id) in set.iter().enumerate() {
+                    s.set_ids[i] = *id;
+                }
+            }
+            GovAction::SetRequiredCapabilities { ttype, reqs } => {
+                s.kind = 5;
+                s.ttype = *ttype;
+                if reqs.len() > GOV_ACTION_MAX_CAP_PAIRS {
+                    return Err(error!(ProgramV04Error::GovActionTooLarge));
+                }
+                s.cap_count = reqs.len() as u8;
+                for (i, (id, amount)) in reqs.iter().enumerate() {
+                    s.cap_ids[i] = *id;
+                    s.cap_amounts[i] = amount.raw();
+                }
+            }
+            GovAction::SetAgentCapability { agent, cap, held } => {
+                s.kind = 6;
+                s.agent = *agent;
+                s.cap_id = *cap;
+                s.flag = *held;
+            }
+            GovAction::SetCapacity { resource, capacity } => {
+                s.kind = 7;
+                s.resource = *resource;
+                s.amount_raw = capacity.raw();
+            }
+            GovAction::SetGroupMultiplier { ttype, group, mult } => {
+                s.kind = 8;
+                s.ttype = *ttype;
+                s.group = *group;
+                s.amount_raw = mult.raw();
+            }
+            GovAction::SetMaxInfluenceShare { share } => {
+                s.kind = 9;
+                s.amount_raw = share.raw();
+            }
+            GovAction::RegisterAgent { agent, groups, base_influence } => {
+                s.kind = 10;
+                s.agent = *agent;
+                if groups.len() > GOV_ACTION_MAX_SET {
+                    return Err(error!(ProgramV04Error::GovActionTooLarge));
+                }
+                s.group_count = groups.len() as u8;
+                for (i, g) in groups.iter().enumerate() {
+                    s.group_ids[i] = *g;
+                }
+                s.amount_raw = base_influence.raw();
+            }
+            GovAction::SetAgentActive { agent, active } => {
+                s.kind = 11;
+                s.agent = *agent;
+                s.flag = *active;
+            }
+            GovAction::SetCouncilSeats { seats } => {
+                s.kind = 12;
+                s.seats_u32 = *seats;
+            }
+            GovAction::InstallCouncil { seats } => {
+                s.kind = 13;
+                if seats.len() > GOV_ACTION_MAX_COUNCIL {
+                    return Err(error!(ProgramV04Error::GovActionTooLarge));
+                }
+                s.council_count = seats.len() as u8;
+                for (i, seat) in seats.iter().enumerate() {
+                    s.council_seats[i] = *seat;
+                }
+            }
+            GovAction::Reboot => {
+                s.kind = 14;
+            }
+        }
+        Ok(s)
+    }
+
+    /// Decode stored bytes back into the exact kernel action.
+    /// A corrupt stored value refuses with `GovActionDecode`.
+    pub fn decode(&self) -> Result<GovAction> {
+        if (self.set_count as usize) > GOV_ACTION_MAX_SET
+            || (self.group_count as usize) > GOV_ACTION_MAX_SET
+            || (self.cap_count as usize) > GOV_ACTION_MAX_CAP_PAIRS
+            || (self.council_count as usize) > GOV_ACTION_MAX_COUNCIL
+        {
+            return Err(error!(ProgramV04Error::GovActionDecode));
+        }
+        Ok(match self.kind {
+            0 => GovAction::GrantRole { who: self.agent, role: role_of(self.role)? },
+            1 => GovAction::RevokeRole { who: self.agent, role: role_of(self.role)? },
+            2 => GovAction::SetPolicy {
+                ttype: self.ttype,
+                policy: Policy {
+                    quorum_required: Amount::from_raw(self.policy_quorum_raw),
+                    confidence_threshold: Amount::from_raw(self.policy_confidence_raw),
+                    min_obs_confidence: Amount::from_raw(self.policy_min_obs_raw),
+                    require_objectives: self.policy_require_objectives,
+                    consensus_window: self.policy_consensus_window,
+                    planning_window: self.policy_planning_window,
+                    execution_window: self.policy_execution_window,
+                    max_plans: self.policy_max_plans,
+                    settlement_threshold: self.policy_settlement_threshold,
+                    max_rounds: self.policy_max_rounds,
+                },
+            },
+            3 => GovAction::SetRequiredConstraints {
+                ttype: self.ttype,
+                set: self.set_ids[..self.set_count as usize].iter().copied().collect(),
+            },
+            4 => GovAction::SetRequiredObjectives {
+                ttype: self.ttype,
+                set: self.set_ids[..self.set_count as usize].iter().copied().collect(),
+            },
+            5 => GovAction::SetRequiredCapabilities {
+                ttype: self.ttype,
+                reqs: self.cap_ids[..self.cap_count as usize]
+                    .iter()
+                    .zip(self.cap_amounts[..self.cap_count as usize].iter())
+                    .map(|(id, raw)| (*id, Amount::from_raw(*raw)))
+                    .collect(),
+            },
+            6 => GovAction::SetAgentCapability { agent: self.agent, cap: self.cap_id, held: self.flag },
+            7 => GovAction::SetCapacity {
+                resource: self.resource,
+                capacity: Amount::from_raw(self.amount_raw),
+            },
+            8 => GovAction::SetGroupMultiplier {
+                ttype: self.ttype,
+                group: self.group,
+                mult: Amount::from_raw(self.amount_raw),
+            },
+            9 => GovAction::SetMaxInfluenceShare { share: Amount::from_raw(self.amount_raw) },
+            10 => GovAction::RegisterAgent {
+                agent: self.agent,
+                groups: self.group_ids[..self.group_count as usize].iter().copied().collect(),
+                base_influence: Amount::from_raw(self.amount_raw),
+            },
+            11 => GovAction::SetAgentActive { agent: self.agent, active: self.flag },
+            12 => GovAction::SetCouncilSeats { seats: self.seats_u32 },
+            13 => GovAction::InstallCouncil {
+                seats: self.council_seats[..self.council_count as usize].to_vec(),
+            },
+            14 => GovAction::Reboot,
+            _ => return Err(error!(ProgramV04Error::GovActionDecode)),
+        })
+    }
+}
+
+/// The fifth §3 account: one stored council approval of one exact
+/// governance action (slice 33). One record per (transition, seat) —
+/// the PDA seeds are `["gov-approval", transition_id, seat]` — because
+/// the kernel's unanimity gate judges seats, not votes: each sitting
+/// seat must approve the exact (id, action) pair, and this record is
+/// that seat's approval, stored with the action it approved. The
+/// `init` constraint refuses a second record for the same seat, so a
+/// seat's first approval stands (see the module docs for the
+/// kernel-overwrite divergence this pins). No stage byte: an approval
+/// is either stored or absent, and it is only ever created against a
+/// `REGISTERED` governance record.
+#[account]
+#[derive(Debug)]
+pub struct GovApprovalRecord {
+    /// Transition this approval belongs to (the PDA seed after `"gov-approval"`).
+    pub transition_id: [u8; 32],
+    /// Approving council seat (the signer's pubkey, by the identity mapping).
+    pub seat: Pubkey,
+    /// The exact action this seat approved, in bounded storage form.
+    pub action: StoredGovAction,
+    /// PDA bump for the `["gov-approval", transition_id, seat]` seeds.
+    pub bump: u8,
+}
+
+impl GovApprovalRecord {
+    /// 8 (discriminator) + 32 + 32 + 1524 (StoredGovAction) + 1.
+    pub const SPACE: usize = 1597;
+}
+
+/// Build a `GovApprovalRecord` against a `KernelState` and its
+/// governance `TransitionRecord` (slice 33): the sealed-state gate,
+/// the governance-type gate, the `REGISTERED`-stage gate (approvals
+/// are collected while the proposal awaits its governance replay),
+/// the seated-council gate judged against the pinned profile, and
+/// the action-category gate (the action must travel under exactly
+/// the record's type, as kernel `register_governance_transition`
+/// requires). Pure, as the registration builders are: a refused
+/// approval leaves the state untouched, and the caller (instruction
+/// or test) owns persistence.
+pub fn build_governance_approval_record(
+    kernel_state: &KernelState,
+    transition_record: &TransitionRecord,
+    seat: Pubkey,
+    action: &GovAction,
+    bump: u8,
+) -> Result<GovApprovalRecord> {
+    if !kernel_state.sealed {
+        return Err(error!(ProgramV04Error::NotSealed));
+    }
+    if !is_gov_type(&transition_record.transition_type) {
+        return Err(error!(ProgramV04Error::GovernanceTypeRequired));
+    }
+    if transition_record.stage != TransitionRecord::REGISTERED {
+        return Err(error!(ProgramV04Error::WrongStage));
+    }
+    let agent_id = resolve_agent_id(seat);
+    let k = sealed_launch_kernel().map_err(|_| error!(ProgramV04Error::KernelSeal))?;
+    match k.agent(&agent_id) {
+        Some(profile) if profile.active && k.is_seated(&agent_id) => {}
+        _ => return Err(error!(ProgramV04Error::NotCouncilSeat)),
+    }
+    if action.category() != transition_record.transition_type {
+        return Err(error!(ProgramV04Error::GovActionCategoryMismatch));
+    }
+    Ok(GovApprovalRecord {
+        transition_id: transition_record.transition_id,
+        seat,
+        action: StoredGovAction::encode(action)?,
+        bump,
+    })
 }
 
 /// The third §3 account: one stored observation. This is the record the
@@ -6159,6 +6627,13 @@ pub struct GovernanceTransitionRegistered {
 }
 
 #[event]
+pub struct GovernanceApproved {
+    pub transition_id: [u8; 32],
+    pub seat: Pubkey,
+    pub action_kind: u8,
+}
+
+#[event]
 pub struct ObservationIngested {
     pub observation_id: [u8; 32],
     pub observer: Pubkey,
@@ -6311,6 +6786,12 @@ pub enum ProgramV04Error {
     GovernanceTypeRequired,
     #[msg("program-v04 governance register: proposer is not a seated council member of the sealed profile")]
     NotCouncilSeat,
+    #[msg("program-v04 governance approval: action category does not match the record's governance type")]
+    GovActionCategoryMismatch,
+    #[msg("program-v04 governance approval: action list exceeds the stored-action cap")]
+    GovActionTooLarge,
+    #[msg("program-v04 governance approval: stored action does not decode to a kernel action")]
+    GovActionDecode,
 }
 
 // ---------------------------------------------------------------- launch genesis
@@ -7000,6 +7481,254 @@ mod tests {
         )
         .expect_err("gov type must refuse ordinary register");
         assert!(format!("{:?}", err).contains("GovernanceRegisterRequired"));
+    }
+
+    fn gov_record(ttype: [u8; 32]) -> TransitionRecord {
+        // Slice 33 helper: a REGISTERED governance record at the
+        // sealed head, proposed by seat ag(1).
+        let state = sealed_state();
+        let (id, _, parent_index, parent_hash, declared, obs, expires) = record_args();
+        build_governance_transition_record(
+            &state, id, ttype, parent_index, parent_hash, declared, obs, expires,
+            Pubkey::new_from_array(ag(1)), 7,
+        )
+        .expect("seat governance record must build")
+    }
+
+    fn all_gov_actions() -> alloc::vec::Vec<GovAction> {
+        // One of every kernel GovAction variant, in declaration
+        // order — the round-trip corpus for slice 33.
+        alloc::vec![
+            GovAction::GrantRole { who: ag(2), role: Role::Observer },
+            GovAction::RevokeRole { who: ag(2), role: Role::Executor },
+            GovAction::SetPolicy { ttype: TT, policy: launch_policy() },
+            GovAction::SetRequiredConstraints {
+                ttype: TT,
+                set: alloc::collections::BTreeSet::from([C1, [9; 32]]),
+            },
+            GovAction::SetRequiredObjectives {
+                ttype: TT,
+                set: alloc::collections::BTreeSet::from([O1]),
+            },
+            GovAction::SetRequiredCapabilities {
+                ttype: TT,
+                reqs: alloc::vec![(C1, Amount::from_raw(2 * SCALE))],
+            },
+            GovAction::SetAgentCapability { agent: ag(2), cap: C1, held: true },
+            GovAction::SetCapacity { resource: RES_EXIT_WINDOW, capacity: Amount::from_raw(400 * SCALE) },
+            GovAction::SetGroupMultiplier { ttype: TT, group: 3, mult: Amount::from_raw(2 * SCALE) },
+            GovAction::SetMaxInfluenceShare { share: Amount::from_raw(SCALE / 2) },
+            GovAction::RegisterAgent {
+                agent: ag(5),
+                groups: alloc::collections::BTreeSet::from([1, 2]),
+                base_influence: Amount::from_raw(2 * SCALE),
+            },
+            GovAction::SetAgentActive { agent: ag(4), active: false },
+            GovAction::SetCouncilSeats { seats: 5 },
+            GovAction::InstallCouncil { seats: alloc::vec![ag(1), ag(2), ag(3)] },
+            GovAction::Reboot,
+        ]
+    }
+
+    #[test]
+    fn stored_gov_action_round_trips_every_variant() {
+        // Slice 33: encoding then decoding returns the exact
+        // action for every variant, and the 15 kinds are distinct —
+        // the later governance replay can trust stored approvals
+        // to rebuild the action the seat approved.
+        let actions = all_gov_actions();
+        assert_eq!(actions.len(), 15);
+        let mut kinds = alloc::collections::BTreeSet::new();
+        for action in &actions {
+            let stored = StoredGovAction::encode(action).expect("in-cap action must encode");
+            assert!(kinds.insert(stored.kind), "kinds must be distinct");
+            assert_eq!(stored.decode().expect("stored action must decode"), *action);
+        }
+        assert_eq!(kinds.len(), 15);
+    }
+
+    #[test]
+    fn build_governance_approval_accepts_seat_and_matching_category() {
+        // Slice 33: seat ag(1) approving a SetCapacity action on an
+        // ADJUSTABLE record builds a record carrying the transition
+        // id, the seat pubkey, and kind 7 — the exact action, stored.
+        let state = sealed_state();
+        let record = gov_record(T_GOV_ADJUSTABLE);
+        let action = GovAction::SetCapacity {
+            resource: RES_EXIT_WINDOW,
+            capacity: Amount::from_raw(400 * SCALE),
+        };
+        let approval = build_governance_approval_record(
+            &state, &record, Pubkey::new_from_array(ag(1)), &action, 9,
+        )
+        .expect("seat approval of a matching action must build");
+        assert_eq!(approval.transition_id, [0xD1; 32]);
+        assert_eq!(approval.seat, Pubkey::new_from_array(ag(1)));
+        assert_eq!(approval.action.kind, 7);
+        assert_eq!(approval.action.decode().expect("stored action must decode"), action);
+        assert_eq!(approval.bump, 9);
+    }
+
+    #[test]
+    fn build_governance_approval_refuses_non_gov_record() {
+        // Approvals belong to governance records only: an ordinary
+        // record refuses with the governance-type error.
+        let state = sealed_state();
+        let (id, ttype, parent_index, parent_hash, declared, obs, expires) = record_args();
+        let ordinary = build_transition_record(
+            &state, id, ttype, parent_index, parent_hash, declared, obs, expires,
+            Pubkey::new_from_array(ag(1)), 1,
+        )
+        .expect("ordinary record must build");
+        let action = GovAction::SetCapacity {
+            resource: RES_EXIT_WINDOW,
+            capacity: Amount::from_raw(400 * SCALE),
+        };
+        let err = build_governance_approval_record(
+            &state, &ordinary, Pubkey::new_from_array(ag(1)), &action, 1,
+        )
+        .expect_err("ordinary record must refuse approval");
+        assert!(format!("{:?}", err).contains("GovernanceTypeRequired"));
+    }
+
+    #[test]
+    fn build_governance_approval_refuses_non_seat_agent() {
+        // ag(4) is seeded and active but not a council seat: the
+        // seat gate, not mere registration, is what approval needs.
+        let state = sealed_state();
+        let record = gov_record(T_GOV_ADJUSTABLE);
+        let action = GovAction::SetCapacity {
+            resource: RES_EXIT_WINDOW,
+            capacity: Amount::from_raw(400 * SCALE),
+        };
+        let err = build_governance_approval_record(
+            &state, &record, Pubkey::new_from_array(ag(4)), &action, 1,
+        )
+        .expect_err("non-seat agent must refuse approval");
+        assert!(format!("{:?}", err).contains("NotCouncilSeat"));
+    }
+
+    #[test]
+    fn build_governance_approval_refuses_unknown_approver() {
+        let state = sealed_state();
+        let record = gov_record(T_GOV_ADJUSTABLE);
+        let action = GovAction::SetCapacity {
+            resource: RES_EXIT_WINDOW,
+            capacity: Amount::from_raw(400 * SCALE),
+        };
+        let err = build_governance_approval_record(
+            &state, &record, Pubkey::new_from_array([0x99; 32]), &action, 1,
+        )
+        .expect_err("unknown approver must refuse approval");
+        assert!(format!("{:?}", err).contains("NotCouncilSeat"));
+    }
+
+    #[test]
+    fn build_governance_approval_refuses_unsealed() {
+        let state = genesis_kernel_state().expect("genesis must construct");
+        let record = gov_record(T_GOV_ADJUSTABLE);
+        let action = GovAction::SetCapacity {
+            resource: RES_EXIT_WINDOW,
+            capacity: Amount::from_raw(400 * SCALE),
+        };
+        let err = build_governance_approval_record(
+            &state, &record, Pubkey::new_from_array(ag(1)), &action, 1,
+        )
+        .expect_err("unsealed approval must refuse");
+        assert!(format!("{:?}", err).contains("NotSealed"));
+    }
+
+    #[test]
+    fn build_governance_approval_refuses_wrong_stage() {
+        // Approvals are collected while the proposal is REGISTERED:
+        // once it has advanced, the approval set is frozen.
+        let state = sealed_state();
+        let mut record = gov_record(T_GOV_ADJUSTABLE);
+        record.stage = TransitionRecord::KERNEL_REGISTERED;
+        let action = GovAction::SetCapacity {
+            resource: RES_EXIT_WINDOW,
+            capacity: Amount::from_raw(400 * SCALE),
+        };
+        let err = build_governance_approval_record(
+            &state, &record, Pubkey::new_from_array(ag(1)), &action, 1,
+        )
+        .expect_err("advanced record must refuse approval");
+        assert!(format!("{:?}", err).contains("WrongStage"));
+    }
+
+    #[test]
+    fn build_governance_approval_refuses_category_mismatch() {
+        // A SetCapacity action travels under ADJUSTABLE, never under
+        // COUNCIL: the category gate refuses at approval time, so no
+        // stored approval can carry an action its record cannot.
+        let state = sealed_state();
+        let record = gov_record(T_GOV_COUNCIL);
+        let action = GovAction::SetCapacity {
+            resource: RES_EXIT_WINDOW,
+            capacity: Amount::from_raw(400 * SCALE),
+        };
+        let err = build_governance_approval_record(
+            &state, &record, Pubkey::new_from_array(ag(1)), &action, 1,
+        )
+        .expect_err("category mismatch must refuse approval");
+        assert!(format!("{:?}", err).contains("GovActionCategoryMismatch"));
+    }
+
+    #[test]
+    fn stored_gov_action_encode_refuses_oversize_lists() {
+        // Over-cap collections refuse rather than truncate: 17 ids
+        // over the 16-set cap, 9 capability pairs over the 8-pair
+        // cap, 16 council seats over the 15-seat cap.
+        let big_set: alloc::collections::BTreeSet<[u8; 32]> =
+            (0..17u8).map(|i| [i; 32]).collect();
+        let err = StoredGovAction::encode(&GovAction::SetRequiredConstraints {
+            ttype: TT,
+            set: big_set,
+        })
+        .expect_err("17-id set must refuse encode");
+        assert!(format!("{:?}", err).contains("GovActionTooLarge"));
+        let big_reqs: alloc::vec::Vec<([u8; 32], Amount)> =
+            (0..9u8).map(|i| ([i; 32], Amount::from_raw(SCALE))).collect();
+        let err = StoredGovAction::encode(&GovAction::SetRequiredCapabilities {
+            ttype: TT,
+            reqs: big_reqs,
+        })
+        .expect_err("9-pair list must refuse encode");
+        assert!(format!("{:?}", err).contains("GovActionTooLarge"));
+        let big_council: alloc::vec::Vec<[u8; 32]> = (0..16u8).map(|i| [i; 32]).collect();
+        let err = StoredGovAction::encode(&GovAction::InstallCouncil { seats: big_council })
+            .expect_err("16-seat list must refuse encode");
+        assert!(format!("{:?}", err).contains("GovActionTooLarge"));
+    }
+
+    #[test]
+    fn stored_gov_action_decode_refuses_corrupt_values() {
+        // An unknown kind and an over-cap count both refuse decode
+        // instead of producing a wrong action.
+        let stored = StoredGovAction { kind: 99, ..StoredGovAction::default() };
+        let err = stored.decode().expect_err("unknown kind must refuse decode");
+        assert!(format!("{:?}", err).contains("GovActionDecode"));
+        let stored = StoredGovAction { kind: 3, set_count: 17, ..StoredGovAction::default() };
+        let err = stored.decode().expect_err("over-cap count must refuse decode");
+        assert!(format!("{:?}", err).contains("GovActionDecode"));
+    }
+
+    #[test]
+    fn gov_approval_record_space_accounts_for_every_field() {
+        // Discriminator 8 + transition 32 + seat 32 + StoredGovAction
+        // 1524 (kind 1 + ttype 32 + agent 32 + role 1 + resource 2 +
+        // group 2 + cap 32 + amount 8 + flag 1 + seats 4 + policy 61 +
+        // set ids 512 + set count 1 + group ids 32 + group count 1 +
+        // cap ids 256 + cap amounts 64 + cap count 1 + council seats
+        // 480 + council count 1) + bump 1.
+        assert_eq!(
+            GovApprovalRecord::SPACE,
+            8 + 32 + 32
+                + (1 + 32 + 32 + 1 + 2 + 2 + 32 + 8 + 1 + 4 + 61 + 512 + 1 + 32 + 1 + 256 + 64 + 1
+                    + 480
+                    + 1)
+                + 1
+        );
     }
 
     #[test]
