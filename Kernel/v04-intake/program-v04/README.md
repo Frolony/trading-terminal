@@ -758,11 +758,66 @@ families, account inventory, and CU golden set are later step-5 slices.
 - Deliberately NOT slice 23: validate/declare, commit replay
   moving the head, and CU measurement — later slices.
 
+## Slice 24 — validate (`RECONCILING` -> `VALIDATED` / `BLOCKED`)
+
+- The `validate_transition` instruction re-proves the whole chain
+  in a rebuilt kernel (chain + priors + select + open_planning +
+  every prior plan + reconcile at the state's clock) and only then
+  runs kernel `validate_transition` at the state's clock,
+  advancing a `RECONCILING` record to `VALIDATED` (stage 8, a new
+  program stage value) when the kernel's predicate passes, or to
+  `BLOCKED` (stage 6) when it fails — the first program-written
+  `BLOCKED` label, which closes the slice-22 honesty bound and
+  opens the slice-22 re-plan path for real. The payer is a fee
+  payer only: kernel `validate_transition` takes no caller, so no
+  proposer, seat, or agent gate applies.
+- The slice's design point, and the slice-23 promise kept: the
+  stored `compatible` verdict is cross-checked, not trusted —
+  slice 23's exact mirror is recomputed over the supplied plan
+  set, and a stored verdict the set does not reproduce refuses
+  before any kernel validate runs. A still-blocked `BLOCKED`
+  record refuses and stands, exactly as the kernel's
+  `StillBlocked` arm dictates — enforced from the stored stage,
+  because the replay kernel reaches `Reconciling` and never
+  carries the record's `Blocked` life into the kernel call (the
+  slice-22 pattern: a rule the replay cannot enforce is enforced
+  by the helper from the stored record). The replay carries no
+  exceptions, so `unresolved_blocking` is always zero here:
+  program validate judges the stored chain, not off-program
+  exception state, and the exception instructions that would clear
+  a block are a later slice's work.
+- Host tests 174/174 (161 prior + 13 slice-24: validated advance,
+  empty-set block, over-capacity block (2 x 600 against a 1000
+  stock), wrong-stage refusal, once-only after validated,
+  still-blocked refusal, stored-verdict-mismatch refusal,
+  stale-observation block (clock 9100, observation expiry),
+  incomplete prior plans, incomplete prior signals,
+  unreproducible-plan refusal, unsealed refusal, parent
+  mismatch). One test-authoring correction, in the tests only:
+  `PlanRecord` is not `Copy`, so repeated prior sets use
+  `std::slice::from_ref` (the slice-23 pattern). One real finding,
+  fixed in the slice code, not the test: the first version let a
+  re-validate of a `BLOCKED` record succeed as a no-op `Blocked`
+  advance, because the fresh replay kernel always reaches
+  `Reconciling` — the helper now enforces `StillBlocked` from the
+  stored stage. Clippy back to the pre-existing profile (anchor
+  macro `unexpected cfg` noise + the slice-8 helper's
+  `type_complexity` note); zero new warnings.
+- `anchor build` green under the pinned toolchain (from-source
+  binary by absolute path; the AVM shim on PATH refuses with a
+  not-installed error and is not the invocation route); the IDL
+  gains the `validate_transition` instruction, the 23rd error
+  (`ValidateFailed`), and the 14th event (`TransitionValidated`)
+  — 16 instructions, 5 accounts, 23 errors, 14 events; `.so`
+  912,672 bytes (sha256 `6fffcfd5…`).
+- Deliberately NOT slice 24: declare, commit replay moving the
+  head, and CU measurement — later slices.
+
 ## Build
 
 ```sh
 export RUSTUP_HOME=~/workspace/toolchains/rustup CARGO_HOME=~/workspace/toolchains/cargo
 export PATH=~/workspace/toolchains/cargo/bin:~/workspace/toolchains/solana/bin:$PATH
 ~/workspace/toolchains/anchor/bin/anchor build   # from this directory
-cargo test                                        # host tests, 161/161
+cargo test                                        # host tests, 174/174
 ```

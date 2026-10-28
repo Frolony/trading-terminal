@@ -483,6 +483,9 @@
 //! validate lands. Until then the re-plan tests set the label as a
 //! fixture standing in for validate's future output. Selection, the
 //! proposer, and the seat roster are all re-proven in every call.
+//! (Slice 24 note: validate has now landed and writes `BLOCKED`,
+//! so the label is program-produced; the re-plan tests' fixture
+//! label is the same label validate produces.)
 //! Reconcile, validate, declare, and commit replay are still later
 //! slices, not smuggled in here.
 //!
@@ -515,8 +518,8 @@
 //! over-capacity set reconciles to incompatible, not to a
 //! refusal — and the verdict is persisted on the record
 //! (`compatible: bool`, SPACE 262 -> 263) and carried on the
-//! event, so the later validate slice can cross-check the stored
-//! verdict against the kernel's recomputed one instead of trusting
+//! event, so slice 24 cross-checks the stored verdict against its
+//! own recomputation over the supplied plan set instead of trusting
 //! either alone. The mirror that computes the stored verdict is
 //! exact, not approximate: the same supplied plan set, the same
 //! checked-add sums, the same sealed capacity stocks the kernel
@@ -524,7 +527,47 @@
 //! supplied plan the replay did not judge, which the anchors
 //! already forbid. The payer is a fee payer only: kernel
 //! `reconcile_plans` takes no caller, so no proposer or seat gate
-//! applies here. Validate, declare, and commit replay are still
+//! applies here. Declare and commit replay are still later
+//! slices, not smuggled in here.
+//!
+//! Slice 24 (this slice): the first validate instruction,
+//! `validate_transition` — `RECONCILING` (7) -> `VALIDATED` (8,
+//! a new program stage value; program stage numbers are the
+//! program's own sequence, not the kernel's `Life`
+//! discriminants — kernel `Validated` is 7, kernel `Blocked` is
+//! 17, program `BLOCKED` is 6). The helper re-proves the whole
+//! chain in a rebuilt kernel (chain + priors + select +
+//! open_planning + every prior plan + reconcile at the state's
+//! clock) and only then runs kernel `validate_transition` at the
+//! state's clock, so a stored `RECONCILING` label a replay cannot
+//! reproduce never validates. Two verdicts, and the second is the
+//! slice's design point: the stored `compatible` verdict is
+//! cross-checked, not trusted — slice 23's exact mirror is
+//! recomputed over the supplied plan set, and a stored verdict
+//! the set does not reproduce refuses before any kernel validate
+//! runs — because a divergence means a supplied plan the replay
+//! did not judge, or a stored verdict no replay reproduces, and
+//! either way the program must not advance the record on it.
+//! The kernel's own validate then judges the rest of the
+//! predicate at the state's clock: constraints, compatibility,
+//! blocking exceptions, manifest expiry, observation freshness.
+//! A passing predicate advances the stage to `VALIDATED`; a
+//! failing predicate from `RECONCILING` advances it to `BLOCKED`
+//! — the first program-written `BLOCKED` label, which closes the
+//! slice-22 honesty bound (the re-plan tests' fixture label is
+//! now the label validate produces) and opens the slice-22
+//! re-plan path for real; a still-blocked `BLOCKED` record
+//! refuses and stands, exactly as the kernel's `StillBlocked`
+//! arm dictates — enforced from the stored stage, because the
+//! replay kernel reaches `Reconciling` and never carries the
+//! record's `Blocked` life into the kernel call. The payer is
+//! a fee payer only: kernel
+//! `validate_transition` takes no caller, so no proposer or seat
+//! gate applies here. The replay carries no exceptions, so
+//! `unresolved_blocking` is always zero in this slice — program
+//! validate judges the stored chain, not off-program exception
+//! state, and the exception instructions that would clear a block
+//! are a later slice's work. Declare and commit replay are still
 //! later slices, not smuggled in here.
 
 extern crate alloc;
@@ -1168,6 +1211,65 @@ pub mod program_v04 {
         });
         Ok(())
     }
+
+    /// Validate a reconciled transition (slice 24): `RECONCILING`
+    /// (7) -> `VALIDATED` (8), or `RECONCILING` -> `BLOCKED` (6)
+    /// when the kernel's predicate fails, or a refusal that leaves
+    /// a `BLOCKED` record standing when the kernel reports it
+    /// still blocked. Remaining accounts split exactly as in
+    /// `reconcile_plans`: the first `signal_count` are the prior
+    /// `SignalRecord`s and the rest are the prior `PlanRecord`s,
+    /// which must number exactly `plan_count`. The payer is a fee
+    /// payer only: kernel `validate_transition` takes no caller,
+    /// so no proposer, seat, or agent gate applies here. A
+    /// validate that finds the predicate failing still advances
+    /// the stage — to `BLOCKED`, not a refusal — because the
+    /// kernel records blocking as a state and the re-plan path
+    /// (slice 22) opens from it; only an unreproducible chain,
+    /// an incomplete prior set, a stored verdict the supplied
+    /// set does not reproduce, or a still-blocked record
+    /// refuses, and then the record stands exactly as it stood.
+    pub fn validate_transition(
+        ctx: Context<ValidateTransition>,
+        transition_id: [u8; 32],
+        observation_id: [u8; 32],
+    ) -> Result<()> {
+        if ctx.accounts.transition_record.transition_id != transition_id
+            || ctx.accounts.observation_record.observation_id != observation_id
+        {
+            return Err(error!(ProgramV04Error::RecordMismatch));
+        }
+        let signal_count = ctx.accounts.transition_record.signal_count as usize;
+        if ctx.remaining_accounts.len() < signal_count {
+            return Err(error!(ProgramV04Error::ValidateFailed));
+        }
+        let mut priors: alloc::vec::Vec<SignalRecord> = alloc::vec::Vec::new();
+        for acc in &ctx.remaining_accounts[..signal_count] {
+            let parsed = Account::<SignalRecord>::try_from(acc)
+                .map_err(|_| error!(ProgramV04Error::RecordMismatch))?;
+            priors.push(parsed.into_inner());
+        }
+        let mut prior_plans: alloc::vec::Vec<PlanRecord> = alloc::vec::Vec::new();
+        for acc in &ctx.remaining_accounts[signal_count..] {
+            let parsed = Account::<PlanRecord>::try_from(acc)
+                .map_err(|_| error!(ProgramV04Error::RecordMismatch))?;
+            prior_plans.push(parsed.into_inner());
+        }
+        let life = validate_transition_from_records(
+            &ctx.accounts.kernel_state,
+            &mut ctx.accounts.transition_record,
+            &ctx.accounts.observation_record,
+            &priors,
+            &prior_plans,
+        )?;
+        debug_assert!(life == Life::Validated || life == Life::Blocked);
+        emit!(TransitionValidated {
+            transition_id,
+            stage: ctx.accounts.transition_record.stage,
+            compatible: ctx.accounts.transition_record.compatible,
+        });
+        Ok(())
+    }
 }
 
 #[derive(Accounts)]
@@ -1222,6 +1324,28 @@ pub struct SubmitPlan<'info> {
     #[account(mut)]
     pub payer: Signer<'info>,
     pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+#[instruction(transition_id: [u8; 32], observation_id: [u8; 32])]
+pub struct ValidateTransition<'info> {
+    #[account(
+        seeds = [b"kernel-state"],
+        bump = kernel_state.bump,
+    )]
+    pub kernel_state: Account<'info, KernelState>,
+    #[account(
+        mut,
+        seeds = [b"transition", transition_id.as_ref()],
+        bump = transition_record.bump,
+    )]
+    pub transition_record: Account<'info, TransitionRecord>,
+    #[account(
+        seeds = [b"observation", observation_id.as_ref()],
+        bump = observation_record.bump,
+    )]
+    pub observation_record: Account<'info, ObservationRecord>,
+    pub payer: Signer<'info>,
 }
 
 #[derive(Accounts)]
@@ -1538,9 +1662,11 @@ pub struct TransitionRecord {
     /// Lifecycle stage: 0 = Registered, 1 = Kernel-registered (slice 10
     /// advances it), 2 = Evaluated (slice 12 advances it), 3 = Eligible
     /// (slice 13 advances it), 4 = Selected (slice 16 advances it),
-    /// 5 = Planning (slice 20 advances it), 6 = Blocked (a future
-    /// validate slice writes it; slice 22 opens the re-plan from it),
-    /// 7 = Reconciling (slice 23 advances it, with `compatible`).
+    /// 5 = Planning (slice 20 advances it), 6 = Blocked (slice 24
+    /// writes it when validate finds the predicate failing; slice
+    /// 22 opens the re-plan from it), 7 = Reconciling (slice 23
+    /// advances it, with `compatible`), 8 = Validated (slice 24
+    /// advances it when the kernel's predicate passes).
     pub stage: u8,
     /// Kernel clock at which `mark_eligible` proved eligibility (slice 14
     /// persists it; 0 until eligibility is proven). This is the
@@ -1595,12 +1721,14 @@ impl TransitionRecord {
     pub const SELECTED: u8 = 4;
     /// Stage value written by `open_planning` (slice 20).
     pub const PLANNING: u8 = 5;
-    /// Stage value a future validate slice writes when a transition
-    /// blocks (slice 22 records it; no slice yet produces it — see
-    /// the slice-22 module note on the re-plan honesty bound).
+    /// Stage value written by `validate_transition` (slice 24)
+    /// when a transition blocks (slice 22 opens the re-plan from
+    /// it; the slice-22 fixture label is now program-produced).
     pub const BLOCKED: u8 = 6;
     /// Stage value written by `reconcile_plans` (slice 23).
     pub const RECONCILING: u8 = 7;
+    /// Stage value written by `validate_transition` (slice 24).
+    pub const VALIDATED: u8 = 8;
     /// 8 (discriminator) + 32 + 32 + 8 + 32 + 32 + 32 + 8 + 32 + 1 + 8 + 8 + 8 + 8 + 8 + 4 + 1 + 1.
     pub const SPACE: usize = 263;
 }
@@ -2467,14 +2595,17 @@ pub fn select_candidate_from_records(
 /// `Selected`, so the kernel call itself always takes its anyone
 /// path — the Blocked path's proposer-or-seat rule and cap are
 /// enforced by this helper from the stored record, not by the
-/// kernel call, because no slice can yet replay a transition INTO
-/// `Blocked` (that needs reconcile/validate, later slices). The
-/// stored `BLOCKED` label is therefore trusted this slice in one
-/// narrow sense: no instruction writes `BLOCKED` yet, so no live
-/// record can carry it, and the label becomes program-written —
-/// hence re-provable — the day validate lands; until then the
-/// re-plan tests set it as a fixture. Selection, proposer, and the
-/// seat roster are all re-proven, not trusted. Only a
+/// kernel call, because the replay kernel reaches `Selected` and
+/// never replays INTO `Blocked`. The stored `BLOCKED` label is
+/// therefore trusted this slice in one narrow sense: since slice
+/// 24, `validate_transition` is the only instruction that writes
+/// it, after a full-replay proof that the predicate failed — so a
+/// live `BLOCKED` record implies a validate-proven block, and a
+/// block verdict cannot improve on its own (constraints and
+/// compatibility are replay-fixed, expiry and freshness only
+/// decay), so the label cannot have gone stale. Selection,
+/// proposer, and the seat roster are all re-proven, not trusted.
+/// Only a
 /// `Life::Planning` life advances the stage, and the persisted
 /// deadline is the state's clock plus the launch policy's
 /// planning window: `apply_launch_genesis` installs exactly
@@ -3208,6 +3339,291 @@ pub fn reconcile_plans_from_records(
     Ok(Life::Reconciling)
 }
 
+/// Validate a reconciled transition through the real kernel (slice 24).
+/// Pure except for the transition record's stage, which moves on
+/// success only, and every refusal leaves it untouched. Gates, in
+/// order: sealed state; stage exactly `RECONCILING` or `BLOCKED`;
+/// parent exactly the sealed head; observation linkage; a proven
+/// planning window (a nonzero stored deadline, with a derivable open
+/// clock — the reconcile replay below re-proves the deadline and the
+/// state's clock sitting at or after it); the prior-signal anchor
+/// (supplied signals numbering exactly `signal_count`, every prior
+/// belonging to the transition with a stored round matching its own
+/// `submitted_at`, no duplicated (agent, round)); the prior-plan
+/// anchor (supplied plans numbering exactly `plan_count`, every prior
+/// belonging to the transition, no duplicated resource inside a
+/// prior's claims). The kernel calls run against a freshly rebuilt
+/// sealed launch kernel under `ProgramEnv`: ingest, register,
+/// evaluate, and mark_eligible, all at the stored `eligible_at`,
+/// then each prior signal at its `submitted_at` in order, then select
+/// and open_planning at the derived open clock, then each prior plan
+/// at the open clock, then reconcile at the state's clock, then
+/// validate at the state's clock. The stored `compatible` verdict is
+/// cross-checked, not trusted: slice 23's exact mirror (non-empty,
+/// and every per-resource checked-add sum within the sealed capacity
+/// stock for that resource) is recomputed over the supplied plan set,
+/// and a stored verdict the set does not reproduce refuses with
+/// `ValidateFailed` before any kernel validate runs — a divergence
+/// means a supplied plan the reconcile replay did not judge, or a
+/// stored verdict no replay reproduces. The kernel's own validate
+/// then judges the rest of the predicate (constraints, compatibility,
+/// blocking exceptions, manifest expiry, observation freshness at the
+/// state's clock): a passing predicate advances the stage to
+/// `VALIDATED`; a failing predicate from `RECONCILING` advances it
+/// to `BLOCKED`, which the slice-22 re-plan path opens from; a
+/// still-blocked `BLOCKED` record refuses with `ValidateFailed` and
+/// stands, exactly as the kernel's `StillBlocked` arm dictates —
+/// enforced here from the stored stage, in the slice-22 manner,
+/// because the replay kernel reaches `Reconciling` and never
+/// carries the record's `Blocked` life into the kernel call.
+/// Honesty bound, stated not smoothed: the replay carries no
+/// exceptions, so `unresolved_blocking` is always zero here —
+/// program validate judges the stored chain, not off-program
+/// exception state, and the exception instructions that would clear
+/// a block are a later slice's work, not claimed here. Likewise a
+/// validate-produced `BLOCKED` record re-validated over the same
+/// chain refuses still-blocked: nothing in the replay changed the
+/// predicate inputs, so the kernel cannot newly pass it; the
+/// `BLOCKED` -> `VALIDATED` path exists for records whose blocking
+/// condition cleared outside this replay. A kernel refusal in any
+/// call maps to `ValidateFailed`, except the seal gate (`NotSealed`),
+/// the stage gate (`WrongStage`), the parent gate (`ParentMismatch`),
+/// and the linkage gates (`RecordMismatch`, `NotObserver`,
+/// `UnknownProposer`), which keep their own errors.
+pub fn validate_transition_from_records(
+    kernel_state: &KernelState,
+    transition_record: &mut TransitionRecord,
+    observation_record: &ObservationRecord,
+    prior_signals: &[SignalRecord],
+    prior_plans: &[PlanRecord],
+) -> Result<Life> {
+    if !kernel_state.sealed {
+        return Err(error!(ProgramV04Error::NotSealed));
+    }
+    if transition_record.stage != TransitionRecord::RECONCILING
+        && transition_record.stage != TransitionRecord::BLOCKED
+    {
+        return Err(error!(ProgramV04Error::WrongStage));
+    }
+    if transition_record.parent_index != kernel_state.head_index
+        || transition_record.parent_hash != kernel_state.head_hash
+    {
+        return Err(error!(ProgramV04Error::ParentMismatch));
+    }
+    if transition_record.observation_id != observation_record.observation_id {
+        return Err(error!(ProgramV04Error::RecordMismatch));
+    }
+    if transition_record.planning_deadline == 0 {
+        return Err(error!(ProgramV04Error::ValidateFailed));
+    }
+    let open_clock = transition_record
+        .planning_deadline
+        .checked_sub(launch_policy().planning_window)
+        .ok_or(error!(ProgramV04Error::ValidateFailed))?;
+    if prior_signals.len() as u64 != transition_record.signal_count {
+        return Err(error!(ProgramV04Error::ValidateFailed));
+    }
+    for prior in prior_signals {
+        if prior.transition_id != transition_record.transition_id {
+            return Err(error!(ProgramV04Error::RecordMismatch));
+        }
+        if signal_round(
+            transition_record.eligible_at,
+            transition_record.consensus_deadline,
+            prior.submitted_at,
+        ) != prior.round
+        {
+            return Err(error!(ProgramV04Error::RecordMismatch));
+        }
+    }
+    {
+        let mut seen: BTreeSet<([u8; 32], u64)> = BTreeSet::new();
+        for prior in prior_signals {
+            if !seen.insert((prior.agent.to_bytes(), prior.round)) {
+                return Err(error!(ProgramV04Error::ValidateFailed));
+            }
+        }
+    }
+    if prior_plans.len() as u64 != transition_record.plan_count {
+        return Err(error!(ProgramV04Error::ValidateFailed));
+    }
+    for prior in prior_plans {
+        if prior.transition_id != transition_record.transition_id {
+            return Err(error!(ProgramV04Error::RecordMismatch));
+        }
+        if prior.claim_count as usize > PlanRecord::MAX_PLAN_CLAIMS {
+            return Err(error!(ProgramV04Error::ValidateFailed));
+        }
+        let mut seen: BTreeSet<u16> = BTreeSet::new();
+        for resource in &prior.claim_resources[..prior.claim_count as usize] {
+            if !seen.insert(*resource) {
+                return Err(error!(ProgramV04Error::ValidateFailed));
+            }
+        }
+    }
+    let proposer = resolve_proposer(kernel_state, transition_record.proposer)
+        .map_err(|_| error!(ProgramV04Error::ValidateFailed))?;
+    let observer_id = resolve_agent_id(observation_record.observer);
+    let mut k = sealed_launch_kernel_env().map_err(|_| error!(ProgramV04Error::KernelSeal))?;
+    if !k.has_role(&observer_id, Role::Observer) {
+        return Err(error!(ProgramV04Error::NotObserver));
+    }
+    let relevant_groups = match k.agent(&proposer) {
+        Some(profile) => profile.groups.clone(),
+        None => return Err(error!(ProgramV04Error::UnknownProposer)),
+    };
+    let observation = Observation {
+        id: observation_record.observation_id,
+        timestamp: observation_record.timestamp,
+        expiry: observation_record.expiry,
+        confidence: Amount::from_raw(observation_record.confidence_raw),
+    };
+    let eligible_at = transition_record.eligible_at;
+    k.ingest_observation(&observer_id, observation, eligible_at)
+        .map_err(|_| error!(ProgramV04Error::ValidateFailed))?;
+    let manifest = Manifest {
+        transition_type: transition_record.transition_type,
+        parent_index: transition_record.parent_index,
+        parent_hash: transition_record.parent_hash,
+        declared_next_hash: transition_record.declared_next_hash,
+        observation_id: transition_record.observation_id,
+        expires_at: transition_record.expires_at,
+        relevant_groups,
+        action: None,
+    };
+    k.register_transition(
+        &proposer,
+        transition_record.transition_id,
+        manifest,
+        BTreeSet::new(),
+        eligible_at,
+    )
+    .map_err(|_| error!(ProgramV04Error::ValidateFailed))?;
+    k.evaluate_transition(&transition_record.transition_id, eligible_at)
+        .map_err(|_| error!(ProgramV04Error::ValidateFailed))?;
+    k.mark_eligible(&transition_record.transition_id, eligible_at)
+        .map_err(|_| error!(ProgramV04Error::ValidateFailed))?;
+    match k.life_of(&transition_record.transition_id) {
+        Some(Life::Eligible) => {}
+        _ => return Err(error!(ProgramV04Error::ValidateFailed)),
+    }
+    let mut priors: alloc::vec::Vec<SignalRecord> = prior_signals.to_vec();
+    priors.sort_by_key(|s| s.submitted_at);
+    for prior in &priors {
+        let support = if prior.has_support {
+            Some(Amount::from_raw(prior.support_raw))
+        } else {
+            None
+        };
+        k.submit_round_signal(
+            &prior.agent.to_bytes(),
+            &transition_record.transition_id,
+            Amount::from_raw(prior.raw),
+            support,
+            prior.submitted_at,
+        )
+        .map_err(|_| error!(ProgramV04Error::ValidateFailed))?;
+    }
+    k.select_candidate(&transition_record.transition_id, open_clock)
+        .map_err(|_| error!(ProgramV04Error::ValidateFailed))?;
+    match k.life_of(&transition_record.transition_id) {
+        Some(Life::Selected) => {}
+        _ => return Err(error!(ProgramV04Error::ValidateFailed)),
+    }
+    k.open_planning(&proposer, &transition_record.transition_id, open_clock)
+        .map_err(|_| error!(ProgramV04Error::ValidateFailed))?;
+    match k.life_of(&transition_record.transition_id) {
+        Some(Life::Planning) => {}
+        _ => return Err(error!(ProgramV04Error::ValidateFailed)),
+    }
+    let deadline = open_clock
+        .checked_add(launch_policy().planning_window)
+        .ok_or(error!(ProgramV04Error::ValidateFailed))?;
+    if deadline != transition_record.planning_deadline {
+        return Err(error!(ProgramV04Error::ValidateFailed));
+    }
+    for prior in prior_plans {
+        let mut prior_map: BTreeMap<u16, Amount> = BTreeMap::new();
+        for (resource, amount) in prior.claim_resources[..prior.claim_count as usize]
+            .iter()
+            .zip(prior.claim_amounts[..prior.claim_count as usize].iter())
+        {
+            prior_map.insert(*resource, Amount::from_raw(*amount));
+        }
+        let prior_plan = Plan {
+            agent: prior.agent.to_bytes(),
+            claims: prior_map,
+            expires_at: prior.expires_at,
+        };
+        k.submit_plan(
+            &prior.agent.to_bytes(),
+            &transition_record.transition_id,
+            prior_plan,
+            open_clock,
+        )
+        .map_err(|_| error!(ProgramV04Error::ValidateFailed))?;
+    }
+    k.reconcile_plans(&transition_record.transition_id, kernel_state.clock)
+        .map_err(|_| error!(ProgramV04Error::ValidateFailed))?;
+    match k.life_of(&transition_record.transition_id) {
+        Some(Life::Reconciling) => {}
+        _ => return Err(error!(ProgramV04Error::ValidateFailed)),
+    }
+    // Slice 23's exact mirror, recomputed over the supplied set:
+    // a stored verdict the set does not reproduce refuses here,
+    // before the kernel's own validate runs, so neither the
+    // stored verdict nor the replay is trusted alone.
+    let mut sums: BTreeMap<u16, Amount> = BTreeMap::new();
+    let mut fits = !prior_plans.is_empty();
+    for prior in prior_plans {
+        for (resource, amount) in prior.claim_resources[..prior.claim_count as usize]
+            .iter()
+            .zip(prior.claim_amounts[..prior.claim_count as usize].iter())
+        {
+            let entry = sums.entry(*resource).or_insert(Amount::ZERO);
+            match entry.checked_add(Amount::from_raw(*amount)) {
+                Ok(v) => *entry = v,
+                Err(_) => fits = false,
+            }
+        }
+    }
+    if fits {
+        for (resource, total) in &sums {
+            if !k.capacity_of(*resource).is_some_and(|cap| *total <= cap) {
+                fits = false;
+            }
+        }
+    }
+    if fits != transition_record.compatible {
+        return Err(error!(ProgramV04Error::ValidateFailed));
+    }
+    k.validate_transition(&transition_record.transition_id, kernel_state.clock)
+        .map_err(|_| error!(ProgramV04Error::ValidateFailed))?;
+    match k.life_of(&transition_record.transition_id) {
+        Some(Life::Validated) => {
+            transition_record.stage = TransitionRecord::VALIDATED;
+            Ok(Life::Validated)
+        }
+        Some(Life::Blocked) => {
+            // The replay kernel reached `Reconciling`, so the
+            // kernel call itself always takes its Reconciling
+            // path — it can never report `StillBlocked`. The
+            // kernel's rule is therefore enforced here from the
+            // stored stage: a record that entered validate
+            // already `BLOCKED` and still fails refuses and
+            // stands, exactly as `StillBlocked` dictates, while a
+            // record that entered `RECONCILING` advances to
+            // `BLOCKED` as a new verdict.
+            if transition_record.stage == TransitionRecord::BLOCKED {
+                return Err(error!(ProgramV04Error::ValidateFailed));
+            }
+            transition_record.stage = TransitionRecord::BLOCKED;
+            Ok(Life::Blocked)
+        }
+        _ => Err(error!(ProgramV04Error::ValidateFailed)),
+    }
+}
+
 /// One sibling transition offered to a sibling-aware select (slice 17):
 /// the sibling's stored transition record, its observation record, and
 /// its stored signal records. All three are read, never written: the
@@ -3691,6 +4107,13 @@ pub struct TransitionReconciled {
     pub plan_count: u64,
 }
 
+#[event]
+pub struct TransitionValidated {
+    pub transition_id: [u8; 32],
+    pub stage: u8,
+    pub compatible: bool,
+}
+
 #[error_code]
 pub enum ProgramV04Error {
     #[msg("program-v04 probe: kernel construction failed")]
@@ -3737,6 +4160,8 @@ pub enum ProgramV04Error {
     PlanFailed,
     #[msg("program-v04 reconcile: kernel reconcile refused, planning window still open or unproven, or supplied plan set incomplete")]
     ReconcileFailed,
+    #[msg("program-v04 validate: kernel validate refused, reconciled chain unproven, stored verdict unreproduced, or record still blocked")]
+    ValidateFailed,
 }
 
 // ---------------------------------------------------------------- launch genesis
@@ -6945,5 +7370,234 @@ mod tests {
         assert!(format!("{:?}", err).contains("ParentMismatch"));
         assert_eq!(record.stage, TransitionRecord::PLANNING);
         assert!(!record.compatible);
+    }
+
+    fn reconciling_pair() -> (
+        KernelState,
+        TransitionRecord,
+        ObservationRecord,
+        SignalRecord,
+        PlanRecord,
+    ) {
+        // Reconciled at the deadline (clock 300) with one fitting
+        // plan: the validate-success fixture every slice-24 test
+        // below builds from.
+        let (mut state, mut record, obs, first, plan) = one_plan_pair();
+        advance_clock_on_state(&mut state, 300).expect("advance to the deadline must succeed");
+        let life = reconcile_plans_from_records(&state, &mut record, &obs, &[first], std::slice::from_ref(&plan))
+            .expect("a fitting plan set at the deadline must reconcile");
+        assert_eq!(life, Life::Reconciling);
+        assert_eq!(record.stage, TransitionRecord::RECONCILING);
+        assert!(record.compatible);
+        (state, record, obs, first, plan)
+    }
+
+    fn empty_reconciling_pair() -> (KernelState, TransitionRecord, ObservationRecord, SignalRecord) {
+        // Reconciled at the deadline with no plans: incompatible,
+        // so validate blocks rather than validates.
+        let (mut state, mut record, obs, first) = planned_pair();
+        advance_clock_on_state(&mut state, 300).expect("advance to the deadline must succeed");
+        let life = reconcile_plans_from_records(&state, &mut record, &obs, &[first], &[])
+            .expect("an empty plan set must reconcile to incompatible");
+        assert_eq!(life, Life::Reconciling);
+        assert_eq!(record.stage, TransitionRecord::RECONCILING);
+        assert!(!record.compatible);
+        (state, record, obs, first)
+    }
+
+    #[test]
+    fn validate_advances_reconciling_to_validated() {
+        // A kernel-proven chain with a fitting plan set and a
+        // fresh observation at clock 300: the predicate passes,
+        // the stage advances to 8, and the stored verdict stands.
+        let (state, mut record, obs, first, plan) = reconciling_pair();
+        let life = validate_transition_from_records(&state, &mut record, &obs, &[first], &[plan])
+            .expect("a fitting reconciled chain must validate");
+        assert_eq!(life, Life::Validated);
+        assert_eq!(record.stage, TransitionRecord::VALIDATED);
+        assert_eq!(record.stage, 8);
+        assert!(record.compatible);
+    }
+
+    #[test]
+    fn validate_empty_plan_set_blocks_not_refuses() {
+        // No plans is never compatible — but blocking is a state,
+        // not a refusal: the kernel advances to Blocked, and the
+        // record says so, so the re-plan path (slice 22) opens
+        // from it instead of the call failing to happen.
+        let (state, mut record, obs, first) = empty_reconciling_pair();
+        let life = validate_transition_from_records(&state, &mut record, &obs, &[first], &[])
+            .expect("an incompatible set must validate to Blocked, not refuse");
+        assert_eq!(life, Life::Blocked);
+        assert_eq!(record.stage, TransitionRecord::BLOCKED);
+        assert_eq!(record.stage, 6);
+        assert!(!record.compatible);
+    }
+
+    #[test]
+    fn validate_over_capacity_blocks() {
+        // The slice-23 over-capacity set reconciles to
+        // incompatible, and validate judges that verdict: Blocked,
+        // with the plan set untouched.
+        let (mut state, mut record, obs, first) = planned_pair();
+        let big = vec![PlanClaimArg { resource: RES_TREASURY_TRANCHE, amount_raw: 600 * SCALE }];
+        let first_plan = submit_plan_from_records(
+            &state, &mut record, &obs, &[first], &[], &big, 400, ag(2), 7,
+        )
+        .expect("first big plan must submit");
+        let second_plan = submit_plan_from_records(
+            &state, &mut record, &obs, &[first], std::slice::from_ref(&first_plan), &big, 400, ag(3), 8,
+        )
+        .expect("second big plan must submit");
+        advance_clock_on_state(&mut state, 300).expect("advance to the deadline must succeed");
+        let plans = [first_plan, second_plan];
+        reconcile_plans_from_records(&state, &mut record, &obs, &[first], &plans)
+            .expect("an over-capacity set must reconcile to incompatible");
+        assert!(!record.compatible);
+        let life = validate_transition_from_records(&state, &mut record, &obs, &[first], &plans)
+            .expect("an incompatible set must validate to Blocked, not refuse");
+        assert_eq!(life, Life::Blocked);
+        assert_eq!(record.stage, TransitionRecord::BLOCKED);
+        assert!(!record.compatible);
+        assert_eq!(record.plan_count, 2);
+    }
+
+    #[test]
+    fn validate_refuses_wrong_stage() {
+        // Still PLANNING, never reconciled: the stage gate refuses
+        // before any replay, and nothing on the record moves.
+        let (state, mut record, obs, first, plan) = one_plan_pair();
+        let err = validate_transition_from_records(&state, &mut record, &obs, &[first], &[plan])
+            .expect_err("an unreconciled record must refuse validate");
+        assert!(format!("{:?}", err).contains("WrongStage"));
+        assert_eq!(record.stage, TransitionRecord::PLANNING);
+        assert!(!record.compatible);
+    }
+
+    #[test]
+    fn validate_is_once_only_after_validated() {
+        // A validated record is past validate: the stage gate
+        // refuses a second call, and the VALIDATED stage stands.
+        let (state, mut record, obs, first, plan) = reconciling_pair();
+        validate_transition_from_records(&state, &mut record, &obs, &[first], std::slice::from_ref(&plan))
+            .expect("first validate must succeed");
+        assert_eq!(record.stage, TransitionRecord::VALIDATED);
+        let err = validate_transition_from_records(&state, &mut record, &obs, &[first], std::slice::from_ref(&plan))
+            .expect_err("a second validate must refuse");
+        assert!(format!("{:?}", err).contains("WrongStage"));
+        assert_eq!(record.stage, TransitionRecord::VALIDATED);
+        assert!(record.compatible);
+    }
+
+    #[test]
+    fn validate_blocked_record_refuses_still_blocked() {
+        // A validate-produced BLOCKED record re-validated over
+        // the same chain: nothing in the replay changed the
+        // predicate inputs, so the kernel reports StillBlocked,
+        // the call refuses, and the record stands BLOCKED.
+        let (state, mut record, obs, first) = empty_reconciling_pair();
+        validate_transition_from_records(&state, &mut record, &obs, &[first], &[])
+            .expect("first validate must block");
+        assert_eq!(record.stage, TransitionRecord::BLOCKED);
+        let err = validate_transition_from_records(&state, &mut record, &obs, &[first], &[])
+            .expect_err("a still-blocked record must refuse re-validate");
+        assert!(format!("{:?}", err).contains("ValidateFailed"));
+        assert_eq!(record.stage, TransitionRecord::BLOCKED);
+        assert!(!record.compatible);
+    }
+
+    #[test]
+    fn validate_refuses_stored_verdict_mismatch() {
+        // The slice-23 promise, enforced: a stored verdict the
+        // supplied plan set does not reproduce refuses before any
+        // kernel validate runs — here a fitting set whose stored
+        // verdict was flipped to false — and the record stands
+        // RECONCILING, neither validated nor blocked on a lie.
+        let (state, mut record, obs, first, plan) = reconciling_pair();
+        record.compatible = false;
+        let err = validate_transition_from_records(&state, &mut record, &obs, &[first], &[plan])
+            .expect_err("a mismatched stored verdict must refuse validate");
+        assert!(format!("{:?}", err).contains("ValidateFailed"));
+        assert_eq!(record.stage, TransitionRecord::RECONCILING);
+        assert!(!record.compatible);
+    }
+
+    #[test]
+    fn validate_stale_observation_blocks() {
+        // At clock 9100 the observation (expiry 9100) is no longer
+        // fresh: the predicate fails on freshness alone, so the
+        // record blocks — the manifest (expiry 10_100) still
+        // stands, so this is a verdict, not a refusal.
+        let (mut state, mut record, obs, first, plan) = reconciling_pair();
+        advance_clock_on_state(&mut state, 9100).expect("advance to the observation expiry must succeed");
+        let life = validate_transition_from_records(&state, &mut record, &obs, &[first], &[plan])
+            .expect("a stale observation must validate to Blocked, not refuse");
+        assert_eq!(life, Life::Blocked);
+        assert_eq!(record.stage, TransitionRecord::BLOCKED);
+        assert!(record.compatible);
+    }
+
+    #[test]
+    fn validate_refuses_incomplete_prior_plans() {
+        // The record claims a prior plan that was never supplied:
+        // the slice-21 anchor refuses before any replay.
+        let (state, mut record, obs, first, plan) = reconciling_pair();
+        record.plan_count = 2;
+        let err = validate_transition_from_records(&state, &mut record, &obs, &[first], &[plan])
+            .expect_err("a short prior plan set must refuse validate");
+        assert!(format!("{:?}", err).contains("ValidateFailed"));
+        assert_eq!(record.stage, TransitionRecord::RECONCILING);
+        assert!(record.compatible);
+        assert_eq!(record.plan_count, 2);
+    }
+
+    #[test]
+    fn validate_refuses_incomplete_prior_signals() {
+        // The record claims a second signal that was never
+        // supplied: the slice-16 anchor refuses before any replay.
+        let (state, mut record, obs, first, plan) = reconciling_pair();
+        record.signal_count = 2;
+        let err = validate_transition_from_records(&state, &mut record, &obs, &[first], &[plan])
+            .expect_err("a short prior signal set must refuse validate");
+        assert!(format!("{:?}", err).contains("ValidateFailed"));
+        assert_eq!(record.stage, TransitionRecord::RECONCILING);
+        assert!(record.compatible);
+    }
+
+    #[test]
+    fn validate_refuses_unreproducible_plan() {
+        // A prior plan whose agent is no seeded agent cannot be
+        // replayed: the kernel's agent gate refuses, so the stored
+        // RECONCILING label alone validates nothing, and the
+        // record stands.
+        let (state, mut record, obs, first, mut plan) = reconciling_pair();
+        plan.agent = Pubkey::new_from_array([0x77; 32]);
+        let err = validate_transition_from_records(&state, &mut record, &obs, &[first], &[plan])
+            .expect_err("an unreproducible plan must refuse validate");
+        assert!(format!("{:?}", err).contains("ValidateFailed"));
+        assert_eq!(record.stage, TransitionRecord::RECONCILING);
+        assert!(record.compatible);
+    }
+
+    #[test]
+    fn validate_refuses_unsealed() {
+        let (mut state, mut record, obs, first, plan) = reconciling_pair();
+        state.sealed = false;
+        let err = validate_transition_from_records(&state, &mut record, &obs, &[first], &[plan])
+            .expect_err("an unsealed state must refuse validate");
+        assert!(format!("{:?}", err).contains("NotSealed"));
+        assert_eq!(record.stage, TransitionRecord::RECONCILING);
+        assert!(record.compatible);
+    }
+
+    #[test]
+    fn validate_refuses_parent_mismatch() {
+        let (mut state, mut record, obs, first, plan) = reconciling_pair();
+        state.head_index = 9;
+        let err = validate_transition_from_records(&state, &mut record, &obs, &[first], &[plan])
+            .expect_err("a record off the sealed head must refuse validate");
+        assert!(format!("{:?}", err).contains("ParentMismatch"));
+        assert_eq!(record.stage, TransitionRecord::RECONCILING);
+        assert!(record.compatible);
     }
 }
