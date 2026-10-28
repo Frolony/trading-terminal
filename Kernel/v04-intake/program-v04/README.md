@@ -1148,11 +1148,55 @@ families, account inventory, and CU golden set are later step-5 slices.
   persistence, governance-state persistence, and CU
   measurement — later slices.
 
+## Slice 31 — prior bundles through the instruction remaining accounts
+
+- All twelve stage instructions gain a `prior_bundle_count`
+  argument, and their remaining accounts begin with exactly
+  that many prior COMMITTED bundles in head order, followed
+  by the target's own evidence exactly as before: replay,
+  evaluate, and mark_eligible refuse any account past the
+  bundles; submit_signal, select, open_planning, and the
+  plan-family instructions (submit_plan, reconcile,
+  validate, declare, commit) parse their own signals/plans
+  from the tail; select_with_siblings classifies its sibling
+  field from the tail. A bundle is self-delimiting — its
+  transition record, then the observation it names, then
+  exactly its stored `signal_count` signals, then exactly
+  its stored `plan_count` plans — so no new argument carries
+  a bundle length and no caller count can shorten a chain.
+  The parser (`split_prior_bundles`, over accounts classified
+  by discriminator) checks every linkage at parse time and
+  refuses with `RecordMismatch` on a mis-linked, truncated,
+  or over-counted bundle before any kernel replay runs; the
+  stage gate stays in slice 29's driver. On-chain
+  instructions can now drive a second commit at a moved
+  head; the commit_governance helper still has no
+  instruction, so it takes no bundles here.
+- Host tests 235/235 (228 prior + 7 slice-31 parser tests:
+  one bundle plus tail, zero bundles leaving all as tail,
+  wrong observation link, foreign signal, foreign plan,
+  truncated and over-counted bundles, wrong first variant).
+  Clippy back to the pre-existing profile (anchor macro
+  `unexpected cfg` noise + the slice-8 test helper's
+  `type_complexity` warning); zero new warnings — the one
+  new warning this slice introduced (submit_signal now
+  carries 8 arguments) is allowed at the instruction, as
+  register_transition already was. No new instruction,
+  account, or error this slice, as designed: IDL counts
+  unchanged (18 instructions, 5 accounts, 28 errors, 16
+  events), with `prior_bundle_count` added to the twelve
+  stage instructions' arguments; `.so` 1,052,336 bytes
+  (sha256 `e163f93d…`).
+- Deliberately NOT slice 31: the
+  governance-registration instruction, approval
+  persistence, governance-state persistence, and CU
+  measurement — later slices.
+
 ## Build
 
 ```sh
 export RUSTUP_HOME=~/workspace/toolchains/rustup CARGO_HOME=~/workspace/toolchains/cargo
 export PATH=~/workspace/toolchains/cargo/bin:~/workspace/toolchains/solana/bin:$PATH
 ~/workspace/toolchains/anchor/bin/anchor build   # from this directory
-cargo test                                        # host tests, 228/228
+cargo test                                        # host tests, 235/235
 ```

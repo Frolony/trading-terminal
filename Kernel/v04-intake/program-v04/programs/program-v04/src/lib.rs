@@ -794,8 +794,8 @@
 //! thirteen instructions still call the helpers with
 //! `&[]`, so on-chain instructions still refuse at a
 //! moved head with `ParentMismatch` — threading prior
-//! bundles through instruction remaining accounts is the
-//! next slice, not smuggled in here. The genesis-profile
+//! bundles through instruction remaining accounts is
+//! slice 31 below, not smuggled in here. The genesis-profile
 //! gates are likewise untouched: `resolve_proposer` /
 //! `build_observation_record` and open_planning's seated
 //! re-plan check still judge the sealed launch profile,
@@ -806,6 +806,31 @@
 //! refuses governance priors with
 //! `GovernanceCommitRequired`; governance TARGETS at an
 //! ordinary moved head do thread, and are tested.
+//!
+//! Slice 31 (this slice): threading prior bundles through the
+//! instruction remaining accounts — the twelve stage instructions
+//! (replay, evaluate, mark_eligible, submit_signal, select,
+//! select_with_siblings, open_planning, submit_plan, reconcile,
+//! validate, declare, commit) each gain a `prior_bundle_count`
+//! argument, and their remaining accounts begin with exactly that
+//! many prior COMMITTED bundles in head order, followed by the
+//! target's own evidence exactly as before. A bundle is
+//! self-delimiting: its transition record, then the observation it
+//! names, then exactly its stored `signal_count` signals, then
+//! exactly its stored `plan_count` plans — the anchors slices 16
+//! and 21 already trust — so no new instruction argument carries a
+//! bundle length and no caller count can shorten a chain. The
+//! parser (`split_prior_bundles`, over a classified account list)
+//! checks every linkage at parse time and refuses with
+//! `RecordMismatch` on a mis-linked, truncated, or over-counted
+//! bundle before any kernel replay runs; the stage gate stays in
+//! slice 29's driver, not duplicated in the parser. Instructions
+//! with no own evidence (replay, evaluate, mark_eligible) refuse
+//! any account past the bundles. The commit_governance helper has
+//! no instruction yet, so it takes no bundles here — its
+//! instruction arrives with governance-registration. Deliberately
+//! NOT slice 31: governance-registration, governance-state
+//! persistence, the cu-golden freeze, or any main-line work.
 
 extern crate alloc;
 
@@ -954,21 +979,31 @@ pub mod program_v04 {
     /// the relevant-groups derivation and the genesis-head-only scope).
     /// The payer is a fee payer only — replay executes steps the stored
     /// records already authorized and creates no new authority.
+    /// Slice 31: remaining accounts begin with `prior_bundle_count` prior COMMITTED bundles (head order, self-delimited by each bundle's stored signal/plan counts); the tail is this instruction's own evidence, as before.
     pub fn replay_transition(
         ctx: Context<ReplayTransition>,
         transition_id: [u8; 32],
         observation_id: [u8; 32],
+        prior_bundle_count: u32,
     ) -> Result<()> {
         if ctx.accounts.transition_record.transition_id != transition_id
             || ctx.accounts.observation_record.observation_id != observation_id
         {
             return Err(error!(ProgramV04Error::RecordMismatch));
         }
+        let (bundles, tail) = split_prior_bundles(
+            classify_remaining_accounts(ctx.remaining_accounts)?,
+            prior_bundle_count as usize,
+        )?;
+        let prior_commits = prior_commits_of(&bundles);
+        if !tail.is_empty() {
+            return Err(error!(ProgramV04Error::RecordMismatch));
+        }
         replay_transition_from_records(
             &ctx.accounts.kernel_state,
             &mut ctx.accounts.transition_record,
             &ctx.accounts.observation_record,
-            &[],
+            &prior_commits,
 )?;
         emit!(TransitionReplayed {
             transition_id,
@@ -1004,21 +1039,31 @@ pub mod program_v04 {
     /// (see module docs for why NoEnv cannot serve this step). The
     /// payer is a fee payer only — evaluation executes steps the
     /// stored records already authorized and creates no new authority.
+    /// Slice 31: remaining accounts begin with `prior_bundle_count` prior COMMITTED bundles (head order, self-delimited by each bundle's stored signal/plan counts); the tail is this instruction's own evidence, as before.
     pub fn evaluate_transition(
         ctx: Context<EvaluateTransition>,
         transition_id: [u8; 32],
         observation_id: [u8; 32],
+        prior_bundle_count: u32,
     ) -> Result<()> {
         if ctx.accounts.transition_record.transition_id != transition_id
             || ctx.accounts.observation_record.observation_id != observation_id
         {
             return Err(error!(ProgramV04Error::RecordMismatch));
         }
+        let (bundles, tail) = split_prior_bundles(
+            classify_remaining_accounts(ctx.remaining_accounts)?,
+            prior_bundle_count as usize,
+        )?;
+        let prior_commits = prior_commits_of(&bundles);
+        if !tail.is_empty() {
+            return Err(error!(ProgramV04Error::RecordMismatch));
+        }
         evaluate_transition_from_records(
             &ctx.accounts.kernel_state,
             &mut ctx.accounts.transition_record,
             &ctx.accounts.observation_record,
-            &[],
+            &prior_commits,
 )?;
         emit!(TransitionEvaluated { transition_id, stage: TransitionRecord::EVALUATED });
         Ok(())
@@ -1041,21 +1086,31 @@ pub mod program_v04 {
     /// caller assertion. The payer is a fee payer only — eligibility
     /// executes steps the stored records already authorized and
     /// creates no new authority.
+    /// Slice 31: remaining accounts begin with `prior_bundle_count` prior COMMITTED bundles (head order, self-delimited by each bundle's stored signal/plan counts); the tail is this instruction's own evidence, as before.
     pub fn mark_eligible(
         ctx: Context<MarkEligible>,
         transition_id: [u8; 32],
         observation_id: [u8; 32],
+        prior_bundle_count: u32,
     ) -> Result<()> {
         if ctx.accounts.transition_record.transition_id != transition_id
             || ctx.accounts.observation_record.observation_id != observation_id
         {
             return Err(error!(ProgramV04Error::RecordMismatch));
         }
+        let (bundles, tail) = split_prior_bundles(
+            classify_remaining_accounts(ctx.remaining_accounts)?,
+            prior_bundle_count as usize,
+        )?;
+        let prior_commits = prior_commits_of(&bundles);
+        if !tail.is_empty() {
+            return Err(error!(ProgramV04Error::RecordMismatch));
+        }
         mark_eligible_from_records(
             &mut ctx.accounts.kernel_state,
             &mut ctx.accounts.transition_record,
             &ctx.accounts.observation_record,
-            &[],
+            &prior_commits,
 )?;
         emit!(TransitionMarkedEligible { transition_id, stage: TransitionRecord::ELIGIBLE });
         Ok(())
@@ -1079,6 +1134,8 @@ pub mod program_v04 {
     /// and the signal's agent in one: the identity mapping means the
     /// signer proves the agent by signing, and no other agent's signal
     /// can be submitted through this instruction.
+    /// Slice 31: remaining accounts begin with `prior_bundle_count` prior COMMITTED bundles (head order, self-delimited by each bundle's stored signal/plan counts); the tail is this instruction's own evidence, as before.
+    #[allow(clippy::too_many_arguments)]
     pub fn submit_signal(
         ctx: Context<SubmitSignal>,
         transition_id: [u8; 32],
@@ -1087,17 +1144,24 @@ pub mod program_v04 {
         raw: u64,
         support_raw: u64,
         has_support: bool,
+        prior_bundle_count: u32,
     ) -> Result<()> {
         if ctx.accounts.transition_record.transition_id != transition_id
             || ctx.accounts.observation_record.observation_id != observation_id
         {
             return Err(error!(ProgramV04Error::RecordMismatch));
         }
+        let (bundles, tail) = split_prior_bundles(
+            classify_remaining_accounts(ctx.remaining_accounts)?,
+            prior_bundle_count as usize,
+        )?;
+        let prior_commits = prior_commits_of(&bundles);
         let mut priors: alloc::vec::Vec<SignalRecord> = alloc::vec::Vec::new();
-        for acc in ctx.remaining_accounts {
-            let parsed = Account::<SignalRecord>::try_from(acc)
-                .map_err(|_| error!(ProgramV04Error::RecordMismatch))?;
-            priors.push(parsed.into_inner());
+        for item in tail {
+            match item {
+                ParsedAccount::Signal(sig) => priors.push(sig),
+                _ => return Err(error!(ProgramV04Error::RecordMismatch)),
+            }
         }
         let (record, total, confidence) = submit_signal_from_records(
             &ctx.accounts.kernel_state,
@@ -1110,7 +1174,7 @@ pub mod program_v04 {
             support_raw,
             has_support,
             ctx.bumps.signal_record,
-            &[],
+            &prior_commits,
 )?;
         *ctx.accounts.signal_record = record;
         emit!(SignalSubmitted {
@@ -1141,28 +1205,36 @@ pub mod program_v04 {
     /// rebuilt kernel holds only this transition, so this
     /// instruction proves own qualification and window closure, and
     /// the census proves no competitor exists to judge.
+    /// Slice 31: remaining accounts begin with `prior_bundle_count` prior COMMITTED bundles (head order, self-delimited by each bundle's stored signal/plan counts); the tail is this instruction's own evidence, as before.
     pub fn select_candidate(
         ctx: Context<SelectCandidate>,
         transition_id: [u8; 32],
         observation_id: [u8; 32],
+        prior_bundle_count: u32,
     ) -> Result<()> {
         if ctx.accounts.transition_record.transition_id != transition_id
             || ctx.accounts.observation_record.observation_id != observation_id
         {
             return Err(error!(ProgramV04Error::RecordMismatch));
         }
+        let (bundles, tail) = split_prior_bundles(
+            classify_remaining_accounts(ctx.remaining_accounts)?,
+            prior_bundle_count as usize,
+        )?;
+        let prior_commits = prior_commits_of(&bundles);
         let mut priors: alloc::vec::Vec<SignalRecord> = alloc::vec::Vec::new();
-        for acc in ctx.remaining_accounts {
-            let parsed = Account::<SignalRecord>::try_from(acc)
-                .map_err(|_| error!(ProgramV04Error::RecordMismatch))?;
-            priors.push(parsed.into_inner());
+        for item in tail {
+            match item {
+                ParsedAccount::Signal(sig) => priors.push(sig),
+                _ => return Err(error!(ProgramV04Error::RecordMismatch)),
+            }
         }
         select_candidate_from_records(
             &ctx.accounts.kernel_state,
             &mut ctx.accounts.transition_record,
             &ctx.accounts.observation_record,
             &priors,
-            &[],
+            &prior_commits,
 )?;
         emit!(TransitionSelected { transition_id, stage: TransitionRecord::SELECTED });
         Ok(())
@@ -1192,31 +1264,35 @@ pub mod program_v04 {
     /// census at the target's parent, or the instruction refuses
     /// before any replay — an omitted eligible competitor can no
     /// longer pass unjudged.
+    /// Slice 31: remaining accounts begin with `prior_bundle_count` prior COMMITTED bundles (head order, self-delimited by each bundle's stored signal/plan counts); the tail is this instruction's own evidence, as before.
     pub fn select_candidate_with_siblings(
         ctx: Context<SelectCandidateWithSiblings>,
         transition_id: [u8; 32],
         observation_id: [u8; 32],
+        prior_bundle_count: u32,
     ) -> Result<()> {
         if ctx.accounts.transition_record.transition_id != transition_id
             || ctx.accounts.observation_record.observation_id != observation_id
         {
             return Err(error!(ProgramV04Error::RecordMismatch));
         }
+        let (bundles, tail) = split_prior_bundles(
+            classify_remaining_accounts(ctx.remaining_accounts)?,
+            prior_bundle_count as usize,
+        )?;
+        let prior_commits = prior_commits_of(&bundles);
         let mut sibling_transitions: alloc::vec::Vec<TransitionRecord> = alloc::vec::Vec::new();
         let mut sibling_observations: alloc::vec::Vec<ObservationRecord> = alloc::vec::Vec::new();
         let mut all_signals: alloc::vec::Vec<SignalRecord> = alloc::vec::Vec::new();
-        for acc in ctx.remaining_accounts {
-            if let Ok(parsed) = Account::<TransitionRecord>::try_from(acc) {
-                sibling_transitions.push(parsed.into_inner());
-                continue;
+        for item in tail {
+            match item {
+                ParsedAccount::Transition(tr) => sibling_transitions.push(tr),
+                ParsedAccount::Observation(obs) => sibling_observations.push(obs),
+                ParsedAccount::Signal(sig) => all_signals.push(sig),
+                ParsedAccount::Plan(_) => {
+                    return Err(error!(ProgramV04Error::RecordMismatch))
+                }
             }
-            if let Ok(parsed) = Account::<ObservationRecord>::try_from(acc) {
-                sibling_observations.push(parsed.into_inner());
-                continue;
-            }
-            let parsed = Account::<SignalRecord>::try_from(acc)
-                .map_err(|_| error!(ProgramV04Error::RecordMismatch))?;
-            all_signals.push(parsed.into_inner());
         }
         for (i, tr) in sibling_transitions.iter().enumerate() {
             if tr.transition_id == transition_id
@@ -1275,7 +1351,7 @@ pub mod program_v04 {
             &ctx.accounts.observation_record,
             &target_priors,
             &siblings,
-            &[],
+            &prior_commits,
 )?;
         emit!(TransitionSelected { transition_id, stage: TransitionRecord::SELECTED });
         Ok(())
@@ -1299,21 +1375,29 @@ pub mod program_v04 {
     /// taken — enforced by this helper from the stored record
     /// (see the helper's honesty bound: the replay proves
     /// selection, not Blocked-ness, until reconcile/validate land).
+    /// Slice 31: remaining accounts begin with `prior_bundle_count` prior COMMITTED bundles (head order, self-delimited by each bundle's stored signal/plan counts); the tail is this instruction's own evidence, as before.
     pub fn open_planning(
         ctx: Context<OpenPlanning>,
         transition_id: [u8; 32],
         observation_id: [u8; 32],
+        prior_bundle_count: u32,
     ) -> Result<()> {
         if ctx.accounts.transition_record.transition_id != transition_id
             || ctx.accounts.observation_record.observation_id != observation_id
         {
             return Err(error!(ProgramV04Error::RecordMismatch));
         }
+        let (bundles, tail) = split_prior_bundles(
+            classify_remaining_accounts(ctx.remaining_accounts)?,
+            prior_bundle_count as usize,
+        )?;
+        let prior_commits = prior_commits_of(&bundles);
         let mut priors: alloc::vec::Vec<SignalRecord> = alloc::vec::Vec::new();
-        for acc in ctx.remaining_accounts {
-            let parsed = Account::<SignalRecord>::try_from(acc)
-                .map_err(|_| error!(ProgramV04Error::RecordMismatch))?;
-            priors.push(parsed.into_inner());
+        for item in tail {
+            match item {
+                ParsedAccount::Signal(sig) => priors.push(sig),
+                _ => return Err(error!(ProgramV04Error::RecordMismatch)),
+            }
         }
         let life = open_planning_from_records(
             &ctx.accounts.kernel_state,
@@ -1321,7 +1405,7 @@ pub mod program_v04 {
             &ctx.accounts.observation_record,
             &priors,
             resolve_agent_id(ctx.accounts.payer.key()),
-            &[],
+            &prior_commits,
 )?;
         debug_assert_eq!(life, Life::Planning);
         emit!(TransitionPlanningOpened {
@@ -1347,33 +1431,43 @@ pub mod program_v04 {
     /// and, by the identity mapping, the plan's agent: the kernel's
     /// agent gate (registered, active, in the proposer's groups)
     /// applies here, unlike open_planning's anyone rule.
+    /// Slice 31: remaining accounts begin with `prior_bundle_count` prior COMMITTED bundles (head order, self-delimited by each bundle's stored signal/plan counts); the tail is this instruction's own evidence, as before.
     pub fn submit_plan(
         ctx: Context<SubmitPlan>,
         transition_id: [u8; 32],
         observation_id: [u8; 32],
         claims: Vec<PlanClaimArg>,
         expires_at: u64,
+        prior_bundle_count: u32,
     ) -> Result<()> {
         if ctx.accounts.transition_record.transition_id != transition_id
             || ctx.accounts.observation_record.observation_id != observation_id
         {
             return Err(error!(ProgramV04Error::RecordMismatch));
         }
+        let (bundles, tail) = split_prior_bundles(
+            classify_remaining_accounts(ctx.remaining_accounts)?,
+            prior_bundle_count as usize,
+        )?;
+        let prior_commits = prior_commits_of(&bundles);
         let signal_count = ctx.accounts.transition_record.signal_count as usize;
-        if ctx.remaining_accounts.len() < signal_count {
+        if tail.len() < signal_count {
             return Err(error!(ProgramV04Error::PlanFailed));
         }
+        let mut tail_iter = tail.into_iter();
         let mut priors: alloc::vec::Vec<SignalRecord> = alloc::vec::Vec::new();
-        for acc in &ctx.remaining_accounts[..signal_count] {
-            let parsed = Account::<SignalRecord>::try_from(acc)
-                .map_err(|_| error!(ProgramV04Error::RecordMismatch))?;
-            priors.push(parsed.into_inner());
+        for _ in 0..signal_count {
+            match tail_iter.next() {
+                Some(ParsedAccount::Signal(sig)) => priors.push(sig),
+                _ => return Err(error!(ProgramV04Error::RecordMismatch)),
+            }
         }
         let mut prior_plans: alloc::vec::Vec<PlanRecord> = alloc::vec::Vec::new();
-        for acc in &ctx.remaining_accounts[signal_count..] {
-            let parsed = Account::<PlanRecord>::try_from(acc)
-                .map_err(|_| error!(ProgramV04Error::RecordMismatch))?;
-            prior_plans.push(parsed.into_inner());
+        for item in tail_iter {
+            match item {
+                ParsedAccount::Plan(plan) => prior_plans.push(plan),
+                _ => return Err(error!(ProgramV04Error::RecordMismatch)),
+            }
         }
         let plan = submit_plan_from_records(
             &ctx.accounts.kernel_state,
@@ -1385,7 +1479,7 @@ pub mod program_v04 {
             expires_at,
             resolve_agent_id(ctx.accounts.payer.key()),
             ctx.bumps.plan_record,
-            &[],
+            &prior_commits,
 )?;
         *ctx.accounts.plan_record = plan;
         emit!(PlanSubmitted {
@@ -1415,31 +1509,41 @@ pub mod program_v04 {
     /// later validate slice judges it; only a window still open,
     /// an unreproducible chain, or an incomplete prior set
     /// refuses, and then the record stands exactly as it stood.
+    /// Slice 31: remaining accounts begin with `prior_bundle_count` prior COMMITTED bundles (head order, self-delimited by each bundle's stored signal/plan counts); the tail is this instruction's own evidence, as before.
     pub fn reconcile_plans(
         ctx: Context<ReconcilePlans>,
         transition_id: [u8; 32],
         observation_id: [u8; 32],
+        prior_bundle_count: u32,
     ) -> Result<()> {
         if ctx.accounts.transition_record.transition_id != transition_id
             || ctx.accounts.observation_record.observation_id != observation_id
         {
             return Err(error!(ProgramV04Error::RecordMismatch));
         }
+        let (bundles, tail) = split_prior_bundles(
+            classify_remaining_accounts(ctx.remaining_accounts)?,
+            prior_bundle_count as usize,
+        )?;
+        let prior_commits = prior_commits_of(&bundles);
         let signal_count = ctx.accounts.transition_record.signal_count as usize;
-        if ctx.remaining_accounts.len() < signal_count {
+        if tail.len() < signal_count {
             return Err(error!(ProgramV04Error::ReconcileFailed));
         }
+        let mut tail_iter = tail.into_iter();
         let mut priors: alloc::vec::Vec<SignalRecord> = alloc::vec::Vec::new();
-        for acc in &ctx.remaining_accounts[..signal_count] {
-            let parsed = Account::<SignalRecord>::try_from(acc)
-                .map_err(|_| error!(ProgramV04Error::RecordMismatch))?;
-            priors.push(parsed.into_inner());
+        for _ in 0..signal_count {
+            match tail_iter.next() {
+                Some(ParsedAccount::Signal(sig)) => priors.push(sig),
+                _ => return Err(error!(ProgramV04Error::RecordMismatch)),
+            }
         }
         let mut prior_plans: alloc::vec::Vec<PlanRecord> = alloc::vec::Vec::new();
-        for acc in &ctx.remaining_accounts[signal_count..] {
-            let parsed = Account::<PlanRecord>::try_from(acc)
-                .map_err(|_| error!(ProgramV04Error::RecordMismatch))?;
-            prior_plans.push(parsed.into_inner());
+        for item in tail_iter {
+            match item {
+                ParsedAccount::Plan(plan) => prior_plans.push(plan),
+                _ => return Err(error!(ProgramV04Error::RecordMismatch)),
+            }
         }
         let life = reconcile_plans_from_records(
             &ctx.accounts.kernel_state,
@@ -1447,7 +1551,7 @@ pub mod program_v04 {
             &ctx.accounts.observation_record,
             &priors,
             &prior_plans,
-            &[],
+            &prior_commits,
 )?;
         debug_assert_eq!(life, Life::Reconciling);
         emit!(TransitionReconciled {
@@ -1476,31 +1580,41 @@ pub mod program_v04 {
     /// an incomplete prior set, a stored verdict the supplied
     /// set does not reproduce, or a still-blocked record
     /// refuses, and then the record stands exactly as it stood.
+    /// Slice 31: remaining accounts begin with `prior_bundle_count` prior COMMITTED bundles (head order, self-delimited by each bundle's stored signal/plan counts); the tail is this instruction's own evidence, as before.
     pub fn validate_transition(
         ctx: Context<ValidateTransition>,
         transition_id: [u8; 32],
         observation_id: [u8; 32],
+        prior_bundle_count: u32,
     ) -> Result<()> {
         if ctx.accounts.transition_record.transition_id != transition_id
             || ctx.accounts.observation_record.observation_id != observation_id
         {
             return Err(error!(ProgramV04Error::RecordMismatch));
         }
+        let (bundles, tail) = split_prior_bundles(
+            classify_remaining_accounts(ctx.remaining_accounts)?,
+            prior_bundle_count as usize,
+        )?;
+        let prior_commits = prior_commits_of(&bundles);
         let signal_count = ctx.accounts.transition_record.signal_count as usize;
-        if ctx.remaining_accounts.len() < signal_count {
+        if tail.len() < signal_count {
             return Err(error!(ProgramV04Error::ValidateFailed));
         }
+        let mut tail_iter = tail.into_iter();
         let mut priors: alloc::vec::Vec<SignalRecord> = alloc::vec::Vec::new();
-        for acc in &ctx.remaining_accounts[..signal_count] {
-            let parsed = Account::<SignalRecord>::try_from(acc)
-                .map_err(|_| error!(ProgramV04Error::RecordMismatch))?;
-            priors.push(parsed.into_inner());
+        for _ in 0..signal_count {
+            match tail_iter.next() {
+                Some(ParsedAccount::Signal(sig)) => priors.push(sig),
+                _ => return Err(error!(ProgramV04Error::RecordMismatch)),
+            }
         }
         let mut prior_plans: alloc::vec::Vec<PlanRecord> = alloc::vec::Vec::new();
-        for acc in &ctx.remaining_accounts[signal_count..] {
-            let parsed = Account::<PlanRecord>::try_from(acc)
-                .map_err(|_| error!(ProgramV04Error::RecordMismatch))?;
-            prior_plans.push(parsed.into_inner());
+        for item in tail_iter {
+            match item {
+                ParsedAccount::Plan(plan) => prior_plans.push(plan),
+                _ => return Err(error!(ProgramV04Error::RecordMismatch)),
+            }
         }
         let life = validate_transition_from_records(
             &ctx.accounts.kernel_state,
@@ -1508,7 +1622,7 @@ pub mod program_v04 {
             &ctx.accounts.observation_record,
             &priors,
             &prior_plans,
-            &[],
+            &prior_commits,
 )?;
         debug_assert!(life == Life::Validated || life == Life::Blocked);
         emit!(TransitionValidated {
@@ -1533,31 +1647,41 @@ pub mod program_v04 {
     /// time, refuses — the record stands `VALIDATED` for a
     /// later declare at a clock where the predicate holds, or
     /// for the exception path to judge it.
+    /// Slice 31: remaining accounts begin with `prior_bundle_count` prior COMMITTED bundles (head order, self-delimited by each bundle's stored signal/plan counts); the tail is this instruction's own evidence, as before.
     pub fn declare_transition(
         ctx: Context<DeclareTransition>,
         transition_id: [u8; 32],
         observation_id: [u8; 32],
+        prior_bundle_count: u32,
     ) -> Result<()> {
         if ctx.accounts.transition_record.transition_id != transition_id
             || ctx.accounts.observation_record.observation_id != observation_id
         {
             return Err(error!(ProgramV04Error::RecordMismatch));
         }
+        let (bundles, tail) = split_prior_bundles(
+            classify_remaining_accounts(ctx.remaining_accounts)?,
+            prior_bundle_count as usize,
+        )?;
+        let prior_commits = prior_commits_of(&bundles);
         let signal_count = ctx.accounts.transition_record.signal_count as usize;
-        if ctx.remaining_accounts.len() < signal_count {
+        if tail.len() < signal_count {
             return Err(error!(ProgramV04Error::DeclareFailed));
         }
+        let mut tail_iter = tail.into_iter();
         let mut priors: alloc::vec::Vec<SignalRecord> = alloc::vec::Vec::new();
-        for acc in &ctx.remaining_accounts[..signal_count] {
-            let parsed = Account::<SignalRecord>::try_from(acc)
-                .map_err(|_| error!(ProgramV04Error::RecordMismatch))?;
-            priors.push(parsed.into_inner());
+        for _ in 0..signal_count {
+            match tail_iter.next() {
+                Some(ParsedAccount::Signal(sig)) => priors.push(sig),
+                _ => return Err(error!(ProgramV04Error::RecordMismatch)),
+            }
         }
         let mut prior_plans: alloc::vec::Vec<PlanRecord> = alloc::vec::Vec::new();
-        for acc in &ctx.remaining_accounts[signal_count..] {
-            let parsed = Account::<PlanRecord>::try_from(acc)
-                .map_err(|_| error!(ProgramV04Error::RecordMismatch))?;
-            prior_plans.push(parsed.into_inner());
+        for item in tail_iter {
+            match item {
+                ParsedAccount::Plan(plan) => prior_plans.push(plan),
+                _ => return Err(error!(ProgramV04Error::RecordMismatch)),
+            }
         }
         let life = declare_transition_from_records(
             &ctx.accounts.kernel_state,
@@ -1565,7 +1689,7 @@ pub mod program_v04 {
             &ctx.accounts.observation_record,
             &priors,
             &prior_plans,
-            &[],
+            &prior_commits,
 )?;
         debug_assert!(life == Life::Committable);
         emit!(TransitionDeclared {
@@ -1589,31 +1713,41 @@ pub mod program_v04 {
     /// the gate with `GovernanceCommitRequired` — its commit
     /// path is the slice-28 `commit_governance_from_records` helper
     /// (no instruction yet — see the slice-28 module note).
+    /// Slice 31: remaining accounts begin with `prior_bundle_count` prior COMMITTED bundles (head order, self-delimited by each bundle's stored signal/plan counts); the tail is this instruction's own evidence, as before.
     pub fn commit_transition(
         ctx: Context<CommitTransition>,
         transition_id: [u8; 32],
         observation_id: [u8; 32],
+        prior_bundle_count: u32,
     ) -> Result<()> {
         if ctx.accounts.transition_record.transition_id != transition_id
             || ctx.accounts.observation_record.observation_id != observation_id
         {
             return Err(error!(ProgramV04Error::RecordMismatch));
         }
+        let (bundles, tail) = split_prior_bundles(
+            classify_remaining_accounts(ctx.remaining_accounts)?,
+            prior_bundle_count as usize,
+        )?;
+        let prior_commits = prior_commits_of(&bundles);
         let signal_count = ctx.accounts.transition_record.signal_count as usize;
-        if ctx.remaining_accounts.len() < signal_count {
+        if tail.len() < signal_count {
             return Err(error!(ProgramV04Error::CommitFailed));
         }
+        let mut tail_iter = tail.into_iter();
         let mut priors: alloc::vec::Vec<SignalRecord> = alloc::vec::Vec::new();
-        for acc in &ctx.remaining_accounts[..signal_count] {
-            let parsed = Account::<SignalRecord>::try_from(acc)
-                .map_err(|_| error!(ProgramV04Error::RecordMismatch))?;
-            priors.push(parsed.into_inner());
+        for _ in 0..signal_count {
+            match tail_iter.next() {
+                Some(ParsedAccount::Signal(sig)) => priors.push(sig),
+                _ => return Err(error!(ProgramV04Error::RecordMismatch)),
+            }
         }
         let mut prior_plans: alloc::vec::Vec<PlanRecord> = alloc::vec::Vec::new();
-        for acc in &ctx.remaining_accounts[signal_count..] {
-            let parsed = Account::<PlanRecord>::try_from(acc)
-                .map_err(|_| error!(ProgramV04Error::RecordMismatch))?;
-            prior_plans.push(parsed.into_inner());
+        for item in tail_iter {
+            match item {
+                ParsedAccount::Plan(plan) => prior_plans.push(plan),
+                _ => return Err(error!(ProgramV04Error::RecordMismatch)),
+            }
         }
         let life = commit_transition_from_records(
             &mut ctx.accounts.kernel_state,
@@ -1621,7 +1755,7 @@ pub mod program_v04 {
             &ctx.accounts.observation_record,
             &priors,
             &prior_plans,
-            &[],
+            &prior_commits,
 )?;
         debug_assert!(life == Life::Committed);
         emit!(TransitionCommitted {
@@ -4969,6 +5103,139 @@ pub struct PriorCommit<'a> {
     pub observation_record: &'a ObservationRecord,
     pub prior_signals: &'a [SignalRecord],
     pub prior_plans: &'a [PlanRecord],
+}
+
+/// One classified remaining account (slice 31): the instruction-side
+/// parse of a raw `AccountInfo` into the record it holds, by
+/// discriminator in the sibling instruction's order — Transition,
+/// Observation, Signal, Plan — so a mis-typed account refuses with
+/// `RecordMismatch` before any replay runs, exactly as the sibling
+/// classifier already did for its own field.
+#[derive(Debug)]
+pub enum ParsedAccount {
+    Transition(TransitionRecord),
+    Observation(ObservationRecord),
+    Signal(SignalRecord),
+    Plan(PlanRecord),
+}
+
+/// Classify every remaining account, in order, into its record type.
+/// An account that is none of the four record types refuses — there
+/// is no "skip unknown" path, because an unparsed bundle member would
+/// silently shorten a chain.
+pub fn classify_remaining_accounts<'a>(
+    accounts: &'a [AccountInfo<'a>],
+) -> Result<alloc::vec::Vec<ParsedAccount>> {
+    let mut parsed = alloc::vec::Vec::new();
+    for acc in accounts {
+        if let Ok(p) = Account::<TransitionRecord>::try_from(acc) {
+            parsed.push(ParsedAccount::Transition(p.into_inner()));
+            continue;
+        }
+        if let Ok(p) = Account::<ObservationRecord>::try_from(acc) {
+            parsed.push(ParsedAccount::Observation(p.into_inner()));
+            continue;
+        }
+        if let Ok(p) = Account::<SignalRecord>::try_from(acc) {
+            parsed.push(ParsedAccount::Signal(p.into_inner()));
+            continue;
+        }
+        let p = Account::<PlanRecord>::try_from(acc)
+            .map_err(|_| error!(ProgramV04Error::RecordMismatch))?;
+        parsed.push(ParsedAccount::Plan(p.into_inner()));
+    }
+    Ok(parsed)
+}
+
+/// One prior commit bundle, owned (slice 31): the stored records a
+/// prior `COMMITTED` transition's replay needs — its transition and
+/// observation records plus its signal and plan sets, in chain order.
+#[derive(Debug)]
+pub struct OwnedPriorBundle {
+    pub transition_record: TransitionRecord,
+    pub observation_record: ObservationRecord,
+    pub signals: alloc::vec::Vec<SignalRecord>,
+    pub plans: alloc::vec::Vec<PlanRecord>,
+}
+
+/// Split the first `count` prior bundles off the head of a classified
+/// remaining-account list, returning the bundles and the tail — the
+/// target's own evidence, which the caller parses exactly as before.
+/// A bundle is self-delimiting: the transition record, then the
+/// observation it names, then exactly its stored `signal_count`
+/// signals, then exactly its stored `plan_count` plans. Every linkage
+/// is checked at parse time: the observation id must equal the
+/// transition's, and every signal and plan must name the bundle's
+/// transition — a bundle that mis-links refuses with `RecordMismatch`
+/// before any kernel replay runs. A bundle short of its counts, or a
+/// count running past the list, refuses the same way; the stage gate
+/// stays in `drive_prior_commit_to_commit` (a merely-declared bundle
+/// is not history), not duplicated here.
+pub fn split_prior_bundles(
+    parsed: alloc::vec::Vec<ParsedAccount>,
+    count: usize,
+) -> Result<(alloc::vec::Vec<OwnedPriorBundle>, alloc::vec::Vec<ParsedAccount>)> {
+    let mut iter = parsed.into_iter();
+    let mut bundles = alloc::vec::Vec::new();
+    for _ in 0..count {
+        let transition_record = match iter.next() {
+            Some(ParsedAccount::Transition(tr)) => tr,
+            _ => return Err(error!(ProgramV04Error::RecordMismatch)),
+        };
+        let observation_record = match iter.next() {
+            Some(ParsedAccount::Observation(obs))
+                if obs.observation_id == transition_record.observation_id =>
+            {
+                obs
+            }
+            _ => return Err(error!(ProgramV04Error::RecordMismatch)),
+        };
+        let mut signals = alloc::vec::Vec::new();
+        for _ in 0..transition_record.signal_count as usize {
+            match iter.next() {
+                Some(ParsedAccount::Signal(sig))
+                    if sig.transition_id == transition_record.transition_id =>
+                {
+                    signals.push(sig)
+                }
+                _ => return Err(error!(ProgramV04Error::RecordMismatch)),
+            }
+        }
+        let mut plans = alloc::vec::Vec::new();
+        for _ in 0..transition_record.plan_count as usize {
+            match iter.next() {
+                Some(ParsedAccount::Plan(plan))
+                    if plan.transition_id == transition_record.transition_id =>
+                {
+                    plans.push(plan)
+                }
+                _ => return Err(error!(ProgramV04Error::RecordMismatch)),
+            }
+        }
+        bundles.push(OwnedPriorBundle {
+            transition_record,
+            observation_record,
+            signals,
+            plans,
+        });
+    }
+    Ok((bundles, iter.collect()))
+}
+
+/// Build the helper-side `PriorCommit` views over owned bundles. The
+/// views borrow the bundles, so they live only as long as the
+/// instruction body that holds them — the helper call runs inside
+/// that body, never past it.
+pub fn prior_commits_of(bundles: &[OwnedPriorBundle]) -> alloc::vec::Vec<PriorCommit<'_>> {
+    bundles
+        .iter()
+        .map(|b| PriorCommit {
+            transition_record: &b.transition_record,
+            observation_record: &b.observation_record,
+            prior_signals: &b.signals,
+            prior_plans: &b.plans,
+        })
+        .collect()
 }
 
 /// Drive one prior commit through its full ordinary chain inside a
@@ -11092,4 +11359,143 @@ mod tests {
         assert!(format!("{:?}", err).contains("ParentMismatch"));
         assert_eq!(record.stage, TransitionRecord::REGISTERED);
     }
+
+    #[test]
+    fn bundle_split_parses_one_bundle_and_tail() {
+        // One committed bundle (transition, observation, its signal,
+        // its plan) plus one trailing target signal: the bundle parses
+        // to its own records and the tail carries exactly the extra
+        // account, in order.
+        let (_state, rec, obs, sig, plan) = committed_pair();
+        let tail_sig = sig;
+        let parsed = alloc::vec![
+            ParsedAccount::Transition(rec),
+            ParsedAccount::Observation(obs),
+            ParsedAccount::Signal(sig),
+            ParsedAccount::Plan(plan),
+            ParsedAccount::Signal(tail_sig),
+        ];
+        let (bundles, tail) =
+            split_prior_bundles(parsed, 1).expect("a well-linked bundle must parse");
+        assert_eq!(bundles.len(), 1);
+        assert_eq!(bundles[0].signals.len(), 1);
+        assert_eq!(bundles[0].plans.len(), 1);
+        assert_eq!(tail.len(), 1);
+        assert!(matches!(tail[0], ParsedAccount::Signal(_)));
+        let priors = prior_commits_of(&bundles);
+        assert_eq!(priors.len(), 1);
+        assert_eq!(priors[0].prior_signals.len(), 1);
+        assert_eq!(priors[0].prior_plans.len(), 1);
+    }
+
+    #[test]
+    fn bundle_split_zero_bundles_leaves_all_as_tail() {
+        // Genesis instructions pass count 0: nothing is consumed and
+        // the whole list is the target's own evidence.
+        let (_state, rec, obs, sig, plan) = committed_pair();
+        let parsed = alloc::vec![
+            ParsedAccount::Transition(rec),
+            ParsedAccount::Observation(obs),
+            ParsedAccount::Signal(sig),
+            ParsedAccount::Plan(plan),
+        ];
+        let (bundles, tail) =
+            split_prior_bundles(parsed, 0).expect("zero bundles must parse");
+        assert!(bundles.is_empty());
+        assert_eq!(tail.len(), 4);
+    }
+
+    #[test]
+    fn bundle_split_refuses_wrong_observation_link() {
+        // The observation after the transition names another id: the
+        // bundle mis-links and refuses before any replay runs.
+        let (_state, rec, mut obs, sig, plan) = committed_pair();
+        obs.observation_id = [0x99; 32];
+        let parsed = alloc::vec![
+            ParsedAccount::Transition(rec),
+            ParsedAccount::Observation(obs),
+            ParsedAccount::Signal(sig),
+            ParsedAccount::Plan(plan),
+        ];
+        let err = split_prior_bundles(parsed, 1)
+            .expect_err("a mis-linked observation must refuse");
+        assert!(format!("{:?}", err).contains("RecordMismatch"));
+    }
+
+    #[test]
+    fn bundle_split_refuses_signal_for_another_transition() {
+        // A signal naming a different transition inside the bundle's
+        // signal run: the count is right but the linkage is wrong.
+        let (_state, rec, obs, mut sig, plan) = committed_pair();
+        sig.transition_id = [0x99; 32];
+        let parsed = alloc::vec![
+            ParsedAccount::Transition(rec),
+            ParsedAccount::Observation(obs),
+            ParsedAccount::Signal(sig),
+            ParsedAccount::Plan(plan),
+        ];
+        let err = split_prior_bundles(parsed, 1)
+            .expect_err("a foreign signal must refuse");
+        assert!(format!("{:?}", err).contains("RecordMismatch"));
+    }
+
+    #[test]
+    fn bundle_split_refuses_plan_for_another_transition() {
+        // Same shape on the plan run: a plan naming a different
+        // transition refuses, even with the counts satisfied.
+        let (_state, rec, obs, sig, mut plan) = committed_pair();
+        plan.transition_id = [0x99; 32];
+        let parsed = alloc::vec![
+            ParsedAccount::Transition(rec),
+            ParsedAccount::Observation(obs),
+            ParsedAccount::Signal(sig),
+            ParsedAccount::Plan(plan),
+        ];
+        let err = split_prior_bundles(parsed, 1)
+            .expect_err("a foreign plan must refuse");
+        assert!(format!("{:?}", err).contains("RecordMismatch"));
+    }
+
+    #[test]
+    fn bundle_split_refuses_truncated_and_overcounted() {
+        // Two refusals, one cause: the stored counts are not met by
+        // the supplied accounts — a bundle missing its plan, and a
+        // count of 2 bundles where only one exists.
+        let (_state, rec, obs, sig, _plan) = committed_pair();
+        let short = alloc::vec![
+            ParsedAccount::Transition(rec),
+            ParsedAccount::Observation(obs),
+            ParsedAccount::Signal(sig),
+        ];
+        let err = split_prior_bundles(short, 1)
+            .expect_err("a bundle short of its plan count must refuse");
+        assert!(format!("{:?}", err).contains("RecordMismatch"));
+        let (_state, rec, obs, sig, plan) = committed_pair();
+        let one = alloc::vec![
+            ParsedAccount::Transition(rec),
+            ParsedAccount::Observation(obs),
+            ParsedAccount::Signal(sig),
+            ParsedAccount::Plan(plan),
+        ];
+        let err = split_prior_bundles(one, 2)
+            .expect_err("a count past the list must refuse");
+        assert!(format!("{:?}", err).contains("RecordMismatch"));
+    }
+
+    #[test]
+    fn bundle_split_refuses_wrong_first_variant() {
+        // A bundle must open with its transition record: an
+        // observation first is a layout error, not a bundle.
+        let (_state, rec, obs, sig, plan) = committed_pair();
+        let parsed = alloc::vec![
+            ParsedAccount::Observation(obs),
+            ParsedAccount::Transition(rec),
+            ParsedAccount::Signal(sig),
+            ParsedAccount::Plan(plan),
+        ];
+        let err = split_prior_bundles(parsed, 1)
+            .expect_err("a bundle not opening with its transition must refuse");
+        assert!(format!("{:?}", err).contains("RecordMismatch"));
+    }
+
 }
