@@ -582,11 +582,45 @@ families, account inventory, and CU golden set are later step-5 slices.
   `selected_for` already names it), reconcile/validate/declare,
   commit replay moving the head, and CU measurement — later slices.
 
+## Slice 20 — open planning (`SELECTED` -> `PLANNING`)
+
+- The `open_planning` instruction: `TransitionRecord` gains
+  `planning_deadline` (SPACE 242 -> 250) and the `PLANNING` stage
+  value 5. The helper re-proves the whole selection chain in a
+  rebuilt kernel (chain + priors + select at the state's clock,
+  with the prior set required to number exactly `signal_count`)
+  and only then runs kernel `open_planning` at the state's
+  clock — a stored `SELECTED` label a replay cannot reproduce
+  never opens planning. The persisted deadline is the state's
+  clock plus the launch policy's planning window (100): the
+  sealed launch kernel installs `launch_policy()` for every
+  type, so this is the kernel's own policy value. The caller is
+  the signing payer's agent id, and the kernel's Selected-path
+  rule is "anyone" — the tests prove a non-proposer, non-agent
+  payer opens planning. A `Blocked` record refuses here: the
+  kernel's proposer-or-seat re-plan path is later work, not
+  opened by this instruction. No plan is submitted here.
+- Host tests 130/130 (122 prior + 8 slice-20: selected ->
+  planning with deadline 300 at clock 200, wrong-stage refusal,
+  once-only, incomplete prior set refusal, selection re-proven
+  at the clock (a SELECTED label with the clock moved back
+  before the deadline refuses), later-clock deadline 600 at
+  clock 500, unsealed refusal, parent-mismatch refusal).
+  `anchor build` green under the pinned toolchain; the IDL gains
+  the 13th instruction, the 19th error (`PlanningFailed`), and
+  the 11th event (`TransitionPlanningOpened`) — 13 instructions,
+  4 accounts, 19 errors, 11 events; `.so` 752,464 bytes (sha256
+  `8b11c147…`).
+- Deliberately NOT slice 20: `submit_plan` (its own record
+  account, next slice), the Blocked -> Planning re-plan path,
+  reconcile/validate/declare, commit replay moving the head,
+  and CU measurement — later slices.
+
 ## Build
 
 ```sh
 export RUSTUP_HOME=~/workspace/toolchains/rustup CARGO_HOME=~/workspace/toolchains/cargo
 export PATH=~/workspace/toolchains/cargo/bin:~/workspace/toolchains/solana/bin:$PATH
 ~/workspace/toolchains/anchor/bin/anchor build   # from this directory
-cargo test                                        # host tests, 122/122
+cargo test                                        # host tests, 130/130
 ```

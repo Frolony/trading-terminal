@@ -388,6 +388,35 @@
 //! `selected_for` already names it, so the gate's refusal is the
 //! correct outcome by the wrong door, and the planning slice must
 //! widen the gate or name that refusal properly.
+//!
+//! Slice 20 (this slice): the first planning instruction,
+//! `open_planning` — `SELECTED` (4) -> `PLANNING` (5). The helper
+//! re-proves the whole selection chain in a rebuilt kernel (chain +
+//! priors + select at the state's clock, exactly as slice 16's
+//! select helper proves it) and only then runs kernel
+//! `open_planning` at the state's clock, so a stored `SELECTED`
+//! label a replay cannot reproduce never opens planning — the
+//! stage label is re-proven, never trusted, as in slices 17–18.
+//! The kernel sets the planning deadline to `now +
+//! planning_window`; the program persists exactly that value, with
+//! `now` the state's clock and the window the launch policy's
+//! (the sealed launch kernel installs `launch_policy()` for every
+//! type, so this is the kernel's own policy value, not a
+//! program-side guess), on `TransitionRecord.planning_deadline`
+//! — 0 until planning opens. The caller is the signing payer's
+//! agent id, and the kernel's Selected-path rule is "anyone": the
+//! tests prove a non-proposer, non-agent payer opens planning,
+//! and a proposer-only reading would contradict the kernel.
+//! Honesty bounds, stated not smoothed: this slice opens planning
+//! only — no plan is submitted here (`submit_plan` is the next
+//! slice, with its own record account), and the Blocked -> Planning
+//! re-plan path is NOT opened by this instruction: the stage gate
+//! is exactly `SELECTED`, so a `Blocked` record refuses here even
+//! though the kernel would admit a proposer-or-seat re-plan —
+//! re-plan is later work, named here rather than smuggled in.
+//! Planning on a sibling field is likewise not re-judged here:
+//! selection was already proven by the select slices, and this
+//! helper's rebuilt kernel holds only this transition.
 
 extern crate alloc;
 
@@ -855,6 +884,74 @@ pub mod program_v04 {
         emit!(TransitionSelected { transition_id, stage: TransitionRecord::SELECTED });
         Ok(())
     }
+
+    /// Open planning (§4.1, sixth replay row, v0.4 form, slice 20):
+    /// run kernel `open_planning` on a `SELECTED` record pair and
+    /// advance the transition record's stage to `PLANNING`, persisting
+    /// the planning deadline the kernel sets (`clock +
+    /// planning_window`). Prior signals for the transition arrive as
+    /// remaining accounts and must number exactly the record's
+    /// `signal_count` — the slice-16 anchor — because the helper
+    /// re-proves the selection chain before opening planning; a
+    /// stored `SELECTED` label alone opens nothing. The payer is a
+    /// fee payer and, for the Selected path, the kernel's planning
+    /// caller: the kernel admits anyone there, so no proposer or
+    /// seat gate applies in this instruction. A `Blocked` record
+    /// refuses here: the kernel's proposer-or-seat re-plan path is
+    /// later work, not opened by this instruction.
+    pub fn open_planning(
+        ctx: Context<OpenPlanning>,
+        transition_id: [u8; 32],
+        observation_id: [u8; 32],
+    ) -> Result<()> {
+        if ctx.accounts.transition_record.transition_id != transition_id
+            || ctx.accounts.observation_record.observation_id != observation_id
+        {
+            return Err(error!(ProgramV04Error::RecordMismatch));
+        }
+        let mut priors: alloc::vec::Vec<SignalRecord> = alloc::vec::Vec::new();
+        for acc in ctx.remaining_accounts {
+            let parsed = Account::<SignalRecord>::try_from(acc)
+                .map_err(|_| error!(ProgramV04Error::RecordMismatch))?;
+            priors.push(parsed.into_inner());
+        }
+        let life = open_planning_from_records(
+            &ctx.accounts.kernel_state,
+            &mut ctx.accounts.transition_record,
+            &ctx.accounts.observation_record,
+            &priors,
+            resolve_agent_id(ctx.accounts.payer.key()),
+        )?;
+        debug_assert_eq!(life, Life::Planning);
+        emit!(TransitionPlanningOpened {
+            transition_id,
+            stage: TransitionRecord::PLANNING,
+            planning_deadline: ctx.accounts.transition_record.planning_deadline,
+        });
+        Ok(())
+    }
+}
+
+#[derive(Accounts)]
+#[instruction(transition_id: [u8; 32], observation_id: [u8; 32])]
+pub struct OpenPlanning<'info> {
+    #[account(
+        seeds = [b"kernel-state"],
+        bump = kernel_state.bump,
+    )]
+    pub kernel_state: Account<'info, KernelState>,
+    #[account(
+        mut,
+        seeds = [b"transition", transition_id.as_ref()],
+        bump = transition_record.bump,
+    )]
+    pub transition_record: Account<'info, TransitionRecord>,
+    #[account(
+        seeds = [b"observation", observation_id.as_ref()],
+        bump = observation_record.bump,
+    )]
+    pub observation_record: Account<'info, ObservationRecord>,
+    pub payer: Signer<'info>,
 }
 
 #[derive(Accounts)]
@@ -1160,6 +1257,9 @@ pub struct TransitionRecord {
     /// launch policy (slice 14 persists it alongside `eligible_at`).
     /// 0 until eligibility is proven.
     pub consensus_deadline: u64,
+    /// Planning deadline `clock + planning_window` of the sealed
+    /// launch policy (slice 20 persists it). 0 until planning opens.
+    pub planning_deadline: u64,
     /// Number of `SignalRecord`s created for this transition (slice 16:
     /// the select completeness anchor). Written by `submit_signal` on
     /// success only — one per created record, revisions included —
@@ -1180,8 +1280,10 @@ impl TransitionRecord {
     pub const ELIGIBLE: u8 = 3;
     /// Stage value written by `select_candidate` (slice 16).
     pub const SELECTED: u8 = 4;
-    /// 8 (discriminator) + 32 + 32 + 8 + 32 + 32 + 32 + 8 + 32 + 1 + 8 + 8 + 8 + 1.
-    pub const SPACE: usize = 242;
+    /// Stage value written by `open_planning` (slice 20).
+    pub const PLANNING: u8 = 5;
+    /// 8 (discriminator) + 32 + 32 + 8 + 32 + 32 + 32 + 8 + 32 + 1 + 8 + 8 + 8 + 8 + 1.
+    pub const SPACE: usize = 250;
 }
 
 /// Build a `TransitionRecord` against a `KernelState`, enforcing the
@@ -1218,6 +1320,7 @@ pub fn build_transition_record(
         stage: TransitionRecord::REGISTERED,
         eligible_at: 0,
         consensus_deadline: 0,
+        planning_deadline: 0,
         signal_count: 0,
         bump,
     })
@@ -2017,6 +2120,164 @@ pub fn select_candidate_from_records(
     Ok(life)
 }
 
+/// Open planning on a selected transition through the real kernel
+/// (slice 20). Pure except for the target record's stage and planning
+/// deadline, which advance only on success — every refusal leaves the
+/// record untouched. Gates, in order: sealed state; stage exactly
+/// `SELECTED` (a `Blocked` record refuses here — the kernel's
+/// proposer-or-seat re-plan path is later work, not this
+/// instruction); parent exactly the sealed head; observation linkage;
+/// a proven window; the completeness anchor — the supplied prior set
+/// must number exactly `signal_count`; every prior belonging to the
+/// target with a stored round matching its own `submitted_at`; no
+/// duplicated (agent, round) in the set. Replay then rebuilds the
+/// sealed launch kernel under `ProgramEnv`, replays the eligibility
+/// chain at the stored `eligible_at`, replays every prior signal at
+/// its own `submitted_at` in order, and runs kernel
+/// `select_candidate` at the state's clock — the stored `SELECTED`
+/// label is re-proven, never trusted — and only then runs kernel
+/// `open_planning` with the caller's agent id at the same clock,
+/// where the kernel's Selected-path rule admits anyone. Only a
+/// `Life::Planning` life advances the stage, and the persisted
+/// deadline is the state's clock plus the launch policy's
+/// planning window: `apply_launch_genesis` installs exactly
+/// `launch_policy()` for this transition's type, so that window is
+/// the kernel's own policy value, and a checked add refuses an
+/// overflowing deadline rather than wrapping it.
+pub fn open_planning_from_records(
+    kernel_state: &KernelState,
+    transition_record: &mut TransitionRecord,
+    observation_record: &ObservationRecord,
+    prior_signals: &[SignalRecord],
+    caller: [u8; 32],
+) -> Result<Life> {
+    if !kernel_state.sealed {
+        return Err(error!(ProgramV04Error::NotSealed));
+    }
+    if transition_record.stage != TransitionRecord::SELECTED {
+        return Err(error!(ProgramV04Error::WrongStage));
+    }
+    if transition_record.parent_index != kernel_state.head_index
+        || transition_record.parent_hash != kernel_state.head_hash
+    {
+        return Err(error!(ProgramV04Error::ParentMismatch));
+    }
+    if transition_record.observation_id != observation_record.observation_id {
+        return Err(error!(ProgramV04Error::RecordMismatch));
+    }
+    if transition_record.eligible_at == 0
+        || transition_record.consensus_deadline <= transition_record.eligible_at
+    {
+        return Err(error!(ProgramV04Error::PlanningFailed));
+    }
+    if prior_signals.len() as u64 != transition_record.signal_count {
+        return Err(error!(ProgramV04Error::PlanningFailed));
+    }
+    for prior in prior_signals {
+        if prior.transition_id != transition_record.transition_id {
+            return Err(error!(ProgramV04Error::RecordMismatch));
+        }
+        if signal_round(
+            transition_record.eligible_at,
+            transition_record.consensus_deadline,
+            prior.submitted_at,
+        ) != prior.round
+        {
+            return Err(error!(ProgramV04Error::RecordMismatch));
+        }
+    }
+    {
+        let mut seen: BTreeSet<([u8; 32], u64)> = BTreeSet::new();
+        for prior in prior_signals {
+            if !seen.insert((prior.agent.to_bytes(), prior.round)) {
+                return Err(error!(ProgramV04Error::PlanningFailed));
+            }
+        }
+    }
+    let proposer = resolve_proposer(kernel_state, transition_record.proposer)
+        .map_err(|_| error!(ProgramV04Error::PlanningFailed))?;
+    let observer_id = resolve_agent_id(observation_record.observer);
+    let mut k = sealed_launch_kernel_env().map_err(|_| error!(ProgramV04Error::KernelSeal))?;
+    if !k.has_role(&observer_id, Role::Observer) {
+        return Err(error!(ProgramV04Error::NotObserver));
+    }
+    let relevant_groups = match k.agent(&proposer) {
+        Some(profile) => profile.groups.clone(),
+        None => return Err(error!(ProgramV04Error::UnknownProposer)),
+    };
+    let observation = Observation {
+        id: observation_record.observation_id,
+        timestamp: observation_record.timestamp,
+        expiry: observation_record.expiry,
+        confidence: Amount::from_raw(observation_record.confidence_raw),
+    };
+    let eligible_at = transition_record.eligible_at;
+    k.ingest_observation(&observer_id, observation, eligible_at)
+        .map_err(|_| error!(ProgramV04Error::PlanningFailed))?;
+    let manifest = Manifest {
+        transition_type: transition_record.transition_type,
+        parent_index: transition_record.parent_index,
+        parent_hash: transition_record.parent_hash,
+        declared_next_hash: transition_record.declared_next_hash,
+        observation_id: transition_record.observation_id,
+        expires_at: transition_record.expires_at,
+        relevant_groups,
+        action: None,
+    };
+    k.register_transition(
+        &proposer,
+        transition_record.transition_id,
+        manifest,
+        BTreeSet::new(),
+        eligible_at,
+    )
+    .map_err(|_| error!(ProgramV04Error::PlanningFailed))?;
+    k.evaluate_transition(&transition_record.transition_id, eligible_at)
+        .map_err(|_| error!(ProgramV04Error::PlanningFailed))?;
+    k.mark_eligible(&transition_record.transition_id, eligible_at)
+        .map_err(|_| error!(ProgramV04Error::PlanningFailed))?;
+    match k.life_of(&transition_record.transition_id) {
+        Some(Life::Eligible) => {}
+        _ => return Err(error!(ProgramV04Error::PlanningFailed)),
+    }
+    let mut priors: alloc::vec::Vec<SignalRecord> = prior_signals.to_vec();
+    priors.sort_by_key(|s| s.submitted_at);
+    for prior in &priors {
+        let support = if prior.has_support {
+            Some(Amount::from_raw(prior.support_raw))
+        } else {
+            None
+        };
+        k.submit_round_signal(
+            &prior.agent.to_bytes(),
+            &transition_record.transition_id,
+            Amount::from_raw(prior.raw),
+            support,
+            prior.submitted_at,
+        )
+        .map_err(|_| error!(ProgramV04Error::PlanningFailed))?;
+    }
+    k.select_candidate(&transition_record.transition_id, kernel_state.clock)
+        .map_err(|_| error!(ProgramV04Error::PlanningFailed))?;
+    match k.life_of(&transition_record.transition_id) {
+        Some(Life::Selected) => {}
+        _ => return Err(error!(ProgramV04Error::PlanningFailed)),
+    }
+    k.open_planning(&caller, &transition_record.transition_id, kernel_state.clock)
+        .map_err(|_| error!(ProgramV04Error::PlanningFailed))?;
+    match k.life_of(&transition_record.transition_id) {
+        Some(Life::Planning) => {}
+        _ => return Err(error!(ProgramV04Error::PlanningFailed)),
+    }
+    let deadline = kernel_state
+        .clock
+        .checked_add(launch_policy().planning_window)
+        .ok_or(error!(ProgramV04Error::PlanningFailed))?;
+    transition_record.stage = TransitionRecord::PLANNING;
+    transition_record.planning_deadline = deadline;
+    Ok(Life::Planning)
+}
+
 /// One sibling transition offered to a sibling-aware select (slice 17):
 /// the sibling's stored transition record, its observation record, and
 /// its stored signal records. All three are read, never written: the
@@ -2477,6 +2738,13 @@ pub struct TransitionSelected {
     pub stage: u8,
 }
 
+#[event]
+pub struct TransitionPlanningOpened {
+    pub transition_id: [u8; 32],
+    pub stage: u8,
+    pub planning_deadline: u64,
+}
+
 #[error_code]
 pub enum ProgramV04Error {
     #[msg("program-v04 probe: kernel construction failed")]
@@ -2515,6 +2783,8 @@ pub enum ProgramV04Error {
     SignalFailed,
     #[msg("program-v04 select: kernel selection refused, window unproven, or supplied signal set incomplete")]
     SelectFailed,
+    #[msg("program-v04 planning: kernel planning refused, selection unproven, or supplied signal set incomplete")]
+    PlanningFailed,
 }
 
 // ---------------------------------------------------------------- launch genesis
@@ -2982,10 +3252,10 @@ mod tests {
         // Discriminator 8 + id 32 + type 32 + parent_index 8 +
         // parent_hash 32 + declared 32 + observation 32 + expires 8 +
         // proposer 32 + stage 1 + eligible_at 8 + consensus_deadline 8 +
-        // signal_count 8 + bump 1.
+        // planning_deadline 8 + signal_count 8 + bump 1.
         assert_eq!(
             TransitionRecord::SPACE,
-            8 + 32 + 32 + 8 + 32 + 32 + 32 + 8 + 32 + 1 + 8 + 8 + 8 + 1
+            8 + 32 + 32 + 8 + 32 + 32 + 32 + 8 + 32 + 1 + 8 + 8 + 8 + 8 + 1
         );
     }
 
@@ -3004,6 +3274,7 @@ mod tests {
             stage: TransitionRecord::ELIGIBLE,
             eligible_at: 200,
             consensus_deadline: 300,
+            planning_deadline: 400,
             signal_count: 2,
             bump: 254,
         };
@@ -3018,6 +3289,7 @@ mod tests {
         assert_eq!(back.stage, 3);
         assert_eq!(back.eligible_at, 200);
         assert_eq!(back.consensus_deadline, 300);
+        assert_eq!(back.planning_deadline, 400);
         assert_eq!(back.bump, 254);
     }
 
@@ -4567,6 +4839,7 @@ mod tests {
             stage: TransitionRecord::ELIGIBLE,
             eligible_at: 100,
             consensus_deadline: 200,
+            planning_deadline: 0,
             signal_count: 0,
             bump: 7,
         };
@@ -5048,5 +5321,123 @@ mod tests {
         .expect_err("a census at another parent must refuse");
         assert!(format!("{:?}", err).contains("SelectFailed"));
         assert_eq!(target.stage, TransitionRecord::ELIGIBLE);
+    }
+
+    fn planning_pair() -> (KernelState, TransitionRecord, ObservationRecord, SignalRecord) {
+        // One qualifying signal at clock 100; at the deadline 200
+        // the window is closed and the tally qualifies, so the
+        // kernel selects and the stage advances to 4.
+        let (mut state, mut record, obs, first) = selected_pair();
+        advance_clock_on_state(&mut state, 200).expect("advance to the deadline must succeed");
+        let life = select_candidate_from_records(&state, &mut record, &obs, &[first])
+            .expect("closed window with a qualifying tally must select");
+        assert_eq!(life, Life::Selected);
+        assert_eq!(record.stage, TransitionRecord::SELECTED);
+        assert_eq!(record.planning_deadline, 0);
+        (state, record, obs, first)
+    }
+
+    #[test]
+    fn open_planning_advances_selected_to_planning() {
+        // At clock 200 the planning window is 100, so the deadline
+        // is 300. The caller is a fresh id — not the proposer, not
+        // a seeded agent — because the kernel's Selected-path rule
+        // is "anyone", and a proposer-only reading would contradict
+        // it.
+        let (state, mut record, obs, first) = planning_pair();
+        let life = open_planning_from_records(&state, &mut record, &obs, &[first], [0x77; 32])
+            .expect("a kernel-proven selection must open planning");
+        assert_eq!(life, Life::Planning);
+        assert_eq!(record.stage, TransitionRecord::PLANNING);
+        assert_eq!(record.stage, 5);
+        assert_eq!(record.planning_deadline, 300);
+        assert_eq!(record.signal_count, 1);
+    }
+
+    #[test]
+    fn open_planning_refuses_wrong_stage() {
+        // Still ELIGIBLE, never selected: the stage gate refuses
+        // before any replay, and nothing on the record moves.
+        let (state, mut record, obs, first) = selected_pair();
+        let err = open_planning_from_records(&state, &mut record, &obs, &[first], ag(1))
+            .expect_err("an unselected record must refuse planning");
+        assert!(format!("{:?}", err).contains("WrongStage"));
+        assert_eq!(record.stage, TransitionRecord::ELIGIBLE);
+        assert_eq!(record.planning_deadline, 0);
+    }
+
+    #[test]
+    fn open_planning_is_once_only() {
+        let (state, mut record, obs, first) = planning_pair();
+        open_planning_from_records(&state, &mut record, &obs, &[first], ag(1))
+            .expect("first planning open must succeed");
+        let err = open_planning_from_records(&state, &mut record, &obs, &[first], ag(1))
+            .expect_err("a second planning open must refuse");
+        assert!(format!("{:?}", err).contains("WrongStage"));
+        assert_eq!(record.stage, TransitionRecord::PLANNING);
+        assert_eq!(record.planning_deadline, 300);
+    }
+
+    #[test]
+    fn open_planning_refuses_incomplete_prior_set() {
+        // The record claims a second signal that was never
+        // supplied: the slice-16 anchor refuses before any replay,
+        // and the SELECTED stage and zero deadline stand.
+        let (state, mut record, obs, first) = planning_pair();
+        record.signal_count = 2;
+        let err = open_planning_from_records(&state, &mut record, &obs, &[first], ag(1))
+            .expect_err("a short prior set must refuse planning");
+        assert!(format!("{:?}", err).contains("PlanningFailed"));
+        assert_eq!(record.stage, TransitionRecord::SELECTED);
+        assert_eq!(record.planning_deadline, 0);
+    }
+
+    #[test]
+    fn open_planning_reproves_selection_at_the_clock() {
+        // A SELECTED label with the clock moved back before the
+        // consensus deadline: the label alone opens nothing — the
+        // replayed select refuses (window still open) and planning
+        // stays closed with the deadline untouched.
+        let (mut state, mut record, obs, first) = planning_pair();
+        state.clock = 199;
+        let err = open_planning_from_records(&state, &mut record, &obs, &[first], ag(1))
+            .expect_err("an unreproducible selection must refuse planning");
+        assert!(format!("{:?}", err).contains("PlanningFailed"));
+        assert_eq!(record.stage, TransitionRecord::SELECTED);
+        assert_eq!(record.planning_deadline, 0);
+    }
+
+    #[test]
+    fn open_planning_at_later_clock_sets_later_deadline() {
+        // Planning opens at the clock it runs at, not the clock
+        // selection ran at: at 500 the deadline is 600.
+        let (mut state, mut record, obs, first) = planning_pair();
+        advance_clock_on_state(&mut state, 500).expect("advance past selection must succeed");
+        open_planning_from_records(&state, &mut record, &obs, &[first], ag(1))
+            .expect("planning at a later clock must succeed");
+        assert_eq!(record.stage, TransitionRecord::PLANNING);
+        assert_eq!(record.planning_deadline, 600);
+    }
+
+    #[test]
+    fn open_planning_refuses_unsealed() {
+        let (mut state, mut record, obs, first) = planning_pair();
+        state.sealed = false;
+        let err = open_planning_from_records(&state, &mut record, &obs, &[first], ag(1))
+            .expect_err("an unsealed state must refuse planning");
+        assert!(format!("{:?}", err).contains("NotSealed"));
+        assert_eq!(record.stage, TransitionRecord::SELECTED);
+        assert_eq!(record.planning_deadline, 0);
+    }
+
+    #[test]
+    fn open_planning_refuses_parent_mismatch() {
+        let (mut state, mut record, obs, first) = planning_pair();
+        state.head_index = 9;
+        let err = open_planning_from_records(&state, &mut record, &obs, &[first], ag(1))
+            .expect_err("a record off the sealed head must refuse planning");
+        assert!(format!("{:?}", err).contains("ParentMismatch"));
+        assert_eq!(record.stage, TransitionRecord::SELECTED);
+        assert_eq!(record.planning_deadline, 0);
     }
 }
