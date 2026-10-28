@@ -706,11 +706,63 @@ families, account inventory, and CU golden set are later step-5 slices.
   commit replay moving the head, and CU measurement — later
   slices.
 
+## Slice 23 — reconcile plans (`PLANNING` -> `RECONCILING`)
+
+- The `reconcile_plans` instruction re-proves the whole chain in
+  a rebuilt kernel (chain + priors + select + open_planning +
+  every prior plan) and only then runs kernel `reconcile_plans`
+  at the state's clock, advancing a `PLANNING` record to
+  `RECONCILING` (stage 7, a new program stage value) and
+  persisting the kernel's compatibility verdict on the record
+  (`compatible: bool`, SPACE 262 -> 263) and on the new
+  `TransitionReconciled` event. The payer is a fee payer only:
+  kernel `reconcile_plans` takes no caller, so no proposer, seat,
+  or agent gate applies.
+- Replay clocks, and the slice's design point: select and
+  open_planning replay at the derived open clock
+  (`planning_deadline - planning_window`), as in slice 21, and
+  prior plans replay at that same open clock — because a
+  `PlanRecord` carries no submission time, no replay can run a
+  plan at its true submission clock, and the open clock is the
+  one window clock every stored plan is guaranteed to satisfy
+  (inside the window, expiry after the deadline — the only clock
+  rules kernel `submit_plan` applies besides manifest expiry,
+  which the state's clock already proves). Reconcile itself runs
+  at the state's clock, which must sit at or after the stored
+  deadline; before it the kernel's `PlanningWindowOpen` refuses.
+- The verdict is a state, not a refusal: an empty plan set
+  reconciles to incompatible (the kernel never calls a plan-less
+  transition compatible), and an over-capacity set reconciles to
+  incompatible while still advancing the stage — only a window
+  still open, an unreproducible chain, or an incomplete prior set
+  refuses, with the record standing exactly as it stood. The
+  stored verdict is the exact mirror of the kernel's
+  `fits_capacity` over the supplied plan set (same sums, same
+  checked-add, same sealed capacity stocks), so the later
+  validate slice can cross-check it against its own replay.
+- Host tests 161/161 (150 prior + 11 slice-23: compatible
+  advance at the deadline exactly, empty-set incompatibility,
+  over-capacity incompatibility (2 x 600 against a 1000 stock),
+  before-deadline refusal, wrong-stage refusal, once-only,
+  incomplete prior plans, incomplete prior signals,
+  unreproducible-plan refusal, unsealed refusal, parent
+  mismatch). Clippy back to the pre-existing profile (anchor
+  macro `unexpected cfg` noise + the slice-8 helper's
+  `type_complexity` note); zero new warnings.
+- `anchor build` green under the pinned toolchain; the IDL gains
+  the `reconcile_plans` instruction, the 22nd error
+  (`ReconcileFailed`), the 13th event (`TransitionReconciled`),
+  and the `compatible: bool` field on `TransitionRecord` — 15
+  instructions, 5 accounts, 22 errors, 13 events; `.so` 875,088
+  bytes (sha256 `c7c0a274…`).
+- Deliberately NOT slice 23: validate/declare, commit replay
+  moving the head, and CU measurement — later slices.
+
 ## Build
 
 ```sh
 export RUSTUP_HOME=~/workspace/toolchains/rustup CARGO_HOME=~/workspace/toolchains/cargo
 export PATH=~/workspace/toolchains/cargo/bin:~/workspace/toolchains/solana/bin:$PATH
 ~/workspace/toolchains/anchor/bin/anchor build   # from this directory
-cargo test                                        # host tests, 150/150
+cargo test                                        # host tests, 161/161
 ```

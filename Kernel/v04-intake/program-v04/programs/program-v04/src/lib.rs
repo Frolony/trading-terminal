@@ -485,6 +485,47 @@
 //! proposer, and the seat roster are all re-proven in every call.
 //! Reconcile, validate, declare, and commit replay are still later
 //! slices, not smuggled in here.
+//!
+//! Slice 23 (this slice): the first reconcile instruction,
+//! `reconcile_plans` — `PLANNING` (5) -> `RECONCILING` (7, a new
+//! program stage value; program stage numbers are the program's own
+//! sequence, not the kernel's `Life` discriminants — kernel
+//! `Reconciling` is 6, kernel `Blocked` is 17, program `BLOCKED` is
+//! 6). The helper re-proves the whole chain in a rebuilt kernel
+//! (chain + priors + select + open_planning + every prior plan)
+//! and only then runs kernel `reconcile_plans` at the state's
+//! clock, so a stored `PLANNING` label a replay cannot reproduce
+//! never reconciles. Two replay clocks, and the second is the
+//! slice's design point: select and open_planning replay at the
+//! derived open clock (`planning_deadline - planning_window`), as
+//! in slice 21, and prior plans replay at that same open clock —
+//! because a `PlanRecord` carries no submission time, no replay
+//! can run a plan at its true submission clock, and the open clock
+//! is the one window clock every stored plan is guaranteed to
+//! satisfy (inside the window, with expiry after the deadline —
+//! the only clock rules kernel `submit_plan` applies, besides
+//! manifest expiry, which the state's clock already proves).
+//! Reconcile itself runs at the state's clock, which the gates
+//! require to sit at or after the stored deadline: before it the
+//! kernel's `PlanningWindowOpen` refuses, and the record stands.
+//! The kernel's verdict is the program's verdict: the stage
+//! advances on a kernel-proven reconcile whether the plans fit or
+//! not — an empty plan set reconciles to incompatible (the kernel
+//! never calls a plan-less transition compatible), and an
+//! over-capacity set reconciles to incompatible, not to a
+//! refusal — and the verdict is persisted on the record
+//! (`compatible: bool`, SPACE 262 -> 263) and carried on the
+//! event, so the later validate slice can cross-check the stored
+//! verdict against the kernel's recomputed one instead of trusting
+//! either alone. The mirror that computes the stored verdict is
+//! exact, not approximate: the same supplied plan set, the same
+//! checked-add sums, the same sealed capacity stocks the kernel
+//! reads — a divergence between mirror and kernel would mean a
+//! supplied plan the replay did not judge, which the anchors
+//! already forbid. The payer is a fee payer only: kernel
+//! `reconcile_plans` takes no caller, so no proposer or seat gate
+//! applies here. Validate, declare, and commit replay are still
+//! later slices, not smuggled in here.
 
 extern crate alloc;
 
@@ -1066,6 +1107,67 @@ pub mod program_v04 {
         });
         Ok(())
     }
+
+    /// Reconcile plans (§4.1, third planning row, v0.4 form): run
+    /// kernel `reconcile_plans` on a `PLANNING` record pair and
+    /// advance the transition record's stage to `RECONCILING`,
+    /// persisting the kernel's compatibility verdict. Remaining
+    /// accounts split deterministically, as in `submit_plan`: the
+    /// first `signal_count` are the transition's prior
+    /// `SignalRecord`s (the selection-chain replay needs them),
+    /// and the rest are its prior `PlanRecord`s, which must number
+    /// exactly `plan_count` — the slice-21 anchor. The payer is a
+    /// fee payer only: kernel `reconcile_plans` takes no caller,
+    /// so no proposer, seat, or agent gate applies here, and the
+    /// instruction refuses nothing on caller identity. A reconcile
+    /// that finds no fitting plan set still advances the stage —
+    /// the verdict is `compatible: false`, not a refusal — because
+    /// the kernel records incompatibility as a state, and the
+    /// later validate slice judges it; only a window still open,
+    /// an unreproducible chain, or an incomplete prior set
+    /// refuses, and then the record stands exactly as it stood.
+    pub fn reconcile_plans(
+        ctx: Context<ReconcilePlans>,
+        transition_id: [u8; 32],
+        observation_id: [u8; 32],
+    ) -> Result<()> {
+        if ctx.accounts.transition_record.transition_id != transition_id
+            || ctx.accounts.observation_record.observation_id != observation_id
+        {
+            return Err(error!(ProgramV04Error::RecordMismatch));
+        }
+        let signal_count = ctx.accounts.transition_record.signal_count as usize;
+        if ctx.remaining_accounts.len() < signal_count {
+            return Err(error!(ProgramV04Error::ReconcileFailed));
+        }
+        let mut priors: alloc::vec::Vec<SignalRecord> = alloc::vec::Vec::new();
+        for acc in &ctx.remaining_accounts[..signal_count] {
+            let parsed = Account::<SignalRecord>::try_from(acc)
+                .map_err(|_| error!(ProgramV04Error::RecordMismatch))?;
+            priors.push(parsed.into_inner());
+        }
+        let mut prior_plans: alloc::vec::Vec<PlanRecord> = alloc::vec::Vec::new();
+        for acc in &ctx.remaining_accounts[signal_count..] {
+            let parsed = Account::<PlanRecord>::try_from(acc)
+                .map_err(|_| error!(ProgramV04Error::RecordMismatch))?;
+            prior_plans.push(parsed.into_inner());
+        }
+        let life = reconcile_plans_from_records(
+            &ctx.accounts.kernel_state,
+            &mut ctx.accounts.transition_record,
+            &ctx.accounts.observation_record,
+            &priors,
+            &prior_plans,
+        )?;
+        debug_assert_eq!(life, Life::Reconciling);
+        emit!(TransitionReconciled {
+            transition_id,
+            stage: TransitionRecord::RECONCILING,
+            compatible: ctx.accounts.transition_record.compatible,
+            plan_count: ctx.accounts.transition_record.plan_count,
+        });
+        Ok(())
+    }
 }
 
 #[derive(Accounts)]
@@ -1120,6 +1222,28 @@ pub struct SubmitPlan<'info> {
     #[account(mut)]
     pub payer: Signer<'info>,
     pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+#[instruction(transition_id: [u8; 32], observation_id: [u8; 32])]
+pub struct ReconcilePlans<'info> {
+    #[account(
+        seeds = [b"kernel-state"],
+        bump = kernel_state.bump,
+    )]
+    pub kernel_state: Account<'info, KernelState>,
+    #[account(
+        mut,
+        seeds = [b"transition", transition_id.as_ref()],
+        bump = transition_record.bump,
+    )]
+    pub transition_record: Account<'info, TransitionRecord>,
+    #[account(
+        seeds = [b"observation", observation_id.as_ref()],
+        bump = observation_record.bump,
+    )]
+    pub observation_record: Account<'info, ObservationRecord>,
+    pub payer: Signer<'info>,
 }
 
 #[derive(Accounts)]
@@ -1415,7 +1539,8 @@ pub struct TransitionRecord {
     /// advances it), 2 = Evaluated (slice 12 advances it), 3 = Eligible
     /// (slice 13 advances it), 4 = Selected (slice 16 advances it),
     /// 5 = Planning (slice 20 advances it), 6 = Blocked (a future
-    /// validate slice writes it; slice 22 opens the re-plan from it).
+    /// validate slice writes it; slice 22 opens the re-plan from it),
+    /// 7 = Reconciling (slice 23 advances it, with `compatible`).
     pub stage: u8,
     /// Kernel clock at which `mark_eligible` proved eligibility (slice 14
     /// persists it; 0 until eligibility is proven). This is the
@@ -1446,6 +1571,13 @@ pub struct TransitionRecord {
     /// zero — the program, not the replay, enforces the cap).
     /// Written by `open_planning` on a Blocked-path success only.
     pub replans: u32,
+    /// Kernel compatibility verdict from `reconcile_plans` (slice 23:
+    /// a non-empty plan set whose per-resource sums fit the sealed
+    /// capacity stocks). False until reconcile runs; written by
+    /// `reconcile_plans` on success only, alongside the stage
+    /// advance — a reconcile that finds no fitting set still
+    /// advances the stage, with this false, rather than refusing.
+    pub compatible: bool,
     /// PDA bump for the `["transition", transition_id]` seeds.
     pub bump: u8,
 }
@@ -1467,8 +1599,10 @@ impl TransitionRecord {
     /// blocks (slice 22 records it; no slice yet produces it — see
     /// the slice-22 module note on the re-plan honesty bound).
     pub const BLOCKED: u8 = 6;
-    /// 8 (discriminator) + 32 + 32 + 8 + 32 + 32 + 32 + 8 + 32 + 1 + 8 + 8 + 8 + 8 + 8 + 4 + 1.
-    pub const SPACE: usize = 262;
+    /// Stage value written by `reconcile_plans` (slice 23).
+    pub const RECONCILING: u8 = 7;
+    /// 8 (discriminator) + 32 + 32 + 8 + 32 + 32 + 32 + 8 + 32 + 1 + 8 + 8 + 8 + 8 + 8 + 4 + 1 + 1.
+    pub const SPACE: usize = 263;
 }
 
 /// Build a `TransitionRecord` against a `KernelState`, enforcing the
@@ -1509,6 +1643,7 @@ pub fn build_transition_record(
         signal_count: 0,
         plan_count: 0,
         replans: 0,
+        compatible: false,
         bump,
     })
 }
@@ -2818,6 +2953,261 @@ pub fn submit_plan_from_records(
     })
 }
 
+/// Reconcile plans through the real kernel (slice 23). Pure except
+/// for the transition record's stage and `compatible`, which move
+/// on success only, and every refusal leaves both untouched. Gates,
+/// in order: sealed state; stage exactly `PLANNING`; parent exactly
+/// the sealed head; observation linkage; a proven planning window
+/// (a nonzero stored deadline, with a derivable open clock at or
+/// before the state's clock and the state's clock at or after the
+/// deadline — before the deadline the window is still open and the
+/// kernel refuses, so no legitimate reconcile is lost); the
+/// prior-signal anchor (supplied signals numbering exactly
+/// `signal_count`, every prior belonging to the transition with a
+/// stored round matching its own `submitted_at`, no duplicated
+/// (agent, round)); the prior-plan anchor (supplied plans numbering
+/// exactly `plan_count`, every prior belonging to the transition,
+/// no duplicated resource inside a prior's claims). The kernel
+/// calls run against a freshly rebuilt sealed launch kernel under
+/// `ProgramEnv`: ingest, register, evaluate, and mark_eligible, all
+/// at the stored `eligible_at`, then each prior signal at its
+/// `submitted_at` in order, then select and open_planning at the
+/// *derived open clock* (so the replayed deadline equals the stored
+/// deadline, by construction — a mismatch refuses rather than
+/// overwriting it), then each prior plan at the open clock, then
+/// reconcile at the state's clock. Prior plans replay at the open
+/// clock because a `PlanRecord` carries no submission time: the
+/// open clock is the one window clock every stored plan is
+/// guaranteed to satisfy (inside the window, expiry after the
+/// deadline — the only clock rules kernel `submit_plan` applies
+/// besides manifest expiry, which the state's clock already
+/// proves), so a plan that could not have been submitted inside
+/// the window still refuses here, through the kernel's own gates,
+/// while no legitimate plan is lost to a clock it never carried.
+/// A kernel refusal in any call maps to `ReconcileFailed`. The
+/// stored `compatible` verdict is the exact mirror of the kernel's
+/// `fits_capacity` over the supplied plan set — non-empty, and
+/// every per-resource checked-add sum within the sealed capacity
+/// stock for that resource — so the record and the event carry the
+/// verdict the kernel just computed, and the later validate slice
+/// can cross-check it against its own replay instead of trusting
+/// either alone. Replay-horizon bound, stated not smoothed: a
+/// reconcile whose transition manifest already expired by the
+/// state's clock refuses here — but the kernel would refuse it too
+/// (`not_expired` at the state's clock), so no legitimate reconcile
+/// is lost to the replay.
+pub fn reconcile_plans_from_records(
+    kernel_state: &KernelState,
+    transition_record: &mut TransitionRecord,
+    observation_record: &ObservationRecord,
+    prior_signals: &[SignalRecord],
+    prior_plans: &[PlanRecord],
+) -> Result<Life> {
+    if !kernel_state.sealed {
+        return Err(error!(ProgramV04Error::NotSealed));
+    }
+    if transition_record.stage != TransitionRecord::PLANNING {
+        return Err(error!(ProgramV04Error::WrongStage));
+    }
+    if transition_record.parent_index != kernel_state.head_index
+        || transition_record.parent_hash != kernel_state.head_hash
+    {
+        return Err(error!(ProgramV04Error::ParentMismatch));
+    }
+    if transition_record.observation_id != observation_record.observation_id {
+        return Err(error!(ProgramV04Error::RecordMismatch));
+    }
+    if transition_record.planning_deadline == 0 {
+        return Err(error!(ProgramV04Error::ReconcileFailed));
+    }
+    let open_clock = transition_record
+        .planning_deadline
+        .checked_sub(launch_policy().planning_window)
+        .ok_or(error!(ProgramV04Error::ReconcileFailed))?;
+    if kernel_state.clock < transition_record.planning_deadline {
+        return Err(error!(ProgramV04Error::ReconcileFailed));
+    }
+    if prior_signals.len() as u64 != transition_record.signal_count {
+        return Err(error!(ProgramV04Error::ReconcileFailed));
+    }
+    for prior in prior_signals {
+        if prior.transition_id != transition_record.transition_id {
+            return Err(error!(ProgramV04Error::RecordMismatch));
+        }
+        if signal_round(
+            transition_record.eligible_at,
+            transition_record.consensus_deadline,
+            prior.submitted_at,
+        ) != prior.round
+        {
+            return Err(error!(ProgramV04Error::RecordMismatch));
+        }
+    }
+    {
+        let mut seen: BTreeSet<([u8; 32], u64)> = BTreeSet::new();
+        for prior in prior_signals {
+            if !seen.insert((prior.agent.to_bytes(), prior.round)) {
+                return Err(error!(ProgramV04Error::ReconcileFailed));
+            }
+        }
+    }
+    if prior_plans.len() as u64 != transition_record.plan_count {
+        return Err(error!(ProgramV04Error::ReconcileFailed));
+    }
+    for prior in prior_plans {
+        if prior.transition_id != transition_record.transition_id {
+            return Err(error!(ProgramV04Error::RecordMismatch));
+        }
+        if prior.claim_count as usize > PlanRecord::MAX_PLAN_CLAIMS {
+            return Err(error!(ProgramV04Error::ReconcileFailed));
+        }
+        let mut seen: BTreeSet<u16> = BTreeSet::new();
+        for resource in &prior.claim_resources[..prior.claim_count as usize] {
+            if !seen.insert(*resource) {
+                return Err(error!(ProgramV04Error::ReconcileFailed));
+            }
+        }
+    }
+    let proposer = resolve_proposer(kernel_state, transition_record.proposer)
+        .map_err(|_| error!(ProgramV04Error::ReconcileFailed))?;
+    let observer_id = resolve_agent_id(observation_record.observer);
+    let mut k = sealed_launch_kernel_env().map_err(|_| error!(ProgramV04Error::KernelSeal))?;
+    if !k.has_role(&observer_id, Role::Observer) {
+        return Err(error!(ProgramV04Error::NotObserver));
+    }
+    let relevant_groups = match k.agent(&proposer) {
+        Some(profile) => profile.groups.clone(),
+        None => return Err(error!(ProgramV04Error::UnknownProposer)),
+    };
+    let observation = Observation {
+        id: observation_record.observation_id,
+        timestamp: observation_record.timestamp,
+        expiry: observation_record.expiry,
+        confidence: Amount::from_raw(observation_record.confidence_raw),
+    };
+    let eligible_at = transition_record.eligible_at;
+    k.ingest_observation(&observer_id, observation, eligible_at)
+        .map_err(|_| error!(ProgramV04Error::ReconcileFailed))?;
+    let manifest = Manifest {
+        transition_type: transition_record.transition_type,
+        parent_index: transition_record.parent_index,
+        parent_hash: transition_record.parent_hash,
+        declared_next_hash: transition_record.declared_next_hash,
+        observation_id: transition_record.observation_id,
+        expires_at: transition_record.expires_at,
+        relevant_groups,
+        action: None,
+    };
+    k.register_transition(
+        &proposer,
+        transition_record.transition_id,
+        manifest,
+        BTreeSet::new(),
+        eligible_at,
+    )
+    .map_err(|_| error!(ProgramV04Error::ReconcileFailed))?;
+    k.evaluate_transition(&transition_record.transition_id, eligible_at)
+        .map_err(|_| error!(ProgramV04Error::ReconcileFailed))?;
+    k.mark_eligible(&transition_record.transition_id, eligible_at)
+        .map_err(|_| error!(ProgramV04Error::ReconcileFailed))?;
+    match k.life_of(&transition_record.transition_id) {
+        Some(Life::Eligible) => {}
+        _ => return Err(error!(ProgramV04Error::ReconcileFailed)),
+    }
+    let mut priors: alloc::vec::Vec<SignalRecord> = prior_signals.to_vec();
+    priors.sort_by_key(|s| s.submitted_at);
+    for prior in &priors {
+        let support = if prior.has_support {
+            Some(Amount::from_raw(prior.support_raw))
+        } else {
+            None
+        };
+        k.submit_round_signal(
+            &prior.agent.to_bytes(),
+            &transition_record.transition_id,
+            Amount::from_raw(prior.raw),
+            support,
+            prior.submitted_at,
+        )
+        .map_err(|_| error!(ProgramV04Error::ReconcileFailed))?;
+    }
+    k.select_candidate(&transition_record.transition_id, open_clock)
+        .map_err(|_| error!(ProgramV04Error::ReconcileFailed))?;
+    match k.life_of(&transition_record.transition_id) {
+        Some(Life::Selected) => {}
+        _ => return Err(error!(ProgramV04Error::ReconcileFailed)),
+    }
+    // The kernel's Selected-path planning rule is "anyone": the
+    // proposer is the replay caller here, not a gate — any agent id
+    // would take the same path, and no caller identity is judged.
+    k.open_planning(&proposer, &transition_record.transition_id, open_clock)
+        .map_err(|_| error!(ProgramV04Error::ReconcileFailed))?;
+    match k.life_of(&transition_record.transition_id) {
+        Some(Life::Planning) => {}
+        _ => return Err(error!(ProgramV04Error::ReconcileFailed)),
+    }
+    let deadline = open_clock
+        .checked_add(launch_policy().planning_window)
+        .ok_or(error!(ProgramV04Error::ReconcileFailed))?;
+    if deadline != transition_record.planning_deadline {
+        return Err(error!(ProgramV04Error::ReconcileFailed));
+    }
+    for prior in prior_plans {
+        let mut prior_map: BTreeMap<u16, Amount> = BTreeMap::new();
+        for (resource, amount) in prior.claim_resources[..prior.claim_count as usize]
+            .iter()
+            .zip(prior.claim_amounts[..prior.claim_count as usize].iter())
+        {
+            prior_map.insert(*resource, Amount::from_raw(*amount));
+        }
+        let prior_plan = Plan {
+            agent: prior.agent.to_bytes(),
+            claims: prior_map,
+            expires_at: prior.expires_at,
+        };
+        k.submit_plan(
+            &prior.agent.to_bytes(),
+            &transition_record.transition_id,
+            prior_plan,
+            open_clock,
+        )
+        .map_err(|_| error!(ProgramV04Error::ReconcileFailed))?;
+    }
+    k.reconcile_plans(&transition_record.transition_id, kernel_state.clock)
+        .map_err(|_| error!(ProgramV04Error::ReconcileFailed))?;
+    match k.life_of(&transition_record.transition_id) {
+        Some(Life::Reconciling) => {}
+        _ => return Err(error!(ProgramV04Error::ReconcileFailed)),
+    }
+    // Exact mirror of the kernel's `fits_capacity` over the same
+    // supplied set: a missing stock, or an overflowing sum, is
+    // incompatible, exactly as the kernel judges it.
+    let mut sums: BTreeMap<u16, Amount> = BTreeMap::new();
+    let mut fits = !prior_plans.is_empty();
+    for prior in prior_plans {
+        for (resource, amount) in prior.claim_resources[..prior.claim_count as usize]
+            .iter()
+            .zip(prior.claim_amounts[..prior.claim_count as usize].iter())
+        {
+            let entry = sums.entry(*resource).or_insert(Amount::ZERO);
+            match entry.checked_add(Amount::from_raw(*amount)) {
+                Ok(v) => *entry = v,
+                Err(_) => fits = false,
+            }
+        }
+    }
+    if fits {
+        for (resource, total) in &sums {
+            if !k.capacity_of(*resource).is_some_and(|cap| *total <= cap) {
+                fits = false;
+            }
+        }
+    }
+    transition_record.stage = TransitionRecord::RECONCILING;
+    transition_record.compatible = fits;
+    Ok(Life::Reconciling)
+}
+
 /// One sibling transition offered to a sibling-aware select (slice 17):
 /// the sibling's stored transition record, its observation record, and
 /// its stored signal records. All three are read, never written: the
@@ -3293,6 +3683,14 @@ pub struct PlanSubmitted {
     pub plan_count: u64,
 }
 
+#[event]
+pub struct TransitionReconciled {
+    pub transition_id: [u8; 32],
+    pub stage: u8,
+    pub compatible: bool,
+    pub plan_count: u64,
+}
+
 #[error_code]
 pub enum ProgramV04Error {
     #[msg("program-v04 probe: kernel construction failed")]
@@ -3337,6 +3735,8 @@ pub enum ProgramV04Error {
     ReplanRefused,
     #[msg("program-v04 plan: kernel plan refused, planning window unproven, or supplied plan set incomplete")]
     PlanFailed,
+    #[msg("program-v04 reconcile: kernel reconcile refused, planning window still open or unproven, or supplied plan set incomplete")]
+    ReconcileFailed,
 }
 
 // ---------------------------------------------------------------- launch genesis
@@ -3804,10 +4204,10 @@ mod tests {
         // Discriminator 8 + id 32 + type 32 + parent_index 8 +
         // parent_hash 32 + declared 32 + observation 32 + expires 8 +
         // proposer 32 + stage 1 + eligible_at 8 + consensus_deadline 8 +
-        // planning_deadline 8 + signal_count 8 + plan_count 8 + replans 4 + bump 1.
+        // planning_deadline 8 + signal_count 8 + plan_count 8 + replans 4 + compatible 1 + bump 1.
         assert_eq!(
             TransitionRecord::SPACE,
-            8 + 32 + 32 + 8 + 32 + 32 + 32 + 8 + 32 + 1 + 8 + 8 + 8 + 8 + 8 + 4 + 1
+            8 + 32 + 32 + 8 + 32 + 32 + 32 + 8 + 32 + 1 + 8 + 8 + 8 + 8 + 8 + 4 + 1 + 1
         );
     }
 
@@ -3830,6 +4230,7 @@ mod tests {
             signal_count: 2,
             plan_count: 1,
             replans: 2,
+            compatible: false,
             bump: 254,
         };
         let mut bytes = Vec::new();
@@ -5398,6 +5799,7 @@ mod tests {
             signal_count: 0,
             plan_count: 0,
             replans: 0,
+            compatible: false,
             bump: 7,
         };
         let sib_obs = ObservationRecord {
@@ -6348,5 +6750,200 @@ mod tests {
         .expect_err("an unsealed state must refuse a plan");
         assert!(format!("{:?}", err).contains("NotSealed"));
         assert_eq!(record.plan_count, 0);
+    }
+
+    fn one_plan_pair() -> (
+        KernelState,
+        TransitionRecord,
+        ObservationRecord,
+        SignalRecord,
+        PlanRecord,
+    ) {
+        // Planning opened at clock 200, deadline 300, one fitting
+        // two-resource plan from ag(2): the reconcile-success
+        // fixture every slice-23 test below builds from.
+        let (state, mut record, obs, first) = planned_pair();
+        let plan = submit_plan_from_records(
+            &state, &mut record, &obs, &[first], &[], &two_claims(), 400, ag(2), 7,
+        )
+        .expect("first plan must submit");
+        assert_eq!(record.plan_count, 1);
+        (state, record, obs, first, plan)
+    }
+
+    #[test]
+    fn reconcile_advances_planning_to_reconciling_compatible() {
+        // At the deadline exactly (clock 300) the window is closed:
+        // the kernel reconciles, the stage advances to 7, and the
+        // fitting plan set records compatible true.
+        let (mut state, mut record, obs, first, plan) = one_plan_pair();
+        advance_clock_on_state(&mut state, 300).expect("advance to the deadline must succeed");
+        let life = reconcile_plans_from_records(&state, &mut record, &obs, &[first], &[plan])
+            .expect("a kernel-proven plan set at the deadline must reconcile");
+        assert_eq!(life, Life::Reconciling);
+        assert_eq!(record.stage, TransitionRecord::RECONCILING);
+        assert_eq!(record.stage, 7);
+        assert!(record.compatible);
+        assert_eq!(record.plan_count, 1);
+        assert_eq!(record.planning_deadline, 300);
+    }
+
+    #[test]
+    fn reconcile_empty_plan_set_is_incompatible_not_refused() {
+        // No plans is never compatible — but it is a verdict, not
+        // a refusal: the kernel still advances to Reconciling, and
+        // the record says so, so validate judges the verdict
+        // instead of the call failing to happen.
+        let (mut state, mut record, obs, first) = planned_pair();
+        advance_clock_on_state(&mut state, 300).expect("advance to the deadline must succeed");
+        let life = reconcile_plans_from_records(&state, &mut record, &obs, &[first], &[])
+            .expect("an empty plan set must reconcile to incompatible, not refuse");
+        assert_eq!(life, Life::Reconciling);
+        assert_eq!(record.stage, TransitionRecord::RECONCILING);
+        assert!(!record.compatible);
+        assert_eq!(record.plan_count, 0);
+    }
+
+    #[test]
+    fn reconcile_over_capacity_is_incompatible() {
+        // Two plans at 600 x SCALE on the tranche stock (capacity
+        // 1000 x SCALE) each submit cleanly — capacity is judged
+        // at reconcile, never at submission — and their 1200 sum
+        // reconciles to incompatible while still advancing the
+        // stage, exactly as the kernel's fits_capacity judges it.
+        let (mut state, mut record, obs, first) = planned_pair();
+        let big = vec![PlanClaimArg { resource: RES_TREASURY_TRANCHE, amount_raw: 600 * SCALE }];
+        let first_plan = submit_plan_from_records(
+            &state, &mut record, &obs, &[first], &[], &big, 400, ag(2), 7,
+        )
+        .expect("first big plan must submit");
+        let second_plan = submit_plan_from_records(
+            &state, &mut record, &obs, &[first], std::slice::from_ref(&first_plan), &big, 400, ag(3), 8,
+        )
+        .expect("second big plan must submit");
+        assert_eq!(record.plan_count, 2);
+        advance_clock_on_state(&mut state, 300).expect("advance to the deadline must succeed");
+        let life = reconcile_plans_from_records(
+            &state,
+            &mut record,
+            &obs,
+            &[first],
+            &[first_plan, second_plan],
+        )
+        .expect("an over-capacity set must reconcile to incompatible, not refuse");
+        assert_eq!(life, Life::Reconciling);
+        assert_eq!(record.stage, TransitionRecord::RECONCILING);
+        assert!(!record.compatible);
+    }
+
+    #[test]
+    fn reconcile_refuses_before_deadline() {
+        // At clock 299 the planning window is still open: the
+        // kernel's PlanningWindowOpen refuses, and the record
+        // stands PLANNING with compatible still false.
+        let (mut state, mut record, obs, first, plan) = one_plan_pair();
+        advance_clock_on_state(&mut state, 299).expect("advance must succeed");
+        let err = reconcile_plans_from_records(&state, &mut record, &obs, &[first], &[plan])
+            .expect_err("an open window must refuse reconcile");
+        assert!(format!("{:?}", err).contains("ReconcileFailed"));
+        assert_eq!(record.stage, TransitionRecord::PLANNING);
+        assert!(!record.compatible);
+    }
+
+    #[test]
+    fn reconcile_refuses_wrong_stage() {
+        // Still SELECTED, never planned: the stage gate refuses
+        // before any replay, and nothing on the record moves.
+        // (`planning_pair` is the fixture that actually stands at
+        // SELECTED; `selected_pair` only holds a signal and is
+        // still ELIGIBLE.)
+        let (state, mut record, obs, first) = planning_pair();
+        let err = reconcile_plans_from_records(&state, &mut record, &obs, &[first], &[])
+            .expect_err("an unplanned record must refuse reconcile");
+        assert!(format!("{:?}", err).contains("WrongStage"));
+        assert_eq!(record.stage, TransitionRecord::SELECTED);
+        assert!(!record.compatible);
+    }
+
+    #[test]
+    fn reconcile_is_once_only() {
+        let (mut state, mut record, obs, first, plan) = one_plan_pair();
+        advance_clock_on_state(&mut state, 300).expect("advance to the deadline must succeed");
+        reconcile_plans_from_records(&state, &mut record, &obs, &[first], std::slice::from_ref(&plan))
+            .expect("first reconcile must succeed");
+        let err = reconcile_plans_from_records(&state, &mut record, &obs, &[first], &[plan])
+            .expect_err("a second reconcile must refuse");
+        assert!(format!("{:?}", err).contains("WrongStage"));
+        assert_eq!(record.stage, TransitionRecord::RECONCILING);
+        assert!(record.compatible);
+    }
+
+    #[test]
+    fn reconcile_refuses_incomplete_prior_plans() {
+        // The record claims a prior plan that was never supplied:
+        // the slice-21 anchor refuses before any replay.
+        let (mut state, mut record, obs, first, plan) = one_plan_pair();
+        record.plan_count = 2;
+        advance_clock_on_state(&mut state, 300).expect("advance to the deadline must succeed");
+        let err = reconcile_plans_from_records(&state, &mut record, &obs, &[first], &[plan])
+            .expect_err("a short prior plan set must refuse reconcile");
+        assert!(format!("{:?}", err).contains("ReconcileFailed"));
+        assert_eq!(record.stage, TransitionRecord::PLANNING);
+        assert!(!record.compatible);
+        assert_eq!(record.plan_count, 2);
+    }
+
+    #[test]
+    fn reconcile_refuses_incomplete_prior_signals() {
+        // The record claims a second signal that was never
+        // supplied: the slice-16 anchor refuses before any replay.
+        let (mut state, mut record, obs, first, plan) = one_plan_pair();
+        record.signal_count = 2;
+        advance_clock_on_state(&mut state, 300).expect("advance to the deadline must succeed");
+        let err = reconcile_plans_from_records(&state, &mut record, &obs, &[first], &[plan])
+            .expect_err("a short prior signal set must refuse reconcile");
+        assert!(format!("{:?}", err).contains("ReconcileFailed"));
+        assert_eq!(record.stage, TransitionRecord::PLANNING);
+        assert!(!record.compatible);
+    }
+
+    #[test]
+    fn reconcile_refuses_unreproducible_plan() {
+        // A prior plan whose agent is no seeded agent cannot be
+        // replayed: the kernel's agent gate refuses, so the stored
+        // PLANNING label alone reconciles nothing, and the record
+        // stands.
+        let (mut state, mut record, obs, first, mut plan) = one_plan_pair();
+        plan.agent = Pubkey::new_from_array([0x77; 32]);
+        advance_clock_on_state(&mut state, 300).expect("advance to the deadline must succeed");
+        let err = reconcile_plans_from_records(&state, &mut record, &obs, &[first], &[plan])
+            .expect_err("an unreproducible plan must refuse reconcile");
+        assert!(format!("{:?}", err).contains("ReconcileFailed"));
+        assert_eq!(record.stage, TransitionRecord::PLANNING);
+        assert!(!record.compatible);
+    }
+
+    #[test]
+    fn reconcile_refuses_unsealed() {
+        let (mut state, mut record, obs, first, plan) = one_plan_pair();
+        advance_clock_on_state(&mut state, 300).expect("advance to the deadline must succeed");
+        state.sealed = false;
+        let err = reconcile_plans_from_records(&state, &mut record, &obs, &[first], &[plan])
+            .expect_err("an unsealed state must refuse reconcile");
+        assert!(format!("{:?}", err).contains("NotSealed"));
+        assert_eq!(record.stage, TransitionRecord::PLANNING);
+        assert!(!record.compatible);
+    }
+
+    #[test]
+    fn reconcile_refuses_parent_mismatch() {
+        let (mut state, mut record, obs, first, plan) = one_plan_pair();
+        advance_clock_on_state(&mut state, 300).expect("advance to the deadline must succeed");
+        state.head_index = 9;
+        let err = reconcile_plans_from_records(&state, &mut record, &obs, &[first], &[plan])
+            .expect_err("a record off the sealed head must refuse reconcile");
+        assert!(format!("{:?}", err).contains("ParentMismatch"));
+        assert_eq!(record.stage, TransitionRecord::PLANNING);
+        assert!(!record.compatible);
     }
 }
