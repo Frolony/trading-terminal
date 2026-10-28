@@ -1192,11 +1192,55 @@ families, account inventory, and CU golden set are later step-5 slices.
   persistence, governance-state persistence, and CU
   measurement — later slices.
 
+## Slice 32 — the governance-registration instruction (`register_governance_transition`)
+
+- The governance mirror of slice 8's `register_transition`:
+  it creates a `TransitionRecord` at stage `REGISTERED` for a
+  governance-typed transition, gated on the sealed head
+  (parent exactly the `KernelState` head) plus two governance
+  gates: the type must be a governance type
+  (`GovernanceTypeRequired` otherwise), and the signing payer
+  must be a seated council member of the sealed launch
+  profile (`NotCouncilSeat` otherwise) — the program-side
+  mirror of kernel `register_governance_transition`'s
+  `NotCouncil` gate, judged against the pinned profile, not a
+  caller-supplied roster. The ordinary builder refuses
+  governance types in this slice
+  (`GovernanceRegisterRequired`), so the two registration
+  paths are disjoint exactly as the kernel's pair is. A new
+  `GovernanceTransitionRegistered` event carries the id, the
+  parent index, and the seat proposer.
+- Honesty bound, stated not smoothed: this slice stores the
+  governance manifest only. `TransitionRecord` still carries
+  no action, and no approval is persisted here — the action
+  encoding and the approval accounts are the
+  approval-persistence slice's work — so a registered
+  governance record still cannot advance (ordinary replay
+  refuses governance types; the governance replay does not
+  exist yet). Slice 31's "its instruction arrives with
+  governance-registration" is read here as the governance
+  family, not this slice: the `commit_governance` instruction
+  still awaits stored action and approvals.
+- Host tests 242/242 (235 prior + 7 slice-32: seat acceptance
+  at the sealed head, non-gov-type refusal, non-seat-agent
+  refusal, unknown-proposer refusal, unsealed refusal, parent
+  mismatch, ordinary-builder gov-type refusal). Clippy back
+  to the pre-existing profile (anchor macro `unexpected cfg`
+  noise + the slice-8 test helper's `type_complexity`
+  warning); zero new warnings. IDL counts move by design
+  (19 instructions, 5 accounts, 31 errors, 17 events — no new
+  account this slice, as designed); `.so` 1,069,456 bytes
+  (sha256 `c6b7c24a…`).
+- Deliberately NOT slice 32: approval persistence, the
+  governance replay and `commit_governance` instruction,
+  governance-state persistence, and CU measurement — later
+  slices.
+
 ## Build
 
 ```sh
 export RUSTUP_HOME=~/workspace/toolchains/rustup CARGO_HOME=~/workspace/toolchains/cargo
 export PATH=~/workspace/toolchains/cargo/bin:~/workspace/toolchains/solana/bin:$PATH
 ~/workspace/toolchains/anchor/bin/anchor build   # from this directory
-cargo test                                        # host tests, 235/235
+cargo test                                        # host tests, 242/242
 ```

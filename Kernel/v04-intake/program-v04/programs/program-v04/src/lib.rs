@@ -831,6 +831,41 @@
 //! instruction arrives with governance-registration. Deliberately
 //! NOT slice 31: governance-registration, governance-state
 //! persistence, the cu-golden freeze, or any main-line work.
+//!
+//! Slice 32 (this slice): the governance-registration instruction,
+//! `register_governance_transition` — the governance mirror of
+//! slice 8's `register_transition`. It creates a `TransitionRecord`
+//! at stage `REGISTERED` for a governance-typed transition, gated
+//! on the sealed head (parent exactly the `KernelState` head, as
+//! in slice 8) plus two governance gates the ordinary path does
+//! not carry: the type must be a governance type (otherwise
+//! `GovernanceTypeRequired`), and the signing payer must be a
+//! seated council member of the sealed launch profile (otherwise
+//! `NotCouncilSeat`) — the program-side mirror of kernel
+//! `register_governance_transition`'s `NotCouncil` gate, judged
+//! against the pinned profile, not a caller-supplied roster.
+//! The ordinary builder refuses governance types in this slice
+//! (`GovernanceRegisterRequired`), so the two registration paths
+//! are disjoint exactly as the kernel's `register_transition` /
+//! `register_governance_transition` pair is: a governance record
+//! can no longer be created through the ordinary instruction
+//! without the seat gate, and an ordinary record cannot enter
+//! through the governance instruction. Honesty bound, stated
+//! not smoothed: this slice stores the governance manifest
+//! only. `TransitionRecord` still carries no action, and no
+//! approval is persisted here — the action encoding and the
+//! approval accounts are the approval-persistence slice's work,
+//! so a registered governance record still cannot advance: the
+//! ordinary replay refuses governance types, and the
+//! governance replay that would drive it (ingest +
+//! `register_governance_transition` from stored action and
+//! approvals, then the stage chain to the slice-28
+//! `commit_governance` helper) does not exist yet. Slice 31's
+//! "its instruction arrives with governance-registration" is
+//! read here as the governance family, not this slice: the
+//! `commit_governance` instruction still awaits stored action
+//! and approvals, and is not smuggled in here. CU measurement
+//! is still a later slice, not smuggled in here.
 
 extern crate alloc;
 
@@ -934,6 +969,54 @@ pub mod program_v04 {
         )?;
         *ctx.accounts.transition_record = record;
         emit!(TransitionRegistered { transition_id, parent_index });
+        Ok(())
+    }
+
+    /// Register governance (§4.1, first lifecycle row, governance
+    /// form, slice 32): store a governance-typed transition
+    /// manifest as a `TransitionRecord` PDA, gated on the sealed
+    /// head, on a governance type, and on the signing payer being
+    /// a seated council member of the sealed launch profile.
+    /// Refuses an unsealed kernel, any parent that is not exactly
+    /// the sealed head, a non-governance type, and a non-seat
+    /// proposer; a second record for the same id is refused by
+    /// the `init` constraint. Like slice 8, this stores the
+    /// manifest — it does not run kernel
+    /// `register_governance_transition`: that call additionally
+    /// needs the exact action and every seat's approval of it,
+    /// and neither is stored yet (approval persistence is a
+    /// later slice), so no kernel call is made here and the
+    /// record is a stored governance manifest awaiting that
+    /// replay, not a registered governance transition.
+    #[allow(clippy::too_many_arguments)]
+    pub fn register_governance_transition(
+        ctx: Context<RegisterGovernanceTransition>,
+        transition_id: [u8; 32],
+        transition_type: [u8; 32],
+        parent_index: u64,
+        parent_hash: [u8; 32],
+        declared_next_hash: [u8; 32],
+        observation_id: [u8; 32],
+        expires_at: u64,
+    ) -> Result<()> {
+        let record = build_governance_transition_record(
+            &ctx.accounts.kernel_state,
+            transition_id,
+            transition_type,
+            parent_index,
+            parent_hash,
+            declared_next_hash,
+            observation_id,
+            expires_at,
+            ctx.accounts.payer.key(),
+            ctx.bumps.transition_record,
+        )?;
+        *ctx.accounts.transition_record = record;
+        emit!(GovernanceTransitionRegistered {
+            transition_id,
+            parent_index,
+            proposer: ctx.accounts.payer.key(),
+        });
         Ok(())
     }
 
@@ -2108,6 +2191,27 @@ pub struct RegisterTransition<'info> {
 }
 
 #[derive(Accounts)]
+#[instruction(transition_id: [u8; 32])]
+pub struct RegisterGovernanceTransition<'info> {
+    #[account(
+        seeds = [b"kernel-state"],
+        bump = kernel_state.bump,
+    )]
+    pub kernel_state: Account<'info, KernelState>,
+    #[account(
+        init,
+        payer = payer,
+        space = TransitionRecord::SPACE,
+        seeds = [b"transition", transition_id.as_ref()],
+        bump,
+    )]
+    pub transition_record: Account<'info, TransitionRecord>,
+    #[account(mut)]
+    pub payer: Signer<'info>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
 pub struct SealKernel<'info> {
     #[account(
         mut,
@@ -2284,9 +2388,49 @@ impl TransitionRecord {
     pub const SPACE: usize = 263;
 }
 
+/// The ungated `TransitionRecord` constructor both builders below
+/// share: the gates live in the builders, never here, so a record
+/// built through either path carries exactly the same fields.
+#[allow(clippy::too_many_arguments)]
+fn new_transition_record(
+    transition_id: [u8; 32],
+    transition_type: [u8; 32],
+    parent_index: u64,
+    parent_hash: [u8; 32],
+    declared_next_hash: [u8; 32],
+    observation_id: [u8; 32],
+    expires_at: u64,
+    proposer: Pubkey,
+    bump: u8,
+) -> TransitionRecord {
+    TransitionRecord {
+        transition_id,
+        transition_type,
+        parent_index,
+        parent_hash,
+        declared_next_hash,
+        observation_id,
+        expires_at,
+        proposer,
+        stage: TransitionRecord::REGISTERED,
+        eligible_at: 0,
+        consensus_deadline: 0,
+        planning_deadline: 0,
+        signal_count: 0,
+        plan_count: 0,
+        replans: 0,
+        compatible: false,
+        bump,
+    }
+}
+
 /// Build a `TransitionRecord` against a `KernelState`, enforcing the
 /// sealed-head lineage gate. Pure: a refused record leaves the state
 /// untouched, and the caller (instruction or test) owns persistence.
+/// Slice 32: governance types refuse here — they register through
+/// `build_governance_transition_record`, which carries the seat gate
+/// this builder does not — exactly as kernel `register_transition`
+/// refuses governance types.
 #[allow(clippy::too_many_arguments)]
 pub fn build_transition_record(
     kernel_state: &KernelState,
@@ -2306,7 +2450,10 @@ pub fn build_transition_record(
     if parent_index != kernel_state.head_index || parent_hash != kernel_state.head_hash {
         return Err(error!(ProgramV04Error::ParentMismatch));
     }
-    Ok(TransitionRecord {
+    if is_gov_type(&transition_type) {
+        return Err(error!(ProgramV04Error::GovernanceRegisterRequired));
+    }
+    Ok(new_transition_record(
         transition_id,
         transition_type,
         parent_index,
@@ -2315,16 +2462,59 @@ pub fn build_transition_record(
         observation_id,
         expires_at,
         proposer,
-        stage: TransitionRecord::REGISTERED,
-        eligible_at: 0,
-        consensus_deadline: 0,
-        planning_deadline: 0,
-        signal_count: 0,
-        plan_count: 0,
-        replans: 0,
-        compatible: false,
         bump,
-    })
+    ))
+}
+
+/// Build a governance-typed `TransitionRecord` against a
+/// `KernelState` (slice 32): the sealed-head lineage gate as in
+/// `build_transition_record`, plus the governance gates — the type
+/// must be a governance type, and the proposer must be a seated
+/// council member of the sealed launch profile (active, and on the
+/// sealed kernel's council list), judged against the pinned profile
+/// exactly as `resolve_proposer` judges its gate. Pure, as above:
+/// a refused record leaves the state untouched. The action and the
+/// approvals are deliberately not built here — they are not stored
+/// yet, and this builder stores the manifest only.
+#[allow(clippy::too_many_arguments)]
+pub fn build_governance_transition_record(
+    kernel_state: &KernelState,
+    transition_id: [u8; 32],
+    transition_type: [u8; 32],
+    parent_index: u64,
+    parent_hash: [u8; 32],
+    declared_next_hash: [u8; 32],
+    observation_id: [u8; 32],
+    expires_at: u64,
+    proposer: Pubkey,
+    bump: u8,
+) -> Result<TransitionRecord> {
+    if !kernel_state.sealed {
+        return Err(error!(ProgramV04Error::NotSealed));
+    }
+    if parent_index != kernel_state.head_index || parent_hash != kernel_state.head_hash {
+        return Err(error!(ProgramV04Error::ParentMismatch));
+    }
+    if !is_gov_type(&transition_type) {
+        return Err(error!(ProgramV04Error::GovernanceTypeRequired));
+    }
+    let agent_id = resolve_agent_id(proposer);
+    let k = sealed_launch_kernel().map_err(|_| error!(ProgramV04Error::KernelSeal))?;
+    match k.agent(&agent_id) {
+        Some(profile) if profile.active && k.is_seated(&agent_id) => {}
+        _ => return Err(error!(ProgramV04Error::NotCouncilSeat)),
+    }
+    Ok(new_transition_record(
+        transition_id,
+        transition_type,
+        parent_index,
+        parent_hash,
+        declared_next_hash,
+        observation_id,
+        expires_at,
+        proposer,
+        bump,
+    ))
 }
 
 /// The third §3 account: one stored observation. This is the record the
@@ -5962,6 +6152,13 @@ pub struct TransitionRegistered {
 }
 
 #[event]
+pub struct GovernanceTransitionRegistered {
+    pub transition_id: [u8; 32],
+    pub parent_index: u64,
+    pub proposer: Pubkey,
+}
+
+#[event]
 pub struct ObservationIngested {
     pub observation_id: [u8; 32],
     pub observer: Pubkey,
@@ -6108,6 +6305,12 @@ pub enum ProgramV04Error {
     NotGovernanceTransition,
     #[msg("program-v04 governance commit: kernel governance commit refused, declared chain unproven, stored verdict unreproduced, action check failed, or full predicate failed at commit time")]
     GovernanceCommitFailed,
+    #[msg("program-v04 register: governance types register through register_governance_transition, not register_transition")]
+    GovernanceRegisterRequired,
+    #[msg("program-v04 governance register: transition type is not a governance type")]
+    GovernanceTypeRequired,
+    #[msg("program-v04 governance register: proposer is not a seated council member of the sealed profile")]
+    NotCouncilSeat,
 }
 
 // ---------------------------------------------------------------- launch genesis
@@ -6692,6 +6895,111 @@ mod tests {
         assert_eq!(record.stage, TransitionRecord::REGISTERED);
         assert_eq!(record.stage, 0);
         assert_eq!(record.bump, 7);
+    }
+
+    #[test]
+    fn build_governance_transition_record_accepts_seat_at_sealed_head() {
+        // Slice 32: a launch-council seat (ag(1)) registering a
+        // governance-typed transition at the sealed genesis head
+        // builds a REGISTERED record carrying the gov type, the
+        // head parent, and the seat proposer.
+        let state = sealed_state();
+        let (id, _, parent_index, parent_hash, declared, obs, expires) = record_args();
+        let record = build_governance_transition_record(
+            &state, id, T_GOV_ADJUSTABLE, parent_index, parent_hash, declared, obs, expires,
+            Pubkey::new_from_array(ag(1)), 7,
+        )
+        .expect("seat governance register must build");
+        assert_eq!(record.transition_id, [0xD1; 32]);
+        assert_eq!(record.transition_type, T_GOV_ADJUSTABLE);
+        assert_eq!(record.parent_index, 0);
+        assert_eq!(record.declared_next_hash, [0xE1; 32]);
+        assert_eq!(record.stage, TransitionRecord::REGISTERED);
+        assert_eq!(record.proposer, Pubkey::new_from_array(ag(1)));
+        assert_eq!(record.bump, 7);
+    }
+
+    #[test]
+    fn build_governance_transition_record_refuses_non_gov_type() {
+        // The governance path admits governance types only: an
+        // ordinary type refuses, and the ordinary path is its
+        // only route (see the builder test below).
+        let state = sealed_state();
+        let (id, ttype, parent_index, parent_hash, declared, obs, expires) = record_args();
+        let err = build_governance_transition_record(
+            &state, id, ttype, parent_index, parent_hash, declared, obs, expires,
+            Pubkey::new_from_array(ag(1)), 1,
+        )
+        .expect_err("ordinary type must refuse governance register");
+        assert!(format!("{:?}", err).contains("GovernanceTypeRequired"));
+    }
+
+    #[test]
+    fn build_governance_transition_record_refuses_non_seat_agent() {
+        // ag(4) is a seeded, active agent but not a council seat:
+        // the seat gate, not mere registration, is what the
+        // governance path requires.
+        let state = sealed_state();
+        let (id, _, parent_index, parent_hash, declared, obs, expires) = record_args();
+        let err = build_governance_transition_record(
+            &state, id, T_GOV_COUNCIL, parent_index, parent_hash, declared, obs, expires,
+            Pubkey::new_from_array(ag(4)), 1,
+        )
+        .expect_err("non-seat agent must refuse governance register");
+        assert!(format!("{:?}", err).contains("NotCouncilSeat"));
+    }
+
+    #[test]
+    fn build_governance_transition_record_refuses_unknown_proposer() {
+        // An unknown pubkey is not a seat either: the gate judges
+        // the pinned profile, and an outsider is refused outright.
+        let state = sealed_state();
+        let (id, _, parent_index, parent_hash, declared, obs, expires) = record_args();
+        let err = build_governance_transition_record(
+            &state, id, T_GOV_ADJUSTABLE, parent_index, parent_hash, declared, obs, expires,
+            Pubkey::new_from_array([0x99; 32]), 1,
+        )
+        .expect_err("unknown proposer must refuse governance register");
+        assert!(format!("{:?}", err).contains("NotCouncilSeat"));
+    }
+
+    #[test]
+    fn build_governance_transition_record_refuses_unsealed() {
+        let state = genesis_kernel_state().expect("genesis must construct");
+        let (id, _, parent_index, parent_hash, declared, obs, expires) = record_args();
+        let err = build_governance_transition_record(
+            &state, id, T_GOV_ADJUSTABLE, parent_index, parent_hash, declared, obs, expires,
+            Pubkey::new_from_array(ag(1)), 1,
+        )
+        .expect_err("unsealed governance register must refuse");
+        assert!(format!("{:?}", err).contains("NotSealed"));
+    }
+
+    #[test]
+    fn build_governance_transition_record_refuses_parent_mismatch() {
+        let state = sealed_state();
+        let (id, _, _, parent_hash, declared, obs, expires) = record_args();
+        let err = build_governance_transition_record(
+            &state, id, T_GOV_ADJUSTABLE, 1, parent_hash, declared, obs, expires,
+            Pubkey::new_from_array(ag(1)), 1,
+        )
+        .expect_err("wrong parent must refuse governance register");
+        assert!(format!("{:?}", err).contains("ParentMismatch"));
+    }
+
+    #[test]
+    fn build_transition_record_refuses_gov_type() {
+        // Slice 32: the ordinary path and the governance path are
+        // disjoint — a governance type through the ordinary
+        // builder refuses and names the governance instruction.
+        let state = sealed_state();
+        let (id, _, parent_index, parent_hash, declared, obs, expires) = record_args();
+        let err = build_transition_record(
+            &state, id, T_GOV_ADJUSTABLE, parent_index, parent_hash, declared, obs, expires,
+            Pubkey::new_from_array(ag(1)), 1,
+        )
+        .expect_err("gov type must refuse ordinary register");
+        assert!(format!("{:?}", err).contains("GovernanceRegisterRequired"));
     }
 
     #[test]
