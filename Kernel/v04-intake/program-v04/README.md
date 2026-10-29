@@ -2044,11 +2044,91 @@ families, account inventory, and CU golden set are later step-5 slices.
   through instructions alone; a revise-approval
   instruction; and CU measurement — later slices.
 
+## Slice 47 — the governance declare instruction
+
+- `declare_transition_governance` +
+  `declare_transition_governance_from_records` +
+  `DeclareTransitionGovernance`: the slice-25 declare on
+  the governance path. Gates, in order: sealed state;
+  stage exactly `VALIDATED`; parent exactly the sealed
+  head; observation linkage; a governance type
+  (`NotGovernanceTransition` otherwise — an ordinary
+  record declares through the ordinary helper, never
+  here); the approval-count anchor; a proven planning
+  window (a nonzero stored deadline, with a derivable
+  open clock); the prior-signal anchor (supplied signals
+  numbering exactly `signal_count`, every prior belonging
+  to the transition with a stored round matching its own
+  `submitted_at`, no duplicated (agent, round)); the
+  prior-plan anchor (supplied plans numbering exactly
+  `plan_count`, every prior belonging to the transition,
+  no duplicated resource inside a prior's claims). Replay
+  runs the slice-37 governance prefix (approvals + ingest
+  + governance registration) at the stored `eligible_at`,
+  then evaluate and mark_eligible at the same clock, then
+  each prior signal at its `submitted_at` in order, then
+  select and open_planning at the derived open clock (so
+  the replayed deadline equals the stored deadline, by
+  construction), then each prior plan at the open clock,
+  then reconcile at the state's clock, then the stored
+  `compatible` verdict cross-checked against slice 23's
+  exact mirror recomputed over the supplied plan set (a
+  mismatch refuses before any kernel validate runs), then
+  kernel `validate_transition` at the state's clock, which
+  must yield `Validated` — a `Blocked` verdict refuses
+  and the record stands `VALIDATED`, because declare is
+  not a verdict writer — and only then kernel
+  `declare_commit` at the state's clock, which re-runs the
+  full 13-bit predicate: a plan expiry reached since
+  validate (the `PLANS` bit) refuses here, the one case
+  validate cannot see. The stage advances to `DECLARED`
+  on a passing predicate; the sealed head does not move.
+  The instruction's remaining accounts parse as in slice
+  31's reconcile, with the governance tail: prior
+  COMMITTED bundles first, then approvals, then prior
+  signals, then prior plans, split by
+  `split_gov_plan_tail`. The payer is a fee payer only:
+  kernel `declare_commit` takes no caller, so no proposer,
+  seat, or agent gate applies. No new account, error, or
+  event; the emitted event is the existing
+  `TransitionDeclared`. The slice-36 `commit_governance`
+  honesty bound is updated in the same pass: the
+  governance stage chain is now complete through declare,
+  so a governance record reaches `DECLARED` through
+  instructions alone and `commit_governance`'s on-chain
+  reach is a fully instruction-driven record.
+- No governance difference surfaced by a failing test
+  this slice: the declared advance, the expired-plan and
+  stale-observation refusals, the stored-verdict
+  mismatch, and all ten refusal tests passed in their
+  first faithful form — the kernel's predicate, capacity
+  verdict, and unanimity gate behave on the governance
+  path exactly as on the ordinary one.
+- Host tests 374/374 (361 prior + 13 slice-47). Clippy
+  back to the pre-existing profile (anchor macro
+  `unexpected cfg` noise + the slice-8 test helper's
+  `type_complexity` warning at lib.rs:12148, the
+  `record_args` helper — line shifted by this slice's
+  inserts); zero warnings naming any slice-47 symbol and
+  none pointing at the new accounts struct. IDL counts
+  move by design (33 instructions, 6 accounts, 34 errors,
+  18 events — +1 instruction only, including
+  `declare_transition_governance`); `.so` 1,618,680 bytes
+  (sha256 `4393a4b9…`). The build log carries four
+  pre-existing stack-frame lines naming approve/select
+  instructions, none naming any slice-47 symbol; the exit
+  code is 0 and both artifacts were regenerated.
+- Deliberately NOT slice 47: the governance stage chain
+  is complete — what remains on the branch is the
+  revise-approval decision, then the cu-golden freeze,
+  then the Agave 4.3.2 + Anchor next-stable scratch
+  assessments; and CU measurement — later slices.
+
 ## Build
 
 ```sh
 export RUSTUP_HOME=~/workspace/toolchains/rustup CARGO_HOME=~/workspace/toolchains/cargo
 export PATH=~/workspace/toolchains/cargo/bin:~/workspace/toolchains/solana/bin:$PATH
 ~/workspace/toolchains/anchor/bin/anchor build   # from this directory
-cargo test                                        # host tests, 324/324
+cargo test                                        # host tests, 374/374
 ```
