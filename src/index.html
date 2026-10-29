@@ -439,7 +439,7 @@ the brief outline flash marks the landing panel without touching its copy.*/
 .wrename-input{flex:1;min-width:0;background:var(--input);border:1px solid var(--inputline);border-radius:6px;color:var(--text);padding:4px 6px;font-size:12px}
 .wrename-save{padding:4px 8px;font-size:11px}
 </style></head><body><div class="app">
-<header class="top"><div class="brand"><div class="mark">T</div><div><h1>TURNPOOL</h1><small>Solana market intelligence</small></div></div><div class="topright"><div class="pagebtns" role="tablist" aria-label="Pages"><button type="button" id="tabTerminal" class="active" role="tab" aria-selected="true">Terminal</button><button type="button" id="tabDashboard" role="tab" aria-selected="false">Dashboard</button><button type="button" id="tabLab" role="tab" aria-selected="false">Strategy Lab</button></div><span class="pill">NETWORK&nbsp; / &nbsp;SOLANA</span><span class="status"><i class="dot"></i><span id="feedStatus" data-testid="feed-badge">CONNECTING DATA</span></span><span class="wwrap"><button id="walletBtn" class="walletbtn" type="button">Connect Wallet</button><span id="syncDot" style="display:none;width:8px;height:8px;border-radius:50%;background:#888;vertical-align:middle;margin-left:2px" title="Sync"></span><div class="wdd" id="walletDd" hidden><div class="wactive-card"><div class="wcard-top"><span class="wavatar" id="walletDdAvatar">W</span><div class="wcard-meta"><div class="wcard-name" id="walletDdName">Wallet</div><button type="button" class="waddr" id="walletDdAddr" title="Copy address"></button></div><span class="wchip chip-off" id="walletSyncChip">Sync off</span></div><div class="wsyncrow"><span class="wsync-label">Sync</span><span class="wsync-value" id="walletSyncLine">Sync off</span></div><button type="button" class="wfull" id="walletSyncTapBtn" hidden>Sign in to sync</button></div><div class="wbal-card"><div class="walletrow"><span>SOL balance</span><strong id="walletSol">—</strong></div><div class="walletrow"><span>USDC balance</span><strong id="walletUsdc">—</strong></div><div class="walletrow"><span>USDT balance</span><strong id="walletUsdt">—</strong></div><div class="wrowbtn"><button type="button" id="walletCopy">Copy address</button><button type="button" id="walletRetryBal">Retry balances</button></div></div><div id="walletRoster"></div><div class="wrowbtn wbottom"><button type="button" class="wfull" id="walletAddBtn">+ Add New Wallet</button><button type="button" id="walletDisconnect" class="danger">Disconnect active wallet</button></div></div></span><!-- N2.7 amendment 2026-10-24 (Carlos 17:47 CST): sign-in moves into the banner; the signed-out header carries no sign-in control, Log out lives in the header only when signed in. --><span class="wwrap"><button id="acctBtn" class="walletbtn" type="button" title="Email account — optional sign-in" style="display:none">Log out</button><span id="acctEmail" style="display:none;font-size:11px;color:var(--muted);max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="Signed-in email account"></span></span><span class="pill">PAPER MODE</span><button id="howItWorksLink" class="howlink" type="button" data-testid="how-it-works-link" title="How the terminal handles orders — simulated paper trading and wallet-signed swaps">How this works</button><span class="wwrap"><button id="layoutBtn" class="iconbtn" type="button" aria-label="Open layout" title="Layout">▦</button><div class="lpop" id="layoutPop" hidden role="dialog" aria-label="Layout"><div class="lpop-head"><strong>Layout</strong><button class="wclose" id="layoutPopClose" type="button" aria-label="Close layout">×</button></div><div class="lpop-note">Three pages — Terminal, Dashboard, Strategy Lab — share one layout. Drag any panel by its header to move it anywhere — the arrows reorder panels within each column; each row's page control moves the panel to another page — it appears there, visible, in its home column.</div><div id="layoutPanelList"></div><div class="lpop-hidden" id="layoutHiddenNote" hidden></div><div class="lpop-sec">Workspaces</div><div id="layoutWsList"></div><div class="searchrow" style="margin-top:8px"><input id="layoutWsName" maxlength="40" placeholder="Name this layout" aria-label="Workspace name" autocomplete="off" spellcheck="false"><button id="layoutWsSave" type="button">Save</button></div></div></span><button id="resetUiBtn" class="resetuibtn" type="button" data-testid="reset-ui-btn" aria-label="Reset UI layout" title="Reset UI layout — restore every panel to its home position">↺ Reset UI</button><!-- N5.13 2026-10-24 (A58): the swap door lives in the header now — the floating pill is gone (see scripts/preserve-gecko.mjs). --><a id="swapHeaderBtn" class="swapheadbtn" href="/raydium/" data-testid="swap-header-btn" title="Open the Raydium swap page">Swap on Raydium</a><button id="settingsBtn" class="iconbtn" type="button" aria-label="Open settings" title="Settings">⚙</button></div></header>
+<header class="top"><div class="brand"><div class="mark">T</div><div><h1>TURNPOOL</h1><small>Solana market intelligence</small></div></div><div class="topright"><div class="pagebtns" role="tablist" aria-label="Pages"><button type="button" id="tabTerminal" class="active" role="tab" aria-selected="true">Terminal</button><button type="button" id="tabDashboard" role="tab" aria-selected="false">Dashboard</button><button type="button" id="tabLab" role="tab" aria-selected="false">Strategy Lab</button></div><span class="pill">NETWORK&nbsp; / &nbsp;SOLANA</span><span class="status"><i class="dot"></i><span id="feedStatus" data-testid="feed-badge">CONNECTING DATA</span></span><span class="wwrap"><button id="walletBtn" class="walletbtn" type="button">Connect Wallet</button><span id="syncDot" style="display:none;width:8px;height:8px;border-radius:50%;background:#888;vertical-align:middle;margin-left:2px" title="Sync"></span><div class="wdd" id="walletDd" hidden><div class="wactive-card"><div class="wcard-top"><span class="wavatar" id="walletDdAvatar">W</span><div class="wcard-meta"><div class="wcard-name" id="walletDdName">Wallet</div><button type="button" class="waddr" id="walletDdAddr" title="Copy address"></button><span class="wcard-addr" id="walletDdChain"></span></div><span class="wchip chip-off" id="walletSyncChip">Sync off</span></div><div class="wsyncrow"><span class="wsync-label">Sync</span><span class="wsync-value" id="walletSyncLine">Sync off</span></div><button type="button" class="wfull" id="walletSyncTapBtn" hidden>Sign in to sync</button></div><div class="wbal-card"><div class="walletrow"><span>SOL balance</span><strong id="walletSol">—</strong></div><div class="walletrow"><span>USDC balance</span><strong id="walletUsdc">—</strong></div><div class="walletrow"><span>USDT balance</span><strong id="walletUsdt">—</strong></div><div class="wrowbtn"><button type="button" id="walletCopy">Copy address</button><button type="button" id="walletRetryBal">Retry balances</button></div></div><div id="walletRoster"></div><div class="wrowbtn wbottom"><button type="button" class="wfull" id="walletAddBtn">+ Add New Wallet</button><button type="button" id="walletDisconnect" class="danger">Disconnect active wallet</button></div></div></span><!-- N2.7 amendment 2026-10-24 (Carlos 17:47 CST): sign-in moves into the banner; the signed-out header carries no sign-in control, Log out lives in the header only when signed in. --><span class="wwrap"><button id="acctBtn" class="walletbtn" type="button" title="Email account — optional sign-in" style="display:none">Log out</button><span id="acctEmail" style="display:none;font-size:11px;color:var(--muted);max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="Signed-in email account"></span></span><span class="pill">PAPER MODE</span><button id="howItWorksLink" class="howlink" type="button" data-testid="how-it-works-link" title="How the terminal handles orders — simulated paper trading and wallet-signed swaps">How this works</button><span class="wwrap"><button id="layoutBtn" class="iconbtn" type="button" aria-label="Open layout" title="Layout">▦</button><div class="lpop" id="layoutPop" hidden role="dialog" aria-label="Layout"><div class="lpop-head"><strong>Layout</strong><button class="wclose" id="layoutPopClose" type="button" aria-label="Close layout">×</button></div><div class="lpop-note">Three pages — Terminal, Dashboard, Strategy Lab — share one layout. Drag any panel by its header to move it anywhere — the arrows reorder panels within each column; each row's page control moves the panel to another page — it appears there, visible, in its home column.</div><div id="layoutPanelList"></div><div class="lpop-hidden" id="layoutHiddenNote" hidden></div><div class="lpop-sec">Workspaces</div><div id="layoutWsList"></div><div class="searchrow" style="margin-top:8px"><input id="layoutWsName" maxlength="40" placeholder="Name this layout" aria-label="Workspace name" autocomplete="off" spellcheck="false"><button id="layoutWsSave" type="button">Save</button></div></div></span><button id="resetUiBtn" class="resetuibtn" type="button" data-testid="reset-ui-btn" aria-label="Reset UI layout" title="Reset UI layout — restore every panel to its home position">↺ Reset UI</button><!-- N5.13 2026-10-24 (A58): the swap door lives in the header now — the floating pill is gone (see scripts/preserve-gecko.mjs). --><a id="swapHeaderBtn" class="swapheadbtn" href="/raydium/" data-testid="swap-header-btn" title="Open the Raydium swap page">Swap on Raydium</a><button id="settingsBtn" class="iconbtn" type="button" aria-label="Open settings" title="Settings">⚙</button></div></header>
 <div id="acctBanner" class="acctbanner" hidden><span class="acctbanner-text"><strong>Create a free account or sign in</strong> — your paper trading follows you across devices. <span class="acctbanner-never">We never sell your email.</span></span><span class="acctbanner-form"><input id="acctBannerEmail" type="email" inputmode="email" autocomplete="email" maxlength="254" placeholder="you@example.com" aria-label="Email for a free account"><button id="acctBannerSubmit" type="button">Create free account</button><button id="acctBannerSignin" type="button">Sign in</button><button id="acctBannerDismiss" type="button" aria-label="Dismiss sign-up banner">×</button></span></div>
 <div class="stats" data-layout-root data-root-key="stats">
 <div class="stat" data-panel="solstat" data-drag-handle><div class="eyebrow">SOL / USD</div><div class="big" id="statPrice">$—</div><div class="sub" id="statPriceSub">Live market feed</div></div>
@@ -650,7 +650,10 @@ function syncIsUserRejection(e){const m=String((e&&e.message)||e||'').toLowerCas
    MetaMask wallet is present the toast goes straight to the
    disconnect/reconnect advice. */
 function walletHasMetaMask(){try{const names=[];(wallet._stdList||[]).forEach(w=>{if(w&&w.name)names.push(w.name);});(wallet._adapters||[]).forEach(a=>{if(a&&a.name)names.push(a.name);});(wallet.roster||[]).forEach(e=>{if(e&&e.name)names.push(e.name);});return names.some(n=>String(n).toLowerCase().indexOf('metamask')>=0);}catch(_){return false;}}
-async function syncAuthAndPull(pk,opts){const fromSwitch=!!(opts&&opts.fromSwitch);const wname=(wallet&&wallet.name)||'Wallet';if(syncState.authing)return;if(syncState.token&&syncState.pubkey===pk)return;syncState.authing=true;syncSetStatus('syncing');let stage='challenge';try{const ch=await syncPost({action:'challenge',pubkey:pk});if(!ch||!ch.ok||!ch.nonce) {syncSetStatus('offline','challenge');toast(wname+' sync sign-in failed at the challenge step — the app could not start the sign-in. Your settings stay on this device only. Disconnect and reconnect to retry.');return;}const message=syncChallengeMessage(ch.nonce,ch.issuedAt);const adapter=wallet.adapter;if(!adapter||typeof adapter.signMessage!=='function'){syncSetStatus('offline','signature');toast(wname+' sync unavailable at the signature step — this wallet cannot sign the login challenge. Your settings stay on this device only.');return;}stage='signature';let sig;try{sig=await adapter.signMessage(new TextEncoder().encode(message));}catch(e){if(syncIsUserRejection(e)){syncSetStatus('off');toast("Wallet connected — sync is OFF because the sign-in wasn't approved. Your settings stay on this device only.");return;}if(fromSwitch){syncSetStatus('tap','signature');toast(wname+' sync sign-in needs a tap — the background sign-in did not return a signature. Tap "Sign in to sync" in the wallet menu to sign in from your tap. Your settings stay on this device until then.');return;}syncSetStatus('offline','signature');toast(wname+' sync sign-in failed at the signature step — the signature did not come back.'+(walletHasMetaMask()?" If MetaMask showed a flagged-site warning on the signature request, approve the override and retry; otherwise disconnect and reconnect to retry.":" Disconnect and reconnect to retry.")+' Your settings stay on this device only.');return;}/* N2.3+N4.10: a declined sign-in is reported, never silent — wallet connected, sync off; a non-rejection signature error is a stage failure, not a decline */stage='verification';const au=await syncPost({action:'auth',pubkey:pk,nonce:ch.nonce,signature:syncB64(sig)});if(!au||!au.ok||!au.token){syncSetStatus('offline','verification');toast(wname+' sync sign-in failed at the verification step — the signature did not verify. Your settings stay on this device only. Disconnect and reconnect to retry.');return;}syncState.token=au.token;syncState.pubkey=pk;syncState.expiresAt=(au.expiresAt?Number(au.expiresAt)*1000:0);syncPushedJson={};const pull=await syncGetPull();if(pull&&pull.ok)syncApplyNamespaces(pull.namespaces,pk);syncSetStatus('synced');try{walletSessionSave();}catch(_){}syncPushNow();/* seeds the server with any local-newer namespaces */}catch(_){syncSetStatus('offline',stage);}finally{syncState.authing=false;}}
+async function syncAuthAndPull(pk,opts){const fromSwitch=!!(opts&&opts.fromSwitch);const wname=(wallet&&wallet.name)||'Wallet';if(syncState.authing)return;/* N4.20: sync sign-in is Solana-only in v1 — an EVM identity never gets a
+   signature prompt (the server auth verifies Ed25519, so a personal_sign
+   proof could not verify); settings stay on this device, named plainly. */
+  const _syncEntry=walletRosterFind(pk);if((_syncEntry&&_syncEntry.chain==='evm')||(wallet.adapter&&wallet.adapter._evm)){syncSetStatus('off');toast('EVM wallet connected for identity and display only — sync sign-in is Solana-only in v1, so settings stay on this device.');return;}if(syncState.token&&syncState.pubkey===pk)return;syncState.authing=true;syncSetStatus('syncing');let stage='challenge';try{const ch=await syncPost({action:'challenge',pubkey:pk});if(!ch||!ch.ok||!ch.nonce) {syncSetStatus('offline','challenge');toast(wname+' sync sign-in failed at the challenge step — the app could not start the sign-in. Your settings stay on this device only. Disconnect and reconnect to retry.');return;}const message=syncChallengeMessage(ch.nonce,ch.issuedAt);const adapter=wallet.adapter;if(!adapter||typeof adapter.signMessage!=='function'){syncSetStatus('offline','signature');toast(wname+' sync unavailable at the signature step — this wallet cannot sign the login challenge. Your settings stay on this device only.');return;}stage='signature';let sig;try{sig=await adapter.signMessage(new TextEncoder().encode(message));}catch(e){if(syncIsUserRejection(e)){syncSetStatus('off');toast("Wallet connected — sync is OFF because the sign-in wasn't approved. Your settings stay on this device only.");return;}if(fromSwitch){syncSetStatus('tap','signature');toast(wname+' sync sign-in needs a tap — the background sign-in did not return a signature. Tap "Sign in to sync" in the wallet menu to sign in from your tap. Your settings stay on this device until then.');return;}syncSetStatus('offline','signature');toast(wname+' sync sign-in failed at the signature step — the signature did not come back.'+(walletHasMetaMask()?" If MetaMask showed a flagged-site warning on the signature request, approve the override and retry; otherwise disconnect and reconnect to retry.":" Disconnect and reconnect to retry.")+' Your settings stay on this device only.');return;}/* N2.3+N4.10: a declined sign-in is reported, never silent — wallet connected, sync off; a non-rejection signature error is a stage failure, not a decline */stage='verification';const au=await syncPost({action:'auth',pubkey:pk,nonce:ch.nonce,signature:syncB64(sig)});if(!au||!au.ok||!au.token){syncSetStatus('offline','verification');toast(wname+' sync sign-in failed at the verification step — the signature did not verify. Your settings stay on this device only. Disconnect and reconnect to retry.');return;}syncState.token=au.token;syncState.pubkey=pk;syncState.expiresAt=(au.expiresAt?Number(au.expiresAt)*1000:0);syncPushedJson={};const pull=await syncGetPull();if(pull&&pull.ok)syncApplyNamespaces(pull.namespaces,pk);syncSetStatus('synced');try{walletSessionSave();}catch(_){}syncPushNow();/* seeds the server with any local-newer namespaces */}catch(_){syncSetStatus('offline',stage);}finally{syncState.authing=false;}}
 function syncClear(){try{clearTimeout(syncState.timer);}catch(_){}syncState.token=null;syncState.pubkey=null;syncState.expiresAt=0;syncState.authing=false;syncState.pushing=false;syncPushedJson={};syncLocalTs={};syncSetStatus('off');}
 document.addEventListener('walletchange',e=>{try{const d=(e&&e.detail)||{};if(d.connected&&d.publicKey){if(wallet._restoreNoAuth){wallet._restoreNoAuth=false;syncSetStatus('tap');}else syncAuthAndPull(d.publicKey,{fromSwitch:!!d.fromSwitch});}else if(!d.connected)syncClear();}catch(_){}});
 /*__N22_SYNC_END__*/
@@ -5423,6 +5426,89 @@ async function ensureStdWallets(){
   if(!mod||typeof mod.getWallets!=='function')throw new Error('no getWallets');
   wallet._stdApi=mod.getWallets();walletRefreshStdList();return wallet._stdApi;
 }
+/* N4.20 (A116): EVM wallet onboarding, v1 — identity/display ONLY.
+   EIP-6963 discovery (the EVM analogue of N4.9's Wallet Standard
+   discovery): wallets announce themselves via the
+   eip6963:announceProvider event after we dispatch
+   eip6963:requestProvider; a legacy window.ethereum injection is
+   collected as a fallback only when it is not already announced.
+   The shim exposes the same adapter surface the rest of the page
+   already uses (connect/disconnect/publicKey.toBase58) so the roster,
+   naming (N2.6), switching (N2.4) and forgetting (N2.8) all work
+   unchanged. HARD SCOPE LINES, enforced by construction, not by
+   copy: there is no EVM transaction, approval, or signing call
+   anywhere in this shim — connect() asks only for accounts
+   (eth_requestAccounts, or eth_accounts for a silent restore) and
+   the chain id (eth_chainId); disconnect() is a local no-op because
+   EIP-1193 has no disconnect. Balances are NOT v1 (they follow the
+   N4.18 server-proxy pattern as a later item): refreshWalletBalances
+   short-circuits for an EVM active wallet, so the menu renders honest
+   dashes, never Solana balances or false zeros. Sync sign-in is
+   Solana-only in v1: syncAuthAndPull refuses an EVM wallet with a
+   named explanation instead of asking for a signature the Ed25519
+   server auth could never verify — so v1 shows NO signature prompt
+   for an EVM wallet at all, which is inside the spec's 'no signing
+   prompt beyond the optional sign-in proof' line (the optional proof
+   itself is deferred, not silently attempted). Chain names come only
+   from the verified map below; an unmapped chain renders as
+   'Chain <decimal id>', never a guessed name. */
+const EVM_CHAIN_LABELS={1:'Ethereum',10:'Optimism',56:'BNB Chain',100:'Gnosis',130:'Unichain',137:'Polygon',146:'L2',324:'zkSync Era',1101:'Polygon zkEVM',42161:'Arbitrum One',42220:'Celo',43114:'Avalanche',5000:'Mantle',8453:'Base'};
+function evmChainLabel(chainIdHex){let n=null;if(typeof chainIdHex==='string'&&chainIdHex.indexOf('0x')===0){try{n=parseInt(chainIdHex,16);}catch(e){n=null;}}else if(typeof chainIdHex==='number'){n=chainIdHex;}if(n===null||!Number.isFinite(n))return 'Unknown chain';return EVM_CHAIN_LABELS[n]||('Chain '+n);}
+function evmIsAddress(a){return typeof a==='string'&&/^0x[0-9a-fA-F]{40}$/.test(a);}
+function evmAddProvider(info,provider){
+  if(!provider||typeof provider.request!=='function')return;
+  if(!wallet._evmList)wallet._evmList=[];
+  const key=(info&&info.uuid)||(info&&info.rdns)||(info&&info.name)||'';
+  if(key&&wallet._evmList.some(e=>e.key===key))return;
+  if(wallet._evmList.some(e=>e.provider===provider))return;
+  wallet._evmList.push({key:key,info:info||{},provider:provider});
+}
+function evmCollectLegacy(){
+  try{
+    const eth=window.ethereum;if(!eth||typeof eth.request!=='function')return;
+    if((wallet._evmList||[]).some(e=>e.provider===eth))return;
+    const name=(eth.isMetaMask?'MetaMask':(eth.name||'EVM wallet'));
+    evmAddProvider({name:name,icon:null,rdns:null},eth);
+  }catch(e){}
+}
+function evmOnAnnounce(e){
+  try{
+    const d=(e&&e.detail)||{};if(!d.provider)return;
+    evmAddProvider(d.info||{},d.provider);
+    if(!$('walletModal').hidden)paintWalletModal();
+  }catch(err){}
+}
+function evmInitDiscovery(){
+  if(wallet._evmListener)return;wallet._evmListener=true;
+  try{window.addEventListener('eip6963:announceProvider',evmOnAnnounce);}catch(e){}
+}
+function evmRequestProviders(){
+  evmInitDiscovery();
+  try{window.dispatchEvent(new CustomEvent('eip6963:requestProvider'));}catch(e){}
+  evmCollectLegacy();
+}
+function evmWalletAdapter(entry){
+  const info=entry.info||{},provider=entry.provider;
+  const shim={name:info.name||'EVM wallet',icon:info.icon||null,url:null,readyState:'Installed',_evm:true,_provider:provider,_evmKey:entry.key||('evm:'+(info.rdns||info.name||'wallet')),_account:null,publicKey:null,_evmChainId:null,_evmChainLabel:null,
+    async connect(opts){
+      let accounts;
+      if(opts&&opts.silent){accounts=await provider.request({method:'eth_accounts'});if(!accounts||!accounts.length)throw new Error('no evm account');}
+      else{accounts=await provider.request({method:'eth_requestAccounts'});if(!accounts||!accounts.length)throw new Error('no evm account');}
+      const addr=accounts[0];if(!evmIsAddress(addr))throw new Error('no evm account');
+      shim._account=addr;shim.publicKey={toBase58:()=>addr};
+      try{const cid=await provider.request({method:'eth_chainId'});shim._evmChainId=cid;shim._evmChainLabel=evmChainLabel(cid);}catch(e){shim._evmChainId=null;shim._evmChainLabel='Unknown chain';}
+      if(!shim._evmListeners){shim._evmListeners=true;
+        try{provider.on('chainChanged',(cid)=>{try{shim._evmChainId=cid;shim._evmChainLabel=evmChainLabel(cid);const en=walletRosterFind(shim.publicKey?shim.publicKey.toBase58():null);if(en){en.evmChainId=cid;en.evmChainLabel=shim._evmChainLabel;}if(wallet.publicKey===shim.publicKey.toBase58())renderWalletDd();renderWalletRoster();}catch(e){}});}catch(e){}
+        try{provider.on('accountsChanged',(accs)=>{try{if(!accs||!accs.length){const en=walletRosterFind(shim.publicKey?shim.publicKey.toBase58():null);if(en)disconnectWallet(en.pubkey);} }catch(e){}});}catch(e){}
+      }
+      return shim;
+    },
+    async disconnect(){shim._account=null;shim.publicKey=null;/* EIP-1193 has no disconnect; forgetting is local (disconnectWallet) */}};
+  return shim;
+}
+function evmWalletRowHtml(a){
+  return '<button type="button" class="wrow" data-wallet="'+esc(a._evmKey)+'">'+walletIconHtml(a)+'<span class="wname">'+esc(a.name)+'<small>EVM · Detected in this browser · click to connect — identity/display only</small></span><span class="wgo">Connect →</span></button>';
+}
 /* Merge rule (N4.9): adapters first; a standard wallet whose name matches an
    adapter row is deduped to the adapter (one row per wallet, never two).
    Returns the same {installed, installable} shape as classifyWallets, and
@@ -5438,7 +5524,16 @@ function walletModalRows(){
     const shim=wallet._stdShims[w.name]||(wallet._stdShims[w.name]=stdWalletAdapter(w));
     installed.push(shim);wallet._connectables[shim.name]=shim;
   });
-  return{installed,installable};
+  /* N4.20: EVM rows are a separate section, keyed by their discovery key
+     (never by bare name) so an EVM MetaMask never collides with a Solana
+     MetaMask row; a wallet already in the roster is filtered at paint. */
+  const evm=[];
+  (wallet._evmList||[]).forEach(en=>{
+    if(!wallet._evmShims)wallet._evmShims={};
+    const shim=wallet._evmShims[en.key||en.provider]||(wallet._evmShims[en.key||en.provider]=evmWalletAdapter(en));
+    evm.push(shim);wallet._connectables[shim._evmKey]=shim;
+  });
+  return{installed,installable,evm:evm};
 }
 function renderWalletModalError(){
   $('walletModalBody').innerHTML='<div class="werr">Wallet library failed to load. Check your connection and retry.</div><button type="button" class="wrow" id="walletLibRetry"><span class="wname">Retry loading adapters</span><span class="wgo">↻</span></button><div class="wnote">No wallet is connected. The terminal keeps working in paper mode.</div>';
@@ -5457,11 +5552,13 @@ function paintWalletModal(){
   const body=$('walletModalBody');
   const c=walletModalRows();
   const connectable=c.installed.filter(a=>!walletRosterHasAdapter(a));
+  const evmConnectable=(c.evm||[]).filter(a=>!walletRosterHasAdapter(a));
   let html='';
   if(wallet.roster.length)html+='<div class="wroster-head">Connected wallets — one is active; the header, ticket and sync follow the active wallet.</div>'+wallet.roster.map(walletRosterRowHtml).join('');
   html+=connectable.map(a=>walletRowHtml(a,'installed')).join('')+c.installable.map(a=>walletRowHtml(a,'install')).join('');
-  if(!connectable.length&&!c.installable.length&&!wallet.roster.length)html='<div class="wnote">No supported wallets found.</div>';
-  html+='<div class="wnote">Only wallets detected in this browser can connect — any Wallet Standard wallet, plus Phantom and Solflare.<br>Connecting is read-only for trading — the terminal signs only the sync login challenge (never a transaction) when you connect.</div>';
+  if(evmConnectable.length)html+='<div class="wroster-head">EVM wallets — identity and display only (no signing, no balances in v1)</div>'+evmConnectable.map(a=>evmWalletRowHtml(a)).join('');
+  if(!connectable.length&&!c.installable.length&&!evmConnectable.length&&!wallet.roster.length)html='<div class="wnote">No supported wallets found.</div>';
+  html+='<div class="wnote">Only wallets detected in this browser can connect — any Wallet Standard wallet, plus Phantom and Solflare.<br>Connecting is read-only for trading — the terminal signs only the sync login challenge (never a transaction) when you connect.<br>EVM wallets detected via EIP-6963 connect as display-only identities — no transaction signing, no token approvals, no balances in v1.</div>';
   if(wallet._lastConnectError)html='<div class="werr">'+esc(wallet._lastConnectError.msg)+'</div>'+html;
   body.innerHTML=html;
 }
@@ -5475,6 +5572,7 @@ async function openWalletModal(){
     catch(e){renderWalletModalError();return;}
   }
   try{await ensureStdWallets();}catch(e){/* standard discovery is additive: adapters-only modal still works */}
+  try{evmRequestProviders();}catch(e){/* EVM discovery is additive: a wallet that announces late repaints via evmOnAnnounce */}
   walletAttachAdapterListeners();
   paintWalletModal();
 }
@@ -5573,7 +5671,7 @@ function renderWalletDd(){
   /* N2.6: the active card's name/avatar follow the (possibly renamed)
      display label. Guarded so extracted-function harnesses that do not
      ship walletDisplayName still run (they fall back to wallet.name). */
-  try{const dn=(typeof walletDisplayName==='function'?walletDisplayName(wallet.publicKey,wallet.name):(wallet.name||'Wallet'));const nm=$('walletDdName');if(nm)nm.textContent=dn;const av=$('walletDdAvatar');if(av)av.textContent=(dn||'W').slice(0,1).toUpperCase();const ad=$('walletDdAddr');if(ad)ad.title='Copy address — '+String(wallet.publicKey||'');}catch(_){}
+  try{const dn=(typeof walletDisplayName==='function'?walletDisplayName(wallet.publicKey,wallet.name):(wallet.name||'Wallet'));const nm=$('walletDdName');if(nm)nm.textContent=dn;const av=$('walletDdAvatar');if(av)av.textContent=(dn||'W').slice(0,1).toUpperCase();const ad=$('walletDdAddr');if(ad)ad.title='Copy address — '+String(wallet.publicKey||'');const ch=$('walletDdChain');if(ch){const _ce=walletRosterFind(wallet.publicKey);ch.textContent=(_ce&&_ce.chain==='evm')?('EVM · '+(_ce.evmChainLabel||'Unknown chain')):'';}}catch(_){}
   paintWalletSync(); // N2.5: the menu's only repaint path also repaints sync — no repaint can leave a stale Sync line behind
   renderWalletRoster();
 }
@@ -5634,9 +5732,10 @@ function walletRosterRowHtml(entry){
   const active=wallet.publicKey===entry.pubkey;
   const dn=walletDisplayName(entry.pubkey,entry.name);
   const total=walletCardTotalUsd(entry);
-  const totalHtml=total===null?'<span class="wcard-total muted">Balances not loaded</span>':'<span class="wcard-total">$'+fmt(total,2)+'</span>';
+  const totalHtml=(entry.chain==='evm')?'<span class="wcard-total muted">EVM · no balances in v1</span>':(total===null?'<span class="wcard-total muted">Balances not loaded</span>':'<span class="wcard-total">$'+fmt(total,2)+'</span>');
+  const chainHtml=(entry.chain==='evm')?'<span class="wcard-addr">EVM · '+esc(entry.evmChainLabel||'Unknown chain')+'</span>':'';
   const switchHtml=active?'<span class="wactive">Active</span>':'<button type="button" data-roster-switch="'+esc(entry.pubkey)+'">Switch to active</button>';
-  return '<div class="wcard'+(active?' active':'')+'" data-roster-card="'+esc(entry.pubkey)+'"><span class="wavatar">'+esc((dn||'W').slice(0,1).toUpperCase())+'</span><span class="wcard-main"><span class="wcard-title"><span class="wcard-name">'+esc(dn)+'</span><button type="button" data-wallet-rename="'+esc(entry.pubkey)+'" title="Rename this wallet">✎</button></span><span class="wcard-addr">'+esc(truncateAddr(entry.pubkey))+'</span><span class="wchip chip-'+walletSyncChipClassFor(entry.pubkey)+'">'+esc(walletRosterSyncShort(entry))+'</span></span><span class="wcard-side">'+totalHtml+switchHtml+'<button type="button" data-roster-disconnect="'+esc(entry.pubkey)+'" title="Disconnect '+esc(dn)+'">Disconnect</button></span></div>';
+  return '<div class="wcard'+(active?' active':'')+'" data-roster-card="'+esc(entry.pubkey)+'"><span class="wavatar">'+esc((dn||'W').slice(0,1).toUpperCase())+'</span><span class="wcard-main"><span class="wcard-title"><span class="wcard-name">'+esc(dn)+'</span><button type="button" data-wallet-rename="'+esc(entry.pubkey)+'" title="Rename this wallet">✎</button></span><span class="wcard-addr">'+esc(truncateAddr(entry.pubkey))+'</span>'+chainHtml+'<span class="wchip chip-'+walletSyncChipClassFor(entry.pubkey)+'">'+esc(walletRosterSyncShort(entry))+'</span></span><span class="wcard-side">'+totalHtml+switchHtml+'<button type="button" data-roster-disconnect="'+esc(entry.pubkey)+'" title="Disconnect '+esc(dn)+'">Disconnect</button></span></div>';
 }
 function walletStartRename(pk,el){
   try{
@@ -5677,15 +5776,15 @@ function setWalletActive(pk,announce){
   renderWalletDd();
   $('ticketNote').textContent='Wallet '+truncateAddr(pk)+' connected · paper mode — no real orders or funds';
   try{document.dispatchEvent(new CustomEvent('walletchange',{detail:{connected:true,publicKey:pk,fromSwitch:true}}));}catch(e){}
-  if(announce!==false)toast('Active wallet switched to '+truncateAddr(pk)+' — sync sign-in runs for this wallet.');
+  if(announce!==false)toast('Active wallet switched to '+truncateAddr(pk)+(entry.chain==='evm'?' — EVM identity only; sync stays off in v1.':' — sync sign-in runs for this wallet.'));
   try{walletSessionSave();}catch(e){} // N2.8: the active wallet is the persisted one
   refreshWalletBalances();
   return true;
 }
 function setWalletConnected(a,pk){
   const existing=walletRosterFind(pk);
-  if(existing){existing.adapter=a;existing.name=a.name;existing.icon=a.icon;if(wallet.publicKey!==pk)setWalletActive(pk);return;}
-  wallet.roster.push({adapter:a,name:a.name,icon:a.icon,pubkey:pk,balances:{sol:null,usdc:null,usdt:null},balErr:{}});
+  if(existing){existing.adapter=a;existing.name=a.name;existing.icon=a.icon;existing.chain=a._evm?'evm':'solana';existing.evmChainId=a._evmChainId||null;existing.evmChainLabel=a._evmChainLabel||null;if(wallet.publicKey!==pk)setWalletActive(pk);return;}
+  wallet.roster.push({adapter:a,name:a.name,icon:a.icon,pubkey:pk,chain:a._evm?'evm':'solana',evmChainId:a._evmChainId||null,evmChainLabel:a._evmChainLabel||null,balances:{sol:null,usdc:null,usdt:null},balErr:{}});
   wallet.connected=true;wallet.publicKey=pk;wallet.name=a.name;wallet.icon=a.icon;wallet.adapter=a;
   wallet.balances={sol:null,usdc:null,usdt:null};wallet.balErr={};
   window.__walletAddress=pk; // N2.2/N7.3 identity hook — memory-only, never persisted
@@ -5801,6 +5900,10 @@ async function fetchProxyBalances(pk){
 }
 async function refreshWalletBalances(){
   if(!wallet.connected||!wallet.publicKey||wallet.balLoading)return;
+  /* N4.20: EVM balances are not v1 — never run the Solana proxy/RPC path
+     for an EVM active wallet; the menu renders honest dashes. */
+  const _actEntry=walletRosterFind(wallet.publicKey);
+  if(_actEntry&&_actEntry.chain==='evm'){wallet.balances={sol:null,usdc:null,usdt:null};wallet.balErr={};wallet.balLoading=false;renderWalletDd();return;}
   wallet.balLoading=true;renderWalletDd();
   const pk=wallet.publicKey;
   const prev={sol:wallet.balances.sol,usdc:wallet.balances.usdc,usdt:wallet.balances.usdt};
@@ -5899,6 +6002,7 @@ function setTicketMode(m){
   if(typeof renderExecPath==='function')renderExecPath(); // N4.7: keep the Execution path panel mode-aware
 }
 function bindWalletUi(){
+  try{evmInitDiscovery();}catch(e){}
   const modal=$('walletModal'),body=$('walletModalBody');
   $('walletBtn').onclick=()=>{if(wallet.connected){const dd=$('walletDd');const opening=dd.hidden;dd.hidden=!dd.hidden;if(opening){paintWalletSync();refreshWalletBalances();}}else openWalletModal();};
   $('walletModalClose').onclick=closeWalletModal;
@@ -5981,7 +6085,7 @@ function walletSessionLoad(){
     return j;
   }catch(e){return null;}
 }
-function walletSessionKind(a){return (a&&a._std)?'standard':'adapter';}
+function walletSessionKind(a){return (a&&a._evm)?'evm':((a&&a._std)?'standard':'adapter');}
 function walletSessionSave(){
   try{
     if(!wallet.connected||!wallet.publicKey)return;
@@ -6015,6 +6119,7 @@ async function walletRestoreSession(){
     if(!saved||wallet.connected)return;
     try{await ensureWalletAdapters();}catch(e){return;}
     try{await ensureStdWallets();}catch(e){/* adapters-only restore */}
+    try{evmRequestProviders();}catch(e){/* EVM restore is additive: no announced provider, no restore, no prompt */}
     try{walletAttachAdapterListeners();}catch(e){}
     let connectables={};
     try{walletModalRows();connectables=wallet._connectables||{};}catch(e){}
@@ -6025,16 +6130,17 @@ async function walletRestoreSession(){
     let restored=false;
     for(let i=0;i<order.length;i++){
       const item=order[i];
-      const a=connectables[item.name]||null;
+      const a=(item.kind==='evm'?((connectables['evm:'+item.name])||Object.values(connectables).find(x=>x&&x._evm&&x.name===item.name)||null):(connectables[item.name]||null));
       if(!a)continue;
       try{
-        if(item.kind==='standard'){await a.connect({silent:true});}
+        if(item.kind==='evm'){await a.connect({silent:true});}
+        else if(item.kind==='standard'){await a.connect({silent:true});}
         else if(typeof a.autoConnect==='function'){await a.autoConnect();}
         else continue;
         const pk=a.publicKey?a.publicKey.toBase58():null;
         if(!pk)continue;
         if(!restored){setWalletConnected(a,pk);}
-        else if(!walletRosterFind(pk)){wallet.roster.push({adapter:a,name:a.name,icon:a.icon,pubkey:pk,balances:{sol:null,usdc:null,usdt:null},balErr:{}});}
+        else if(!walletRosterFind(pk)){wallet.roster.push({adapter:a,name:a.name,icon:a.icon,pubkey:pk,chain:a._evm?'evm':'solana',evmChainId:a._evmChainId||null,evmChainLabel:a._evmChainLabel||null,balances:{sol:null,usdc:null,usdt:null},balErr:{}});}
         restored=true;
       }catch(e){/* silent-only: locked, revoked, or untrusted — no popup, no noise */}
     }
