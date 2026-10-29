@@ -2871,6 +2871,67 @@ pub mod program_v04 {
         });
         Ok(())
     }
+
+    /// Validate a reconciled transition on the governance path
+    /// (slice 46): the slice-24 `validate_transition` on a
+    /// governance `RECONCILING` record, with the slice-37
+    /// governance prefix in the replay. `RECONCILING` (7) ->
+    /// `VALIDATED` (8), or `RECONCILING` -> `BLOCKED` (6) when
+    /// the kernel's predicate fails, or a refusal that leaves a
+    /// `BLOCKED` record standing when the kernel reports it
+    /// still blocked. Remaining accounts: prior COMMITTED
+    /// bundles first (slice 31), then the governance tail —
+    /// approvals, then prior signals, then prior plans — split
+    /// by `split_gov_plan_tail`. The payer is a fee payer only:
+    /// kernel `validate_transition` takes no caller, so no
+    /// proposer, seat, or agent gate applies here. A validate
+    /// that finds the predicate failing still advances the
+    /// stage — to `BLOCKED`, not a refusal — because the kernel
+    /// records blocking as a state and the re-plan path opens
+    /// from it; only an unreproducible chain, an incomplete
+    /// prior set, a stored verdict the supplied set does not
+    /// reproduce, or a still-blocked record refuses, and then
+    /// the record stands exactly as it stood. No new account,
+    /// error, or event; the emitted event is the existing
+    /// `TransitionValidated`.
+    pub fn validate_transition_governance(
+        ctx: Context<ValidateTransitionGovernance>,
+        transition_id: [u8; 32],
+        observation_id: [u8; 32],
+        prior_bundle_count: u32,
+    ) -> Result<()> {
+        if ctx.accounts.transition_record.transition_id != transition_id
+            || ctx.accounts.observation_record.observation_id != observation_id
+        {
+            return Err(error!(ProgramV04Error::RecordMismatch));
+        }
+        let (bundles, tail) = split_prior_bundles(
+            classify_remaining_accounts(ctx.remaining_accounts)?,
+            prior_bundle_count as usize,
+        )?;
+        let prior_entries = prior_entries_of(&bundles);
+        let (approvals, priors, prior_plans) = split_gov_plan_tail(
+            tail,
+            ctx.accounts.transition_record.approval_count as usize,
+            ctx.accounts.transition_record.signal_count as usize,
+        )?;
+        let life = validate_transition_governance_from_records(
+            &ctx.accounts.kernel_state,
+            &mut ctx.accounts.transition_record,
+            &ctx.accounts.observation_record,
+            &approvals,
+            &priors,
+            &prior_plans,
+            &prior_entries,
+        )?;
+        debug_assert!(life == Life::Validated || life == Life::Blocked);
+        emit!(TransitionValidated {
+            transition_id,
+            stage: ctx.accounts.transition_record.stage,
+            compatible: ctx.accounts.transition_record.compatible,
+        });
+        Ok(())
+    }
 }
 
 #[derive(Accounts)]
@@ -3295,6 +3356,28 @@ pub struct SubmitPlanGovernance<'info> {
 #[derive(Accounts)]
 #[instruction(transition_id: [u8; 32], observation_id: [u8; 32])]
 pub struct ReconcilePlansGovernance<'info> {
+    #[account(
+        seeds = [b"kernel-state"],
+        bump = kernel_state.bump,
+    )]
+    pub kernel_state: Account<'info, KernelState>,
+    #[account(
+        mut,
+        seeds = [b"transition", transition_id.as_ref()],
+        bump = transition_record.bump,
+    )]
+    pub transition_record: Account<'info, TransitionRecord>,
+    #[account(
+        seeds = [b"observation", observation_id.as_ref()],
+        bump = observation_record.bump,
+    )]
+    pub observation_record: Account<'info, ObservationRecord>,
+    pub payer: Signer<'info>,
+}
+
+#[derive(Accounts)]
+#[instruction(transition_id: [u8; 32], observation_id: [u8; 32])]
+pub struct ValidateTransitionGovernance<'info> {
     #[account(
         seeds = [b"kernel-state"],
         bump = kernel_state.bump,
@@ -5806,6 +5889,295 @@ pub fn reconcile_plans_governance_from_records(
     transition_record.stage = TransitionRecord::RECONCILING;
     transition_record.compatible = fits;
     Ok(Life::Reconciling)
+}
+
+/// Validate a reconciled transition on the governance path
+/// through the real kernel (slice 46). The slice-24 helper with
+/// one substitution at the head of the replay: where the ordinary
+/// helper runs kernel `register_transition`, this helper first
+/// decodes the action and seats from the supplied stored approvals
+/// through the slice-36 shared decoder (`gov_action_and_seats` —
+/// count re-checked against the record, foreign / mixed /
+/// duplicate / corrupt sets refused before any kernel call), then
+/// runs every stored seat's `approve_governance` and kernel
+/// `register_governance_transition` at the stored `eligible_at`.
+/// Pure except for the transition record's stage, which moves on
+/// success only — to `VALIDATED` on a passing predicate, to
+/// `BLOCKED` on a failing predicate entered from `RECONCILING` —
+/// and every refusal leaves the record exactly as it stood.
+/// Gates, in order: sealed state; stage exactly `RECONCILING` or
+/// `BLOCKED`; parent exactly the sealed head; observation
+/// linkage; a governance type (`NotGovernanceTransition`
+/// otherwise — an ordinary record validates through the ordinary
+/// helper, never here); the approval-count anchor; a proven
+/// planning window (a nonzero stored deadline, with a derivable
+/// open clock); the prior-signal anchor; the prior-plan anchor.
+/// The kernel calls run against a freshly rebuilt sealed launch
+/// kernel under `ProgramEnv`: the governance prefix, then
+/// evaluate and mark_eligible, all at the stored `eligible_at`,
+/// then each prior signal at its `submitted_at` in order, then
+/// select and open_planning at the *derived open clock* (so the
+/// replayed deadline equals the stored deadline, by
+/// construction — a mismatch refuses rather than overwriting
+/// it), then each prior plan at the open clock, then reconcile
+/// at the state's clock, then the stored `compatible` verdict
+/// cross-checked against slice 23's exact mirror recomputed over
+/// the supplied plan set (a stored verdict the set does not
+/// reproduce refuses before any kernel validate runs, exactly as
+/// on the ordinary path), then kernel `validate_transition` at
+/// the state's clock. A kernel refusal in any call maps to
+/// `ValidateFailed`, exactly as on the ordinary path — except
+/// the seal / stage / parent / linkage / type gates, which keep
+/// their own errors, as in slice 45.
+pub fn validate_transition_governance_from_records(
+    kernel_state: &KernelState,
+    transition_record: &mut TransitionRecord,
+    observation_record: &ObservationRecord,
+    approval_records: &[GovApprovalRecord],
+    prior_signals: &[SignalRecord],
+    prior_plans: &[PlanRecord],
+    prior_entries: &[PriorEntry],
+) -> Result<Life> {
+    if !kernel_state.sealed {
+        return Err(error!(ProgramV04Error::NotSealed));
+    }
+    if transition_record.stage != TransitionRecord::RECONCILING
+        && transition_record.stage != TransitionRecord::BLOCKED
+    {
+        return Err(error!(ProgramV04Error::WrongStage));
+    }
+    if transition_record.parent_index != kernel_state.head_index
+        || transition_record.parent_hash != kernel_state.head_hash
+    {
+        return Err(error!(ProgramV04Error::ParentMismatch));
+    }
+    if transition_record.observation_id != observation_record.observation_id {
+        return Err(error!(ProgramV04Error::RecordMismatch));
+    }
+    if !is_gov_type(&transition_record.transition_type) {
+        return Err(error!(ProgramV04Error::NotGovernanceTransition));
+    }
+    if approval_records.len() as u64 != transition_record.approval_count {
+        return Err(error!(ProgramV04Error::RecordMismatch));
+    }
+    if transition_record.planning_deadline == 0 {
+        return Err(error!(ProgramV04Error::ValidateFailed));
+    }
+    let open_clock = transition_record
+        .planning_deadline
+        .checked_sub(launch_policy().planning_window)
+        .ok_or(error!(ProgramV04Error::ValidateFailed))?;
+    if prior_signals.len() as u64 != transition_record.signal_count {
+        return Err(error!(ProgramV04Error::ValidateFailed));
+    }
+    for prior in prior_signals {
+        if prior.transition_id != transition_record.transition_id {
+            return Err(error!(ProgramV04Error::RecordMismatch));
+        }
+        if signal_round(
+            transition_record.eligible_at,
+            transition_record.consensus_deadline,
+            prior.submitted_at,
+        ) != prior.round
+        {
+            return Err(error!(ProgramV04Error::RecordMismatch));
+        }
+    }
+    {
+        let mut seen: BTreeSet<([u8; 32], u64)> = BTreeSet::new();
+        for prior in prior_signals {
+            if !seen.insert((prior.agent.to_bytes(), prior.round)) {
+                return Err(error!(ProgramV04Error::ValidateFailed));
+            }
+        }
+    }
+    if prior_plans.len() as u64 != transition_record.plan_count {
+        return Err(error!(ProgramV04Error::ValidateFailed));
+    }
+    for prior in prior_plans {
+        if prior.transition_id != transition_record.transition_id {
+            return Err(error!(ProgramV04Error::RecordMismatch));
+        }
+        if prior.claim_count as usize > PlanRecord::MAX_PLAN_CLAIMS {
+            return Err(error!(ProgramV04Error::ValidateFailed));
+        }
+        let mut seen: BTreeSet<u16> = BTreeSet::new();
+        for resource in &prior.claim_resources[..prior.claim_count as usize] {
+            if !seen.insert(*resource) {
+                return Err(error!(ProgramV04Error::ValidateFailed));
+            }
+        }
+    }
+    let (action, seats) =
+        gov_action_and_seats(approval_records, transition_record.transition_id)?;
+    let proposer = resolve_proposer(kernel_state, transition_record.proposer)
+        .map_err(|_| error!(ProgramV04Error::ValidateFailed))?;
+    let observer_id = resolve_agent_id(observation_record.observer);
+    let mut k = kernel_at_head_from_entries(kernel_state, prior_entries)?;
+    if !k.has_role(&observer_id, Role::Observer) {
+        return Err(error!(ProgramV04Error::NotObserver));
+    }
+    let relevant_groups = match k.agent(&proposer) {
+        Some(profile) => profile.groups.clone(),
+        None => return Err(error!(ProgramV04Error::UnknownProposer)),
+    };
+    let observation = Observation {
+        id: observation_record.observation_id,
+        timestamp: observation_record.timestamp,
+        expiry: observation_record.expiry,
+        confidence: Amount::from_raw(observation_record.confidence_raw),
+    };
+    let eligible_at = transition_record.eligible_at;
+    for seat in &seats {
+        k.approve_governance(seat, transition_record.transition_id, action.clone(), eligible_at)
+            .map_err(|_| error!(ProgramV04Error::ValidateFailed))?;
+    }
+    k.ingest_observation(&observer_id, observation, eligible_at)
+        .map_err(|_| error!(ProgramV04Error::ValidateFailed))?;
+    let manifest = Manifest {
+        transition_type: transition_record.transition_type,
+        parent_index: transition_record.parent_index,
+        parent_hash: transition_record.parent_hash,
+        declared_next_hash: transition_record.declared_next_hash,
+        observation_id: transition_record.observation_id,
+        expires_at: transition_record.expires_at,
+        relevant_groups,
+        action: None,
+    };
+    k.register_governance_transition(
+        &proposer,
+        transition_record.transition_id,
+        manifest,
+        action,
+        eligible_at,
+    )
+    .map_err(|_| error!(ProgramV04Error::ValidateFailed))?;
+    k.evaluate_transition(&transition_record.transition_id, eligible_at)
+        .map_err(|_| error!(ProgramV04Error::ValidateFailed))?;
+    k.mark_eligible(&transition_record.transition_id, eligible_at)
+        .map_err(|_| error!(ProgramV04Error::ValidateFailed))?;
+    match k.life_of(&transition_record.transition_id) {
+        Some(Life::Eligible) => {}
+        _ => return Err(error!(ProgramV04Error::ValidateFailed)),
+    }
+    let mut priors: alloc::vec::Vec<SignalRecord> = prior_signals.to_vec();
+    priors.sort_by_key(|s| s.submitted_at);
+    for prior in &priors {
+        let support = if prior.has_support {
+            Some(Amount::from_raw(prior.support_raw))
+        } else {
+            None
+        };
+        k.submit_round_signal(
+            &prior.agent.to_bytes(),
+            &transition_record.transition_id,
+            Amount::from_raw(prior.raw),
+            support,
+            prior.submitted_at,
+        )
+        .map_err(|_| error!(ProgramV04Error::ValidateFailed))?;
+    }
+    k.select_candidate(&transition_record.transition_id, open_clock)
+        .map_err(|_| error!(ProgramV04Error::ValidateFailed))?;
+    match k.life_of(&transition_record.transition_id) {
+        Some(Life::Selected) => {}
+        _ => return Err(error!(ProgramV04Error::ValidateFailed)),
+    }
+    // The kernel's Selected-path planning rule is "anyone": the
+    // proposer is the replay caller here, not a gate — any agent id
+    // would take the same path, and no caller identity is judged.
+    k.open_planning(&proposer, &transition_record.transition_id, open_clock)
+        .map_err(|_| error!(ProgramV04Error::ValidateFailed))?;
+    match k.life_of(&transition_record.transition_id) {
+        Some(Life::Planning) => {}
+        _ => return Err(error!(ProgramV04Error::ValidateFailed)),
+    }
+    let deadline = open_clock
+        .checked_add(launch_policy().planning_window)
+        .ok_or(error!(ProgramV04Error::ValidateFailed))?;
+    if deadline != transition_record.planning_deadline {
+        return Err(error!(ProgramV04Error::ValidateFailed));
+    }
+    for prior in prior_plans {
+        let mut prior_map: BTreeMap<u16, Amount> = BTreeMap::new();
+        for (resource, amount) in prior.claim_resources[..prior.claim_count as usize]
+            .iter()
+            .zip(prior.claim_amounts[..prior.claim_count as usize].iter())
+        {
+            prior_map.insert(*resource, Amount::from_raw(*amount));
+        }
+        let prior_plan = Plan {
+            agent: prior.agent.to_bytes(),
+            claims: prior_map,
+            expires_at: prior.expires_at,
+        };
+        k.submit_plan(
+            &prior.agent.to_bytes(),
+            &transition_record.transition_id,
+            prior_plan,
+            open_clock,
+        )
+        .map_err(|_| error!(ProgramV04Error::ValidateFailed))?;
+    }
+    k.reconcile_plans(&transition_record.transition_id, kernel_state.clock)
+        .map_err(|_| error!(ProgramV04Error::ValidateFailed))?;
+    match k.life_of(&transition_record.transition_id) {
+        Some(Life::Reconciling) => {}
+        _ => return Err(error!(ProgramV04Error::ValidateFailed)),
+    }
+    // Slice 23's exact mirror, recomputed over the supplied set:
+    // a stored verdict the set does not reproduce refuses here,
+    // before the kernel's own validate runs, so neither the
+    // stored verdict nor the replay is trusted alone.
+    let mut sums: BTreeMap<u16, Amount> = BTreeMap::new();
+    let mut fits = !prior_plans.is_empty();
+    for prior in prior_plans {
+        for (resource, amount) in prior.claim_resources[..prior.claim_count as usize]
+            .iter()
+            .zip(prior.claim_amounts[..prior.claim_count as usize].iter())
+        {
+            let entry = sums.entry(*resource).or_insert(Amount::ZERO);
+            match entry.checked_add(Amount::from_raw(*amount)) {
+                Ok(v) => *entry = v,
+                Err(_) => fits = false,
+            }
+        }
+    }
+    if fits {
+        for (resource, total) in &sums {
+            if !k.capacity_of(*resource).is_some_and(|cap| *total <= cap) {
+                fits = false;
+            }
+        }
+    }
+    if fits != transition_record.compatible {
+        return Err(error!(ProgramV04Error::ValidateFailed));
+    }
+    k.validate_transition(&transition_record.transition_id, kernel_state.clock)
+        .map_err(|_| error!(ProgramV04Error::ValidateFailed))?;
+    match k.life_of(&transition_record.transition_id) {
+        Some(Life::Validated) => {
+            transition_record.stage = TransitionRecord::VALIDATED;
+            Ok(Life::Validated)
+        }
+        Some(Life::Blocked) => {
+            // The replay kernel reached `Reconciling`, so the
+            // kernel call itself always takes its Reconciling
+            // path — it can never report `StillBlocked`. The
+            // kernel's rule is therefore enforced here from the
+            // stored stage: a record that entered validate
+            // already `BLOCKED` and still fails refuses and
+            // stands, exactly as `StillBlocked` dictates, while a
+            // record that entered `RECONCILING` advances to
+            // `BLOCKED` as a new verdict.
+            if transition_record.stage == TransitionRecord::BLOCKED {
+                return Err(error!(ProgramV04Error::ValidateFailed));
+            }
+            transition_record.stage = TransitionRecord::BLOCKED;
+            Ok(Life::Blocked)
+        }
+        _ => Err(error!(ProgramV04Error::ValidateFailed)),
+    }
 }
 
 /// Submit a plan on the governance path through the real kernel
@@ -19628,6 +20000,316 @@ mod tests {
         assert!(format!("{:?}", err).contains("ParentMismatch"));
         assert_eq!(record.stage, TransitionRecord::PLANNING);
         assert_eq!(record.planning_deadline, 300);
+    }
+
+    fn gov_reconciling_pair() -> (
+        KernelState,
+        TransitionRecord,
+        ObservationRecord,
+        [GovApprovalRecord; 3],
+        SignalRecord,
+        PlanRecord,
+    ) {
+        // A governance record through the slice-45 reconcile:
+        // reconciled at the deadline (clock 300) with one fitting
+        // plan — the fixture every slice-46 test below builds
+        // from, exactly as the ordinary reconciling pair.
+        let (mut state, mut record, obs, approvals, first, plan) = gov_one_plan_pair();
+        advance_clock_on_state(&mut state, 300).expect("advance to the deadline must succeed");
+        let life = reconcile_plans_governance_from_records(
+            &state, &mut record, &obs, &approvals, &[first], std::slice::from_ref(&plan), &[],
+        )
+        .expect("a fitting governance plan set at the deadline must reconcile");
+        assert_eq!(life, Life::Reconciling);
+        assert_eq!(record.stage, TransitionRecord::RECONCILING);
+        assert!(record.compatible);
+        (state, record, obs, approvals, first, plan)
+    }
+
+    fn gov_empty_reconciling_pair() -> (
+        KernelState,
+        TransitionRecord,
+        ObservationRecord,
+        [GovApprovalRecord; 3],
+        SignalRecord,
+    ) {
+        // Reconciled at the deadline with no plans: incompatible,
+        // so validate blocks rather than validates.
+        let (mut state, mut record, obs, approvals, first) = gov_planned_pair();
+        advance_clock_on_state(&mut state, 300).expect("advance to the deadline must succeed");
+        let life = reconcile_plans_governance_from_records(
+            &state, &mut record, &obs, &approvals, &[first], &[], &[],
+        )
+        .expect("an empty governance plan set must reconcile to incompatible");
+        assert_eq!(life, Life::Reconciling);
+        assert_eq!(record.stage, TransitionRecord::RECONCILING);
+        assert!(!record.compatible);
+        (state, record, obs, approvals, first)
+    }
+
+    #[test]
+    fn gov_validate_advances_reconciling_to_validated() {
+        // A kernel-proven governance chain with a fitting plan
+        // set and a fresh observation at clock 300: the predicate
+        // passes, the stage advances to 8, and the stored verdict
+        // stands, on the governance path exactly as on the
+        // ordinary one.
+        let (state, mut record, obs, approvals, first, plan) = gov_reconciling_pair();
+        let life = validate_transition_governance_from_records(
+            &state, &mut record, &obs, &approvals, &[first], &[plan], &[],
+        )
+        .expect("a fitting reconciled governance chain must validate");
+        assert_eq!(life, Life::Validated);
+        assert_eq!(record.stage, TransitionRecord::VALIDATED);
+        assert_eq!(record.stage, 8);
+        assert!(record.compatible);
+    }
+
+    #[test]
+    fn gov_validate_empty_plan_set_blocks_not_refuses() {
+        // No plans is never compatible — but blocking is a state,
+        // not a refusal: the kernel advances to Blocked, and the
+        // record says so, so the re-plan path opens from it
+        // instead of the call failing to happen.
+        let (state, mut record, obs, approvals, first) = gov_empty_reconciling_pair();
+        let life = validate_transition_governance_from_records(
+            &state, &mut record, &obs, &approvals, &[first], &[], &[],
+        )
+        .expect("an incompatible governance set must validate to Blocked, not refuse");
+        assert_eq!(life, Life::Blocked);
+        assert_eq!(record.stage, TransitionRecord::BLOCKED);
+        assert_eq!(record.stage, 6);
+        assert!(!record.compatible);
+    }
+
+    #[test]
+    fn gov_validate_over_capacity_blocks() {
+        // The slice-45 over-capacity set reconciles to
+        // incompatible, and validate judges that verdict: Blocked,
+        // with the plan set untouched.
+        let (mut state, mut record, obs, approvals, first) = gov_planned_pair();
+        let big = vec![PlanClaimArg { resource: RES_TREASURY_TRANCHE, amount_raw: 600 * SCALE }];
+        let first_plan = submit_plan_governance_from_records(
+            &state, &mut record, &obs, &approvals, &[first], &[], &big, 400, ag(2), 7,
+            &[],
+        )
+        .expect("first big governance plan must submit");
+        let second_plan = submit_plan_governance_from_records(
+            &state, &mut record, &obs, &approvals, &[first], std::slice::from_ref(&first_plan), &big, 400, ag(3), 8,
+            &[],
+        )
+        .expect("second big governance plan must submit");
+        advance_clock_on_state(&mut state, 300).expect("advance to the deadline must succeed");
+        let plans = [first_plan, second_plan];
+        reconcile_plans_governance_from_records(&state, &mut record, &obs, &approvals, &[first], &plans, &[])
+            .expect("an over-capacity governance set must reconcile to incompatible");
+        assert!(!record.compatible);
+        let life = validate_transition_governance_from_records(
+            &state, &mut record, &obs, &approvals, &[first], &plans, &[],
+        )
+        .expect("an incompatible governance set must validate to Blocked, not refuse");
+        assert_eq!(life, Life::Blocked);
+        assert_eq!(record.stage, TransitionRecord::BLOCKED);
+        assert!(!record.compatible);
+        assert_eq!(record.plan_count, 2);
+    }
+
+    #[test]
+    fn gov_validate_refuses_wrong_stage() {
+        // Still PLANNING, never reconciled: the stage gate refuses
+        // before any replay, and nothing on the record moves.
+        let (state, mut record, obs, approvals, first, plan) = gov_one_plan_pair();
+        let err = validate_transition_governance_from_records(
+            &state, &mut record, &obs, &approvals, &[first], &[plan], &[],
+        )
+        .expect_err("an unreconciled governance record must refuse validate");
+        assert!(format!("{:?}", err).contains("WrongStage"));
+        assert_eq!(record.stage, TransitionRecord::PLANNING);
+        assert!(!record.compatible);
+    }
+
+    #[test]
+    fn gov_validate_is_once_only_after_validated() {
+        // A validated governance record is past validate: the
+        // stage gate refuses a second call, and the VALIDATED
+        // stage stands.
+        let (state, mut record, obs, approvals, first, plan) = gov_reconciling_pair();
+        validate_transition_governance_from_records(
+            &state, &mut record, &obs, &approvals, &[first], std::slice::from_ref(&plan), &[],
+        )
+        .expect("first governance validate must succeed");
+        assert_eq!(record.stage, TransitionRecord::VALIDATED);
+        let err = validate_transition_governance_from_records(
+            &state, &mut record, &obs, &approvals, &[first], std::slice::from_ref(&plan), &[],
+        )
+        .expect_err("a second governance validate must refuse");
+        assert!(format!("{:?}", err).contains("WrongStage"));
+        assert_eq!(record.stage, TransitionRecord::VALIDATED);
+        assert!(record.compatible);
+    }
+
+    #[test]
+    fn gov_validate_blocked_record_refuses_still_blocked() {
+        // A validate-produced BLOCKED governance record
+        // re-validated over the same chain: nothing in the replay
+        // changed the predicate inputs, so the kernel reports
+        // StillBlocked, the call refuses, and the record stands
+        // BLOCKED.
+        let (state, mut record, obs, approvals, first) = gov_empty_reconciling_pair();
+        validate_transition_governance_from_records(
+            &state, &mut record, &obs, &approvals, &[first], &[], &[],
+        )
+        .expect("first governance validate must block");
+        assert_eq!(record.stage, TransitionRecord::BLOCKED);
+        let err = validate_transition_governance_from_records(
+            &state, &mut record, &obs, &approvals, &[first], &[], &[],
+        )
+        .expect_err("a still-blocked governance record must refuse re-validate");
+        assert!(format!("{:?}", err).contains("ValidateFailed"));
+        assert_eq!(record.stage, TransitionRecord::BLOCKED);
+        assert!(!record.compatible);
+    }
+
+    #[test]
+    fn gov_validate_refuses_stored_verdict_mismatch() {
+        // The slice-23 promise, enforced on the governance path:
+        // a stored verdict the supplied plan set does not
+        // reproduce refuses before any kernel validate runs —
+        // here a fitting set whose stored verdict was flipped to
+        // false — and the record stands RECONCILING, neither
+        // validated nor blocked on a lie.
+        let (state, mut record, obs, approvals, first, plan) = gov_reconciling_pair();
+        record.compatible = false;
+        let err = validate_transition_governance_from_records(
+            &state, &mut record, &obs, &approvals, &[first], &[plan], &[],
+        )
+        .expect_err("a mismatched stored governance verdict must refuse validate");
+        assert!(format!("{:?}", err).contains("ValidateFailed"));
+        assert_eq!(record.stage, TransitionRecord::RECONCILING);
+        assert!(!record.compatible);
+    }
+
+    #[test]
+    fn gov_validate_stale_observation_blocks() {
+        // At clock 9100 the observation (expiry 9100) is no longer
+        // fresh: the predicate fails on freshness alone, so the
+        // record blocks — the manifest (expiry 10_100) still
+        // stands, so this is a verdict, not a refusal.
+        let (mut state, mut record, obs, approvals, first, plan) = gov_reconciling_pair();
+        advance_clock_on_state(&mut state, 9100).expect("advance to the observation expiry must succeed");
+        let life = validate_transition_governance_from_records(
+            &state, &mut record, &obs, &approvals, &[first], &[plan], &[],
+        )
+        .expect("a stale observation must validate a governance record to Blocked, not refuse");
+        assert_eq!(life, Life::Blocked);
+        assert_eq!(record.stage, TransitionRecord::BLOCKED);
+        assert!(record.compatible);
+    }
+
+    #[test]
+    fn gov_validate_refuses_incomplete_prior_plans() {
+        // The record claims a prior plan that was never supplied:
+        // the slice-21 anchor refuses before any replay.
+        let (state, mut record, obs, approvals, first, plan) = gov_reconciling_pair();
+        record.plan_count = 2;
+        let err = validate_transition_governance_from_records(
+            &state, &mut record, &obs, &approvals, &[first], &[plan], &[],
+        )
+        .expect_err("a short governance prior plan set must refuse validate");
+        assert!(format!("{:?}", err).contains("ValidateFailed"));
+        assert_eq!(record.stage, TransitionRecord::RECONCILING);
+        assert!(record.compatible);
+        assert_eq!(record.plan_count, 2);
+    }
+
+    #[test]
+    fn gov_validate_refuses_incomplete_prior_signals() {
+        // The record claims a second signal that was never
+        // supplied: the slice-16 anchor refuses before any replay.
+        let (state, mut record, obs, approvals, first, plan) = gov_reconciling_pair();
+        record.signal_count = 2;
+        let err = validate_transition_governance_from_records(
+            &state, &mut record, &obs, &approvals, &[first], &[plan], &[],
+        )
+        .expect_err("a short governance prior signal set must refuse validate");
+        assert!(format!("{:?}", err).contains("ValidateFailed"));
+        assert_eq!(record.stage, TransitionRecord::RECONCILING);
+        assert!(record.compatible);
+    }
+
+    #[test]
+    fn gov_validate_refuses_unreproducible_plan() {
+        // A prior plan whose agent is no seeded agent cannot be
+        // replayed: the kernel's agent gate refuses, so the stored
+        // RECONCILING label alone validates nothing, and the
+        // record stands.
+        let (state, mut record, obs, approvals, first, mut plan) = gov_reconciling_pair();
+        plan.agent = Pubkey::new_from_array([0x77; 32]);
+        let err = validate_transition_governance_from_records(
+            &state, &mut record, &obs, &approvals, &[first], &[plan], &[],
+        )
+        .expect_err("an unreproducible governance plan must refuse validate");
+        assert!(format!("{:?}", err).contains("ValidateFailed"));
+        assert_eq!(record.stage, TransitionRecord::RECONCILING);
+        assert!(record.compatible);
+    }
+
+    #[test]
+    fn gov_validate_refuses_ordinary_type() {
+        // An ordinary-typed record refuses at the type gate, never
+        // reaching the kernel — it validates through the ordinary
+        // helper, never here.
+        let (state, mut record, obs, approvals, first, plan) = gov_reconciling_pair();
+        record.transition_type = TT;
+        let err = validate_transition_governance_from_records(
+            &state, &mut record, &obs, &approvals, &[first], &[plan], &[],
+        )
+        .expect_err("an ordinary-typed record must refuse the governance validate");
+        assert!(format!("{:?}", err).contains("NotGovernanceTransition"));
+        assert_eq!(record.stage, TransitionRecord::RECONCILING);
+        assert!(record.compatible);
+    }
+
+    #[test]
+    fn gov_validate_refuses_non_unanimous_approvals() {
+        // Two approvals against a count of two pass the decoder
+        // but fail the kernel's unanimity gate, so the validate
+        // refuses with `ValidateFailed` and the record stands
+        // RECONCILING with compatible still true.
+        let (state, mut record, obs, approvals, first, plan) = gov_reconciling_pair();
+        record.approval_count = 2;
+        let err = validate_transition_governance_from_records(
+            &state, &mut record, &obs, &approvals[..2], &[first], &[plan], &[],
+        )
+        .expect_err("a non-unanimous approval set must refuse a governance validate");
+        assert!(format!("{:?}", err).contains("ValidateFailed"));
+        assert_eq!(record.stage, TransitionRecord::RECONCILING);
+        assert!(record.compatible);
+    }
+
+    #[test]
+    fn gov_validate_refuses_unsealed_and_parent_mismatch() {
+        // Two gate refusals, one cause each: an unsealed state
+        // refuses on `NotSealed`, and a record off the sealed head
+        // refuses on `ParentMismatch`, both before any replay.
+        let (mut state, mut record, obs, approvals, first, plan) = gov_reconciling_pair();
+        state.sealed = false;
+        let err = validate_transition_governance_from_records(
+            &state, &mut record, &obs, &approvals, &[first], &[plan], &[],
+        )
+        .expect_err("an unsealed state must refuse a governance validate");
+        assert!(format!("{:?}", err).contains("NotSealed"));
+        assert_eq!(record.stage, TransitionRecord::RECONCILING);
+
+        let (mut state, mut record, obs, approvals, first, plan) = gov_reconciling_pair();
+        state.head_index = 9;
+        let err = validate_transition_governance_from_records(
+            &state, &mut record, &obs, &approvals, &[first], &[plan], &[],
+        )
+        .expect_err("a record off the sealed head must refuse a governance validate");
+        assert!(format!("{:?}", err).contains("ParentMismatch"));
+        assert_eq!(record.stage, TransitionRecord::RECONCILING);
+        assert!(record.compatible);
     }
 
 }
