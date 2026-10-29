@@ -1188,10 +1188,43 @@ function dashPaperModel(){
   for(const r of rows)r.weight=equity>0?r.value/equity:0;
   return{rows:rows,cash:cash,posValue:posValue,equity:equity,totalRealized:totalRealized,totalUnreal:totalUnreal,total:equity-PAPER_START_CASH,stale:stale,hasFills:Object.keys(fifo).length>0};
 }
-function dashMovers(){ // N5.17: movers follow the ACTIVE list (not the Default list) and carry the stored pool identity through instead of dropping it
+function mvEnrich(t){ // N5.32: movers-only enrichment — live feed value or NOTHING. Unlike wlEnrich (drawer/header keep the last-good snapshot with a stale flag per pack §1.4), a mover with no live value renders price '—' + stale badge, never the stored-at-watch price (A30).
+  const live=wlFeedMap.get(t.mint);
+  if(live&&Number(live.priceUsd)>0)return{priceUsd:live.priceUsd,change24h:live.change24h,stale:false};
+  return{priceUsd:null,change24h:null,stale:true};
+}
+let mvLiveAt=0,mvLiveSig='',mvLiveInflight=false;
+async function mvFetchLive(tokens){ // N5.32: live-price satellite for movers missing from the session feed map. One DexScreener tokens call per missing mint (the evidenced single-mint endpoint fetchMarket uses), capped at 10 mints per cycle, 10 s timeout; a pair matching the stored pairAddress wins, else the highest-liquidity pair whose base matches the mint (discSameAddress, the N3.9 orientation guard). Found prices land in wlFeedMap (shared with drawer/header) and repaint the dashboard through the digest guard; a failed mint simply stays '—'/stale — never the stored price, never a retry storm (60 s throttle per token set, inflight guard).
+  try{
+    const missing=[],seen=new Set();
+    (tokens||[]).forEach(t=>{if(!t||typeof t.mint!=='string'||!t.mint||seen.has(t.mint))return;seen.add(t.mint);const live=wlFeedMap.get(t.mint);if(!(live&&Number(live.priceUsd)>0))missing.push(t);});
+    if(!missing.length)return;
+    const sig=missing.map(t=>t.mint+':'+(t.pairAddress||'')).sort().join('|');
+    const now=Date.now();
+    if(sig===mvLiveSig&&now-mvLiveAt<60000)return; // throttled: same set within 60 s
+    if(mvLiveInflight)return;
+    mvLiveInflight=true;mvLiveSig=sig;mvLiveAt=now;
+    const todo=missing.slice(0,10);
+    await Promise.all(todo.map(async t=>{
+      try{
+        const controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),10000);
+        let j;try{const r=await fetch('https://api.dexscreener.com/latest/dex/tokens/'+encodeURIComponent(t.mint),{signal:controller.signal});if(!r.ok)return;j=await r.json();}finally{clearTimeout(timeout);}
+        const pairs=((j||{}).pairs||[]).filter(p=>p&&p.baseToken&&discSameAddress(p.baseToken.address,t.mint)&&Number.isFinite(Number(p.priceUsd))&&Number(p.priceUsd)>0);
+        if(!pairs.length)return;
+        let pick=pairs.find(p=>t.pairAddress&&p.pairAddress===t.pairAddress);
+        if(!pick)pick=pairs.slice().sort((a,b)=>(Number(b.liquidity?.usd)||0)-(Number(a.liquidity?.usd)||0))[0];
+        wlFeedMap.set(t.mint,{priceUsd:Number(pick.priceUsd),change24h:pick.priceChange?.h24==null?null:Number(pick.priceChange.h24)});
+      }catch(_){} // per-mint failure: that mover stays '—'/stale
+    }));
+    mvLiveInflight=false;
+    try{paintDashboard();}catch(_){}
+  }catch(_){mvLiveInflight=false;}
+}
+function dashMovers(){ // N5.17: movers follow the ACTIVE list (not the Default list) and carry the stored pool identity through instead of dropping it; N5.32: rows price from the live feed only (mvEnrich), never the stored-at-watch price, with the satellite above fetching live prices for movers missing from the session feed map
   const l=wlActiveList();
   if(!l||!(l.tokens||[]).length)return{tokens:[],empty:true,listName:l?l.name:null};
-  const rows=(l.tokens||[]).map(t=>{const e=wlEnrich(t);return{mint:t.mint,symbol:t.symbol,name:t.name,priceUsd:e.priceUsd,change24h:e.change24h,stale:e.stale,pairAddress:t.pairAddress||null,dexUrl:t.dexUrl||null};});
+  const rows=(l.tokens||[]).map(t=>{const e=mvEnrich(t);return{mint:t.mint,symbol:t.symbol,name:t.name,priceUsd:e.priceUsd,change24h:e.change24h,stale:e.stale,pairAddress:t.pairAddress||null,dexUrl:t.dexUrl||null};});
+  try{mvFetchLive(rows);}catch(_){}
   return{tokens:dbSortMovers(rows),empty:false,listName:l.name};
 }
 function dashDigestNow(){
