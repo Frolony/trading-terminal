@@ -208,7 +208,21 @@ that follows.
 
 ## Golden `.so` freeze (2026-10-29)
 
-**FROZEN — program_v04 `.so` sha256
+> **SUPERSEDED 2026-10-29 by Carlos's pin-migration ruling
+> (~11:45 CST): migrate to Agave 4.3.2 / Anchor 1.2.2 /
+> mollusk 0.16.4 BEFORE the golden freeze, and freeze once
+> under the new pins. The sha below is the OLD-pin
+> (1.2.1 / 4.1.2 / 0.16.2) freeze only — do not cite it as
+> the golden after the migration pass; the migration pass
+> re-freezes under the new pins with the four ruled
+> conditions (pinned lockfile + CI fails on fresh
+> resolution; harness label fixed with a stamp==resolved
+> check; frames re-measured under the new toolchain; pins +
+> figures recorded together in TOOLS.md + OWN_IDL_DESIGN
+> §2.2). Sequence as ruled: migrate + re-measure frames
+> → post-settle reclaim decision → golden freeze once.**
+
+**FROZEN (old pins) — program_v04 `.so` sha256
 `cb2bf9577169737befb4c68ce12aa0e11d8978a6d4fdb8d6d375f1d22662547d`.**
 This is the binary the slice-2/slice-3 golden CU values were
 measured against, now frozen rather than merely fresh:
