@@ -1188,6 +1188,15 @@ pub mod program_v04 {
         observation_id: [u8; 32],
         expires_at: u64,
     ) -> Result<()> {
+        // Slice 52: the governance record is created only for a
+        // finalized action written by its own proposer — an
+        // unfinalized or foreign-written account refuses here,
+        // before any record exists to approve against.
+        check_gov_action_for_registration(
+            &ctx.accounts.gov_action_account,
+            transition_id,
+            ctx.accounts.payer.key(),
+        )?;
         let record = build_governance_transition_record(
             &ctx.accounts.kernel_state,
             transition_id,
@@ -1223,12 +1232,19 @@ pub mod program_v04 {
     pub fn approve_governance(
         ctx: Context<ApproveGovernance>,
         transition_id: [u8; 32],
-        action: StoredGovAction,
     ) -> Result<()> {
         if ctx.accounts.transition_record.transition_id != transition_id {
             return Err(error!(ProgramV04Error::RecordMismatch));
         }
-        let decoded = action.decode()?;
+        // Slice 52: no action travels by value any more — the
+        // 1,524-byte argument that overflowed the `__global`
+        // frame is gone. The action is read from the finalized
+        // account-carried account (borrowed bytes, decoded
+        // here), bound to this transition's proposer by the gate.
+        let decoded = check_gov_action_for_approval(
+            &ctx.accounts.gov_action_account,
+            &ctx.accounts.transition_record,
+        )?;
         let record = build_governance_approval_record(
             &ctx.accounts.kernel_state,
             &ctx.accounts.transition_record,
@@ -1237,7 +1253,7 @@ pub mod program_v04 {
             ctx.bumps.approval_record,
         )?;
         let action_kind = record.action.kind;
-        *ctx.accounts.approval_record = record;
+        **ctx.accounts.approval_record = record;
         // Slice 35: the approval-count anchor moves here, after
         // the record is stored — a refused approval leaves the
         // count untouched, and the count increments exactly once
@@ -1279,12 +1295,18 @@ pub mod program_v04 {
     pub fn revise_governance_approval(
         ctx: Context<ReviseGovernanceApproval>,
         transition_id: [u8; 32],
-        action: StoredGovAction,
     ) -> Result<()> {
         if ctx.accounts.transition_record.transition_id != transition_id {
             return Err(error!(ProgramV04Error::RecordMismatch));
         }
-        let decoded = action.decode()?;
+        // Slice 52: as in `approve_governance` — the action is
+        // read from the finalized account-carried account, never
+        // taken by value, so the revised approval binds to the
+        // same (transition, action) pair the first approval did.
+        let decoded = check_gov_action_for_approval(
+            &ctx.accounts.gov_action_account,
+            &ctx.accounts.transition_record,
+        )?;
         revise_governance_approval_record(
             &ctx.accounts.kernel_state,
             &ctx.accounts.transition_record,
@@ -2289,6 +2311,16 @@ pub mod program_v04 {
             ctx.accounts.transition_record.plan_count as usize,
             ctx.accounts.transition_record.approval_count as usize,
         )?;
+        // Slice 52 (lifetime rule, commit half): the finalized
+        // action account comes in with the commit, and the
+        // approved action must hash to exactly its finalized
+        // hash — a commit over a substituted action refuses
+        // before any replay runs.
+        check_gov_action_for_commit(
+            &ctx.accounts.gov_action_account,
+            &ctx.accounts.transition_record,
+            &approval_records,
+        )?;
         let life = commit_governance_from_stored(
             &mut ctx.accounts.kernel_state,
             &mut ctx.accounts.transition_record,
@@ -3288,6 +3320,18 @@ pub struct CommitGovernance<'info> {
         bump = observation_record.bump,
     )]
     pub observation_record: Account<'info, ObservationRecord>,
+    // Slice 52 (lifetime rule, commit half): the finalized
+    // action account comes in with the commit, PDA-bound to
+    // the writer account below; the handler gate proves the
+    // approved action hashes to its finalized hash.
+    /// CHECK: As in `ApproveGovernance` — seed component and
+    /// proposer binding only, never a signer or authority here.
+    pub writer: UncheckedAccount<'info>,
+    #[account(
+        seeds = [b"gov-action", transition_id.as_ref(), writer.key().as_ref()],
+        bump = gov_action_account.bump,
+    )]
+    pub gov_action_account: Box<Account<'info, GovActionAccount>>,
     pub payer: Signer<'info>,
 }
 
@@ -3810,6 +3854,15 @@ pub struct RegisterGovernanceTransition<'info> {
         bump,
     )]
     pub transition_record: Account<'info, TransitionRecord>,
+    // Slice 52: the finalized action account, seeded by the
+    // registering proposer (the payer) — registration binds
+    // the writer to the proposer and refuses an unfinalized
+    // account before any record exists.
+    #[account(
+        seeds = [b"gov-action", transition_id.as_ref(), payer.key().as_ref()],
+        bump = gov_action_account.bump,
+    )]
+    pub gov_action_account: Box<Account<'info, GovActionAccount>>,
     #[account(mut)]
     pub payer: Signer<'info>,
     pub system_program: Program<'info, System>,
@@ -3829,6 +3882,23 @@ pub struct ApproveGovernance<'info> {
         bump = transition_record.bump,
     )]
     pub transition_record: Account<'info, TransitionRecord>,
+    // Slice 52: the writer (the transition's proposer) is an
+    // explicit account because the approving seat is not the
+    // writer — the PDA seeds bind the action account to the
+    // writer's pubkey, and the handler gate binds the writer
+    // to the record's proposer. The action itself travels
+    // only here, never as an instruction argument.
+    /// CHECK: The writer is not a signer of this instruction; its
+    /// pubkey is used only as a PDA seed component for the
+    /// gov-action account, and the handler gate binds it to the
+    /// transition record's proposer. No funds or authority derive
+    /// from this account alone.
+    pub writer: UncheckedAccount<'info>,
+    #[account(
+        seeds = [b"gov-action", transition_id.as_ref(), writer.key().as_ref()],
+        bump = gov_action_account.bump,
+    )]
+    pub gov_action_account: Box<Account<'info, GovActionAccount>>,
     #[account(
         init,
         payer = payer,
@@ -3836,7 +3906,7 @@ pub struct ApproveGovernance<'info> {
         seeds = [b"gov-approval", transition_id.as_ref(), payer.key().as_ref()],
         bump,
     )]
-    pub approval_record: Account<'info, GovApprovalRecord>,
+    pub approval_record: Box<Account<'info, GovApprovalRecord>>,
     #[account(mut)]
     pub payer: Signer<'info>,
     pub system_program: Program<'info, System>,
@@ -3861,7 +3931,18 @@ pub struct ReviseGovernanceApproval<'info> {
         seeds = [b"gov-approval", transition_id.as_ref(), payer.key().as_ref()],
         bump = approval_record.bump,
     )]
-    pub approval_record: Account<'info, GovApprovalRecord>,
+    pub approval_record: Box<Account<'info, GovApprovalRecord>>,
+    // Slice 52: as in `ApproveGovernance` — the revising seat
+    // is not the writer, so the writer arrives explicitly and
+    // the action account is PDA-bound to it.
+    /// CHECK: As in `ApproveGovernance` — seed component and
+    /// proposer binding only, never a signer or authority here.
+    pub writer: UncheckedAccount<'info>,
+    #[account(
+        seeds = [b"gov-action", transition_id.as_ref(), writer.key().as_ref()],
+        bump = gov_action_account.bump,
+    )]
+    pub gov_action_account: Box<Account<'info, GovActionAccount>>,
     pub payer: Signer<'info>,
 }
 
@@ -4689,10 +4770,13 @@ pub const GOV_ACTION_CHUNK_LEN: usize = 512;
 /// squatted by another party, and the writer is the party slice
 /// 52 binds to the transition record's proposer at
 /// registration. The action travels as raw serialized bytes,
-/// not as a by-value instruction argument: that is the whole
-/// fix — the 1,524-byte value leaves the instruction data and
-/// the `__global` wrapper frame, and approve/revise in slice 52
-/// read it from here as a borrowed slice instead. `expected_hash`
+/// not as a by-value instruction argument: the 1,524-byte value
+/// leaves the instruction data, and approve/revise in slice 52
+/// read it from here as a borrowed slice instead — with the
+/// account itself boxed (slice 52's measured finding: the
+/// unboxed account added more to the wrapper frame than the
+/// removed argument saved, so boxing, not the rewiring alone,
+/// is what fits the wrappers under 4,096). `expected_hash`
 /// is recorded at init, before any byte is written; `action_hash`
 /// is written by finalize alone, from the accumulated bytes, and
 /// is zero until then. A finalized account is write-once sealed
@@ -4809,6 +4893,104 @@ pub fn check_gov_action_close(account: &GovActionAccount, writer: Pubkey) -> Res
     }
     if account.finalized {
         return Err(error!(ProgramV04Error::GovActionAlreadyFinalized));
+    }
+    Ok(())
+}
+
+/// Gate an account-carried action for approval (slice 52): the
+/// account must belong to this transition, its writer must be the
+/// transition record's proposer (the slice-51 binding — a seat
+/// approves the proposer's action, never some other writer's
+/// account for the same transition id), and it must be finalized.
+/// The decoded action is returned, and the binding is re-proven
+/// at the use site: the hash of the stored bytes must equal the
+/// finalized `action_hash`, so an approval can never bind to
+/// bytes that did not pass finalize. Pure, so the instruction
+/// and the host tests share the gates.
+pub fn check_gov_action_for_approval(
+    account: &GovActionAccount,
+    transition_record: &TransitionRecord,
+) -> Result<GovAction> {
+    if account.transition_id != transition_record.transition_id {
+        return Err(error!(ProgramV04Error::RecordMismatch));
+    }
+    if account.writer != transition_record.proposer {
+        return Err(error!(ProgramV04Error::RecordMismatch));
+    }
+    if !account.finalized {
+        return Err(error!(ProgramV04Error::GovActionNotFinalized));
+    }
+    let computed = solana_sha256_hasher::hash(&account.action_bytes).to_bytes();
+    if computed != account.action_hash {
+        return Err(error!(ProgramV04Error::GovActionHashMismatch));
+    }
+    let stored = StoredGovAction::try_from_slice(&account.action_bytes)
+        .map_err(|_| error!(ProgramV04Error::GovActionDecode))?;
+    stored.decode()
+}
+
+/// Gate an account-carried action for governance registration
+/// (slice 52): the account must belong to this transition, its
+/// writer must be the registering proposer, and it must be
+/// finalized — registration refuses an unfinalized account, so
+/// no governance record is ever created for an action that is
+/// still being written. The hash itself is proven at finalize
+/// and re-proven at approval and commit; registration's job is
+/// the proposer binding and the finalized gate, not a second
+/// hash computation. Pure.
+pub fn check_gov_action_for_registration(
+    account: &GovActionAccount,
+    transition_id: [u8; 32],
+    proposer: Pubkey,
+) -> Result<()> {
+    if account.transition_id != transition_id {
+        return Err(error!(ProgramV04Error::RecordMismatch));
+    }
+    if account.writer != proposer {
+        return Err(error!(ProgramV04Error::RecordMismatch));
+    }
+    if !account.finalized {
+        return Err(error!(ProgramV04Error::GovActionNotFinalized));
+    }
+    Ok(())
+}
+
+/// Gate an account-carried action for governance commit (slice
+/// 52, the lifetime rule's commit half): the account must belong
+/// to this transition, its writer must be the record's proposer,
+/// and it must be finalized — commit takes the action account
+/// in, because the bridge replays recorded inputs and kernel
+/// state cannot be rehydrated from accounts alone. The binding
+/// is then proven against the approved set itself: the action
+/// decoded from the approval records (unanimity re-checked by
+/// the shared decoder) is re-encoded to its canonical stored
+/// form, hashed, and compared to the account's finalized hash.
+/// A commit over a different finalized account than the one the
+/// seats approved refuses with `GovActionHashMismatch`, never
+/// with a silently substituted action. Pure.
+pub fn check_gov_action_for_commit(
+    account: &GovActionAccount,
+    transition_record: &TransitionRecord,
+    approval_records: &[GovApprovalRecord],
+) -> Result<()> {
+    if account.transition_id != transition_record.transition_id {
+        return Err(error!(ProgramV04Error::RecordMismatch));
+    }
+    if account.writer != transition_record.proposer {
+        return Err(error!(ProgramV04Error::RecordMismatch));
+    }
+    if !account.finalized {
+        return Err(error!(ProgramV04Error::GovActionNotFinalized));
+    }
+    let (action, _) = gov_action_and_seats(approval_records, transition_record.transition_id)?;
+    let stored = StoredGovAction::encode(&action)?;
+    use anchor_lang::AnchorSerialize;
+    let mut buf = alloc::vec::Vec::new();
+    stored
+        .serialize(&mut buf)
+        .map_err(|_| error!(ProgramV04Error::GovActionDecode))?;
+    if solana_sha256_hasher::hash(&buf).to_bytes() != account.action_hash {
+        return Err(error!(ProgramV04Error::GovActionHashMismatch));
     }
     Ok(())
 }
@@ -12131,6 +12313,8 @@ pub enum ProgramV04Error {
     GovActionIncomplete,
     #[msg("program-v04 gov action account: computed action hash does not match the hash recorded at init")]
     GovActionHashMismatch,
+    #[msg("program-v04 gov action account: the action account is not finalized; approvals, registration, and commit require a finalized action")]
+    GovActionNotFinalized,
 }
 
 // ---------------------------------------------------------------- launch genesis
@@ -21862,6 +22046,155 @@ mod tests {
         let err = check_gov_action_close(&account, writer)
             .expect_err("close after finalize must refuse");
         assert!(format!("{:?}", err).contains("GovActionAlreadyFinalized"));
+    }
+
+    fn slice52_record(proposer: Pubkey) -> TransitionRecord {
+        // Slice 52 helper: a record for the carrier's transition
+        // id ([0xD1; 32], the slice-51 carrier helper's id),
+        // proposed by `proposer` — the gate reads only the id
+        // and the proposer, so the remaining fields are inert.
+        TransitionRecord {
+            transition_id: [0xD1; 32],
+            transition_type: TT,
+            parent_index: 0,
+            parent_hash: [0; 32],
+            declared_next_hash: [0; 32],
+            observation_id: [0; 32],
+            expires_at: 0,
+            proposer,
+            stage: TransitionRecord::REGISTERED,
+            eligible_at: 0,
+            consensus_deadline: 0,
+            planning_deadline: 0,
+            signal_count: 0,
+            plan_count: 0,
+            approval_count: 0,
+            replans: 0,
+            compatible: false,
+            bump: 7,
+        }
+    }
+
+    fn slice52_finalized_account(writer: Pubkey) -> GovActionAccount {
+        // Slice 52 helper: the sample action, chunked and
+        // finalized exactly as slice 51's test does.
+        let bytes = sample_action_bytes();
+        let expected = solana_sha256_hasher::hash(&bytes).to_bytes();
+        let mut account = gov_action_account(writer, expected);
+        write_gov_action_chunk(&mut account, writer, 0, &bytes[..512])
+            .expect("first chunk must append");
+        write_gov_action_chunk(&mut account, writer, 512, &bytes[512..1024])
+            .expect("second chunk must append");
+        write_gov_action_chunk(&mut account, writer, 1024, &bytes[1024..])
+            .expect("third chunk must append");
+        finalize_gov_action_record(&mut account, writer).expect("exact bytes must finalize");
+        account
+    }
+
+    #[test]
+    fn gov_action_approval_gate_binds_finalized_proposer_action() {
+        // Slice 52: the approval gate passes on a finalized
+        // account written by the record's proposer and decodes
+        // the sample action; an unfinalized account, a foreign
+        // writer, and a foreign transition id each refuse, and
+        // the registration gate passes the same finalized
+        // account while refusing the unfinalized one.
+        let writer = Pubkey::new_from_array(ag(1));
+        let foreign = Pubkey::new_from_array(ag(2));
+        let record = slice52_record(writer);
+        let account = slice52_finalized_account(writer);
+        let decoded = check_gov_action_for_approval(&account, &record)
+            .expect("finalized proposer action must pass the approval gate");
+        assert_eq!(
+            decoded,
+            GovAction::SetCapacity {
+                resource: RES_EXIT_WINDOW,
+                capacity: Amount::from_raw(400 * SCALE),
+            }
+        );
+        check_gov_action_for_registration(&account, [0xD1; 32], writer)
+            .expect("finalized proposer action must pass the registration gate");
+        let bytes = sample_action_bytes();
+        let mut half = gov_action_account(writer, solana_sha256_hasher::hash(&bytes).to_bytes());
+        write_gov_action_chunk(&mut half, writer, 0, &bytes[..512])
+            .expect("first chunk must append");
+        let err = check_gov_action_for_approval(&half, &record)
+            .expect_err("an unfinalized account must refuse approval");
+        assert!(format!("{:?}", err).contains("GovActionNotFinalized"));
+        let err = check_gov_action_for_registration(&half, [0xD1; 32], writer)
+            .expect_err("an unfinalized account must refuse registration");
+        assert!(format!("{:?}", err).contains("GovActionNotFinalized"));
+        let foreign_record = slice52_record(foreign);
+        let err = check_gov_action_for_approval(&account, &foreign_record)
+            .expect_err("a foreign writer's account must refuse approval");
+        assert!(format!("{:?}", err).contains("RecordMismatch"));
+        let err = check_gov_action_for_registration(&account, [0xD1; 32], foreign)
+            .expect_err("a foreign writer must refuse registration");
+        assert!(format!("{:?}", err).contains("RecordMismatch"));
+        let mut wrong_id = account;
+        wrong_id.transition_id = [0xD2; 32];
+        let err = check_gov_action_for_approval(&wrong_id, &record)
+            .expect_err("a foreign transition id must refuse approval");
+        assert!(format!("{:?}", err).contains("RecordMismatch"));
+    }
+
+    #[test]
+    fn gov_action_commit_gate_binds_approved_action_hash() {
+        // Slice 52: the commit gate passes when the approval
+        // records' action re-encodes to the account's finalized
+        // hash, and refuses with a hash mismatch when the seats
+        // approved a different action than the finalized one —
+        // plus the unfinalized and foreign-writer refusals.
+        let writer = Pubkey::new_from_array(ag(1));
+        let foreign = Pubkey::new_from_array(ag(2));
+        let record = slice52_record(writer);
+        let account = slice52_finalized_account(writer);
+        let action = GovAction::SetCapacity {
+            resource: RES_EXIT_WINDOW,
+            capacity: Amount::from_raw(400 * SCALE),
+        };
+        let stored = StoredGovAction::encode(&action).expect("sample action must encode");
+        let approvals = [
+            GovApprovalRecord {
+                transition_id: [0xD1; 32],
+                seat: Pubkey::new_from_array(ag(1)),
+                action: stored,
+                bump: 7,
+            },
+            GovApprovalRecord {
+                transition_id: [0xD1; 32],
+                seat: Pubkey::new_from_array(ag(2)),
+                action: stored,
+                bump: 7,
+            },
+        ];
+        check_gov_action_for_commit(&account, &record, &approvals)
+            .expect("the approved action must pass the commit gate");
+        let other = GovAction::SetCapacity {
+            resource: RES_LENDING_BOOK,
+            capacity: Amount::from_raw(400 * SCALE),
+        };
+        let other_stored = StoredGovAction::encode(&other).expect("other action must encode");
+        let other_approvals = [GovApprovalRecord {
+            transition_id: [0xD1; 32],
+            seat: Pubkey::new_from_array(ag(1)),
+            action: other_stored,
+            bump: 7,
+        }];
+        let err = check_gov_action_for_commit(&account, &record, &other_approvals)
+            .expect_err("a substituted action must refuse commit");
+        assert!(format!("{:?}", err).contains("GovActionHashMismatch"));
+        let bytes = sample_action_bytes();
+        let mut half = gov_action_account(writer, solana_sha256_hasher::hash(&bytes).to_bytes());
+        write_gov_action_chunk(&mut half, writer, 0, &bytes[..512])
+            .expect("first chunk must append");
+        let err = check_gov_action_for_commit(&half, &record, &approvals)
+            .expect_err("an unfinalized account must refuse commit");
+        assert!(format!("{:?}", err).contains("GovActionNotFinalized"));
+        let foreign_record = slice52_record(foreign);
+        let err = check_gov_action_for_commit(&account, &foreign_record, &approvals)
+            .expect_err("a foreign writer must refuse commit");
+        assert!(format!("{:?}", err).contains("RecordMismatch"));
     }
 
 }

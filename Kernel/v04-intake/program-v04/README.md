@@ -2435,11 +2435,87 @@ post-settle reclaim decision for finalized accounts, the
 cu-golden measurements for the four new instructions, and
 the genuine Agave 4.3.2 / Anchor 1.2.2 builds.
 
+## Slice 52 — approval rewiring + registration/commit hash checks (2026-10-29)
+
+- `approve_governance` / `revise_governance_approval` take no
+  action argument any more: the 1,524-byte by-value argument
+  is gone from the instruction data, and the action is read
+  from the finalized `GovActionAccount` (gate:
+  `check_gov_action_for_approval` — account belongs to the
+  transition, writer is the record's proposer, finalized,
+  and the stored bytes hash to the finalized `action_hash`).
+  The approving seat is not the writer, so both instructions
+  take an explicit `writer` account (seed component only,
+  `/// CHECK:`-documented) and the action account is
+  PDA-bound to it.
+- `register_governance_transition` takes the action account
+  (seeded by the registering proposer) and refuses an
+  unfinalized or foreign-written account before any record
+  exists (`check_gov_action_for_registration`) — the
+  slice-51 proposer binding, now enforced.
+- `commit_governance` takes the action account in (the
+  lifetime rule's commit half) and proves the binding
+  against the approved set itself
+  (`check_gov_action_for_commit`): the action decoded from
+  the approval records (unanimity re-checked by the shared
+  decoder) is re-encoded to canonical stored form, hashed,
+  and compared to the finalized hash — a substituted
+  action refuses with `GovActionHashMismatch` before any
+  replay runs. New error `GovActionNotFinalized` (6038).
+- Frame result (pinned toolchain): the rewiring alone made
+  the wrappers WORSE — approve 5,760 → 7,552, revise
+  5,760 → 7,488 — because the new 1,664-byte account
+  lands in the wrapper frame while the removed argument
+  saved nothing there. The fix is boxing (Anchor
+  `Box<Account<…>>`, no IDL/seeds/semantics change):
+  the gov-action account is boxed in all four
+  instructions and the approval record is boxed in
+  approve/revise. After boxing, the overflow list is back
+  to the pre-slice-52 three: BTreeMap-insert 4,672 and
+  the two sibling-select wrappers at 4,224 each — the
+  approve, revise, register, and commit `__global`
+  wrappers (and their `try_accounts`) report no overflow.
+  Exact fitting sizes are not emitted by the toolchain,
+  so the margin is recorded as "fits 4,096, margin
+  unquantified" — the ruled with-margin bar is NOT yet
+  met on measurement alone (see below).
+- Host tests 390/390 (388 prior + 2 slice-52: approval /
+  registration gates incl. unfinalized, foreign-writer,
+  and foreign-transition refusals; commit gate incl. the
+  substituted-action hash mismatch). Plain clippy exit 0
+  (only the pre-existing 43 cfg warnings + the old
+  `record_args` type-complexity warning; `-D warnings`
+  was already failing on those before this slice).
+  `anchor build` green under the pinned toolchain; IDL
+  now 38 instructions / 7 accounts / 39 errors / 23
+  events; `.so` sha256 `741230a2…`.
+- Frame-margin probe (scratch, Agave 4.3.2 /
+  platform-tools v1.57, which supports the
+  `--sbf-stack-size` threshold the pinned v1.54 does
+  not): PENDING at slice-52 push time — see the run log
+  for the measured threshold, or slice 53 if it is still
+  open. A fitting-frame measurement at a lowered
+  threshold, or a mollusk execution of approve/revise
+  (Blocked since slice 49), is what closes the margin
+  bar; neither was claimed from the pinned build alone.
+
+Deliberately NOT slice 52: the approval-record shrink to
+the 32-byte hash (records still store the full
+`StoredGovAction`, so the ~14 replay helpers are
+untouched — the shrink, with `GovPriorCommit` bundles
+carrying the action account, rides slice 53); the
+sibling-select wrapper fix (mixed + governance-with-
+siblings still 4,224 each; the ordinary with-siblings
+wrapper never overflowed); the post-settle reclaim
+decision for finalized accounts; cu-golden measurements
+for the slice-51 instructions; the genuine Agave 4.3.2 /
+Anchor 1.2.2 builds.
+
 ## Build
 
 ```sh
 export RUSTUP_HOME=~/workspace/toolchains/rustup CARGO_HOME=~/workspace/toolchains/cargo
 export PATH=~/workspace/toolchains/cargo/bin:~/workspace/toolchains/solana/bin:$PATH
 ~/workspace/toolchains/anchor/bin/anchor build   # from this directory
-cargo test                                        # host tests, 388/388
+cargo test                                        # host tests, 390/390
 ```
