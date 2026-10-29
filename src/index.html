@@ -537,8 +537,8 @@ function paintChartTfButtons(){document.querySelectorAll('[data-tf]').forEach(b=
 let candles=[],candleStatus='idle',candlePool=null,candlePairLabel='',candleUpdatedAt=0,heroPair=null,candleReq=0,tickFails=0,tickSkipUntil=0,ohlcvViaCoverage=false,candleSource='GeckoTerminal',candleCap=0,coveragePairLabel='',coverageSource='coverage API';
 /* N3.26 (2026-10-28, A112): chart follows the selected coin. chartPair is the chart's own pair state — null means the SOL/USDC hero (heroPair). It is deliberately separate from ticketPair: the ticket selector, pairs table, discovery, search and watchlist set it explicitly at their call sites, and the boot default-pair path (maybeApplyDefaultPair) never touches it, so a restored chartPair survives boot. A restored pair's saved spot is dropped (priceUsd 0): the first load after restore runs unguarded against a possibly hours-stale reference, then ratchets to the verified last close; fresh selections always guard against their live DexScreener spot. Restored pairs that 404 fall back to the hero with a caption note; transient failures keep the honest N1.6 error state. */
 let chartPair=null,chartPairFallbackNote=false,chartPairRestored=false;
-const CHART_GT_NETWORKS={solana:'solana',eth:'eth',ethereum:'eth',bsc:'bsc',bnb:'bsc',polygon:'polygon_pos',arbitrum:'arbitrum',avalanche:'avax',base:'base',optimism:'optimism',fantom:'fantom',cronos:'cronos',sui:'sui',aptos:'aptos'};
-const CHART_CHAIN_LABELS={solana:'Solana mainnet',eth:'Ethereum',ethereum:'Ethereum',bsc:'BNB Chain',bnb:'BNB Chain',polygon:'Polygon',arbitrum:'Arbitrum',avalanche:'Avalanche',base:'Base',optimism:'Optimism',fantom:'Fantom',cronos:'Cronos',sui:'Sui',aptos:'Aptos'};
+const CHART_GT_NETWORKS={solana:'solana',eth:'eth',ethereum:'eth',bsc:'bsc',bnb:'bsc',polygon:'polygon_pos',arbitrum:'arbitrum',avalanche:'avax',base:'base',optimism:'optimism',unichain:'unichain',zksync:'zksync',mantle:'mantle',fantom:'fantom',cronos:'cronos',sui:'sui',aptos:'aptos'};
+const CHART_CHAIN_LABELS={solana:'Solana mainnet',eth:'Ethereum',ethereum:'Ethereum',bsc:'BNB Chain',bnb:'BNB Chain',polygon:'Polygon',arbitrum:'Arbitrum',avalanche:'Avalanche',base:'Base',optimism:'Optimism',unichain:'Unichain',zksync:'zkSync Era',mantle:'Mantle',fantom:'Fantom',cronos:'Cronos',sui:'Sui',aptos:'Aptos'};
 function chartPairChainId(p){return String((p&&(p.chainId||p.discChain))||'solana').toLowerCase()}
 function chartPairNetwork(p){const c=chartPairChainId(p);return CHART_GT_NETWORKS[c]||c}
 function chartChainLabel(p){const c=chartPairChainId(p);return CHART_CHAIN_LABELS[c]||c}
@@ -1707,7 +1707,7 @@ function loadSettings(){
      and can be cleared, instead of silently resetting the user's filter.
      Age/market-cap bands are closed lists; anything else normalizes to All. */
   const _df312=(s.discFilters&&typeof s.discFilters==='object')?s.discFilters:null;
-  s.discChain=(typeof s.discChain==='string'&&['solana','ethereum','base','bsc','arbitrum','polygon'].indexOf(s.discChain)>=0)?s.discChain:'solana';
+  s.discChain=(typeof s.discChain==='string'&&['solana','ethereum','base','bsc','arbitrum','polygon','optimism','unichain','zksync','mantle'].indexOf(s.discChain)>=0)?s.discChain:'solana';
    s.discFilters={quote:(_df312&&typeof _df312.quote==='string'&&_df312.quote)?_df312.quote:'ALL',dex:(_df312&&typeof _df312.dex==='string'&&_df312.dex)?_df312.dex:'ALL',age:(_df312&&['all','1h','24h','7d','7dplus'].indexOf(_df312.age)>=0)?_df312.age:'all',mcap:(_df312&&['all','lt1','1to10','gt10'].indexOf(_df312.mcap)>=0)?_df312.mcap:'all'};
   /* N3.28 (2026-10-28, A114): discovery range filters live beside the chips
      in the same settings.discFilters object, so they ride the existing
@@ -3505,6 +3505,30 @@ async function discFetchGtSearchPrices(rows){ // N3.8 search satellite: the N3.5
    the switch and discChainState() falls back to Solana, never a broken row.
    Per-pool caches key chain+pool (discPoolKey) so the same EVM address on
    two chains can never bleed a price, sparkline or range across chains. */
+/* N3.29 (2026-10-28, A115): discovery chain expansion — every viable L2.
+   PROBE (this build run, 2026-10-28, GT trending top 10, bar >=5/10 pools
+   with reserve >= $50K AND top pool >= $300K): Optimism 7/10, top $5.82M
+   (GT optimism, DS optimism — DS pairs verified live for OP); Unichain 9/10,
+   top $2.41M (GT unichain, DS unichain — DS pairs verified live for UNI);
+   zkSync Era 6/10, top $326K (GT zksync, DS zksync — DS pairs verified live
+   for ZK); Mantle 9/10, top $5.05M (GT mantle, DS mantle — DS pairs verified
+   live for WMNT), the one build-time passer. FAILS, listed nowhere: Scroll
+   2/10, top $64.5K; Blast 2/10 (top $305K passes, count fails); Mode 0/10,
+   top $32.9K; Taiko 0/10, top $17.3K; Linea already failed the bar
+   (chat-side probe, 2/10) and stays absent — steering may re-probe it.
+   FEED INVENTORY (Carlos's aggregate principle): GT OHLCV primary for all
+   four, DexScreener for stats/search (both ids verified live per chain
+   above); Kraken fallback is the existing N3.30 map only — OP and ZK are
+   already in it, Unichain/Mantle headline assets get no invented Kraken
+   row, so a GT failure on those chains lands on the honest N1.6 error
+   exactly like every other unmapped chain. HONESTY UNCHANGED from N3.17:
+   off-Solana rows keep Token Info '—', Trade/Quick Buy disabled with the
+   reason shown, watchlist identity chain-qualified; the N3.26 chart and
+   N3.27 stat strip follow selections on the new chains via the network
+   slugs added to CHART_GT_NETWORKS/CHART_CHAIN_LABELS above. GEOMETRY:
+   the N3.19 rail is flex-wrap:nowrap + overflow-x:auto with buttons
+   flex:0 0 auto, so ten chains scroll sideways at ~400px — no layout
+   change, only this re-check. */
 const DISC_CHAINS=[
  {id:'solana',label:'Solana',dsChainId:'solana',gtNetwork:'solana',verified:true},
  {id:'ethereum',label:'Ethereum',dsChainId:'ethereum',gtNetwork:'eth',verified:true},
@@ -3512,6 +3536,10 @@ const DISC_CHAINS=[
  {id:'bsc',label:'BNB Chain',dsChainId:'bsc',gtNetwork:'bsc',verified:true},
  {id:'arbitrum',label:'Arbitrum',dsChainId:'arbitrum',gtNetwork:'arbitrum',verified:true},
  {id:'polygon',label:'Polygon',dsChainId:'polygon',gtNetwork:'polygon_pos',verified:true},
+ {id:'optimism',label:'Optimism',dsChainId:'optimism',gtNetwork:'optimism',verified:true},
+ {id:'unichain',label:'Unichain',dsChainId:'unichain',gtNetwork:'unichain',verified:true},
+ {id:'zksync',label:'zkSync Era',dsChainId:'zksync',gtNetwork:'zksync',verified:true},
+ {id:'mantle',label:'Mantle',dsChainId:'mantle',gtNetwork:'mantle',verified:true},
 ];
 function discChainForId(id){return (DISC_CHAINS||[]).find(c=>c.id===id)||null;}
 function discChainForDsId(dsId){return (DISC_CHAINS||[]).find(c=>c.dsChainId===dsId)||null;}
