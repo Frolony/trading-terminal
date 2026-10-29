@@ -6,7 +6,12 @@
 //! succeed; any failure aborts with a non-zero exit, so a golden file
 //! is never written from a failed chain.
 //!
-//! Slice 1 chain (genesis + governance registration): `probe_kernel`,
+//! Slice 3 chain = slice 2 (genesis + governance registration +
+//! account-carried approval chain) plus the close chain: an
+//! abandoned second action account (init + one chunk, never
+//! finalized) closed for rent reclaim, and a refused close on
+//! the finalized GOV account. Slice 1 chain (genesis +
+//! governance registration): `probe_kernel`,
 //! `initialize_kernel`, `seal_kernel`, `advance_clock` (100 -> 200),
 //! `register_transition` (ordinary), `ingest_observation`
 //! (observer `[0xA1;32]`, timestamp 100, expiry 10100, confidence
@@ -93,6 +98,16 @@
 //! loads and the handler runs, with the approval count and the
 //! stored hash unchanged, exactly as slice 48 specifies).
 //!
+//! SLICE-3 ADDENDUM — close_gov_action, the last unmeasured
+//! slice-51 instruction, now measured: a second, abandoned
+//! action account (init + one 512-byte chunk, never finalized)
+//! closes with its rent returned to the writer, and close on
+//! the finalized GOV account refuses with
+//! GovActionAlreadyFinalized, leaving the sealed account
+//! untouched — the finalized-stays-open lifetime rule proven
+//! at runtime. Refusal CU is recorded under `refusals`, never
+//! as a success measurement.
+//!
 //! No §2.2-style estimate exists for the v0.4 program (the design
 //! doc's §2.2 estimates are for the v0.2 treasury program), so every
 //! slice-1 value is recorded as BASELINE, not gated. Later slices
@@ -123,6 +138,7 @@ const MOLLUSK_SVM_VERSION: &str = "0.16.2";
 
 // Pinned launch profile constants (program-v04 lib.rs, slices 7/33).
 const GOV_TID: [u8; 32] = [0xD1; 32];
+const ABANDON_TID: [u8; 32] = [0xD3; 32];
 const ORD_TID: [u8; 32] = [0xD2; 32];
 const DECLARED_HASH: [u8; 32] = [0xE1; 32];
 const GOV_OBS: [u8; 32] = [0xC0; 32];
@@ -218,6 +234,30 @@ fn run(
     (result.resulting_accounts, result.compute_units_consumed)
 }
 
+/// Runs one instruction expected to REFUSE, asserts the failure,
+/// prints its measured CU, and returns the threaded accounts plus
+/// the measured CU and the error debug string. A refusal's CU is
+/// still real compute consumed, so it is recorded in the golden
+/// file's `refusals` section, never in `measured`.
+fn run_refused(
+    mollusk: &Mollusk,
+    label: &str,
+    ix: &Instruction,
+    accounts: &[(Pubkey, Account)],
+) -> (Vec<(Pubkey, Account)>, u64, String) {
+    let result = mollusk.process_instruction(ix, accounts);
+    println!(
+        "{label}: program_result={:?} cu={}",
+        result.program_result, result.compute_units_consumed
+    );
+    assert!(
+        result.program_result.is_err(),
+        "{label} was expected to refuse but succeeded",
+    );
+    let err = format!("{:?}", result.program_result);
+    (result.resulting_accounts, result.compute_units_consumed, err)
+}
+
 fn find<'a>(accounts: &'a [(Pubkey, Account)], key: &Pubkey) -> &'a Account {
     accounts
         .iter()
@@ -267,6 +307,13 @@ fn main() {
         &[b"gov-approval", GOV_TID.as_ref(), seat1.as_ref()],
         &program_id,
     );
+    // Abandoned action (slice-3 close chain): a second action
+    // account under its own transition id, half-written and never
+    // finalized — the rent-reclaim path's intended input.
+    let (abandon_account, _) = pda(
+        &[b"gov-action", ABANDON_TID.as_ref(), seat1.as_ref()],
+        &program_id,
+    );
 
     let empty = Account {
         lamports: 0,
@@ -291,6 +338,7 @@ fn main() {
         (obs_record, empty.clone()),
         (gov_action_account, empty.clone()),
         (approval_record, empty.clone()),
+        (abandon_account, empty.clone()),
         (payer, funded.clone()),
         (seat1, funded.clone()),
         (observer, funded.clone()),
@@ -581,14 +629,130 @@ fn main() {
     let ap = find(&accounts, &approval_record);
     assert_eq!(ap.data[72..104], expected_hash, "revise must keep the same action hash");
 
+    // SLICE-3 ADDENDUM — close_gov_action, the last unmeasured
+    // slice-51 instruction. Two proofs: (a) the rent-reclaim
+    // success path on an abandoned account — init + one 512-byte
+    // chunk, never finalized, then close, with the rent returned
+    // to the writer; (b) the lifetime gate — close on the
+    // finalized GOV account refuses with
+    // GovActionAlreadyFinalized and leaves that account sealed
+    // and untouched (the post-settle reclaim decision is still
+    // open, but the finalized-stays-open rule is now runtime
+    // proven, not just host-tested).
+    let mut refusals: Vec<serde_json::Value> = Vec::new();
+
+    // (a1) init the abandoned account (writer seat1, same action
+    // bytes' hash as the expected hash — finalization never runs,
+    // so the hash is never checked here).
+    let mut data = disc("init_gov_action");
+    data.extend_from_slice(&ABANDON_TID);
+    data.extend_from_slice(&expected_hash);
+    let ix = Instruction::new_with_bytes(
+        program_id,
+        &data,
+        vec![
+            AccountMeta::new(abandon_account, false),
+            AccountMeta::new(seat1, true),
+            AccountMeta::new_readonly(system_id, false),
+        ],
+    );
+    let (next, cu) = run(&mollusk, "init_gov_action_abandoned", &ix, &accounts);
+    accounts = next;
+    push!("init_gov_action_abandoned", cu);
+    let ab = find(&accounts, &abandon_account);
+    assert_eq!(ab.data[138], 0, "abandoned account must start unfinalized");
+
+    // (a2) one chunk: half-written, 512 of 1524 bytes.
+    let mut data = disc("append_gov_action_chunk");
+    data.extend_from_slice(&ABANDON_TID);
+    data.extend_from_slice(&u16le(0));
+    data.extend_from_slice(&(512u32).to_le_bytes());
+    data.extend_from_slice(&action_bytes[0..512]);
+    let ix = Instruction::new_with_bytes(
+        program_id,
+        &data,
+        vec![
+            AccountMeta::new(abandon_account, false),
+            AccountMeta::new(seat1, true),
+        ],
+    );
+    let (next, cu) = run(&mollusk, "append_gov_action_chunk_abandoned", &ix, &accounts);
+    accounts = next;
+    push!("append_gov_action_chunk_abandoned", cu);
+    let ab = find(&accounts, &abandon_account);
+    assert_eq!(u16::from_le_bytes(ab.data[136..138].try_into().unwrap()), 512, "abandoned account must hold exactly one chunk");
+
+    // (a3) close: rent returns to the writer, account emptied.
+    let pre_writer_lamports = find(&accounts, &seat1).lamports;
+    let pre_abandon_lamports = find(&accounts, &abandon_account).lamports;
+    assert!(pre_abandon_lamports > 0, "abandoned account must hold rent before close");
+    let mut data = disc("close_gov_action");
+    data.extend_from_slice(&ABANDON_TID);
+    let ix = Instruction::new_with_bytes(
+        program_id,
+        &data,
+        vec![
+            AccountMeta::new(abandon_account, false),
+            AccountMeta::new(seat1, true),
+        ],
+    );
+    let (next, cu) = run(&mollusk, "close_gov_action", &ix, &accounts);
+    accounts = next;
+    push!("close_gov_action", cu);
+    assert_eq!(
+        find(&accounts, &seat1).lamports,
+        pre_writer_lamports + pre_abandon_lamports,
+        "close must return the abandoned account's rent to the writer"
+    );
+    match accounts.iter().find(|(k, _)| k == &abandon_account) {
+        Some((_, closed)) => {
+            assert_eq!(closed.lamports, 0, "closed account must hold no lamports");
+            assert!(closed.data.is_empty(), "closed account must be emptied");
+        }
+        None => {} // mollusk dropping the closed account is the same outcome
+    }
+
+    // (b) close on the finalized GOV account must refuse, and
+    // the sealed account must stand untouched afterwards.
+    let mut data = disc("close_gov_action");
+    data.extend_from_slice(&GOV_TID);
+    let ix = Instruction::new_with_bytes(
+        program_id,
+        &data,
+        vec![
+            AccountMeta::new(gov_action_account, false),
+            AccountMeta::new(seat1, true),
+        ],
+    );
+    let (next, cu, err) = run_refused(&mollusk, "close_gov_action_finalized", &ix, &accounts);
+    accounts = next;
+    // Mollusk reports the failure as Failure(Custom(6034)); the
+    // program log on the same execution names it
+    // GovActionAlreadyFinalized (error 6034, lib.rs:5043).
+    assert!(
+        err.contains("6034"),
+        "finalized close must refuse with error 6034 (GovActionAlreadyFinalized), got {err}"
+    );
+    refusals.push(serde_json::json!({
+        "instruction": "close_gov_action_finalized",
+        "cu": cu,
+        "result": "Refused",
+        "error": "GovActionAlreadyFinalized (6034)",
+        "note": "slice-3 lifetime gate: a finalized account stays open until the transition settles",
+    }));
+    let ga = find(&accounts, &gov_action_account);
+    assert_eq!(ga.data[138], 1, "refused close must leave the finalized account sealed");
+    assert_eq!(ga.data[104..136], expected_hash, "refused close must leave the finalized hash untouched");
+
     let out = serde_json::json!({
         "program": "program_v04",
         "program_id": PROGRAM_ID,
         "so_sha256": so_sha256,
         "mollusk_svm": MOLLUSK_SVM_VERSION,
         "toolchain": "Anchor 1.2.1 / Solana 4.1.2 / platform-tools v1.54",
-        "slice": "cu-golden slice 2: genesis + governance registration + account-carried approval chain (program slices 51-53)",
+        "slice": "cu-golden slice 3: genesis + governance registration + account-carried approval chain (program slices 51-53) + close_gov_action rent-reclaim and finalized-refusal gate",
         "measured": measured,
+        "refusals": refusals,
         "blocked": [],
         "design_finding_resolved": "Slice-49/50 findings CLOSED by the account-carried action (program slices 51-53, Carlos's 2026-10-29 ruling): approve/revise no longer carry the 1524-byte StoredGovAction by value (the 1564-byte instruction-data / tx-size finding is gone — the largest new instruction is a 512-byte chunk), and the rewired wrappers frame-measure fitting 2048 bytes (slice 53). This run proves both instructions execute in-process against the real .so: approve stores the finalized action hash and increments the approval count to 1; revise re-binds the same finalized action with count and hash unchanged.",
     });

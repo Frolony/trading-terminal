@@ -163,6 +163,49 @@ post-settle reclaim decision, and the golden-`.so` sha debt —
 this run's `.so` (`cb2bf957…`) is the freshly built current
 source, not the stale slice-49 golden sha.
 
+## Slice 3 — close_gov_action MEASURED (2026-10-29)
+
+The last unmeasured slice-51 instruction is now measured, against
+the same `.so` (`cb2bf957…`, reproduced byte-identical from a
+fresh pinned-toolchain build this run) with all slice-2 values
+reproduced exactly. The chain extends past revise with a second,
+abandoned action account (transition id `[0xD3;32]`, writer seat1):
+`init_gov_action` + one 512-byte chunk, never finalized, then
+`close_gov_action` — plus the lifetime gate, a close attempt on
+the finalized GOV account.
+
+| instruction | CU | result |
+| --- | ---: | --- |
+| init_gov_action (abandoned account) | 14,427 | Success |
+| append_gov_action_chunk (abandoned, @0) | 4,660 | Success |
+| close_gov_action | 3,903 | Success |
+| close_gov_action (finalized account) | 5,328 | Refused — GovActionAlreadyFinalized (6034) |
+
+State assertions held: the abandoned account starts unfinalized
+with exactly one chunk written; close returns its full rent to
+the writer (writer lamports rise by exactly the account's
+pre-close lamports) and empties the account; the refused close
+leaves the finalized account sealed with its hash untouched —
+the finalized-stays-open lifetime rule is now runtime proven,
+not just host-tested. Refusal CU lives in the golden file's new
+`refusals` section, never as a success measurement.
+
+OPEN OBSERVATION (not a gate — both values are baselines): the
+second `init_gov_action` in the same chain costs 14,427 CU
+against 8,427 CU for the first, a deterministic +6,000 delta
+reproduced across two runs, with no identified cause yet (same
+account shape, same payer, same 3-account instruction). Flagged
+here rather than smoothed over; a future slice may isolate it.
+
+With this slice, every slice-51 carrier instruction is measured
+(init / append / finalize / close) and the slice-51 CU set is
+closed. Remaining carried debts: genuine Agave 4.3.2 /
+Anchor 1.2.2 builds, the post-settle reclaim decision (close
+after settle is still unbuilt — this slice proves only the
+abandoned-account reclaim and the finalized refusal), and the
+golden-`.so` sha debt (`cb2bf957…` is still the freshly built
+current source, not a frozen golden).
+
 ## Layout
 
 - `mollusk/` — standalone Rust crate (its own `[workspace]`

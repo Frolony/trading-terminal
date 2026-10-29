@@ -85,12 +85,39 @@
       "instruction": "revise_governance_approval",
       "note": "slice-1 baseline (no design estimate exists for the v0.4 program)",
       "result": "Success"
+    },
+    {
+      "cu": 14427,
+      "instruction": "init_gov_action_abandoned",
+      "note": "slice-1 baseline (no design estimate exists for the v0.4 program)",
+      "result": "Success"
+    },
+    {
+      "cu": 4660,
+      "instruction": "append_gov_action_chunk_abandoned",
+      "note": "slice-1 baseline (no design estimate exists for the v0.4 program)",
+      "result": "Success"
+    },
+    {
+      "cu": 3903,
+      "instruction": "close_gov_action",
+      "note": "slice-1 baseline (no design estimate exists for the v0.4 program)",
+      "result": "Success"
     }
   ],
   "mollusk_svm": "0.16.2",
   "program": "program_v04",
   "program_id": "FzxnCtig4asxnCxGhjcbCDY5zkfcpfTb5GcXNL9UaGg6",
-  "slice": "cu-golden slice 2: genesis + governance registration + account-carried approval chain (program slices 51-53)",
+  "refusals": [
+    {
+      "cu": 5328,
+      "error": "GovActionAlreadyFinalized (6034)",
+      "instruction": "close_gov_action_finalized",
+      "note": "slice-3 lifetime gate: a finalized account stays open until the transition settles",
+      "result": "Refused"
+    }
+  ],
+  "slice": "cu-golden slice 3: genesis + governance registration + account-carried approval chain (program slices 51-53) + close_gov_action rent-reclaim and finalized-refusal gate",
   "so_sha256": "cb2bf9577169737befb4c68ce12aa0e11d8978a6d4fdb8d6d375f1d22662547d",
   "toolchain": "Anchor 1.2.1 / Solana 4.1.2 / platform-tools v1.54"
 }

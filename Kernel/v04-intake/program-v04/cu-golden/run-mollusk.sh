@@ -1,12 +1,11 @@
 #!/usr/bin/env bash
-# V0.4 program CU golden-test harness (mollusk path), slice 1.
-# Executes the slice-1 chain (genesis + governance registration)
-# against the already-built program .so (build it first:
-# `anchor build` from program-v04/) and writes
-# ../cu-golden-mollusk.json. No validator, no network, no real funds.
-# approve_governance / revise_governance_approval are recorded as
-# BLOCKED in the golden file (slice-49 finding), not executed.
-# The keys in the harness are throwaway local-test keys.
+# V0.4 program CU golden-test harness (mollusk path), slice 3.
+# Executes the slice-3 chain (genesis + governance registration
+# + account-carried approval chain + close_gov_action rent-reclaim
+# and finalized-refusal gate) against the already-built program
+# .so (build it first: `anchor build` from program-v04/) and
+# writes ../cu-golden-mollusk.json. No validator, no network, no
+# real funds. The keys in the harness are throwaway local-test keys.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 export SBF_OUT_DIR="${SBF_OUT_DIR:-$HERE/../target/deploy}"
