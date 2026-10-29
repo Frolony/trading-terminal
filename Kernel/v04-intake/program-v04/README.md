@@ -1519,11 +1519,71 @@ families, account inventory, and CU golden set are later step-5 slices.
   instructions alone; a revise-approval instruction; and CU
   measurement — later slices.
 
+## Slice 39 — the governance select instruction
+
+- `select_candidate_governance` +
+  `select_candidate_governance_from_records`: the slice-16
+  select on the governance path. The helper mirrors the
+  ordinary select with one substitution in the prefix: the
+  slice-37 governance prefix (every stored seat's
+  `approve_governance`, ingest, governance registration,
+  evaluate, mark_eligible) runs at the stored `eligible_at`,
+  so the rebuilt kernel's window IS the stored window, then
+  every supplied prior signal replays at its own
+  `submitted_at`, then kernel `select_candidate` at the
+  state's clock. Only a `Life::Selected` life advances the
+  stage, to `SELECTED` (4). Gates, in order: sealed state;
+  stage exactly `ELIGIBLE`; parent exactly the sealed head;
+  observation linkage; a governance type
+  (`NotGovernanceTransition` otherwise); the
+  approval-count anchor; a proven window; the completeness
+  anchor — the supplied prior set must number exactly
+  `signal_count`, every prior belonging to this transition
+  with a stored round matching its own `submitted_at`, no
+  duplicated (agent, round); and the slice-19 census gate —
+  the `KernelState` sibling census at the target's parent
+  must read exactly 1, so a competitor cannot be bypassed
+  through this plain path. A kernel refusal in any call
+  maps to `SelectFailed` (still-open window, unmet quorum,
+  confidence below threshold, expired manifest,
+  non-unanimous approval set, deadline signal in the prior
+  replay). The instruction's remaining accounts parse as
+  in slice 38 (prior COMMITTED bundles first, then the
+  tail through the reused `split_gov_signal_tail`); the
+  payer is a fee payer only, as in slice 16; the emitted
+  event is the existing `TransitionSelected`. No new
+  account or error.
+- Host tests 283/283 (277 prior + 6 slice-39: the
+  deadline select success (stage 4, count unchanged); the
+  before-deadline refusal; the wrong-stage /
+  ordinary-type / non-unanimous refusals; the incomplete
+  and duplicated prior-set refusals; the unqualified-tally
+  and competitor-census refusals; and once-only).
+  Clippy back to the pre-existing profile (anchor macro
+  `unexpected cfg` noise + the slice-8 test helper's
+  `type_complexity` warning); zero warnings naming any
+  slice-39 symbol and none pointing at the new accounts
+  struct. IDL counts move by design (26 instructions, 6
+  accounts, 34 errors, 18 events — +1 instruction only,
+  including `select_candidate_governance`); `.so`
+  1,358,392 bytes (sha256 `9309c84d…`). The build output
+  also carries two stack-frame messages naming
+  `approve_governance` only — that instruction is untouched
+  by this slice, and `anchor build` exits 0, so they are
+  recorded here as pre-existing build output, not a
+  slice-39 regression.
+- Deliberately NOT slice 39: the sibling-aware
+  governance select, the governance planning, reconcile,
+  validate, and declare stages — a governance record
+  still cannot reach `DECLARED` through instructions
+  alone; a revise-approval instruction; and CU
+  measurement — later slices.
+
 ## Build
 
 ```sh
 export RUSTUP_HOME=~/workspace/toolchains/rustup CARGO_HOME=~/workspace/toolchains/cargo
 export PATH=~/workspace/toolchains/cargo/bin:~/workspace/toolchains/solana/bin:$PATH
 ~/workspace/toolchains/anchor/bin/anchor build   # from this directory
-cargo test                                        # host tests, 273/273
+cargo test                                        # host tests, 283/283
 ```
