@@ -2441,9 +2441,9 @@ pub mod program_v04 {
     /// `ParentAlreadyHasASelectedTransition` arm, while an
     /// unprovable `SELECTED` label refuses the whole call
     /// rather than blocking on trust. An ordinary-typed
-    /// sibling refuses at the type gate, so a mixed field is
-    /// fail-closed by the census gate rather than judged by
-    /// this instruction.
+    /// sibling refuses at the type gate: a mixed field selects
+    /// through `select_candidate_mixed_with_siblings` (slice
+    /// 42), never through this instruction.
     pub fn select_candidate_governance_with_siblings(
         ctx: Context<SelectCandidateGovernanceWithSiblings>,
         transition_id: [u8; 32],
@@ -2545,6 +2545,147 @@ pub mod program_v04 {
             }
         }
         select_candidate_governance_from_records_with_siblings(
+            &ctx.accounts.kernel_state,
+            &mut ctx.accounts.transition_record,
+            &ctx.accounts.observation_record,
+            &target_approvals,
+            &target_priors,
+            &siblings,
+            &prior_entries,
+        )?;
+        emit!(TransitionSelected { transition_id, stage: TransitionRecord::SELECTED });
+        Ok(())
+    }
+
+    /// Select a candidate over a mixed sibling field (§4.1,
+    /// governance replay row, slice 42): the slice-40/41 select
+    /// with the type dispatch — run kernel `select_candidate`
+    /// on an `ELIGIBLE` record of either type over a supplied
+    /// field containing both types, and advance the target's
+    /// stage to `SELECTED`. Remaining accounts begin with
+    /// `prior_bundle_count` prior COMMITTED bundles (head
+    /// order, self-delimited as in slice 31); the tail is the
+    /// sibling evidence, grouped by transition id exactly as
+    /// in `select_candidate_governance_with_siblings`: sibling
+    /// `TransitionRecord`s, their `ObservationRecord`s,
+    /// `GovApprovalRecord`s (the target's own approvals and
+    /// each governance sibling's, told apart by their
+    /// `transition_id` — an approval naming an ordinary member
+    /// or an ordinary target refuses in the helper with
+    /// `RecordMismatch`), and `SignalRecord`s (the target's
+    /// priors and each sibling's, told apart the same way). A
+    /// `PlanRecord` in the tail, an approval or signal naming
+    /// no supplied transition, a sibling without exactly one
+    /// matching observation, or an observation matching no
+    /// sibling refuses with `RecordMismatch` before any replay.
+    /// The payer is a fee payer only, as in slice 39. Only the
+    /// target record's stage advances; sibling records are
+    /// read, never written. A sibling at stage `SELECTED` of
+    /// either type is admitted and re-proven exactly as in
+    /// slice 41, across types. No new account, error, or
+    /// event: the emitted event is the existing
+    /// `TransitionSelected`.
+    pub fn select_candidate_mixed_with_siblings(
+        ctx: Context<SelectCandidateMixedWithSiblings>,
+        transition_id: [u8; 32],
+        observation_id: [u8; 32],
+        prior_bundle_count: u32,
+    ) -> Result<()> {
+        if ctx.accounts.transition_record.transition_id != transition_id
+            || ctx.accounts.observation_record.observation_id != observation_id
+        {
+            return Err(error!(ProgramV04Error::RecordMismatch));
+        }
+        let (bundles, tail) = split_prior_bundles(
+            classify_remaining_accounts(ctx.remaining_accounts)?,
+            prior_bundle_count as usize,
+        )?;
+        let prior_entries = prior_entries_of(&bundles);
+        let mut sibling_transitions: alloc::vec::Vec<TransitionRecord> = alloc::vec::Vec::new();
+        let mut sibling_observations: alloc::vec::Vec<ObservationRecord> = alloc::vec::Vec::new();
+        let mut all_approvals: alloc::vec::Vec<GovApprovalRecord> = alloc::vec::Vec::new();
+        let mut all_signals: alloc::vec::Vec<SignalRecord> = alloc::vec::Vec::new();
+        for item in tail {
+            match item {
+                ParsedAccount::Transition(tr) => sibling_transitions.push(tr),
+                ParsedAccount::Observation(obs) => sibling_observations.push(obs),
+                ParsedAccount::GovApproval(approval) => all_approvals.push(*approval),
+                ParsedAccount::Signal(sig) => all_signals.push(sig),
+                ParsedAccount::Plan(_) => {
+                    return Err(error!(ProgramV04Error::RecordMismatch))
+                }
+            }
+        }
+        for (i, tr) in sibling_transitions.iter().enumerate() {
+            if tr.transition_id == transition_id
+                || sibling_transitions[..i]
+                    .iter()
+                    .any(|t| t.transition_id == tr.transition_id)
+            {
+                return Err(error!(ProgramV04Error::RecordMismatch));
+            }
+        }
+        let mut sibling_approval_sets: alloc::vec::Vec<alloc::vec::Vec<GovApprovalRecord>> =
+            alloc::vec::Vec::new();
+        let mut sibling_signal_sets: alloc::vec::Vec<alloc::vec::Vec<SignalRecord>> =
+            alloc::vec::Vec::new();
+        for _ in &sibling_transitions {
+            sibling_approval_sets.push(alloc::vec::Vec::new());
+            sibling_signal_sets.push(alloc::vec::Vec::new());
+        }
+        let mut target_approvals: alloc::vec::Vec<GovApprovalRecord> = alloc::vec::Vec::new();
+        let mut target_priors: alloc::vec::Vec<SignalRecord> = alloc::vec::Vec::new();
+        for approval in all_approvals {
+            if approval.transition_id == transition_id {
+                target_approvals.push(approval);
+                continue;
+            }
+            match sibling_transitions
+                .iter()
+                .position(|t| t.transition_id == approval.transition_id)
+            {
+                Some(i) => sibling_approval_sets[i].push(approval),
+                None => return Err(error!(ProgramV04Error::RecordMismatch)),
+            }
+        }
+        for sig in all_signals {
+            if sig.transition_id == transition_id {
+                target_priors.push(sig);
+                continue;
+            }
+            match sibling_transitions
+                .iter()
+                .position(|t| t.transition_id == sig.transition_id)
+            {
+                Some(i) => sibling_signal_sets[i].push(sig),
+                None => return Err(error!(ProgramV04Error::RecordMismatch)),
+            }
+        }
+        let mut siblings: alloc::vec::Vec<MixedSiblingReplay> = alloc::vec::Vec::new();
+        for (i, tr) in sibling_transitions.iter().enumerate() {
+            let matches: alloc::vec::Vec<&ObservationRecord> = sibling_observations
+                .iter()
+                .filter(|o| o.observation_id == tr.observation_id)
+                .collect();
+            if matches.len() != 1 {
+                return Err(error!(ProgramV04Error::RecordMismatch));
+            }
+            siblings.push(MixedSiblingReplay {
+                transition_record: tr,
+                observation_record: matches[0],
+                approval_records: &sibling_approval_sets[i],
+                prior_signals: &sibling_signal_sets[i],
+            });
+        }
+        for obs in &sibling_observations {
+            if !sibling_transitions
+                .iter()
+                .any(|t| t.observation_id == obs.observation_id)
+            {
+                return Err(error!(ProgramV04Error::RecordMismatch));
+            }
+        }
+        select_candidate_mixed_from_records_with_siblings(
             &ctx.accounts.kernel_state,
             &mut ctx.accounts.transition_record,
             &ctx.accounts.observation_record,
@@ -2882,6 +3023,28 @@ pub struct SelectCandidateGovernance<'info> {
 #[derive(Accounts)]
 #[instruction(transition_id: [u8; 32], observation_id: [u8; 32])]
 pub struct SelectCandidateGovernanceWithSiblings<'info> {
+    #[account(
+        seeds = [b"kernel-state"],
+        bump = kernel_state.bump,
+    )]
+    pub kernel_state: Account<'info, KernelState>,
+    #[account(
+        mut,
+        seeds = [b"transition", transition_id.as_ref()],
+        bump = transition_record.bump,
+    )]
+    pub transition_record: Account<'info, TransitionRecord>,
+    #[account(
+        seeds = [b"observation", observation_id.as_ref()],
+        bump = observation_record.bump,
+    )]
+    pub observation_record: Account<'info, ObservationRecord>,
+    pub payer: Signer<'info>,
+}
+
+#[derive(Accounts)]
+#[instruction(transition_id: [u8; 32], observation_id: [u8; 32])]
+pub struct SelectCandidateMixedWithSiblings<'info> {
     #[account(
         seeds = [b"kernel-state"],
         bump = kernel_state.bump,
@@ -7483,7 +7646,7 @@ pub fn select_candidate_governance_from_records(
 /// linkage to its own observation record; a governance type
 /// (`NotGovernanceTransition` otherwise — an ordinary sibling
 /// cannot replay through the governance prefix, so a mixed
-/// field is fail-closed by the census gate below, not judged);
+/// field selects through the slice-42 mixed helper, never here);
 /// its supplied approval set numbering exactly its own
 /// `approval_count`; a proven window; its supplied signal set
 /// numbering exactly its own `signal_count`; every sibling
@@ -7754,6 +7917,317 @@ pub fn select_candidate_governance_from_records_with_siblings(
     // sibling that cannot win here (unqualified tally, an outranking
     // target, a window not yet closed) refuses the whole helper,
     // and the target's stage is left untouched.
+    for sibling in siblings {
+        if sibling.transition_record.stage != TransitionRecord::SELECTED {
+            continue;
+        }
+        k.select_candidate(
+            &sibling.transition_record.transition_id,
+            kernel_state.clock,
+        )
+        .map_err(|_| error!(ProgramV04Error::SelectFailed))?;
+        match k.life_of(&sibling.transition_record.transition_id) {
+            Some(Life::Selected) => {}
+            _ => return Err(error!(ProgramV04Error::SelectFailed)),
+        }
+    }
+    k.select_candidate(&transition_record.transition_id, kernel_state.clock)
+        .map_err(|_| error!(ProgramV04Error::SelectFailed))?;
+    let life = match k.life_of(&transition_record.transition_id) {
+        Some(Life::Selected) => Life::Selected,
+        _ => return Err(error!(ProgramV04Error::SelectFailed)),
+    };
+    transition_record.stage = TransitionRecord::SELECTED;
+    Ok(life)
+}
+
+/// Select a candidate over a supplied mixed sibling field through
+/// the real kernel (slice 42): the slice-17/19/40/41 select with the
+/// type dispatch the single-type paths lack. The kernel's sibling
+/// loop is type-blind — it judges every `Eligible` sibling at the
+/// parent regardless of type — but neither single-type replay path
+/// can replay the other type: ordinary registration refuses a
+/// governance type (`GovernanceTypeOnly`) and the governance prefix
+/// refuses an ordinary type. A mixed field (a governance target
+/// with an ordinary competitor, or the reverse) therefore refused
+/// at a type gate or at the census gate, never judged. This helper
+/// closes that gap by dispatching each member's eligibility chain
+/// on its own type — governance members through
+/// `replay_governance_transition_chain` (approve + ingest +
+/// governance registration + evaluate + mark_eligible), ordinary
+/// members through `replay_transition_chain` (ingest + register +
+/// evaluate + mark_eligible) — into one rebuilt kernel, so the
+/// kernel's `SiblingsStillOpen` / `OutrankedBySibling` /
+/// `ParentAlreadyHasASelectedTransition` arms judge the whole
+/// field at once, across types, including the tie rule (siblings
+/// before the target on an equal `eligible_at`, so an equal
+/// confidence, equal eligibility competitor of either type
+/// outranks the target).
+///
+/// Pure except for the target record's stage, which advances to
+/// `SELECTED` only on success — every refusal leaves every record
+/// untouched. Gates, in order: sealed state; target stage exactly
+/// `ELIGIBLE`; target parent exactly the sealed head; target
+/// observation linkage; the type-dispatched approval anchor — a
+/// governance target's supplied approvals numbering exactly its
+/// `approval_count`, an ordinary target's supplied approvals
+/// numbering exactly zero (`RecordMismatch` otherwise, since
+/// council approvals are not evidence for an ordinary
+/// transition); a proven target window; the target completeness
+/// anchor (priors numbering exactly `signal_count`, every prior
+/// belonging to the target with a stored round matching its own
+/// `submitted_at`, no duplicated (agent, round)). Sibling gates,
+/// per sibling: an id distinct from the target and every other
+/// supplied sibling; stage exactly `ELIGIBLE` or `SELECTED`
+/// (slice 18/41, across types: every other stage refuses; a
+/// `SELECTED` label is re-proven, never trusted — its own select
+/// runs in the rebuilt kernel before the target's, and must yield
+/// `Selected`); at most one `SELECTED` sibling; parent exactly
+/// the target's parent; observation linkage; the type-dispatched
+/// approval anchor (governance: exactly its own `approval_count`;
+/// ordinary: exactly zero); a proven window; its signal set
+/// numbering exactly its own `signal_count` with the same
+/// ownership/round/duplicate rules. Then the slice-19 census gate:
+/// the supplied field plus the target must number exactly the
+/// `KernelState` sibling census at the target's parent — an
+/// omitted competitor of either type refuses here rather than
+/// passing unjudged. Replay then runs as one merged timeline
+/// (chains before signals at an equal time, siblings before the
+/// target on an equal `eligible_at`), each chain replayed by its
+/// member's type, then the `SELECTED` re-proof (if any), then
+/// kernel `select_candidate` on the target at the state's clock.
+/// A kernel refusal in any call maps to `SelectFailed`. Only a
+/// `Life::Selected` life advances the stage.
+///
+/// Deliberately NOT a mixed-only gate: this helper judges a
+/// single-type field correctly too (every member dispatches to the
+/// same chain), but the single-type instructions keep their
+/// contracts — their helpers still refuse cross-type members — so
+/// the mixed instruction is the path for fields containing both
+/// types, and a caller that knows its field is single-type uses
+/// the specific instruction. Requiring mixed-ness here would make
+/// the helper refuse a census-complete field for no safety gain.
+#[allow(clippy::too_many_arguments)]
+pub fn select_candidate_mixed_from_records_with_siblings(
+    kernel_state: &KernelState,
+    transition_record: &mut TransitionRecord,
+    observation_record: &ObservationRecord,
+    target_approval_records: &[GovApprovalRecord],
+    prior_signals: &[SignalRecord],
+    siblings: &[MixedSiblingReplay],
+    prior_entries: &[PriorEntry],
+) -> Result<Life> {
+    if !kernel_state.sealed {
+        return Err(error!(ProgramV04Error::NotSealed));
+    }
+    if transition_record.stage != TransitionRecord::ELIGIBLE {
+        return Err(error!(ProgramV04Error::WrongStage));
+    }
+    if transition_record.parent_index != kernel_state.head_index
+        || transition_record.parent_hash != kernel_state.head_hash
+    {
+        return Err(error!(ProgramV04Error::ParentMismatch));
+    }
+    if transition_record.observation_id != observation_record.observation_id {
+        return Err(error!(ProgramV04Error::RecordMismatch));
+    }
+    if is_gov_type(&transition_record.transition_type) {
+        if target_approval_records.len() as u64 != transition_record.approval_count {
+            return Err(error!(ProgramV04Error::RecordMismatch));
+        }
+    } else if !target_approval_records.is_empty() {
+        return Err(error!(ProgramV04Error::RecordMismatch));
+    }
+    if transition_record.eligible_at == 0
+        || transition_record.consensus_deadline <= transition_record.eligible_at
+    {
+        return Err(error!(ProgramV04Error::SelectFailed));
+    }
+    if prior_signals.len() as u64 != transition_record.signal_count {
+        return Err(error!(ProgramV04Error::SelectFailed));
+    }
+    for prior in prior_signals {
+        if prior.transition_id != transition_record.transition_id {
+            return Err(error!(ProgramV04Error::RecordMismatch));
+        }
+        if signal_round(
+            transition_record.eligible_at,
+            transition_record.consensus_deadline,
+            prior.submitted_at,
+        ) != prior.round
+        {
+            return Err(error!(ProgramV04Error::RecordMismatch));
+        }
+    }
+    {
+        let mut seen: BTreeSet<([u8; 32], u64)> = BTreeSet::new();
+        for prior in prior_signals {
+            if !seen.insert((prior.agent.to_bytes(), prior.round)) {
+                return Err(error!(ProgramV04Error::SelectFailed));
+            }
+        }
+    }
+    {
+        let mut seen_ids: BTreeSet<[u8; 32]> = BTreeSet::new();
+        for sibling in siblings {
+            let srec = sibling.transition_record;
+            if srec.transition_id == transition_record.transition_id
+                || !seen_ids.insert(srec.transition_id)
+            {
+                return Err(error!(ProgramV04Error::SelectFailed));
+            }
+            if srec.stage != TransitionRecord::ELIGIBLE
+                && srec.stage != TransitionRecord::SELECTED
+            {
+                return Err(error!(ProgramV04Error::SelectFailed));
+            }
+            if srec.parent_index != transition_record.parent_index
+                || srec.parent_hash != transition_record.parent_hash
+            {
+                return Err(error!(ProgramV04Error::ParentMismatch));
+            }
+            if srec.observation_id != sibling.observation_record.observation_id {
+                return Err(error!(ProgramV04Error::RecordMismatch));
+            }
+            if is_gov_type(&srec.transition_type) {
+                if sibling.approval_records.len() as u64 != srec.approval_count {
+                    return Err(error!(ProgramV04Error::RecordMismatch));
+                }
+            } else if !sibling.approval_records.is_empty() {
+                return Err(error!(ProgramV04Error::RecordMismatch));
+            }
+            if srec.eligible_at == 0 || srec.consensus_deadline <= srec.eligible_at {
+                return Err(error!(ProgramV04Error::SelectFailed));
+            }
+            if sibling.prior_signals.len() as u64 != srec.signal_count {
+                return Err(error!(ProgramV04Error::SelectFailed));
+            }
+            let mut seen: BTreeSet<([u8; 32], u64)> = BTreeSet::new();
+            for prior in sibling.prior_signals {
+                if prior.transition_id != srec.transition_id {
+                    return Err(error!(ProgramV04Error::RecordMismatch));
+                }
+                if signal_round(srec.eligible_at, srec.consensus_deadline, prior.submitted_at)
+                    != prior.round
+                {
+                    return Err(error!(ProgramV04Error::RecordMismatch));
+                }
+                if !seen.insert((prior.agent.to_bytes(), prior.round)) {
+                    return Err(error!(ProgramV04Error::SelectFailed));
+                }
+            }
+        }
+    }
+    if siblings
+        .iter()
+        .filter(|s| s.transition_record.stage == TransitionRecord::SELECTED)
+        .count()
+        > 1
+    {
+        return Err(error!(ProgramV04Error::SelectFailed));
+    }
+    if kernel_state.eligible_sibling_parent_index != transition_record.parent_index
+        || kernel_state.eligible_sibling_parent_hash != transition_record.parent_hash
+        || siblings.len() as u64 + 1 != kernel_state.eligible_sibling_count
+    {
+        return Err(error!(ProgramV04Error::SelectFailed));
+    }
+    let mut k = kernel_at_head_from_entries(kernel_state, prior_entries)?;
+    enum TimelineEvent<'a> {
+        Chain(usize),
+        Signal(&'a SignalRecord, [u8; 32]),
+    }
+    let mut timeline: alloc::vec::Vec<(u64, u8, u8, TimelineEvent)> = alloc::vec::Vec::new();
+    for (i, sibling) in siblings.iter().enumerate() {
+        timeline.push((
+            sibling.transition_record.eligible_at,
+            0,
+            0,
+            TimelineEvent::Chain(i),
+        ));
+    }
+    timeline.push((
+        transition_record.eligible_at,
+        0,
+        1,
+        TimelineEvent::Chain(usize::MAX),
+    ));
+    for prior in prior_signals {
+        timeline.push((
+            prior.submitted_at,
+            1,
+            1,
+            TimelineEvent::Signal(prior, transition_record.transition_id),
+        ));
+    }
+    for sibling in siblings {
+        for prior in sibling.prior_signals {
+            timeline.push((
+                prior.submitted_at,
+                1,
+                0,
+                TimelineEvent::Signal(prior, sibling.transition_record.transition_id),
+            ));
+        }
+    }
+    timeline.sort_by_key(|t| (t.0, t.1, t.2));
+    for (_, _, _, event) in &timeline {
+        match event {
+            TimelineEvent::Chain(idx) => {
+                if *idx == usize::MAX {
+                    if is_gov_type(&transition_record.transition_type) {
+                        replay_governance_transition_chain(
+                            kernel_state,
+                            &mut k,
+                            transition_record,
+                            observation_record,
+                            target_approval_records,
+                        )?;
+                    } else {
+                        replay_transition_chain(
+                            kernel_state,
+                            &mut k,
+                            transition_record,
+                            observation_record,
+                        )?;
+                    }
+                } else {
+                    let sibling = &siblings[*idx];
+                    if is_gov_type(&sibling.transition_record.transition_type) {
+                        replay_governance_transition_chain(
+                            kernel_state,
+                            &mut k,
+                            sibling.transition_record,
+                            sibling.observation_record,
+                            sibling.approval_records,
+                        )?;
+                    } else {
+                        replay_transition_chain(
+                            kernel_state,
+                            &mut k,
+                            sibling.transition_record,
+                            sibling.observation_record,
+                        )?;
+                    }
+                }
+            }
+            TimelineEvent::Signal(prior, tid) => {
+                let support = if prior.has_support {
+                    Some(Amount::from_raw(prior.support_raw))
+                } else {
+                    None
+                };
+                k.submit_round_signal(
+                    &prior.agent.to_bytes(),
+                    tid,
+                    Amount::from_raw(prior.raw),
+                    support,
+                    prior.submitted_at,
+                )
+                .map_err(|_| error!(ProgramV04Error::SelectFailed))?;
+            }
+        }
+    }
     for sibling in siblings {
         if sibling.transition_record.stage != TransitionRecord::SELECTED {
             continue;
@@ -8727,11 +9201,30 @@ pub struct SiblingReplay<'a> {
 /// A sibling of ordinary type cannot be offered here — its chain
 /// replays through the governance prefix, which refuses a
 /// non-governance type — so a mixed field (an ordinary competitor
-/// at the same parent) is fail-closed by the census gate, not
-/// judged: the mixed-field select is later work, named here
-/// rather than claimed here.
+/// at the same parent) selects through
+/// `select_candidate_mixed_from_records_with_siblings` (slice 42),
+/// never here: this helper judges governance-only fields.
 #[derive(Clone, Copy)]
 pub struct GovSiblingReplay<'a> {
+    pub transition_record: &'a TransitionRecord,
+    pub observation_record: &'a ObservationRecord,
+    pub approval_records: &'a [GovApprovalRecord],
+    pub prior_signals: &'a [SignalRecord],
+}
+
+/// One sibling transition offered to a mixed-field select (slice
+/// 42): the sibling's stored transition record, its observation
+/// record, its stored council approval records, and its stored
+/// signal records. All four are read, never written. The approval
+/// set is the type dispatch in miniature: a governance member
+/// carries exactly its own `approval_count` approvals, an
+/// ordinary member carries none — a non-empty approval set on an
+/// ordinary member refuses with `RecordMismatch`, because council
+/// approvals are not evidence for a transition no council approved.
+/// The target's own approvals arrive as a separate slice on the
+/// helper, under the same rule.
+#[derive(Clone, Copy)]
+pub struct MixedSiblingReplay<'a> {
     pub transition_record: &'a TransitionRecord,
     pub observation_record: &'a ObservationRecord,
     pub approval_records: &'a [GovApprovalRecord],
@@ -17062,6 +17555,286 @@ mod tests {
         .expect("an empty sibling field at census 1 must select like the plain path");
         assert_eq!(life, Life::Selected);
         assert_eq!(target.stage, TransitionRecord::SELECTED);
+    }
+
+    // Slice 42 fixtures note: the mixed helper takes both member
+    // types in one field, so these tests pair the slice-17
+    // ordinary fixtures with the slice-37/40 governance fixtures
+    // at the same genesis head — no new fixture is needed, only
+    // the cross-type pairing is new.
+
+    #[test]
+    fn mixed_select_gov_target_wins_over_weaker_ordinary_sibling() {
+        // Governance target confidence 1.0, ordinary sibling
+        // confidence 0, both windows 100/200: the sibling does
+        // not outrank, so the target selects at clock 200 —
+        // the kernel judges the ordinary competitor, not a
+        // type gate.
+        let mut state = select_state_at(200);
+        state.eligible_sibling_count = 2;
+        let (_, mut target, target_obs, target_approvals, first) = gov_selected_pair();
+        let (mut sib, sib_obs) =
+            eligible_sibling_at(100, [0xD3; 32], [0xC1; 32], [0xE3; 32], 10_100);
+        let sib_sig = sibling_signal_at(&mut sib, &sib_obs, &[], 2, 0, 100);
+        let sibling = MixedSiblingReplay {
+            transition_record: &sib,
+            observation_record: &sib_obs,
+            approval_records: &[],
+            prior_signals: &[sib_sig],
+        };
+        let life = select_candidate_mixed_from_records_with_siblings(
+            &state, &mut target, &target_obs, &target_approvals, &[first], &[sibling], &[],
+        )
+        .expect("a governance target outranking its ordinary sibling must select");
+        assert_eq!(life, Life::Selected);
+        assert_eq!(target.stage, TransitionRecord::SELECTED);
+    }
+
+    #[test]
+    fn mixed_select_ordinary_target_wins_over_weaker_gov_sibling() {
+        // The reverse direction: ordinary target confidence 1.0,
+        // governance sibling confidence 0, both windows 100/200.
+        let mut state = select_state_at(200);
+        state.eligible_sibling_count = 2;
+        let (_, mut target, target_obs, first) = selected_pair();
+        let (_, mut sib, sib_obs, sib_approvals) =
+            gov_eligible_pair_at([0xD3; 32], [0xC1; 32], [0xE3; 32], 100);
+        let sib_sig = gov_sibling_signal_at(&mut sib, &sib_obs, &sib_approvals, &[], 2, 0, 100);
+        let sibling = MixedSiblingReplay {
+            transition_record: &sib,
+            observation_record: &sib_obs,
+            approval_records: &sib_approvals,
+            prior_signals: &[sib_sig],
+        };
+        let life = select_candidate_mixed_from_records_with_siblings(
+            &state, &mut target, &target_obs, &[], &[first], &[sibling], &[],
+        )
+        .expect("an ordinary target outranking its governance sibling must select");
+        assert_eq!(life, Life::Selected);
+        assert_eq!(target.stage, TransitionRecord::SELECTED);
+    }
+
+    #[test]
+    fn mixed_select_gov_target_refuses_outranking_ordinary_sibling() {
+        // Governance target confidence 0.5 against an ordinary
+        // sibling at 1.0, both windows closed at 200: the
+        // kernel's OutrankedBySibling arm fires across types.
+        let mut state = select_state_at(200);
+        state.eligible_sibling_count = 2;
+        let (_, mut target, target_obs, target_approvals, first, second) = gov_two_signals();
+        let (mut sib, sib_obs) =
+            eligible_sibling_at(100, [0xD3; 32], [0xC1; 32], [0xE3; 32], 10_100);
+        let sib_sig = sibling_signal_at(&mut sib, &sib_obs, &[], 2, SCALE, 100);
+        let sibling = MixedSiblingReplay {
+            transition_record: &sib,
+            observation_record: &sib_obs,
+            approval_records: &[],
+            prior_signals: &[sib_sig],
+        };
+        let err = select_candidate_mixed_from_records_with_siblings(
+            &state, &mut target, &target_obs, &target_approvals, &[first, second], &[sibling],
+            &[],
+        )
+        .expect_err("a higher-confidence ordinary sibling must refuse the governance target");
+        assert!(format!("{:?}", err).contains("SelectFailed"));
+        assert_eq!(target.stage, TransitionRecord::ELIGIBLE);
+    }
+
+    #[test]
+    fn mixed_select_ordinary_target_refuses_outranking_gov_sibling() {
+        // The reverse direction: ordinary target confidence 0.5
+        // against a governance sibling at 1.0.
+        let mut state = select_state_at(200);
+        state.eligible_sibling_count = 2;
+        let (_, mut target, target_obs, first, second) = two_signals();
+        let (_, mut sib, sib_obs, sib_approvals) =
+            gov_eligible_pair_at([0xD3; 32], [0xC1; 32], [0xE3; 32], 100);
+        let sib_sig =
+            gov_sibling_signal_at(&mut sib, &sib_obs, &sib_approvals, &[], 2, SCALE, 100);
+        let sibling = MixedSiblingReplay {
+            transition_record: &sib,
+            observation_record: &sib_obs,
+            approval_records: &sib_approvals,
+            prior_signals: &[sib_sig],
+        };
+        let err = select_candidate_mixed_from_records_with_siblings(
+            &state, &mut target, &target_obs, &[], &[first, second], &[sibling], &[],
+        )
+        .expect_err("a higher-confidence governance sibling must refuse the ordinary target");
+        assert!(format!("{:?}", err).contains("SelectFailed"));
+        assert_eq!(target.stage, TransitionRecord::ELIGIBLE);
+    }
+
+    #[test]
+    fn mixed_select_selected_ordinary_sibling_blocks_gov_target() {
+        // Cross-type slice-41 shape: an ordinary SELECTED
+        // sibling (eligible 100, confidence 1.0) re-proves its
+        // own select over the governance target (eligible 150,
+        // confidence 1.0) at clock 250, so the target meets
+        // ParentAlreadyHasASelectedTransition and refuses.
+        let mut state = select_state_at(250);
+        state.eligible_sibling_count = 2;
+        let (mut sib, sib_obs) =
+            eligible_sibling_at(100, [0xD2; 32], [0xC1; 32], [0xE2; 32], 10_100);
+        let sib_sig = sibling_signal_at(&mut sib, &sib_obs, &[], 2, SCALE, 100);
+        // Mutated after the signal is built: the signal helper
+        // gates on ELIGIBLE stage, so the mutation must follow
+        // it, not precede it.
+        sib.stage = TransitionRecord::SELECTED;
+        let (_, mut target, target_obs, target_approvals) =
+            gov_eligible_pair_at([0xD1; 32], [0xC0; 32], [0xE1; 32], 150);
+        let target_sig = gov_sibling_signal_at(
+            &mut target, &target_obs, &target_approvals, &[], 2, SCALE, 150,
+        );
+        let sibling = MixedSiblingReplay {
+            transition_record: &sib,
+            observation_record: &sib_obs,
+            approval_records: &[],
+            prior_signals: &[sib_sig],
+        };
+        let err = select_candidate_mixed_from_records_with_siblings(
+            &state, &mut target, &target_obs, &target_approvals, &[target_sig], &[sibling], &[],
+        )
+        .expect_err("an already-selected ordinary sibling must block the governance target");
+        assert!(format!("{:?}", err).contains("SelectFailed"));
+        assert_eq!(target.stage, TransitionRecord::ELIGIBLE);
+        assert_eq!(sib.stage, TransitionRecord::SELECTED);
+    }
+
+    #[test]
+    fn mixed_select_selected_gov_sibling_blocks_ordinary_target() {
+        // The reverse cross-type shape: a governance SELECTED
+        // sibling (eligible 100) blocks an ordinary target
+        // (eligible 150) through the same re-proof.
+        let mut state = select_state_at(250);
+        state.eligible_sibling_count = 2;
+        let (_, mut sib, sib_obs, sib_approvals) =
+            gov_eligible_pair_at([0xD2; 32], [0xC1; 32], [0xE2; 32], 100);
+        let sib_sig =
+            gov_sibling_signal_at(&mut sib, &sib_obs, &sib_approvals, &[], 2, SCALE, 100);
+        sib.stage = TransitionRecord::SELECTED;
+        let (mut target, target_obs) =
+            eligible_sibling_at(150, [0xD1; 32], [0xC0; 32], [0xE1; 32], 10_100);
+        let target_sig = sibling_signal_at(&mut target, &target_obs, &[], 2, SCALE, 150);
+        let sibling = MixedSiblingReplay {
+            transition_record: &sib,
+            observation_record: &sib_obs,
+            approval_records: &sib_approvals,
+            prior_signals: &[sib_sig],
+        };
+        let err = select_candidate_mixed_from_records_with_siblings(
+            &state, &mut target, &target_obs, &[], &[target_sig], &[sibling], &[],
+        )
+        .expect_err("an already-selected governance sibling must block the ordinary target");
+        assert!(format!("{:?}", err).contains("SelectFailed"));
+        assert_eq!(target.stage, TransitionRecord::ELIGIBLE);
+        assert_eq!(sib.stage, TransitionRecord::SELECTED);
+    }
+
+    #[test]
+    fn mixed_select_refuses_approvals_for_ordinary_sibling() {
+        // A non-empty approval set on an ordinary member is a
+        // category error: council approvals are not evidence
+        // for a transition no council approved. The slice is
+        // the target's own approvals, non-empty — the gate is
+        // the length, not the content.
+        let mut state = select_state_at(200);
+        state.eligible_sibling_count = 2;
+        let (_, mut target, target_obs, target_approvals, first) = gov_selected_pair();
+        let (mut sib, sib_obs) =
+            eligible_sibling_at(100, [0xD3; 32], [0xC1; 32], [0xE3; 32], 10_100);
+        let sib_sig = sibling_signal_at(&mut sib, &sib_obs, &[], 2, 0, 100);
+        let sibling = MixedSiblingReplay {
+            transition_record: &sib,
+            observation_record: &sib_obs,
+            approval_records: &target_approvals,
+            prior_signals: &[sib_sig],
+        };
+        let err = select_candidate_mixed_from_records_with_siblings(
+            &state, &mut target, &target_obs, &target_approvals, &[first], &[sibling], &[],
+        )
+        .expect_err("approvals on an ordinary sibling must refuse");
+        assert!(format!("{:?}", err).contains("RecordMismatch"));
+        assert_eq!(target.stage, TransitionRecord::ELIGIBLE);
+    }
+
+    #[test]
+    fn mixed_select_refuses_gov_sibling_missing_approvals() {
+        // A governance sibling supplied with no approvals cannot
+        // meet its approval-count anchor: the count is 3, the
+        // set is empty, so the gate refuses before any replay.
+        let mut state = select_state_at(200);
+        state.eligible_sibling_count = 2;
+        let (_, mut target, target_obs, target_approvals, first) = gov_selected_pair();
+        let (_, mut sib, sib_obs, _sib_approvals) =
+            gov_eligible_pair_at([0xD3; 32], [0xC1; 32], [0xE3; 32], 100);
+        let sib_sig = gov_sibling_signal_at(
+            &mut sib, &sib_obs, &_sib_approvals, &[], 2, 0, 100,
+        );
+        let sibling = MixedSiblingReplay {
+            transition_record: &sib,
+            observation_record: &sib_obs,
+            approval_records: &[],
+            prior_signals: &[sib_sig],
+        };
+        let err = select_candidate_mixed_from_records_with_siblings(
+            &state, &mut target, &target_obs, &target_approvals, &[first], &[sibling], &[],
+        )
+        .expect_err("a governance sibling without approvals must refuse");
+        assert!(format!("{:?}", err).contains("RecordMismatch"));
+        assert_eq!(target.stage, TransitionRecord::ELIGIBLE);
+    }
+
+    #[test]
+    fn mixed_select_refuses_open_ordinary_sibling() {
+        // Governance target window 100/200 closed at 200,
+        // ordinary sibling window 150/250 still open: the
+        // kernel's SiblingsStillOpen arm fires across types.
+        let mut state = select_state_at(200);
+        state.eligible_sibling_count = 2;
+        let (_, mut target, target_obs, target_approvals, first) = gov_selected_pair();
+        let (mut sib, sib_obs) =
+            eligible_sibling_at(150, [0xD3; 32], [0xC1; 32], [0xE3; 32], 10_100);
+        let sib_sig = sibling_signal_at(&mut sib, &sib_obs, &[], 2, SCALE, 150);
+        let sibling = MixedSiblingReplay {
+            transition_record: &sib,
+            observation_record: &sib_obs,
+            approval_records: &[],
+            prior_signals: &[sib_sig],
+        };
+        let err = select_candidate_mixed_from_records_with_siblings(
+            &state, &mut target, &target_obs, &target_approvals, &[first], &[sibling], &[],
+        )
+        .expect_err("an open ordinary sibling window must refuse the governance target");
+        assert!(format!("{:?}", err).contains("SelectFailed"));
+        assert_eq!(target.stage, TransitionRecord::ELIGIBLE);
+    }
+
+    #[test]
+    fn mixed_select_equal_eligibility_tie_refuses_target() {
+        // Equal confidence 1.0 AND equal eligibility (both
+        // 100/200) across types: the sibling-first tie rule
+        // replays the ordinary sibling before the governance
+        // target, so the sibling wins the tie and the target
+        // refuses — the fail-closed direction, across types.
+        let mut state = select_state_at(200);
+        state.eligible_sibling_count = 2;
+        let (_, mut target, target_obs, target_approvals, first) = gov_selected_pair();
+        let (mut sib, sib_obs) =
+            eligible_sibling_at(100, [0xD3; 32], [0xC1; 32], [0xE3; 32], 10_100);
+        let sib_sig = sibling_signal_at(&mut sib, &sib_obs, &[], 2, SCALE, 100);
+        let sibling = MixedSiblingReplay {
+            transition_record: &sib,
+            observation_record: &sib_obs,
+            approval_records: &[],
+            prior_signals: &[sib_sig],
+        };
+        let err = select_candidate_mixed_from_records_with_siblings(
+            &state, &mut target, &target_obs, &target_approvals, &[first], &[sibling], &[],
+        )
+        .expect_err("an equal-eligibility cross-type tie must refuse the target");
+        assert!(format!("{:?}", err).contains("SelectFailed"));
+        assert_eq!(target.stage, TransitionRecord::ELIGIBLE);
     }
 
 }

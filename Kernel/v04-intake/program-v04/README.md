@@ -1704,11 +1704,69 @@ families, account inventory, and CU golden set are later step-5 slices.
   `DECLARED` through instructions alone; a revise-approval
   instruction; and CU measurement — later slices.
 
+## Slice 42 — the mixed-field select instruction
+
+- `select_candidate_mixed_with_siblings` +
+  `select_candidate_mixed_from_records_with_siblings` +
+  `MixedSiblingReplay`: the slice-17/19/40/41 select with
+  the type dispatch the single-type paths lack. The kernel's
+  sibling loop is type-blind, but ordinary registration
+  refuses a governance type and the governance prefix
+  refuses an ordinary type, so a mixed field refused at a
+  type gate or at the census gate, never judged. This slice
+  dispatches each member's eligibility chain on its own
+  type (governance prefix for governance members, ordinary
+  registration for ordinary members) into one rebuilt
+  kernel, so the kernel's `SiblingsStillOpen` /
+  `OutrankedBySibling` / `ParentAlreadyHasASelectedTransition`
+  arms judge the whole field at once, across types,
+  including the sibling-first tie rule on an equal
+  `eligible_at`. The approval anchor dispatches too: a
+  governance member carries exactly its own
+  `approval_count` approvals, an ordinary member carries
+  none (a non-empty set on an ordinary member refuses
+  with `RecordMismatch`). The slice-41 `SELECTED`
+  re-proof runs across types, and the slice-19 census gate
+  still applies — an omitted competitor of either type
+  refuses before any replay. The single-type instructions
+  keep their contracts (their helpers still refuse
+  cross-type members); the mixed instruction is the path
+  for fields containing both types, and no mixed-only gate
+  is imposed — a census-complete single-type field judges
+  correctly here too, but callers that know their field
+  is single-type use the specific instruction. No new
+  account, error, or event; the emitted event is the
+  existing `TransitionSelected`.
+- Host tests 310/310 (300 prior + 10 slice-42: the
+  governance target winning over a weaker ordinary
+  sibling and the reverse; the outranked refusal in both
+  directions; the cross-type `SELECTED` sibling blocking
+  the target in both directions; approvals on an
+  ordinary sibling refusing with `RecordMismatch`; a
+  governance sibling without approvals refusing the same
+  way; an open ordinary sibling window refusing a
+  governance target; and the equal-eligibility tie
+  refusing across types). Clippy back to the
+  pre-existing profile (anchor macro `unexpected cfg`
+  noise + the slice-8 test helper's `type_complexity`
+  warning, line shifted by this slice's inserts); zero
+  warnings naming any slice-42 symbol and none pointing
+  at the new accounts struct. IDL counts move by design
+  (28 instructions, 6 accounts, 34 errors, 18 events — +1
+  instruction only, including
+  `select_candidate_mixed_with_siblings`); `.so`
+  1,436,464 bytes (sha256 `69bb01ba…`).
+- Deliberately NOT slice 42: the governance planning,
+  reconcile, validate, and declare stages — a governance
+  record still cannot reach `DECLARED` through
+  instructions alone; a revise-approval instruction; and
+  CU measurement — later slices.
+
 ## Build
 
 ```sh
 export RUSTUP_HOME=~/workspace/toolchains/rustup CARGO_HOME=~/workspace/toolchains/cargo
 export PATH=~/workspace/toolchains/cargo/bin:~/workspace/toolchains/solana/bin:$PATH
 ~/workspace/toolchains/anchor/bin/anchor build   # from this directory
-cargo test                                        # host tests, 294/294
+cargo test                                        # host tests, 310/310
 ```
