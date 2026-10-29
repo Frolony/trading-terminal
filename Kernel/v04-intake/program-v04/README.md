@@ -1579,11 +1579,88 @@ families, account inventory, and CU golden set are later step-5 slices.
   alone; a revise-approval instruction; and CU
   measurement — later slices.
 
+## Slice 40 — the sibling-aware governance select instruction
+
+- `select_candidate_governance_with_siblings` +
+  `select_candidate_governance_from_records_with_siblings`
+  + `GovSiblingReplay` + `replay_governance_transition_chain`:
+  the slice-17/19 select on the governance path. The
+  helper mirrors the ordinary with-siblings select with a
+  governance prefix per transition: every stored seat's
+  `approve_governance`, ingest, governance registration,
+  evaluate, mark_eligible, all at the stored `eligible_at`,
+  then every supplied signal at its own `submitted_at` in
+  one merged timeline (chains before signals at an equal
+  time, siblings before the target on an equal
+  `eligible_at` — the fail-closed tie rule), then kernel
+  `select_candidate` on the target at the state's clock,
+  so the kernel's `SiblingsStillOpen` /
+  `OutrankedBySibling` arms can now fire on the governance
+  path. Only a `Life::Selected` life advances the stage,
+  to `SELECTED` (4). Gates, in order: the slice-39 target
+  gates (sealed state; stage exactly `ELIGIBLE`; parent
+  exactly the sealed head; observation linkage; a
+  governance type; the approval-count anchor; a proven
+  window; the completeness anchor — the supplied prior set
+  numbering exactly `signal_count`, every prior belonging
+  to the target with a stored round matching its own
+  `submitted_at`, no duplicated (agent, round)); then per
+  sibling: an id distinct from the target and every other
+  sibling; stage exactly `ELIGIBLE`; parent exactly the
+  target's parent; observation linkage; a governance type;
+  its approval set numbering exactly its own
+  `approval_count`; a proven window; its signal set
+  numbering exactly its own `signal_count`, with the same
+  ownership/round/duplicate rules; then the slice-19
+  census gate — supplied siblings + target equal to the
+  `KernelState` sibling census at the target's parent.
+  The instruction's tail groups by transition id, as in
+  the ordinary with-siblings instruction: sibling
+  transitions and observations, approvals (the target's
+  and each sibling's, told apart by `transition_id`),
+  and signals likewise; a plan, an approval or signal
+  naming no supplied transition, a sibling without
+  exactly one matching observation, or an unmatched
+  observation refuses with `RecordMismatch` before any
+  replay. No new account or error; the payer is a fee
+  payer only; the emitted event is the existing
+  `TransitionSelected`.
+- Host tests 294/294 (283 prior + 11 slice-40: the
+  target-wins-over-weaker-sibling success; the outranked
+  and open-sibling refusals; the earlier-target tie win
+  and the equal-eligibility tie refusal; the omitted
+  sibling (census 3, one supplied) refusal; the
+  ordinary-typed sibling refusal; the selected-stage
+  sibling gate refusal; the incomplete sibling-signal
+  refusal; the duplicate-sibling refusal; and the empty
+  field at census 1 selecting like the plain path).
+  Clippy back to the pre-existing profile (anchor macro
+  `unexpected cfg` noise + the slice-8 test helper's
+  `type_complexity` warning); zero warnings naming any
+  slice-40 symbol and none pointing at the new accounts
+  struct. IDL counts move by design (27 instructions, 6
+  accounts, 34 errors, 18 events — +1 instruction only,
+  including `select_candidate_governance_with_siblings`);
+  `.so` 1,399,616 bytes (sha256 `6ff4de8b…`).
+- Deliberately NOT slice 40: the already-selected
+  governance sibling re-proof (a `SELECTED` sibling
+  refuses at this slice's gate — the correct outcome by
+  the gate, not yet by the kernel's selected arm); the
+  mixed-field select (an ordinary competitor at the same
+  parent is fail-closed by the census gate, not judged —
+  the kernel's sibling loop is type-blind, but neither
+  single-type replay path can replay the other type);
+  the governance planning, reconcile, validate, and
+  declare stages — a governance record still cannot reach
+  `DECLARED` through instructions alone; a
+  revise-approval instruction; and CU measurement —
+  later slices.
+
 ## Build
 
 ```sh
 export RUSTUP_HOME=~/workspace/toolchains/rustup CARGO_HOME=~/workspace/toolchains/cargo
 export PATH=~/workspace/toolchains/cargo/bin:~/workspace/toolchains/solana/bin:$PATH
 ~/workspace/toolchains/anchor/bin/anchor build   # from this directory
-cargo test                                        # host tests, 283/283
+cargo test                                        # host tests, 294/294
 ```

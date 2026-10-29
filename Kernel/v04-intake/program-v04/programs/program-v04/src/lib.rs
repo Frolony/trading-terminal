@@ -2411,6 +2411,146 @@ pub mod program_v04 {
         emit!(TransitionSelected { transition_id, stage: TransitionRecord::SELECTED });
         Ok(())
     }
+
+    /// Select a governance candidate with sibling replay (§4.1,
+    /// governance replay row, slice 40): the slice-17/19 select
+    /// on the governance path — run kernel `select_candidate`
+    /// on an `ELIGIBLE` governance record pair over a supplied
+    /// field of governance siblings, and advance the target's
+    /// stage to `SELECTED`. Remaining accounts begin with
+    /// `prior_bundle_count` prior COMMITTED bundles (head
+    /// order, self-delimited as in slice 31); the tail is the
+    /// sibling evidence, grouped by transition id exactly as
+    /// in `select_candidate_with_siblings`: sibling
+    /// `TransitionRecord`s, their `ObservationRecord`s,
+    /// `GovApprovalRecord`s (the target's own approvals and
+    /// each sibling's, told apart by their `transition_id`),
+    /// and `SignalRecord`s (the target's priors and each
+    /// sibling's, told apart the same way). A `PlanRecord` in
+    /// the tail, an approval or signal naming no supplied
+    /// transition, a sibling without exactly one matching
+    /// observation, or an observation matching no sibling
+    /// refuses with `RecordMismatch` before any replay. The
+    /// payer is a fee payer only, as in slice 39. Only the
+    /// target record's stage advances; sibling records are
+    /// read, never written. A sibling at stage `SELECTED`
+    /// refuses at the helper's gate — its already-selected
+    /// re-proof is the next slice, not smuggled in here — and
+    /// an ordinary-typed sibling refuses at the type gate, so
+    /// a mixed field is fail-closed by the census gate rather
+    /// than judged by this instruction.
+    pub fn select_candidate_governance_with_siblings(
+        ctx: Context<SelectCandidateGovernanceWithSiblings>,
+        transition_id: [u8; 32],
+        observation_id: [u8; 32],
+        prior_bundle_count: u32,
+    ) -> Result<()> {
+        if ctx.accounts.transition_record.transition_id != transition_id
+            || ctx.accounts.observation_record.observation_id != observation_id
+        {
+            return Err(error!(ProgramV04Error::RecordMismatch));
+        }
+        let (bundles, tail) = split_prior_bundles(
+            classify_remaining_accounts(ctx.remaining_accounts)?,
+            prior_bundle_count as usize,
+        )?;
+        let prior_entries = prior_entries_of(&bundles);
+        let mut sibling_transitions: alloc::vec::Vec<TransitionRecord> = alloc::vec::Vec::new();
+        let mut sibling_observations: alloc::vec::Vec<ObservationRecord> = alloc::vec::Vec::new();
+        let mut all_approvals: alloc::vec::Vec<GovApprovalRecord> = alloc::vec::Vec::new();
+        let mut all_signals: alloc::vec::Vec<SignalRecord> = alloc::vec::Vec::new();
+        for item in tail {
+            match item {
+                ParsedAccount::Transition(tr) => sibling_transitions.push(tr),
+                ParsedAccount::Observation(obs) => sibling_observations.push(obs),
+                ParsedAccount::GovApproval(approval) => all_approvals.push(*approval),
+                ParsedAccount::Signal(sig) => all_signals.push(sig),
+                ParsedAccount::Plan(_) => {
+                    return Err(error!(ProgramV04Error::RecordMismatch))
+                }
+            }
+        }
+        for (i, tr) in sibling_transitions.iter().enumerate() {
+            if tr.transition_id == transition_id
+                || sibling_transitions[..i]
+                    .iter()
+                    .any(|t| t.transition_id == tr.transition_id)
+            {
+                return Err(error!(ProgramV04Error::RecordMismatch));
+            }
+        }
+        let mut sibling_approval_sets: alloc::vec::Vec<alloc::vec::Vec<GovApprovalRecord>> =
+            alloc::vec::Vec::new();
+        let mut sibling_signal_sets: alloc::vec::Vec<alloc::vec::Vec<SignalRecord>> =
+            alloc::vec::Vec::new();
+        for _ in &sibling_transitions {
+            sibling_approval_sets.push(alloc::vec::Vec::new());
+            sibling_signal_sets.push(alloc::vec::Vec::new());
+        }
+        let mut target_approvals: alloc::vec::Vec<GovApprovalRecord> = alloc::vec::Vec::new();
+        let mut target_priors: alloc::vec::Vec<SignalRecord> = alloc::vec::Vec::new();
+        for approval in all_approvals {
+            if approval.transition_id == transition_id {
+                target_approvals.push(approval);
+                continue;
+            }
+            match sibling_transitions
+                .iter()
+                .position(|t| t.transition_id == approval.transition_id)
+            {
+                Some(i) => sibling_approval_sets[i].push(approval),
+                None => return Err(error!(ProgramV04Error::RecordMismatch)),
+            }
+        }
+        for sig in all_signals {
+            if sig.transition_id == transition_id {
+                target_priors.push(sig);
+                continue;
+            }
+            match sibling_transitions
+                .iter()
+                .position(|t| t.transition_id == sig.transition_id)
+            {
+                Some(i) => sibling_signal_sets[i].push(sig),
+                None => return Err(error!(ProgramV04Error::RecordMismatch)),
+            }
+        }
+        let mut siblings: alloc::vec::Vec<GovSiblingReplay> = alloc::vec::Vec::new();
+        for (i, tr) in sibling_transitions.iter().enumerate() {
+            let matches: alloc::vec::Vec<&ObservationRecord> = sibling_observations
+                .iter()
+                .filter(|o| o.observation_id == tr.observation_id)
+                .collect();
+            if matches.len() != 1 {
+                return Err(error!(ProgramV04Error::RecordMismatch));
+            }
+            siblings.push(GovSiblingReplay {
+                transition_record: tr,
+                observation_record: matches[0],
+                approval_records: &sibling_approval_sets[i],
+                prior_signals: &sibling_signal_sets[i],
+            });
+        }
+        for obs in &sibling_observations {
+            if !sibling_transitions
+                .iter()
+                .any(|t| t.observation_id == obs.observation_id)
+            {
+                return Err(error!(ProgramV04Error::RecordMismatch));
+            }
+        }
+        select_candidate_governance_from_records_with_siblings(
+            &ctx.accounts.kernel_state,
+            &mut ctx.accounts.transition_record,
+            &ctx.accounts.observation_record,
+            &target_approvals,
+            &target_priors,
+            &siblings,
+            &prior_entries,
+        )?;
+        emit!(TransitionSelected { transition_id, stage: TransitionRecord::SELECTED });
+        Ok(())
+    }
 }
 
 #[derive(Accounts)]
@@ -2715,6 +2855,28 @@ pub struct SelectCandidateWithSiblings<'info> {
 #[derive(Accounts)]
 #[instruction(transition_id: [u8; 32], observation_id: [u8; 32])]
 pub struct SelectCandidateGovernance<'info> {
+    #[account(
+        seeds = [b"kernel-state"],
+        bump = kernel_state.bump,
+    )]
+    pub kernel_state: Account<'info, KernelState>,
+    #[account(
+        mut,
+        seeds = [b"transition", transition_id.as_ref()],
+        bump = transition_record.bump,
+    )]
+    pub transition_record: Account<'info, TransitionRecord>,
+    #[account(
+        seeds = [b"observation", observation_id.as_ref()],
+        bump = observation_record.bump,
+    )]
+    pub observation_record: Account<'info, ObservationRecord>,
+    pub payer: Signer<'info>,
+}
+
+#[derive(Accounts)]
+#[instruction(transition_id: [u8; 32], observation_id: [u8; 32])]
+pub struct SelectCandidateGovernanceWithSiblings<'info> {
     #[account(
         seeds = [b"kernel-state"],
         bump = kernel_state.bump,
@@ -7281,6 +7443,279 @@ pub fn select_candidate_governance_from_records(
     Ok(life)
 }
 
+/// Select a governance candidate over a supplied sibling field
+/// through the real kernel (slice 40): the slice-17/19 select on
+/// the governance path. Pure except for the target record's
+/// stage, which advances to `SELECTED` only on success — every
+/// refusal leaves every record untouched. Target gates, in
+/// order: sealed state; stage exactly `ELIGIBLE`; parent exactly
+/// the sealed head; observation linkage; a governance type
+/// (`NotGovernanceTransition` otherwise — an ordinary record
+/// selects through `select_candidate_from_records_with_siblings`,
+/// never here); the approval-count anchor (the supplied set
+/// numbering exactly `approval_count`); a proven window; the
+/// completeness anchor — the supplied target prior set must
+/// number exactly `signal_count`; every target prior belonging
+/// to the target with a stored round matching its own
+/// `submitted_at`; no duplicated (agent, round) in the target
+/// set. Sibling gates, per sibling: an id distinct from the
+/// target and from every other supplied sibling; stage exactly
+/// `ELIGIBLE` — a `SELECTED` sibling refuses here, as in slice
+/// 17's original bound: its already-selected re-proof is the
+/// next slice's work, and the refusal is the correct outcome
+/// (the target cannot select past a selected competitor) by
+/// the gate rather than by the kernel's
+/// `ParentAlreadyHasASelectedTransition` arm; parent exactly
+/// the target's parent (hence the sealed head); observation
+/// linkage to its own observation record; a governance type
+/// (`NotGovernanceTransition` otherwise — an ordinary sibling
+/// cannot replay through the governance prefix, so a mixed
+/// field is fail-closed by the census gate below, not judged);
+/// its supplied approval set numbering exactly its own
+/// `approval_count`; a proven window; its supplied signal set
+/// numbering exactly its own `signal_count`; every sibling
+/// prior belonging to the sibling with a stored round matching
+/// its own `submitted_at`; no duplicated (agent, round) within
+/// the sibling's set. Replay then runs as one merged timeline
+/// against a freshly rebuilt sealed launch kernel under
+/// `ProgramEnv`, exactly as in slice 17: eligibility chains
+/// (governance prefix at each stored `eligible_at`) and signals
+/// (at their `submitted_at`) interleaved in ascending time
+/// order, chains before signals at an equal time (siblings
+/// before the target on an equal `eligible_at` — the
+/// fail-closed tie rule); then kernel `select_candidate` runs
+/// on the target at the state's clock, where the kernel's
+/// `SiblingsStillOpen` / `OutrankedBySibling` arms can fire. A
+/// kernel refusal in any call maps to `SelectFailed`: a
+/// still-open target or sibling window, an unmet quorum,
+/// confidence below the launch threshold, an outranking
+/// sibling, an expired manifest, a non-unanimous approval set,
+/// and a signal at or past a deadline during the prior replay
+/// all fail here, through the kernel, not through a
+/// program-side guess about them. Only a `Life::Selected` life
+/// advances the stage. Slice 19's completeness anchor applies
+/// here too, before any replay: the supplied field plus the
+/// target must number exactly the `KernelState` sibling census
+/// at the target's parent, so an omitted eligible competitor
+/// refuses here rather than passing unjudged — including an
+/// omitted ordinary competitor, which this instruction cannot
+/// supply and therefore cannot select past.
+#[allow(clippy::too_many_arguments)]
+pub fn select_candidate_governance_from_records_with_siblings(
+    kernel_state: &KernelState,
+    transition_record: &mut TransitionRecord,
+    observation_record: &ObservationRecord,
+    approval_records: &[GovApprovalRecord],
+    prior_signals: &[SignalRecord],
+    siblings: &[GovSiblingReplay],
+    prior_entries: &[PriorEntry],
+) -> Result<Life> {
+    if !kernel_state.sealed {
+        return Err(error!(ProgramV04Error::NotSealed));
+    }
+    if transition_record.stage != TransitionRecord::ELIGIBLE {
+        return Err(error!(ProgramV04Error::WrongStage));
+    }
+    if transition_record.parent_index != kernel_state.head_index
+        || transition_record.parent_hash != kernel_state.head_hash
+    {
+        return Err(error!(ProgramV04Error::ParentMismatch));
+    }
+    if transition_record.observation_id != observation_record.observation_id {
+        return Err(error!(ProgramV04Error::RecordMismatch));
+    }
+    if !is_gov_type(&transition_record.transition_type) {
+        return Err(error!(ProgramV04Error::NotGovernanceTransition));
+    }
+    if approval_records.len() as u64 != transition_record.approval_count {
+        return Err(error!(ProgramV04Error::RecordMismatch));
+    }
+    if transition_record.eligible_at == 0
+        || transition_record.consensus_deadline <= transition_record.eligible_at
+    {
+        return Err(error!(ProgramV04Error::SelectFailed));
+    }
+    if prior_signals.len() as u64 != transition_record.signal_count {
+        return Err(error!(ProgramV04Error::SelectFailed));
+    }
+    for prior in prior_signals {
+        if prior.transition_id != transition_record.transition_id {
+            return Err(error!(ProgramV04Error::RecordMismatch));
+        }
+        if signal_round(
+            transition_record.eligible_at,
+            transition_record.consensus_deadline,
+            prior.submitted_at,
+        ) != prior.round
+        {
+            return Err(error!(ProgramV04Error::RecordMismatch));
+        }
+    }
+    {
+        let mut seen: BTreeSet<([u8; 32], u64)> = BTreeSet::new();
+        for prior in prior_signals {
+            if !seen.insert((prior.agent.to_bytes(), prior.round)) {
+                return Err(error!(ProgramV04Error::SelectFailed));
+            }
+        }
+    }
+    {
+        let mut seen_ids: BTreeSet<[u8; 32]> = BTreeSet::new();
+        for sibling in siblings {
+            let srec = sibling.transition_record;
+            if srec.transition_id == transition_record.transition_id
+                || !seen_ids.insert(srec.transition_id)
+            {
+                return Err(error!(ProgramV04Error::SelectFailed));
+            }
+            if srec.stage != TransitionRecord::ELIGIBLE {
+                return Err(error!(ProgramV04Error::SelectFailed));
+            }
+            if srec.parent_index != transition_record.parent_index
+                || srec.parent_hash != transition_record.parent_hash
+            {
+                return Err(error!(ProgramV04Error::ParentMismatch));
+            }
+            if srec.observation_id != sibling.observation_record.observation_id {
+                return Err(error!(ProgramV04Error::RecordMismatch));
+            }
+            if !is_gov_type(&srec.transition_type) {
+                return Err(error!(ProgramV04Error::NotGovernanceTransition));
+            }
+            if sibling.approval_records.len() as u64 != srec.approval_count {
+                return Err(error!(ProgramV04Error::RecordMismatch));
+            }
+            if srec.eligible_at == 0 || srec.consensus_deadline <= srec.eligible_at {
+                return Err(error!(ProgramV04Error::SelectFailed));
+            }
+            if sibling.prior_signals.len() as u64 != srec.signal_count {
+                return Err(error!(ProgramV04Error::SelectFailed));
+            }
+            let mut seen: BTreeSet<([u8; 32], u64)> = BTreeSet::new();
+            for prior in sibling.prior_signals {
+                if prior.transition_id != srec.transition_id {
+                    return Err(error!(ProgramV04Error::RecordMismatch));
+                }
+                if signal_round(srec.eligible_at, srec.consensus_deadline, prior.submitted_at)
+                    != prior.round
+                {
+                    return Err(error!(ProgramV04Error::RecordMismatch));
+                }
+                if !seen.insert((prior.agent.to_bytes(), prior.round)) {
+                    return Err(error!(ProgramV04Error::SelectFailed));
+                }
+            }
+        }
+    }
+    // Slice 19, on the governance path: the supplied field plus
+    // the target must number exactly the census at the target's
+    // parent — a field short of the census omits an eligible
+    // competitor the kernel would have judged, and a field
+    // over it cannot exist without a duplicated id (refused
+    // above), so either direction refuses before any replay.
+    // The census parent must equal the target's parent: a count
+    // recorded at another parent says nothing about this field.
+    if kernel_state.eligible_sibling_parent_index != transition_record.parent_index
+        || kernel_state.eligible_sibling_parent_hash != transition_record.parent_hash
+        || siblings.len() as u64 + 1 != kernel_state.eligible_sibling_count
+    {
+        return Err(error!(ProgramV04Error::SelectFailed));
+    }
+    let mut k = kernel_at_head_from_entries(kernel_state, prior_entries)?;
+    // One merged timeline, as in slice 17: (time, kind rank, tie
+    // rank, index) with kind rank 0 = eligibility chain, 1 =
+    // signal, so a chain always precedes same-time signals; tie
+    // rank 0 = sibling, 1 = target, so siblings precede the
+    // target on an equal eligible_at. The index is usize::MAX
+    // for the target, the sibling's supply index otherwise;
+    // sort_by is stable, so equal keys keep supply order.
+    enum TimelineEvent<'a> {
+        Chain(usize),
+        Signal(&'a SignalRecord, [u8; 32]),
+    }
+    let mut timeline: alloc::vec::Vec<(u64, u8, u8, TimelineEvent)> = alloc::vec::Vec::new();
+    for (i, sibling) in siblings.iter().enumerate() {
+        timeline.push((
+            sibling.transition_record.eligible_at,
+            0,
+            0,
+            TimelineEvent::Chain(i),
+        ));
+    }
+    timeline.push((
+        transition_record.eligible_at,
+        0,
+        1,
+        TimelineEvent::Chain(usize::MAX),
+    ));
+    for prior in prior_signals {
+        timeline.push((
+            prior.submitted_at,
+            1,
+            1,
+            TimelineEvent::Signal(prior, transition_record.transition_id),
+        ));
+    }
+    for sibling in siblings {
+        for prior in sibling.prior_signals {
+            timeline.push((
+                prior.submitted_at,
+                1,
+                0,
+                TimelineEvent::Signal(prior, sibling.transition_record.transition_id),
+            ));
+        }
+    }
+    timeline.sort_by_key(|t| (t.0, t.1, t.2));
+    for (_, _, _, event) in &timeline {
+        match event {
+            TimelineEvent::Chain(idx) => {
+                if *idx == usize::MAX {
+                    replay_governance_transition_chain(
+                        kernel_state,
+                        &mut k,
+                        transition_record,
+                        observation_record,
+                        approval_records,
+                    )?;
+                } else {
+                    let sibling = &siblings[*idx];
+                    replay_governance_transition_chain(
+                        kernel_state,
+                        &mut k,
+                        sibling.transition_record,
+                        sibling.observation_record,
+                        sibling.approval_records,
+                    )?;
+                }
+            }
+            TimelineEvent::Signal(prior, tid) => {
+                let support = if prior.has_support {
+                    Some(Amount::from_raw(prior.support_raw))
+                } else {
+                    None
+                };
+                k.submit_round_signal(
+                    &prior.agent.to_bytes(),
+                    tid,
+                    Amount::from_raw(prior.raw),
+                    support,
+                    prior.submitted_at,
+                )
+                .map_err(|_| error!(ProgramV04Error::SelectFailed))?;
+            }
+        }
+    }
+    k.select_candidate(&transition_record.transition_id, kernel_state.clock)
+        .map_err(|_| error!(ProgramV04Error::SelectFailed))?;
+    let life = match k.life_of(&transition_record.transition_id) {
+        Some(Life::Selected) => Life::Selected,
+        _ => return Err(error!(ProgramV04Error::SelectFailed)),
+    };
+    transition_record.stage = TransitionRecord::SELECTED;
+    Ok(life)
+}
+
 /// One prior committed transition offered to a replay-from-head
 /// (slice 29): the stored transition record (stage `COMMITTED`),
 /// its observation record, and its stored signal and plan records.
@@ -8217,6 +8652,99 @@ pub struct SiblingReplay<'a> {
     pub transition_record: &'a TransitionRecord,
     pub observation_record: &'a ObservationRecord,
     pub prior_signals: &'a [SignalRecord],
+}
+
+/// One governance sibling transition offered to a sibling-aware
+/// governance select (slice 40): the sibling's stored transition
+/// record, its observation record, its stored council approval
+/// records, and its stored signal records. All four are read,
+/// never written: the replay proves the sibling's tally in a
+/// rebuilt kernel, and only the target record's stage advances.
+/// A sibling of ordinary type cannot be offered here — its chain
+/// replays through the governance prefix, which refuses a
+/// non-governance type — so a mixed field (an ordinary competitor
+/// at the same parent) is fail-closed by the census gate, not
+/// judged: the mixed-field select is later work, named here
+/// rather than claimed here.
+#[derive(Clone, Copy)]
+pub struct GovSiblingReplay<'a> {
+    pub transition_record: &'a TransitionRecord,
+    pub observation_record: &'a ObservationRecord,
+    pub approval_records: &'a [GovApprovalRecord],
+    pub prior_signals: &'a [SignalRecord],
+}
+
+/// Replay one governance transition's eligibility chain into a
+/// rebuilt kernel (slice 40's governance analogue of slice 17's
+/// `replay_transition_chain`): every stored seat's
+/// `approve_governance`, ingest, governance registration,
+/// evaluate, mark_eligible, all at the stored `eligible_at`, so
+/// the rebuilt kernel's window IS the stored window. The shared
+/// decoder's failures propagate as their own errors (foreign
+/// approval `RecordMismatch`, corrupt action `GovActionDecode`,
+/// mixed action or duplicate seat `GovernanceCommitFailed`);
+/// every kernel-call failure maps to `SelectFailed` — this
+/// helper judges a supplied replay set, not a single
+/// transition's gates, so the pre-replay gates of the calling
+/// helper carry the distinct errors.
+fn replay_governance_transition_chain(
+    kernel_state: &KernelState,
+    k: &mut LaunchKernelProgramEnv,
+    transition_record: &TransitionRecord,
+    observation_record: &ObservationRecord,
+    approval_records: &[GovApprovalRecord],
+) -> Result<()> {
+    let (action, seats) =
+        gov_action_and_seats(approval_records, transition_record.transition_id)?;
+    let proposer = resolve_proposer(kernel_state, transition_record.proposer)
+        .map_err(|_| error!(ProgramV04Error::SelectFailed))?;
+    let observer_id = resolve_agent_id(observation_record.observer);
+    if !k.has_role(&observer_id, Role::Observer) {
+        return Err(error!(ProgramV04Error::SelectFailed));
+    }
+    let relevant_groups = match k.agent(&proposer) {
+        Some(profile) => profile.groups.clone(),
+        None => return Err(error!(ProgramV04Error::SelectFailed)),
+    };
+    let observation = Observation {
+        id: observation_record.observation_id,
+        timestamp: observation_record.timestamp,
+        expiry: observation_record.expiry,
+        confidence: Amount::from_raw(observation_record.confidence_raw),
+    };
+    let eligible_at = transition_record.eligible_at;
+    for seat in &seats {
+        k.approve_governance(seat, transition_record.transition_id, action.clone(), eligible_at)
+            .map_err(|_| error!(ProgramV04Error::SelectFailed))?;
+    }
+    k.ingest_observation(&observer_id, observation, eligible_at)
+        .map_err(|_| error!(ProgramV04Error::SelectFailed))?;
+    let manifest = Manifest {
+        transition_type: transition_record.transition_type,
+        parent_index: transition_record.parent_index,
+        parent_hash: transition_record.parent_hash,
+        declared_next_hash: transition_record.declared_next_hash,
+        observation_id: transition_record.observation_id,
+        expires_at: transition_record.expires_at,
+        relevant_groups,
+        action: None,
+    };
+    k.register_governance_transition(
+        &proposer,
+        transition_record.transition_id,
+        manifest,
+        action,
+        eligible_at,
+    )
+    .map_err(|_| error!(ProgramV04Error::SelectFailed))?;
+    k.evaluate_transition(&transition_record.transition_id, eligible_at)
+        .map_err(|_| error!(ProgramV04Error::SelectFailed))?;
+    k.mark_eligible(&transition_record.transition_id, eligible_at)
+        .map_err(|_| error!(ProgramV04Error::SelectFailed))?;
+    match k.life_of(&transition_record.transition_id) {
+        Some(Life::Eligible) => Ok(()),
+        _ => Err(error!(ProgramV04Error::SelectFailed)),
+    }
 }
 
 /// Replay one transition's eligibility chain into a rebuilt kernel
@@ -15853,6 +16381,392 @@ mod tests {
         )
         .expect_err("a second governance select must refuse on stage");
         assert!(format!("{:?}", err).contains("WrongStage"));
+    }
+
+    fn gov_eligible_pair_at(
+        tid: [u8; 32],
+        obs_id: [u8; 32],
+        declared: [u8; 32],
+        mark_clock: u64,
+    ) -> (
+        KernelState,
+        TransitionRecord,
+        ObservationRecord,
+        [GovApprovalRecord; 3],
+    ) {
+        // A governance record driven through the slice-37 chain
+        // to ELIGIBLE at `mark_clock`, parameterized so a
+        // sibling field can hold two governance transitions at
+        // once: the window is `mark_clock` /
+        // `mark_clock + 100`, and the observation is the
+        // genesis pair's shape (timestamp 100, expiry 9100,
+        // confidence 0.9) under the sibling's own id. The
+        // action is the same capacity rule change for both
+        // transitions — approvals are keyed by transition id,
+        // so the shared action is no collision.
+        let mut state = sealed_state();
+        if mark_clock > state.clock {
+            advance_clock_on_state(&mut state, mark_clock).expect("advance must succeed");
+        }
+        let mut record = build_governance_transition_record(
+            &state, tid, T_GOV_ADJUSTABLE, 0, [0; 32], declared, obs_id, 10_100,
+            Pubkey::new_from_array(ag(1)), 7,
+        )
+        .expect("seated proposer at the sealed head must build");
+        let obs = build_observation_record(
+            &state, obs_id, 100, 9100, 900_000, observer_pubkey(), 7,
+        )
+        .expect("observer at the sibling clock must ingest");
+        let action = gov_action();
+        let approvals = [
+            build_governance_approval_record(
+                &state, &record, Pubkey::new_from_array(ag(1)), &action, 1,
+            )
+            .expect("seat 1 approval must build"),
+            build_governance_approval_record(
+                &state, &record, Pubkey::new_from_array(ag(2)), &action, 1,
+            )
+            .expect("seat 2 approval must build"),
+            build_governance_approval_record(
+                &state, &record, Pubkey::new_from_array(ag(3)), &action, 1,
+            )
+            .expect("seat 3 approval must build"),
+        ];
+        record.approval_count = approvals.len() as u64;
+        replay_governance_from_records(&state, &mut record, &obs, &approvals, &[])
+            .expect("pair must replay before governance eligible");
+        evaluate_governance_from_records(&state, &mut record, &obs, &approvals, &[])
+            .expect("pair must evaluate before governance eligible");
+        mark_eligible_governance_from_records(&mut state, &mut record, &obs, &approvals, &[])
+            .expect("pair must mark eligible");
+        assert_eq!(record.stage, TransitionRecord::ELIGIBLE);
+        assert_eq!(record.eligible_at, mark_clock);
+        assert_eq!(record.consensus_deadline, mark_clock + 100);
+        (state, record, obs, approvals)
+    }
+
+    fn gov_sibling_signal_at(
+        record: &mut TransitionRecord,
+        obs: &ObservationRecord,
+        approvals: &[GovApprovalRecord; 3],
+        priors: &[SignalRecord],
+        agent_n: u8,
+        support_raw: u64,
+        at_clock: u64,
+    ) -> SignalRecord {
+        // The governance analogue of `sibling_signal_at`: a
+        // round-0 signal at the transition's own `eligible_at`
+        // (every test signals there), submitted through the
+        // slice-38 helper against a state advanced to that
+        // clock.
+        let mut state = sealed_state();
+        if at_clock > state.clock {
+            advance_clock_on_state(&mut state, at_clock).expect("advance must succeed");
+        }
+        let (sig, _, _) = submit_signal_governance_from_records(
+            &state, record, obs, approvals, priors, Pubkey::new_from_array(ag(agent_n)),
+            0, SCALE, support_raw, true, 7, &[],
+        )
+        .expect("governance sibling signal must submit");
+        sig
+    }
+
+    #[test]
+    fn gov_select_with_siblings_target_wins_over_weaker_sibling() {
+        // Target confidence 1.0, sibling confidence 0, both
+        // windows 100/200: the sibling does not outrank, so
+        // the target selects at clock 200.
+        let mut state = select_state_at(200);
+        state.eligible_sibling_count = 2;
+        let (_, mut target, target_obs, target_approvals, first) = gov_selected_pair();
+        let (_, mut sib, sib_obs, sib_approvals) =
+            gov_eligible_pair_at([0xD3; 32], [0xC1; 32], [0xE3; 32], 100);
+        let sib_sig = gov_sibling_signal_at(&mut sib, &sib_obs, &sib_approvals, &[], 2, 0, 100);
+        let sibling = GovSiblingReplay {
+            transition_record: &sib,
+            observation_record: &sib_obs,
+            approval_records: &sib_approvals,
+            prior_signals: &[sib_sig],
+        };
+        let life = select_candidate_governance_from_records_with_siblings(
+            &state, &mut target, &target_obs, &target_approvals, &[first], &[sibling], &[],
+        )
+        .expect("target outranking its governance sibling must select");
+        assert_eq!(life, Life::Selected);
+        assert_eq!(target.stage, TransitionRecord::SELECTED);
+    }
+
+    #[test]
+    fn gov_select_with_siblings_refuses_outranked() {
+        // Target confidence exactly 0.5 (two signals: support
+        // 1.0 and support 0), sibling confidence 1.0, both
+        // windows closed at 200: the kernel's
+        // OutrankedBySibling arm must refuse, and the target's
+        // stage stays ELIGIBLE.
+        let mut state = select_state_at(200);
+        state.eligible_sibling_count = 2;
+        let (_, mut target, target_obs, target_approvals, first, second) = gov_two_signals();
+        let (_, mut sib, sib_obs, sib_approvals) =
+            gov_eligible_pair_at([0xD3; 32], [0xC1; 32], [0xE3; 32], 100);
+        let sib_sig =
+            gov_sibling_signal_at(&mut sib, &sib_obs, &sib_approvals, &[], 2, SCALE, 100);
+        let sibling = GovSiblingReplay {
+            transition_record: &sib,
+            observation_record: &sib_obs,
+            approval_records: &sib_approvals,
+            prior_signals: &[sib_sig],
+        };
+        let err = select_candidate_governance_from_records_with_siblings(
+            &state, &mut target, &target_obs, &target_approvals, &[first, second], &[sibling], &[],
+        )
+        .expect_err("a higher-confidence governance sibling must refuse selection");
+        assert!(format!("{:?}", err).contains("SelectFailed"));
+        assert_eq!(target.stage, TransitionRecord::ELIGIBLE);
+    }
+
+    #[test]
+    fn gov_select_with_siblings_refuses_open_sibling() {
+        // Target window 100/200 closed at clock 200, sibling
+        // window 150/250 still open: the kernel's
+        // SiblingsStillOpen arm must refuse even though the
+        // sibling would otherwise qualify.
+        let mut state = select_state_at(200);
+        state.eligible_sibling_count = 2;
+        let (_, mut target, target_obs, target_approvals, first) = gov_selected_pair();
+        let (_, mut sib, sib_obs, sib_approvals) =
+            gov_eligible_pair_at([0xD3; 32], [0xC1; 32], [0xE3; 32], 150);
+        let sib_sig =
+            gov_sibling_signal_at(&mut sib, &sib_obs, &sib_approvals, &[], 2, SCALE, 150);
+        let sibling = GovSiblingReplay {
+            transition_record: &sib,
+            observation_record: &sib_obs,
+            approval_records: &sib_approvals,
+            prior_signals: &[sib_sig],
+        };
+        let err = select_candidate_governance_from_records_with_siblings(
+            &state, &mut target, &target_obs, &target_approvals, &[first], &[sibling], &[],
+        )
+        .expect_err("an open governance sibling window must refuse selection");
+        assert!(format!("{:?}", err).contains("SelectFailed"));
+        assert_eq!(target.stage, TransitionRecord::ELIGIBLE);
+    }
+
+    #[test]
+    fn gov_select_with_siblings_tie_earlier_target_wins() {
+        // Mirror of the open-sibling shape with both windows
+        // closed: target eligible at 100, sibling at 150,
+        // equal confidence 1.0, clock 250 — the target wins
+        // its own tie-break and selects.
+        let mut state = select_state_at(250);
+        state.eligible_sibling_count = 2;
+        let (_, mut target, target_obs, target_approvals, first) = gov_selected_pair();
+        let (_, mut sib, sib_obs, sib_approvals) =
+            gov_eligible_pair_at([0xD3; 32], [0xC1; 32], [0xE3; 32], 150);
+        let sib_sig =
+            gov_sibling_signal_at(&mut sib, &sib_obs, &sib_approvals, &[], 2, SCALE, 150);
+        let sibling = GovSiblingReplay {
+            transition_record: &sib,
+            observation_record: &sib_obs,
+            approval_records: &sib_approvals,
+            prior_signals: &[sib_sig],
+        };
+        let life = select_candidate_governance_from_records_with_siblings(
+            &state, &mut target, &target_obs, &target_approvals, &[first], &[sibling], &[],
+        )
+        .expect("the earlier governance target must win its tie");
+        assert_eq!(life, Life::Selected);
+        assert_eq!(target.stage, TransitionRecord::SELECTED);
+    }
+
+    #[test]
+    fn gov_select_with_siblings_tie_equal_eligibility_refuses() {
+        // Equal confidence 1.0 AND equal eligibility (both
+        // 100/200): the slice-17 tie rule replays siblings
+        // before the target, so the sibling wins and the
+        // target refuses — the fail-closed direction for an
+        // order the clock cannot distinguish.
+        let mut state = select_state_at(200);
+        state.eligible_sibling_count = 2;
+        let (_, mut target, target_obs, target_approvals, first) = gov_selected_pair();
+        let (_, mut sib, sib_obs, sib_approvals) =
+            gov_eligible_pair_at([0xD3; 32], [0xC1; 32], [0xE3; 32], 100);
+        let sib_sig =
+            gov_sibling_signal_at(&mut sib, &sib_obs, &sib_approvals, &[], 2, SCALE, 100);
+        let sibling = GovSiblingReplay {
+            transition_record: &sib,
+            observation_record: &sib_obs,
+            approval_records: &sib_approvals,
+            prior_signals: &[sib_sig],
+        };
+        let err = select_candidate_governance_from_records_with_siblings(
+            &state, &mut target, &target_obs, &target_approvals, &[first], &[sibling], &[],
+        )
+        .expect_err("an equal-eligibility governance tie must refuse the target");
+        assert!(format!("{:?}", err).contains("SelectFailed"));
+        assert_eq!(target.stage, TransitionRecord::ELIGIBLE);
+    }
+
+    #[test]
+    fn gov_select_with_siblings_refuses_omitted_sibling() {
+        // The census reads 3 at the target's parent but only
+        // one sibling is supplied: the completeness anchor
+        // refuses before any replay, even with a qualifying
+        // tally at a closed window.
+        let mut state = select_state_at(200);
+        state.eligible_sibling_count = 3;
+        let (_, mut target, target_obs, target_approvals, first) = gov_selected_pair();
+        let (_, mut sib, sib_obs, sib_approvals) =
+            gov_eligible_pair_at([0xD3; 32], [0xC1; 32], [0xE3; 32], 100);
+        let sib_sig = gov_sibling_signal_at(&mut sib, &sib_obs, &sib_approvals, &[], 2, 0, 100);
+        let sibling = GovSiblingReplay {
+            transition_record: &sib,
+            observation_record: &sib_obs,
+            approval_records: &sib_approvals,
+            prior_signals: &[sib_sig],
+        };
+        let err = select_candidate_governance_from_records_with_siblings(
+            &state, &mut target, &target_obs, &target_approvals, &[first], &[sibling], &[],
+        )
+        .expect_err("a field short of the census must refuse");
+        assert!(format!("{:?}", err).contains("SelectFailed"));
+        assert_eq!(target.stage, TransitionRecord::ELIGIBLE);
+    }
+
+    #[test]
+    fn gov_select_with_siblings_refuses_ordinary_typed_sibling() {
+        // A sibling whose type is ordinary cannot replay
+        // through the governance prefix: the type gate
+        // refuses with NotGovernanceTransition before any
+        // replay, and the target stays ELIGIBLE. This is the
+        // mixed-field shape, fail-closed, not judged.
+        let mut state = select_state_at(200);
+        state.eligible_sibling_count = 2;
+        let (_, mut target, target_obs, target_approvals, first) = gov_selected_pair();
+        let (_, mut sib, sib_obs, sib_approvals) =
+            gov_eligible_pair_at([0xD3; 32], [0xC1; 32], [0xE3; 32], 100);
+        let sib_sig = gov_sibling_signal_at(&mut sib, &sib_obs, &sib_approvals, &[], 2, 0, 100);
+        // Mutated after the signal is built: the signal helper
+        // itself gates on governance type, so the mutation must
+        // follow it, not precede it.
+        sib.transition_type = TT;
+        let sibling = GovSiblingReplay {
+            transition_record: &sib,
+            observation_record: &sib_obs,
+            approval_records: &sib_approvals,
+            prior_signals: &[sib_sig],
+        };
+        let err = select_candidate_governance_from_records_with_siblings(
+            &state, &mut target, &target_obs, &target_approvals, &[first], &[sibling], &[],
+        )
+        .expect_err("an ordinary-typed sibling must refuse the governance select");
+        assert!(format!("{:?}", err).contains("NotGovernanceTransition"));
+        assert_eq!(target.stage, TransitionRecord::ELIGIBLE);
+    }
+
+    #[test]
+    fn gov_select_with_siblings_refuses_selected_stage_sibling() {
+        // A sibling already at stage SELECTED refuses at the
+        // helper's gate: its already-selected re-proof is the
+        // next slice, and the target cannot select past it
+        // through this instruction. The refusal is by the
+        // gate, not by the kernel's selected arm, and the
+        // target stays ELIGIBLE.
+        let mut state = select_state_at(200);
+        state.eligible_sibling_count = 2;
+        let (_, mut target, target_obs, target_approvals, first) = gov_selected_pair();
+        let (_, mut sib, sib_obs, sib_approvals) =
+            gov_eligible_pair_at([0xD3; 32], [0xC1; 32], [0xE3; 32], 100);
+        let sib_sig = gov_sibling_signal_at(&mut sib, &sib_obs, &sib_approvals, &[], 2, 0, 100);
+        // Mutated after the signal is built: the signal helper
+        // itself gates on ELIGIBLE stage, so the mutation must
+        // follow it, not precede it.
+        sib.stage = TransitionRecord::SELECTED;
+        let sibling = GovSiblingReplay {
+            transition_record: &sib,
+            observation_record: &sib_obs,
+            approval_records: &sib_approvals,
+            prior_signals: &[sib_sig],
+        };
+        let err = select_candidate_governance_from_records_with_siblings(
+            &state, &mut target, &target_obs, &target_approvals, &[first], &[sibling], &[],
+        )
+        .expect_err("a selected-stage sibling must refuse this instruction");
+        assert!(format!("{:?}", err).contains("SelectFailed"));
+        assert_eq!(target.stage, TransitionRecord::ELIGIBLE);
+    }
+
+    #[test]
+    fn gov_select_with_siblings_refuses_incomplete_sibling_signals() {
+        // The sibling's count is 2 but only its first signal
+        // is supplied: the per-sibling completeness anchor
+        // refuses before any replay, and the target's stage
+        // stays ELIGIBLE.
+        let mut state = select_state_at(200);
+        state.eligible_sibling_count = 2;
+        let (_, mut target, target_obs, target_approvals, first) = gov_selected_pair();
+        let (_, mut sib, sib_obs, sib_approvals) =
+            gov_eligible_pair_at([0xD3; 32], [0xC1; 32], [0xE3; 32], 100);
+        let sib_first =
+            gov_sibling_signal_at(&mut sib, &sib_obs, &sib_approvals, &[], 2, 0, 100);
+        let _sib_second = gov_sibling_signal_at(
+            &mut sib, &sib_obs, &sib_approvals, &[sib_first], 3, 0, 100,
+        );
+        assert_eq!(sib.signal_count, 2);
+        let sibling = GovSiblingReplay {
+            transition_record: &sib,
+            observation_record: &sib_obs,
+            approval_records: &sib_approvals,
+            prior_signals: &[sib_first],
+        };
+        let err = select_candidate_governance_from_records_with_siblings(
+            &state, &mut target, &target_obs, &target_approvals, &[first], &[sibling], &[],
+        )
+        .expect_err("a sibling set short of its signal_count must refuse");
+        assert!(format!("{:?}", err).contains("SelectFailed"));
+        assert_eq!(target.stage, TransitionRecord::ELIGIBLE);
+    }
+
+    #[test]
+    fn gov_select_with_siblings_refuses_duplicate_sibling() {
+        // The same sibling supplied twice: the distinct-id
+        // gate refuses before any replay, and the target
+        // stays ELIGIBLE. The census is set to 3 (target +
+        // two supplied) so the duplicate gate, not the census
+        // gate, is what fires.
+        let mut state = select_state_at(200);
+        state.eligible_sibling_count = 3;
+        let (_, mut target, target_obs, target_approvals, first) = gov_selected_pair();
+        let (_, mut sib, sib_obs, sib_approvals) =
+            gov_eligible_pair_at([0xD3; 32], [0xC1; 32], [0xE3; 32], 100);
+        let sib_sig = gov_sibling_signal_at(&mut sib, &sib_obs, &sib_approvals, &[], 2, 0, 100);
+        let sibling = GovSiblingReplay {
+            transition_record: &sib,
+            observation_record: &sib_obs,
+            approval_records: &sib_approvals,
+            prior_signals: &[sib_sig],
+        };
+        let err = select_candidate_governance_from_records_with_siblings(
+            &state, &mut target, &target_obs, &target_approvals, &[first], &[sibling, sibling], &[],
+        )
+        .expect_err("a duplicated sibling must refuse");
+        assert!(format!("{:?}", err).contains("SelectFailed"));
+        assert_eq!(target.stage, TransitionRecord::ELIGIBLE);
+    }
+
+    #[test]
+    fn gov_select_with_siblings_empty_is_plain_select() {
+        // No siblings supplied and the census reading 1: the
+        // with-siblings helper subsumes the plain path, and a
+        // qualifying tally at a closed window selects.
+        let mut state = select_state_at(200);
+        state.eligible_sibling_count = 1;
+        let (_, mut target, target_obs, target_approvals, first) = gov_selected_pair();
+        let life = select_candidate_governance_from_records_with_siblings(
+            &state, &mut target, &target_obs, &target_approvals, &[first], &[], &[],
+        )
+        .expect("an empty sibling field at census 1 must select like the plain path");
+        assert_eq!(life, Life::Selected);
+        assert_eq!(target.stage, TransitionRecord::SELECTED);
     }
 
 }
