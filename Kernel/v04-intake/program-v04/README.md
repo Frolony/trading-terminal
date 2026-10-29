@@ -2340,11 +2340,106 @@ design decision for Carlos, folded into the pending encoding
 decision), the later cu-golden slices, and the Agave 4.3.2 +
 Anchor 1.2.2 scratch assessments.
 
+## Slice 51 — the account-carried action, carrier only (2026-10-29)
+
+Carlos's encoding decision, refined the same morning
+(2026-10-29 ~05:19 CST): the action is account-carried, written
+in CHUNKED APPEND + FINALIZE on the current legacy/v0 stack (a
+later v1 single write may replace the chunks without changing
+the account layout or the hash rule). This slice builds the
+carrier; the approval rewiring is slice 52.
+
+- `GovActionAccount` (SPACE 1664): one per
+  `(transition, writer)`, PDA seeds
+  `["gov-action", transition_id, writer]`. Fields: transition
+  id, writer, `expected_hash` (recorded at init, before any
+  byte), `action_hash` (written by finalize alone, zero until
+  then), `written_len`, `finalized`, the 1,524-byte serialized
+  action buffer, bump. The action travels as raw bytes, never
+  as a by-value instruction argument — that is the fix for
+  both the 1,564-byte transaction finding and the 5,760-byte
+  wrapper frame.
+- Four instructions: `init_gov_action` (writer = signing
+  payer; records the expected hash), `append_gov_action_chunk`
+  (offset + up to 512 bytes; a chunk instruction is ~550 bytes
+  of instruction data, inside the legacy 1,232-byte cap),
+  `finalize_gov_action` (refuses incomplete buffers and
+  undecodable buffers; computes the hash from the accumulated
+  bytes with the `sol_sha256` syscall on SBF — never from a
+  caller-supplied hash — and succeeds only if it equals the
+  expected hash), `close_gov_action` (rent reclaim for a
+  half-written account; writer-only, refused once finalized).
+- Squatting, closed by both defenses together: the seed
+  includes the writer AND writes require the writer's
+  signature, so no other party can pre-create the account for
+  a transition id; and init records the expected hash, so a
+  writer cannot init one action and finalize another.
+- Sequential-prefix rule: a chunk's offset must equal
+  `written_len` exactly — no gaps, no overwrites. A gapped
+  buffer can never finalize as a different action, and a
+  poisoned chunk cannot be repaired in place (fail-closed;
+  remedy is a fresh transition id, as with a wrong first
+  approval before slice 48).
+- Frame result (pinned toolchain, this slice's build): the
+  four new `__global` wrappers report NO overflow — the
+  overflow list is exactly the baseline's (approve/revise
+  5,760 each, sibling selects 4,224 each, `try_accounts`
+  4,480 each, BTreeMap-insert 4,672). Approve/revise still
+  overflow in this slice, as designed: they still take the
+  action by value, and their rewiring is slice 52.
+- Baseline correction, found while measuring: the canonical
+  revise wrapper is 5,760 bytes, not the 5,696 slice 50
+  reported — 5,696 was the scratch probe variant's frame, and
+  two independent pinned-toolchain builds of the canonical
+  program (this slice's baseline and the Agave assessment's
+  scratch build) both report 5,760. The acceptance bar is
+  unchanged, the number is corrected.
+- Agave 4.3.2 correction, found in the same pass: the
+  assessment's scratch build log shows toolchain
+  `1.89.0-sbpf-solana-v1.54` — its build ran on the pinned
+  toolchain, not v1.57, and its `.so` is byte-identical to
+  this slice's pinned build. Its CU deltas (-4% to -21%) are
+  therefore NOT Agave 4.3.2 effects and are withdrawn pending
+  a genuine v1.57 build (the build must be forced onto the
+  4.3.2 install's `cargo-build-sbf` and the toolchain line
+  confirmed in the log). The golden `.so` sha (1de0c0a2…)
+  likewise does not reproduce from current source + pinned
+  toolchain (twice 407907c8…); CU golden values stay valid
+  as measurements of their `.so`, but the sha is an open
+  verification debt, not a reproducibility claim.
+- Host tests 388/388 (383 prior + 5 slice-51: serialized
+  length + SPACE, chunk-sequence finalize, gap/overwrite/
+  oversize/empty refusals, incomplete/hash-mismatch/foreign-
+  writer refusals, close gate + post-finalize refusals).
+  `anchor build` green under the pinned toolchain; IDL now
+  38 instructions / 7 accounts / 38 errors / 23 events;
+  `.so` sha256 `58e601a6…`.
+- Approval-record shrink audit (the refined ruling's
+  confirm step): exactly ONE production function decodes an
+  action from approval records — `gov_action_and_seats`
+  (the shared decoder, called from ~14 helpers: commit,
+  stage chain, prior drivers, sibling helpers) — plus the
+  approve/revise bodies' `action.kind` event reads. Under
+  the shrink, all of them must read the action from the
+  `GovActionAccount` instead; `GovPriorCommit` bundles
+  (which carry approval-record slices) must additionally
+  carry the action account. That rework is slice 52's scope,
+  not smuggled into this carrier slice.
+
+Deliberately NOT slice 51: rewiring approve/revise to read
+the action account (their frames still overflow), the
+registration/commit hash checks (registration refuses an
+unfinalized account; commit takes the action account in),
+the sibling-select wrapper fix (still 4,224 each), the
+post-settle reclaim decision for finalized accounts, the
+cu-golden measurements for the four new instructions, and
+the genuine Agave 4.3.2 / Anchor 1.2.2 builds.
+
 ## Build
 
 ```sh
 export RUSTUP_HOME=~/workspace/toolchains/rustup CARGO_HOME=~/workspace/toolchains/cargo
 export PATH=~/workspace/toolchains/cargo/bin:~/workspace/toolchains/solana/bin:$PATH
 ~/workspace/toolchains/anchor/bin/anchor build   # from this directory
-cargo test                                        # host tests, 383/383
+cargo test                                        # host tests, 388/388
 ```

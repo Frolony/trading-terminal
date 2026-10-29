@@ -1301,6 +1301,107 @@ pub mod program_v04 {
         Ok(())
     }
 
+    /// Init the account-carried action (§4.1, governance lifecycle
+    /// row, slice 51 — carrier only): create the `GovActionAccount`
+    /// PDA for one transition id, seeded by the writing proposer,
+    /// and record the expected action hash up front. The writer is
+    /// the signing payer: only that pubkey can append or finalize
+    /// (the PDA seeds and the helper gates enforce it), so no
+    /// other party can squat the account for this transition id,
+    /// and finalize later succeeds only if the accumulated bytes
+    /// hash to exactly this expected hash — a writer cannot
+    /// init one action and finalize another. The account starts
+    /// empty and unfinalized; the action bytes arrive through
+    /// `append_gov_action_chunk` in 512-byte chunks (slice 51's
+    /// legacy/v0 answer to the 1,564-byte single-write finding:
+    /// a later v1 single write may replace the chunks without
+    /// changing this account's layout or hash rule). This
+    /// instruction does NOT rewire approval yet: approve/revise
+    /// still take their action by value in this slice, and the
+    /// registration/commit hash checks ride slice 52.
+    pub fn init_gov_action(
+        ctx: Context<InitGovAction>,
+        transition_id: [u8; 32],
+        expected_hash: [u8; 32],
+    ) -> Result<()> {
+        let account = &mut ctx.accounts.gov_action_account;
+        account.transition_id = transition_id;
+        account.writer = ctx.accounts.payer.key();
+        account.expected_hash = expected_hash;
+        account.action_hash = [0; 32];
+        account.written_len = 0;
+        account.finalized = false;
+        account.action_bytes = [0; GOV_ACTION_SERIALIZED_LEN];
+        account.bump = ctx.bumps.gov_action_account;
+        emit!(GovActionInitialized { transition_id, writer: account.writer, expected_hash });
+        Ok(())
+    }
+
+    /// Append one chunk of the account-carried action (slice 51):
+    /// write `chunk` at `offset` into the `GovActionAccount`'s
+    /// serialized action bytes. The helper enforces the
+    /// sequential-prefix rule (`offset` must equal `written_len`
+    /// exactly, no gaps, no overwrites, no chunk over 512 bytes)
+    /// and refuses once finalized, so the accumulated bytes are
+    /// always a prefix of exactly one intended action — never a
+    /// gapped buffer that could finalize as a different action.
+    pub fn append_gov_action_chunk(
+        ctx: Context<AppendGovActionChunk>,
+        transition_id: [u8; 32],
+        offset: u16,
+        chunk: Vec<u8>,
+    ) -> Result<()> {
+        let account = &mut ctx.accounts.gov_action_account;
+        write_gov_action_chunk(account, ctx.accounts.payer.key(), offset, &chunk)?;
+        emit!(GovActionChunkAppended {
+            transition_id,
+            writer: account.writer,
+            offset,
+            chunk_len: chunk.len() as u16,
+            written_len: account.written_len,
+        });
+        Ok(())
+    }
+
+    /// Finalize the account-carried action (slice 51): refuse an
+    /// incomplete buffer, refuse a buffer that does not decode
+    /// to a kernel action, compute the action hash from the
+    /// accumulated bytes with the on-chain hash syscall (never
+    /// from a caller-supplied hash — a supplied hash would make
+    /// the binding only a claim), and succeed only if the
+    /// computed hash equals the expected hash recorded at init.
+    /// On success the account is write-once sealed: appends and
+    /// a second finalize refuse, and the close path closes with
+    /// it — a finalized account stays open until the transition
+    /// settles (slice 52's lifetime rule; no post-settle reclaim
+    /// exists in this slice).
+    pub fn finalize_gov_action(
+        ctx: Context<FinalizeGovAction>,
+        transition_id: [u8; 32],
+    ) -> Result<()> {
+        let account = &mut ctx.accounts.gov_action_account;
+        let action_hash = finalize_gov_action_record(account, ctx.accounts.payer.key())?;
+        emit!(GovActionFinalized { transition_id, writer: account.writer, action_hash });
+        Ok(())
+    }
+
+    /// Close an abandoned account-carried action (slice 51): the
+    /// rent-reclaim path for a half-written account. Only the
+    /// writer may close, and only while the account is
+    /// unfinalized — once finalized, no approval may yet have
+    /// bound to the hash in this slice, but the lifetime rule
+    /// already applies: a finalized account stays open until
+    /// the transition settles, so close refuses after finalize
+    /// rather than freeing bytes an approval set may reference.
+    pub fn close_gov_action(
+        ctx: Context<CloseGovAction>,
+        transition_id: [u8; 32],
+    ) -> Result<()> {
+        check_gov_action_close(&ctx.accounts.gov_action_account, ctx.accounts.writer.key())?;
+        emit!(GovActionClosed { transition_id, writer: ctx.accounts.writer.key() });
+        Ok(())
+    }
+
     /// Ingest (§4.1, second lifecycle row, v0.4 form): store an
     /// observation as an `ObservationRecord` PDA, gated on the sealed
     /// state, the Observer role of the signing payer's agent id, and the
@@ -3765,6 +3866,60 @@ pub struct ReviseGovernanceApproval<'info> {
 }
 
 #[derive(Accounts)]
+#[instruction(transition_id: [u8; 32])]
+pub struct InitGovAction<'info> {
+    #[account(
+        init,
+        payer = payer,
+        space = GovActionAccount::SPACE,
+        seeds = [b"gov-action", transition_id.as_ref(), payer.key().as_ref()],
+        bump,
+    )]
+    pub gov_action_account: Account<'info, GovActionAccount>,
+    #[account(mut)]
+    pub payer: Signer<'info>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+#[instruction(transition_id: [u8; 32])]
+pub struct AppendGovActionChunk<'info> {
+    #[account(
+        mut,
+        seeds = [b"gov-action", transition_id.as_ref(), payer.key().as_ref()],
+        bump = gov_action_account.bump,
+    )]
+    pub gov_action_account: Account<'info, GovActionAccount>,
+    pub payer: Signer<'info>,
+}
+
+#[derive(Accounts)]
+#[instruction(transition_id: [u8; 32])]
+pub struct FinalizeGovAction<'info> {
+    #[account(
+        mut,
+        seeds = [b"gov-action", transition_id.as_ref(), payer.key().as_ref()],
+        bump = gov_action_account.bump,
+    )]
+    pub gov_action_account: Account<'info, GovActionAccount>,
+    pub payer: Signer<'info>,
+}
+
+#[derive(Accounts)]
+#[instruction(transition_id: [u8; 32])]
+pub struct CloseGovAction<'info> {
+    #[account(
+        mut,
+        close = writer,
+        seeds = [b"gov-action", transition_id.as_ref(), writer.key().as_ref()],
+        bump = gov_action_account.bump,
+    )]
+    pub gov_action_account: Account<'info, GovActionAccount>,
+    #[account(mut)]
+    pub writer: Signer<'info>,
+}
+
+#[derive(Accounts)]
 pub struct SealKernel<'info> {
     #[account(
         mut,
@@ -4507,6 +4662,154 @@ pub fn revise_governance_approval_record(
         approval_record.bump,
     )?;
     approval_record.action = revised.action;
+    Ok(())
+}
+
+/// Serialized length of a `StoredGovAction` (slice 51): the fixed
+/// Borsh layout sums to exactly 1,524 bytes, pinned by host test
+/// — a chunked write that totals any other length is not one
+/// action, and finalize refuses it as incomplete.
+pub const GOV_ACTION_SERIALIZED_LEN: usize = 1524;
+
+/// Maximum bytes per `append_gov_action_chunk` call (slice 51):
+/// 512 keeps a chunk instruction at ~550 bytes of instruction
+/// data (transition id + offset + length prefix + chunk), far
+/// inside the legacy/v0 1,232-byte transaction cap even with a
+/// signature and the account metas — the chunk cap, not the
+/// buffer size, is what makes the write fit the pinned stack.
+/// Three chunks carry a full action (512 + 512 + 500).
+pub const GOV_ACTION_CHUNK_LEN: usize = 512;
+
+/// The sixth §3 account: one account-carried governance action
+/// (slice 51, Carlos's 2026-10-29 account-carried ruling). One
+/// account per (transition, writer) — the PDA seeds are
+/// `["gov-action", transition_id, writer]` — because the writer
+/// is the binding: only the writer's signature appends or
+/// finalizes, so an account for a transition id cannot be
+/// squatted by another party, and the writer is the party slice
+/// 52 binds to the transition record's proposer at
+/// registration. The action travels as raw serialized bytes,
+/// not as a by-value instruction argument: that is the whole
+/// fix — the 1,524-byte value leaves the instruction data and
+/// the `__global` wrapper frame, and approve/revise in slice 52
+/// read it from here as a borrowed slice instead. `expected_hash`
+/// is recorded at init, before any byte is written; `action_hash`
+/// is written by finalize alone, from the accumulated bytes, and
+/// is zero until then. A finalized account is write-once sealed
+/// and stays open until the transition settles.
+#[account]
+#[derive(Debug)]
+pub struct GovActionAccount {
+    /// Transition this action belongs to (the PDA seed after `"gov-action"`).
+    pub transition_id: [u8; 32],
+    /// Writing proposer (the signer's pubkey, the PDA's third seed).
+    pub writer: Pubkey,
+    /// Hash declared at init; finalize must reproduce it exactly.
+    pub expected_hash: [u8; 32],
+    /// Hash computed at finalize from `action_bytes`; zero until then.
+    pub action_hash: [u8; 32],
+    /// Bytes written so far; the sequential-prefix length.
+    pub written_len: u16,
+    /// True once finalized; appends, re-finalize, and close refuse.
+    pub finalized: bool,
+    /// The serialized action, accumulated chunk by chunk.
+    pub action_bytes: [u8; GOV_ACTION_SERIALIZED_LEN],
+    /// PDA bump for the `["gov-action", transition_id, writer]` seeds.
+    pub bump: u8,
+}
+
+impl GovActionAccount {
+    /// 8 (discriminator) + 32 + 32 + 32 + 32 + 2 + 1 + 1524 + 1.
+    pub const SPACE: usize = 1664;
+}
+
+/// Append one chunk to an account-carried action (slice 51).
+/// Pure, so the instruction and the host tests share the gates:
+/// writer identity (`RecordMismatch` for a foreign writer),
+/// finalized refusal, the chunk-size cap, and the
+/// sequential-prefix rule — offset must equal `written_len`,
+/// so a gap can never be finalized over and a chunk can never
+/// overwrite an earlier chunk. A refused append leaves the
+/// account untouched; a poisoned (wrong-byte) chunk cannot be
+/// repaired in place, fail-closed — the remedy is a fresh
+/// transition id, exactly as a wrong first approval's remedy
+/// was a fresh id before slice 48.
+pub fn write_gov_action_chunk(
+    account: &mut GovActionAccount,
+    writer: Pubkey,
+    offset: u16,
+    chunk: &[u8],
+) -> Result<()> {
+    if account.writer != writer {
+        return Err(error!(ProgramV04Error::RecordMismatch));
+    }
+    if account.finalized {
+        return Err(error!(ProgramV04Error::GovActionAlreadyFinalized));
+    }
+    if chunk.is_empty() || chunk.len() > GOV_ACTION_CHUNK_LEN {
+        return Err(error!(ProgramV04Error::GovActionChunkMismatch));
+    }
+    if offset != account.written_len {
+        return Err(error!(ProgramV04Error::GovActionChunkMismatch));
+    }
+    let end = (offset as usize)
+        .checked_add(chunk.len())
+        .ok_or(error!(ProgramV04Error::GovActionChunkMismatch))?;
+    if end > GOV_ACTION_SERIALIZED_LEN {
+        return Err(error!(ProgramV04Error::GovActionChunkMismatch));
+    }
+    account.action_bytes[offset as usize..end].copy_from_slice(chunk);
+    account.written_len = end as u16;
+    Ok(())
+}
+
+/// Finalize an account-carried action (slice 51). Pure except
+/// for the seal it writes: writer identity, finalized refusal,
+/// completeness (exactly 1,524 bytes written), decodability
+/// (only a decodable action may finalize — a corrupt buffer
+/// refuses with `GovActionDecode`, never with a hash of junk),
+/// then the hash binding: the hash is computed here from the
+/// accumulated bytes via the on-chain hash syscall and must
+/// equal the expected hash recorded at init, or the finalize
+/// refuses with `GovActionHashMismatch` and the account stays
+/// unfinalized. Returns the computed hash for the event.
+pub fn finalize_gov_action_record(
+    account: &mut GovActionAccount,
+    writer: Pubkey,
+) -> Result<[u8; 32]> {
+    if account.writer != writer {
+        return Err(error!(ProgramV04Error::RecordMismatch));
+    }
+    if account.finalized {
+        return Err(error!(ProgramV04Error::GovActionAlreadyFinalized));
+    }
+    if account.written_len as usize != GOV_ACTION_SERIALIZED_LEN {
+        return Err(error!(ProgramV04Error::GovActionIncomplete));
+    }
+    let _decoded = StoredGovAction::try_from_slice(&account.action_bytes)
+        .map_err(|_| error!(ProgramV04Error::GovActionDecode))?;
+    let computed = solana_sha256_hasher::hash(&account.action_bytes).to_bytes();
+    if computed != account.expected_hash {
+        return Err(error!(ProgramV04Error::GovActionHashMismatch));
+    }
+    account.action_hash = computed;
+    account.finalized = true;
+    Ok(computed)
+}
+
+/// Gate the rent-reclaim close (slice 51): only the writer, and
+/// only while unfinalized. A finalized account refuses even
+/// though no approval has bound to it yet in this slice — the
+/// lifetime rule (open until the transition settles) already
+/// governs it, and the close instruction's Anchor `close`
+/// constraint runs only after this gate passes.
+pub fn check_gov_action_close(account: &GovActionAccount, writer: Pubkey) -> Result<()> {
+    if account.writer != writer {
+        return Err(error!(ProgramV04Error::RecordMismatch));
+    }
+    if account.finalized {
+        return Err(error!(ProgramV04Error::GovActionAlreadyFinalized));
+    }
     Ok(())
 }
 
@@ -11633,6 +11936,35 @@ pub struct GovernanceApprovalRevised {
 }
 
 #[event]
+pub struct GovActionInitialized {
+    pub transition_id: [u8; 32],
+    pub writer: Pubkey,
+    pub expected_hash: [u8; 32],
+}
+
+#[event]
+pub struct GovActionChunkAppended {
+    pub transition_id: [u8; 32],
+    pub writer: Pubkey,
+    pub offset: u16,
+    pub chunk_len: u16,
+    pub written_len: u16,
+}
+
+#[event]
+pub struct GovActionFinalized {
+    pub transition_id: [u8; 32],
+    pub writer: Pubkey,
+    pub action_hash: [u8; 32],
+}
+
+#[event]
+pub struct GovActionClosed {
+    pub transition_id: [u8; 32],
+    pub writer: Pubkey,
+}
+
+#[event]
 pub struct ObservationIngested {
     pub observation_id: [u8; 32],
     pub observer: Pubkey,
@@ -11791,6 +12123,14 @@ pub enum ProgramV04Error {
     GovActionTooLarge,
     #[msg("program-v04 governance approval: stored action does not decode to a kernel action")]
     GovActionDecode,
+    #[msg("program-v04 gov action account: account is finalized; writes, re-finalize, and close are refused")]
+    GovActionAlreadyFinalized,
+    #[msg("program-v04 gov action account: chunk does not continue the written prefix (gap, overwrite, empty, or over the 512-byte cap)")]
+    GovActionChunkMismatch,
+    #[msg("program-v04 gov action account: finalize refused; the action buffer is incomplete")]
+    GovActionIncomplete,
+    #[msg("program-v04 gov action account: computed action hash does not match the hash recorded at init")]
+    GovActionHashMismatch,
 }
 
 // ---------------------------------------------------------------- launch genesis
@@ -21336,6 +21676,192 @@ mod tests {
         assert!(format!("{:?}", err).contains("ParentMismatch"));
         assert_eq!(record.stage, TransitionRecord::VALIDATED);
         assert!(record.compatible);
+    }
+
+    fn gov_action_account(writer: Pubkey, expected_hash: [u8; 32]) -> GovActionAccount {
+        // Slice 51 helper: a fresh, unfinalized carrier for one
+        // transition id, written by `writer`.
+        GovActionAccount {
+            transition_id: [0xD1; 32],
+            writer,
+            expected_hash,
+            action_hash: [0; 32],
+            written_len: 0,
+            finalized: false,
+            action_bytes: [0; GOV_ACTION_SERIALIZED_LEN],
+            bump: 7,
+        }
+    }
+
+    fn sample_action_bytes() -> alloc::vec::Vec<u8> {
+        // Slice 51 helper: one SetCapacity action, serialized —
+        // the exact bytes a writer would chunk into the carrier.
+        use anchor_lang::AnchorSerialize;
+        let action = GovAction::SetCapacity {
+            resource: RES_EXIT_WINDOW,
+            capacity: Amount::from_raw(400 * SCALE),
+        };
+        let stored = StoredGovAction::encode(&action).expect("sample action must encode");
+        let mut buf = alloc::vec::Vec::new();
+        stored.serialize(&mut buf).expect("stored action must serialize");
+        buf
+    }
+
+    #[test]
+    fn gov_action_serialized_len_and_space() {
+        // Slice 51: the fixed layout is exactly 1,524 bytes and
+        // the carrier account's Borsh length is exactly
+        // SPACE - 8 — the chunk arithmetic (512 + 512 + 500)
+        // and the rent-paying SPACE both rest on these figures.
+        use anchor_lang::AnchorSerialize;
+        let bytes = sample_action_bytes();
+        assert_eq!(bytes.len(), GOV_ACTION_SERIALIZED_LEN);
+        assert_eq!(GOV_ACTION_SERIALIZED_LEN, 1524);
+        assert_eq!(GovActionAccount::SPACE, 1664);
+        let account = gov_action_account(Pubkey::new_from_array(ag(1)), [0xE1; 32]);
+        let mut buf = alloc::vec::Vec::new();
+        account.serialize(&mut buf).expect("carrier must serialize");
+        assert_eq!(buf.len(), GovActionAccount::SPACE - 8);
+    }
+
+    #[test]
+    fn gov_action_chunk_sequence_finalizes_exact_action() {
+        // Slice 51: three sequential chunks (512 + 512 + 500)
+        // reassemble the exact action, and finalize seals it
+        // with the hash computed from those bytes — the binding
+        // slice 52's approval rewiring will rely on.
+        let bytes = sample_action_bytes();
+        let expected = solana_sha256_hasher::hash(&bytes).to_bytes();
+        let writer = Pubkey::new_from_array(ag(1));
+        let mut account = gov_action_account(writer, expected);
+        write_gov_action_chunk(&mut account, writer, 0, &bytes[..512])
+            .expect("first chunk must append");
+        assert_eq!(account.written_len, 512);
+        write_gov_action_chunk(&mut account, writer, 512, &bytes[512..1024])
+            .expect("second chunk must append");
+        assert_eq!(account.written_len, 1024);
+        write_gov_action_chunk(&mut account, writer, 1024, &bytes[1024..])
+            .expect("third chunk must append");
+        assert_eq!(account.written_len, 1524);
+        assert_eq!(&account.action_bytes[..], &bytes[..]);
+        let hash = finalize_gov_action_record(&mut account, writer)
+            .expect("exact bytes with the declared hash must finalize");
+        assert_eq!(hash, expected);
+        assert!(account.finalized);
+        assert_eq!(account.action_hash, expected);
+        use anchor_lang::AnchorDeserialize;
+        let decoded = StoredGovAction::try_from_slice(&account.action_bytes)
+            .expect("finalized bytes must decode");
+        assert_eq!(
+            decoded.decode().expect("decoded action must decode"),
+            GovAction::SetCapacity {
+                resource: RES_EXIT_WINDOW,
+                capacity: Amount::from_raw(400 * SCALE),
+            }
+        );
+    }
+
+    #[test]
+    fn gov_action_append_refuses_gap_overlap_oversize_empty() {
+        // Slice 51: the sequential-prefix rule, one refusal
+        // each — a gap, an overwrite, an over-cap chunk, and an
+        // empty chunk — and every refusal leaves the account
+        // untouched (written_len still 0, or still 512).
+        let bytes = sample_action_bytes();
+        let writer = Pubkey::new_from_array(ag(1));
+        let mut account = gov_action_account(writer, [0xE1; 32]);
+        let err = write_gov_action_chunk(&mut account, writer, 512, &bytes[..512])
+            .expect_err("a gapped first chunk must refuse");
+        assert!(format!("{:?}", err).contains("GovActionChunkMismatch"));
+        assert_eq!(account.written_len, 0);
+        write_gov_action_chunk(&mut account, writer, 0, &bytes[..512])
+            .expect("in-order first chunk must append");
+        let err = write_gov_action_chunk(&mut account, writer, 0, &bytes[..512])
+            .expect_err("an overwriting chunk must refuse");
+        assert!(format!("{:?}", err).contains("GovActionChunkMismatch"));
+        assert_eq!(account.written_len, 512);
+        let big = alloc::vec![0u8; GOV_ACTION_CHUNK_LEN + 1];
+        let err = write_gov_action_chunk(&mut account, writer, 512, &big)
+            .expect_err("an over-cap chunk must refuse");
+        assert!(format!("{:?}", err).contains("GovActionChunkMismatch"));
+        let err = write_gov_action_chunk(&mut account, writer, 512, &[])
+            .expect_err("an empty chunk must refuse");
+        assert!(format!("{:?}", err).contains("GovActionChunkMismatch"));
+        assert_eq!(account.written_len, 512);
+    }
+
+    #[test]
+    fn gov_action_finalize_refuses_incomplete_hash_mismatch_and_foreign_writer() {
+        // Slice 51: finalize gates, one cause each — an
+        // incomplete buffer, a completed buffer whose computed
+        // hash is not the declared hash (the account stays
+        // unfinalized, so the writer can still abandon it via
+        // close), and a foreign writer at append, finalize,
+        // and close alike.
+        let bytes = sample_action_bytes();
+        let writer = Pubkey::new_from_array(ag(1));
+        let foreign = Pubkey::new_from_array(ag(2));
+        let expected = solana_sha256_hasher::hash(&bytes).to_bytes();
+        let mut account = gov_action_account(writer, expected);
+        write_gov_action_chunk(&mut account, writer, 0, &bytes[..512])
+            .expect("first chunk must append");
+        let err = finalize_gov_action_record(&mut account, writer)
+            .expect_err("an incomplete buffer must refuse finalize");
+        assert!(format!("{:?}", err).contains("GovActionIncomplete"));
+        assert!(!account.finalized);
+        let err = write_gov_action_chunk(&mut account, foreign, 512, &bytes[512..1024])
+            .expect_err("a foreign writer must refuse append");
+        assert!(format!("{:?}", err).contains("RecordMismatch"));
+        let mut wrong = gov_action_account(writer, [0xE2; 32]);
+        write_gov_action_chunk(&mut wrong, writer, 0, &bytes[..512])
+            .expect("first chunk must append");
+        write_gov_action_chunk(&mut wrong, writer, 512, &bytes[512..1024])
+            .expect("second chunk must append");
+        write_gov_action_chunk(&mut wrong, writer, 1024, &bytes[1024..])
+            .expect("third chunk must append");
+        let err = finalize_gov_action_record(&mut wrong, writer)
+            .expect_err("a hash-mismatched buffer must refuse finalize");
+        assert!(format!("{:?}", err).contains("GovActionHashMismatch"));
+        assert!(!wrong.finalized);
+        let err = finalize_gov_action_record(&mut wrong, foreign)
+            .expect_err("a foreign writer must refuse finalize");
+        assert!(format!("{:?}", err).contains("RecordMismatch"));
+        let err = check_gov_action_close(&wrong, foreign)
+            .expect_err("a foreign writer must refuse close");
+        assert!(format!("{:?}", err).contains("RecordMismatch"));
+    }
+
+    #[test]
+    fn gov_action_close_gate_and_finalized_refusals() {
+        // Slice 51: close passes on a half-written account by
+        // its writer, and every post-finalize mutation refuses
+        // — append, re-finalize, and close alike — so a
+        // finalized account stays open until the transition
+        // settles, as the lifetime rule requires.
+        let bytes = sample_action_bytes();
+        let expected = solana_sha256_hasher::hash(&bytes).to_bytes();
+        let writer = Pubkey::new_from_array(ag(1));
+        let mut half = gov_action_account(writer, expected);
+        write_gov_action_chunk(&mut half, writer, 0, &bytes[..512])
+            .expect("first chunk must append");
+        check_gov_action_close(&half, writer).expect("a half-written account must close");
+        let mut account = gov_action_account(writer, expected);
+        write_gov_action_chunk(&mut account, writer, 0, &bytes[..512])
+            .expect("first chunk must append");
+        write_gov_action_chunk(&mut account, writer, 512, &bytes[512..1024])
+            .expect("second chunk must append");
+        write_gov_action_chunk(&mut account, writer, 1024, &bytes[1024..])
+            .expect("third chunk must append");
+        finalize_gov_action_record(&mut account, writer).expect("exact bytes must finalize");
+        let err = write_gov_action_chunk(&mut account, writer, 1524, &[])
+            .expect_err("append after finalize must refuse");
+        assert!(format!("{:?}", err).contains("GovActionAlreadyFinalized"));
+        let err = finalize_gov_action_record(&mut account, writer)
+            .expect_err("re-finalize must refuse");
+        assert!(format!("{:?}", err).contains("GovActionAlreadyFinalized"));
+        let err = check_gov_action_close(&account, writer)
+            .expect_err("close after finalize must refuse");
+        assert!(format!("{:?}", err).contains("GovActionAlreadyFinalized"));
     }
 
 }

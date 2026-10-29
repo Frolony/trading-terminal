@@ -31,6 +31,9 @@ coordination-kernel = { path = "../../../coordination-kernel-rs", default-featur
 # Same transitive pins as the v0.2 treasury program.
 cpufeatures = "=0.2.17"
 sha2 = "=0.10.8"
+# Slice 51: the finalize hash runs through the sol_sha256 syscall on
+# SBF (software sha2 on host, via the sha2 feature, for host tests).
+solana-sha256-hasher = { version = "=3.1.0", features = ["sha2"] }
 blake3 = "=1.5.4"
 proc-macro-crate = "=3.4.0"
 zeroize = "=1.8.1"
