@@ -2577,21 +2577,38 @@ Anchor 1.2.2 builds.
   driver; sibling wrappers previously overflowed by only
   128 bytes). The record shrink is the fix; the slice-52
   boxing stays as side relief.
-- Frame-margin probe: NOT measured this run. The
-  2,048-byte lowered-threshold probe could not complete:
-  the sandbox session intermittently denies child-
-  process writes with EPERM (`Operation not permitted`
-  on fingerprint `invoked.timestamp` writes and on
-  scratch copies), so the threshold build fails before
-  emitting a frame list. The margin is therefore recorded
-  as "fits 4,096, margin unquantified" — the ruled
-  with-margin bar is NOT yet measured for slice 53.
-  Structural reasoning, stated as reasoning and not as
-  measurement: the shrink cut ~1,492 bytes per copied
-  record from the copy-heavy paths, and the sibling
-  wrappers previously overflowed by only 128 bytes.
-  The probe rides the next healthy session; it is a
-  measurement debt, not a design finding.
+- Frame-margin probe: MEASURED 2026-10-29 ~07:3x CST
+  (BUILD run scheduled 07:28 CST), closing the slice-53
+  measurement debt. Scratch copy of the pushed tree
+  (lib.rs sha256 `03dd5686…`, byte-identical to staging)
+  built with `cargo build-sbf --sbf-stack-size 2048`
+  under the Agave 4.3.2 scratch toolchain
+  (cargo-build-sbf 4.4.0 / platform-tools v1.57 /
+  rustc 1.95.0 — the pinned v1.54 toolchain does not
+  support `--sbf-stack-size`, so the threshold route
+  cannot run on it; frame sizes vary only by tens of
+  bytes across these compilers, far below the measured
+  margin). The 2,048-byte overflow list is COMPLETE
+  (47 functions, including the BTreeMap-insert at
+  4,672 bytes — the completeness marker the 07:12
+  oversight probe found missing): its `__global`
+  entries are exactly the four slice-51 gov-action
+  lifecycle wrappers (init 3,520; close 3,456;
+  finalize 3,456; append 3,584 — all fit at 4,096, as
+  before). Approve, revise, register-governance,
+  commit-governance, AND both sibling-select
+  `__global` wrappers are ABSENT from the list: each
+  fits 2,048 bytes, i.e. at least 2,048 bytes of margin
+  under the 4,096-byte limit. The ruled with-margin
+  bar (Carlos 2026-10-29 ~05:19 CST) is therefore MET
+  for slice 53 on the wrapper measure. Helper-function
+  frames between 2,048 and 4,096 bytes (e.g.
+  `gov_action_hash` 3,136) are not the entry-path
+  gate per the slice-50 methodology and fit at 4,096.
+  The pinned-toolchain fit-at-4,096 result (overflow
+  list exactly BTreeMap-insert) stands alongside this
+  threshold measurement; the two together close the
+  slice-53 margin question.
 - Host tests 392/392 (390 prior + 2 slice-53: the
   approval hash rule equals the finalize hash rule, and
   a hash-tampered approval set refuses stage replay with
