@@ -1762,11 +1762,85 @@ families, account inventory, and CU golden set are later step-5 slices.
   instructions alone; a revise-approval instruction; and
   CU measurement — later slices.
 
+## Slice 43 — the governance open-planning instruction
+
+- `open_planning_governance` +
+  `open_planning_governance_from_records` +
+  `OpenPlanningGovernance`: the slice-20/22 open planning on
+  the governance path. Gates, in order: sealed state; stage
+  exactly `SELECTED` or `BLOCKED` (the re-plan path: a
+  `BLOCKED` governance record re-plans only for its proposer
+  or a seat of the sealed launch council, and fewer than
+  `MAX_REPLANS` re-plans taken); parent exactly the sealed
+  head; observation linkage; a governance type
+  (`NotGovernanceTransition` otherwise — an ordinary record
+  opens planning through the ordinary helper, never here);
+  the approval-count anchor; a proven window; the
+  completeness anchor (supplied priors numbering exactly
+  `signal_count`, every prior belonging to the transition
+  with a stored round matching its own `submitted_at`, no
+  duplicated (agent, round)). Replay runs the slice-37
+  governance prefix (approvals + ingest + governance
+  registration) at the stored `eligible_at`, then evaluate
+  and mark_eligible at the same clock, then each prior
+  signal at its `submitted_at` in order, then select and
+  open_planning at the state's clock; only a
+  `Life::Planning` life advances the stage, and the stored
+  deadline is `clock + planning_window` — a re-plan resets
+  it, exactly as the ordinary path does. The instruction's
+  remaining accounts parse as in slice 39: prior COMMITTED
+  bundles first, then the governance tail (approvals, then
+  prior signals) split by `split_gov_signal_tail`. No new
+  account, error, or event; the emitted event is the
+  existing `TransitionPlanningOpened`.
+- Governance difference found by a failing test, not by
+  design review: the kernel's
+  `register_governance_transition` refuses a non-seat
+  caller with `NotCouncil`, so a governance record's
+  proposer is a seat by construction — the ordinary
+  seat-ground fixture (proposer moved to a non-seat agent)
+  cannot exist on this path and refuses in replay. The
+  seat-ground test therefore keeps the proposer a seat and
+  varies the caller instead (seat 2, not the proposer),
+  proving the seat arm distinctly from the proposer arm.
+  The helper is unchanged by this: the re-plan gate is the
+  same proposer-or-seat rule as the ordinary helper.
+- The `BLOCKED` fixture carries the slice-22 honesty note:
+  no slice can yet produce a Blocked governance record — a
+  future governance validate slice will — so the fixture
+  sets the label and the tests prove the re-plan authority
+  gate and the cap, not the label itself.
+- Host tests 324/324 (310 prior + 14 slice-43: the Selected
+  open with the anyone caller and deadline 300; the
+  wrong-stage, once-only, incomplete-prior-set, clock-moved
+  -back re-proof, later-clock deadline, ordinary-type,
+  non-unanimous-approval, unsealed, and parent-mismatch
+  refusals; the proposer re-plan, the non-proposer-seat
+  re-plan, the stranger refusal, the at-cap refusal, and
+  the Selected open leaving `replans` untouched). All 14
+  passed except the seat-ground test's first form, which
+  failed on the `NotCouncil` rule above and was corrected
+  to the faithful form rather than weakened. Clippy back
+  to the pre-existing profile (anchor macro `unexpected
+  cfg` noise + the slice-8 test helper's `type_complexity`
+  warning, line shifted by this slice's inserts); zero
+  warnings naming any slice-43 symbol and none pointing at
+  the new accounts struct. IDL counts move by design
+  (29 instructions, 6 accounts, 34 errors, 18 events — +1
+  instruction only, including
+  `open_planning_governance`); `.so` 1,466,024 bytes
+  (sha256 `55b7055b…`).
+- Deliberately NOT slice 43: the governance submit-plan,
+  reconcile, validate, and declare stages — a governance
+  record still cannot reach `DECLARED` through
+  instructions alone; a revise-approval instruction; and
+  CU measurement — later slices.
+
 ## Build
 
 ```sh
 export RUSTUP_HOME=~/workspace/toolchains/rustup CARGO_HOME=~/workspace/toolchains/cargo
 export PATH=~/workspace/toolchains/cargo/bin:~/workspace/toolchains/solana/bin:$PATH
 ~/workspace/toolchains/anchor/bin/anchor build   # from this directory
-cargo test                                        # host tests, 310/310
+cargo test                                        # host tests, 324/324
 ```

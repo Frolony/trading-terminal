@@ -2697,6 +2697,58 @@ pub mod program_v04 {
         emit!(TransitionSelected { transition_id, stage: TransitionRecord::SELECTED });
         Ok(())
     }
+
+    /// Open planning on a governance record pair (§4.1, governance
+    /// planning row, slice 43): the slice-20/22 open planning on
+    /// the governance path — run kernel `open_planning` on a
+    /// `SELECTED` (or `BLOCKED`, re-plan) governance record pair
+    /// and advance its stage to `PLANNING` with the deadline
+    /// written. Remaining accounts begin with
+    /// `prior_bundle_count` prior COMMITTED bundles (head order,
+    /// self-delimited as in slice 31); the tail is the governance
+    /// tail (approvals, then prior signals) split by
+    /// `split_gov_signal_tail`. The payer is a fee payer on the
+    /// Selected path — the kernel's anyone rule — and the
+    /// re-plan authority (proposer or seat) on the Blocked path,
+    /// judged by the helper, not by the accounts struct. The
+    /// emitted event is the existing `TransitionPlanningOpened`.
+    pub fn open_planning_governance(
+        ctx: Context<OpenPlanningGovernance>,
+        transition_id: [u8; 32],
+        observation_id: [u8; 32],
+        prior_bundle_count: u32,
+    ) -> Result<()> {
+        if ctx.accounts.transition_record.transition_id != transition_id
+            || ctx.accounts.observation_record.observation_id != observation_id
+        {
+            return Err(error!(ProgramV04Error::RecordMismatch));
+        }
+        let (bundles, tail) = split_prior_bundles(
+            classify_remaining_accounts(ctx.remaining_accounts)?,
+            prior_bundle_count as usize,
+        )?;
+        let prior_entries = prior_entries_of(&bundles);
+        let (approvals, priors) = split_gov_signal_tail(
+            tail,
+            ctx.accounts.transition_record.approval_count as usize,
+        )?;
+        let life = open_planning_governance_from_records(
+            &ctx.accounts.kernel_state,
+            &mut ctx.accounts.transition_record,
+            &ctx.accounts.observation_record,
+            &approvals,
+            &priors,
+            resolve_agent_id(ctx.accounts.payer.key()),
+            &prior_entries,
+        )?;
+        debug_assert_eq!(life, Life::Planning);
+        emit!(TransitionPlanningOpened {
+            transition_id,
+            stage: TransitionRecord::PLANNING,
+            planning_deadline: ctx.accounts.transition_record.planning_deadline,
+        });
+        Ok(())
+    }
 }
 
 #[derive(Accounts)]
@@ -3045,6 +3097,28 @@ pub struct SelectCandidateGovernanceWithSiblings<'info> {
 #[derive(Accounts)]
 #[instruction(transition_id: [u8; 32], observation_id: [u8; 32])]
 pub struct SelectCandidateMixedWithSiblings<'info> {
+    #[account(
+        seeds = [b"kernel-state"],
+        bump = kernel_state.bump,
+    )]
+    pub kernel_state: Account<'info, KernelState>,
+    #[account(
+        mut,
+        seeds = [b"transition", transition_id.as_ref()],
+        bump = transition_record.bump,
+    )]
+    pub transition_record: Account<'info, TransitionRecord>,
+    #[account(
+        seeds = [b"observation", observation_id.as_ref()],
+        bump = observation_record.bump,
+    )]
+    pub observation_record: Account<'info, ObservationRecord>,
+    pub payer: Signer<'info>,
+}
+
+#[derive(Accounts)]
+#[instruction(transition_id: [u8; 32], observation_id: [u8; 32])]
+pub struct OpenPlanningGovernance<'info> {
     #[account(
         seeds = [b"kernel-state"],
         bump = kernel_state.bump,
@@ -8250,6 +8324,209 @@ pub fn select_candidate_mixed_from_records_with_siblings(
     };
     transition_record.stage = TransitionRecord::SELECTED;
     Ok(life)
+}
+
+/// Open planning on a stored governance transition pair through the
+/// real kernel (slice 43): the slice-20/22 open planning on the
+/// governance path. Pure except for the record's stage, planning
+/// deadline, and (Blocked path only) `replans` count, which advance
+/// to `PLANNING` with `planning_deadline` written only on success —
+/// every refusal leaves all three untouched. Gates, in order: sealed
+/// state; stage exactly `SELECTED` or `BLOCKED` (the re-plan path,
+/// slice 22 on the governance path: a `BLOCKED` governance record
+/// re-plans only for its proposer or a seat of the sealed launch
+/// council, and fewer than `MAX_REPLANS` re-plans taken — a stranger
+/// or a capped record refuses with `ReplanRefused` before any
+/// replay); parent exactly the sealed head; observation linkage; a
+/// governance type (`NotGovernanceTransition` otherwise — an
+/// ordinary record opens planning through
+/// `open_planning_from_records`, never here); the approval-count
+/// anchor (the supplied set numbering exactly `approval_count`); a
+/// proven window; the completeness anchor — the supplied prior set
+/// numbering exactly `signal_count`, every prior belonging to the
+/// transition with a stored round matching its own `submitted_at`,
+/// no duplicated (agent, round). The kernel calls run at the same
+/// clocks as the ordinary helper against a freshly rebuilt sealed
+/// launch kernel under `ProgramEnv`: the slice-37 governance prefix
+/// (approvals + ingest + governance registration) at the stored
+/// `eligible_at`, then evaluate and mark_eligible at the same
+/// clock, then each prior signal at its `submitted_at` in order,
+/// then select and open_planning at the state's clock. Only a
+/// `Life::Planning` life advances the stage, and the stored
+/// deadline is `clock + planning_window` from the launch policy —
+/// a re-plan resets it, exactly as the ordinary path does. A kernel
+/// refusal in any call maps to `PlanningFailed`: an unreproducible
+/// selection, a non-unanimous approval set, and a signal at or past
+/// a deadline during the prior replay all fail here, through the
+/// kernel, not through a program-side guess about them. The
+/// instruction's remaining accounts parse as in slice 39: prior
+/// COMMITTED bundles first, then the governance tail (approvals,
+/// then prior signals) split by `split_gov_signal_tail`.
+#[allow(clippy::too_many_arguments)]
+pub fn open_planning_governance_from_records(
+    kernel_state: &KernelState,
+    transition_record: &mut TransitionRecord,
+    observation_record: &ObservationRecord,
+    approval_records: &[GovApprovalRecord],
+    prior_signals: &[SignalRecord],
+    caller: [u8; 32],
+    prior_entries: &[PriorEntry],
+) -> Result<Life> {
+    if !kernel_state.sealed {
+        return Err(error!(ProgramV04Error::NotSealed));
+    }
+    if transition_record.stage != TransitionRecord::SELECTED
+        && transition_record.stage != TransitionRecord::BLOCKED
+    {
+        return Err(error!(ProgramV04Error::WrongStage));
+    }
+    let is_replan = transition_record.stage == TransitionRecord::BLOCKED;
+    if is_replan {
+        let proposer_id = resolve_agent_id(transition_record.proposer);
+        let seated = sealed_launch_kernel()
+            .map(|k| k.is_seated(&caller))
+            .map_err(|_| error!(ProgramV04Error::PlanningFailed))?;
+        if caller != proposer_id && !seated {
+            return Err(error!(ProgramV04Error::ReplanRefused));
+        }
+        if transition_record.replans >= MAX_REPLANS {
+            return Err(error!(ProgramV04Error::ReplanRefused));
+        }
+    }
+    if transition_record.parent_index != kernel_state.head_index
+        || transition_record.parent_hash != kernel_state.head_hash
+    {
+        return Err(error!(ProgramV04Error::ParentMismatch));
+    }
+    if transition_record.observation_id != observation_record.observation_id {
+        return Err(error!(ProgramV04Error::RecordMismatch));
+    }
+    if !is_gov_type(&transition_record.transition_type) {
+        return Err(error!(ProgramV04Error::NotGovernanceTransition));
+    }
+    if approval_records.len() as u64 != transition_record.approval_count {
+        return Err(error!(ProgramV04Error::RecordMismatch));
+    }
+    if transition_record.eligible_at == 0
+        || transition_record.consensus_deadline <= transition_record.eligible_at
+    {
+        return Err(error!(ProgramV04Error::PlanningFailed));
+    }
+    if prior_signals.len() as u64 != transition_record.signal_count {
+        return Err(error!(ProgramV04Error::PlanningFailed));
+    }
+    for prior in prior_signals {
+        if prior.transition_id != transition_record.transition_id {
+            return Err(error!(ProgramV04Error::RecordMismatch));
+        }
+        if signal_round(
+            transition_record.eligible_at,
+            transition_record.consensus_deadline,
+            prior.submitted_at,
+        ) != prior.round
+        {
+            return Err(error!(ProgramV04Error::RecordMismatch));
+        }
+    }
+    {
+        let mut seen: BTreeSet<([u8; 32], u64)> = BTreeSet::new();
+        for prior in prior_signals {
+            if !seen.insert((prior.agent.to_bytes(), prior.round)) {
+                return Err(error!(ProgramV04Error::PlanningFailed));
+            }
+        }
+    }
+    let (action, seats) =
+        gov_action_and_seats(approval_records, transition_record.transition_id)?;
+    let proposer = resolve_proposer(kernel_state, transition_record.proposer)
+        .map_err(|_| error!(ProgramV04Error::PlanningFailed))?;
+    let observer_id = resolve_agent_id(observation_record.observer);
+    let mut k = kernel_at_head_from_entries(kernel_state, prior_entries)?;
+    if !k.has_role(&observer_id, Role::Observer) {
+        return Err(error!(ProgramV04Error::NotObserver));
+    }
+    let relevant_groups = match k.agent(&proposer) {
+        Some(profile) => profile.groups.clone(),
+        None => return Err(error!(ProgramV04Error::UnknownProposer)),
+    };
+    let observation = Observation {
+        id: observation_record.observation_id,
+        timestamp: observation_record.timestamp,
+        expiry: observation_record.expiry,
+        confidence: Amount::from_raw(observation_record.confidence_raw),
+    };
+    let eligible_at = transition_record.eligible_at;
+    for seat in &seats {
+        k.approve_governance(seat, transition_record.transition_id, action.clone(), eligible_at)
+            .map_err(|_| error!(ProgramV04Error::PlanningFailed))?;
+    }
+    k.ingest_observation(&observer_id, observation, eligible_at)
+        .map_err(|_| error!(ProgramV04Error::PlanningFailed))?;
+    let manifest = Manifest {
+        transition_type: transition_record.transition_type,
+        parent_index: transition_record.parent_index,
+        parent_hash: transition_record.parent_hash,
+        declared_next_hash: transition_record.declared_next_hash,
+        observation_id: transition_record.observation_id,
+        expires_at: transition_record.expires_at,
+        relevant_groups,
+        action: None,
+    };
+    k.register_governance_transition(
+        &proposer,
+        transition_record.transition_id,
+        manifest,
+        action,
+        eligible_at,
+    )
+    .map_err(|_| error!(ProgramV04Error::PlanningFailed))?;
+    k.evaluate_transition(&transition_record.transition_id, eligible_at)
+        .map_err(|_| error!(ProgramV04Error::PlanningFailed))?;
+    k.mark_eligible(&transition_record.transition_id, eligible_at)
+        .map_err(|_| error!(ProgramV04Error::PlanningFailed))?;
+    match k.life_of(&transition_record.transition_id) {
+        Some(Life::Eligible) => {}
+        _ => return Err(error!(ProgramV04Error::PlanningFailed)),
+    }
+    let mut priors: alloc::vec::Vec<SignalRecord> = prior_signals.to_vec();
+    priors.sort_by_key(|s| s.submitted_at);
+    for prior in &priors {
+        let support = if prior.has_support {
+            Some(Amount::from_raw(prior.support_raw))
+        } else {
+            None
+        };
+        k.submit_round_signal(
+            &prior.agent.to_bytes(),
+            &transition_record.transition_id,
+            Amount::from_raw(prior.raw),
+            support,
+            prior.submitted_at,
+        )
+        .map_err(|_| error!(ProgramV04Error::PlanningFailed))?;
+    }
+    k.select_candidate(&transition_record.transition_id, kernel_state.clock)
+        .map_err(|_| error!(ProgramV04Error::PlanningFailed))?;
+    match k.life_of(&transition_record.transition_id) {
+        Some(Life::Selected) => {}
+        _ => return Err(error!(ProgramV04Error::PlanningFailed)),
+    }
+    k.open_planning(&caller, &transition_record.transition_id, kernel_state.clock)
+        .map_err(|_| error!(ProgramV04Error::PlanningFailed))?;
+    match k.life_of(&transition_record.transition_id) {
+        Some(Life::Planning) => {}
+        _ => return Err(error!(ProgramV04Error::PlanningFailed)),
+    }
+    let deadline = kernel_state
+        .clock
+        .checked_add(launch_policy().planning_window)
+        .ok_or(error!(ProgramV04Error::PlanningFailed))?;
+    transition_record.stage = TransitionRecord::PLANNING;
+    transition_record.planning_deadline = deadline;
+    if is_replan {
+        transition_record.replans += 1;
+    }
+    Ok(Life::Planning)
 }
 
 /// One prior committed transition offered to a replay-from-head
@@ -17835,6 +18112,287 @@ mod tests {
         .expect_err("an equal-eligibility cross-type tie must refuse the target");
         assert!(format!("{:?}", err).contains("SelectFailed"));
         assert_eq!(target.stage, TransitionRecord::ELIGIBLE);
+    }
+
+    fn gov_planning_pair() -> (
+        KernelState,
+        TransitionRecord,
+        ObservationRecord,
+        [GovApprovalRecord; 3],
+        SignalRecord,
+    ) {
+        // A governance record through the slice-39 select: one
+        // qualifying signal at clock 100, selected at the
+        // deadline 200, so the stage stands at SELECTED with a
+        // zero deadline, exactly as the ordinary planning pair.
+        let (mut state, mut record, obs, approvals, first) = gov_selected_pair();
+        advance_clock_on_state(&mut state, 200).expect("advance to the deadline must succeed");
+        let life = select_candidate_governance_from_records(
+            &state, &mut record, &obs, &approvals, &[first], &[],
+        )
+        .expect("closed window with a qualifying governance tally must select");
+        assert_eq!(life, Life::Selected);
+        assert_eq!(record.stage, TransitionRecord::SELECTED);
+        assert_eq!(record.planning_deadline, 0);
+        (state, record, obs, approvals, first)
+    }
+
+    fn gov_blocked_pair() -> (
+        KernelState,
+        TransitionRecord,
+        ObservationRecord,
+        [GovApprovalRecord; 3],
+        SignalRecord,
+    ) {
+        // Slice-43 fixture, mirroring the slice-22 note: a
+        // governance planning pair whose record stands at BLOCKED
+        // with a prior episode's deadline of 250 — deliberately
+        // not 300, so a successful re-plan proves the deadline
+        // RESET to clock 200 + window 100, rather than leaving it
+        // alone. No slice can yet produce a Blocked governance
+        // record — a future governance validate slice will — so
+        // the fixture sets the label; the tests below prove the
+        // re-plan authority gate and the cap, not the label
+        // itself.
+        let (state, mut record, obs, approvals, first) = gov_planning_pair();
+        record.stage = TransitionRecord::BLOCKED;
+        record.planning_deadline = 250;
+        assert_eq!(record.replans, 0);
+        (state, record, obs, approvals, first)
+    }
+
+    #[test]
+    fn gov_open_planning_advances_selected_to_planning() {
+        // At clock 200 the planning window is 100, so the deadline
+        // is 300. The caller is a fresh id — not the proposer, not
+        // a seeded agent — because the kernel's Selected-path rule
+        // is "anyone", and a proposer-only reading would contradict
+        // it, on the governance path exactly as on the ordinary one.
+        let (state, mut record, obs, approvals, first) = gov_planning_pair();
+        let life = open_planning_governance_from_records(
+            &state, &mut record, &obs, &approvals, &[first], [0x77; 32], &[],
+        )
+        .expect("a kernel-proven governance selection must open planning");
+        assert_eq!(life, Life::Planning);
+        assert_eq!(record.stage, TransitionRecord::PLANNING);
+        assert_eq!(record.stage, 5);
+        assert_eq!(record.planning_deadline, 300);
+        assert_eq!(record.signal_count, 1);
+    }
+
+    #[test]
+    fn gov_open_planning_refuses_wrong_stage() {
+        // Still ELIGIBLE, never selected: the stage gate refuses
+        // before any replay, and nothing on the record moves.
+        let (state, mut record, obs, approvals, first) = gov_selected_pair();
+        let err = open_planning_governance_from_records(
+            &state, &mut record, &obs, &approvals, &[first], ag(1), &[],
+        )
+        .expect_err("an unselected governance record must refuse planning");
+        assert!(format!("{:?}", err).contains("WrongStage"));
+        assert_eq!(record.stage, TransitionRecord::ELIGIBLE);
+        assert_eq!(record.planning_deadline, 0);
+    }
+
+    #[test]
+    fn gov_open_planning_is_once_only() {
+        let (state, mut record, obs, approvals, first) = gov_planning_pair();
+        open_planning_governance_from_records(
+            &state, &mut record, &obs, &approvals, &[first], ag(1), &[],
+        )
+        .expect("first governance planning open must succeed");
+        let err = open_planning_governance_from_records(
+            &state, &mut record, &obs, &approvals, &[first], ag(1), &[],
+        )
+        .expect_err("a second governance planning open must refuse");
+        assert!(format!("{:?}", err).contains("WrongStage"));
+        assert_eq!(record.stage, TransitionRecord::PLANNING);
+        assert_eq!(record.planning_deadline, 300);
+    }
+
+    #[test]
+    fn gov_open_planning_refuses_incomplete_prior_set() {
+        // The record claims a second signal that was never
+        // supplied: the completeness anchor refuses before any
+        // replay, and the SELECTED stage and zero deadline stand.
+        let (state, mut record, obs, approvals, first) = gov_planning_pair();
+        record.signal_count = 2;
+        let err = open_planning_governance_from_records(
+            &state, &mut record, &obs, &approvals, &[first], ag(1), &[],
+        )
+        .expect_err("a short prior set must refuse governance planning");
+        assert!(format!("{:?}", err).contains("PlanningFailed"));
+        assert_eq!(record.stage, TransitionRecord::SELECTED);
+        assert_eq!(record.planning_deadline, 0);
+    }
+
+    #[test]
+    fn gov_open_planning_reproves_selection_at_the_clock() {
+        // A SELECTED label with the clock moved back before the
+        // consensus deadline: the label alone opens nothing — the
+        // replayed select refuses (window still open) and planning
+        // stays closed with the deadline untouched.
+        let (mut state, mut record, obs, approvals, first) = gov_planning_pair();
+        state.clock = 199;
+        let err = open_planning_governance_from_records(
+            &state, &mut record, &obs, &approvals, &[first], ag(1), &[],
+        )
+        .expect_err("an unreproducible governance selection must refuse planning");
+        assert!(format!("{:?}", err).contains("PlanningFailed"));
+        assert_eq!(record.stage, TransitionRecord::SELECTED);
+        assert_eq!(record.planning_deadline, 0);
+    }
+
+    #[test]
+    fn gov_open_planning_at_later_clock_sets_later_deadline() {
+        // Planning opens at the clock it runs at, not the clock
+        // selection ran at: at 500 the deadline is 600.
+        let (mut state, mut record, obs, approvals, first) = gov_planning_pair();
+        advance_clock_on_state(&mut state, 500).expect("advance past selection must succeed");
+        open_planning_governance_from_records(
+            &state, &mut record, &obs, &approvals, &[first], ag(1), &[],
+        )
+        .expect("governance planning at a later clock must succeed");
+        assert_eq!(record.stage, TransitionRecord::PLANNING);
+        assert_eq!(record.planning_deadline, 600);
+    }
+
+    #[test]
+    fn gov_open_planning_refuses_ordinary_type() {
+        // An ordinary-typed record refuses at the type gate, never
+        // reaching the kernel — it opens planning through the
+        // ordinary helper, never here.
+        let (state, mut record, obs, approvals, first) = gov_planning_pair();
+        record.transition_type = TT;
+        let err = open_planning_governance_from_records(
+            &state, &mut record, &obs, &approvals, &[first], ag(1), &[],
+        )
+        .expect_err("an ordinary-typed record must refuse the governance planning open");
+        assert!(format!("{:?}", err).contains("NotGovernanceTransition"));
+        assert_eq!(record.stage, TransitionRecord::SELECTED);
+        assert_eq!(record.planning_deadline, 0);
+    }
+
+    #[test]
+    fn gov_open_planning_refuses_non_unanimous_approvals() {
+        // Two approvals against a count of two pass the decoder
+        // but fail the kernel's unanimity gate, so the open
+        // refuses with `PlanningFailed` and the record stands
+        // SELECTED with a zero deadline.
+        let (state, mut record, obs, approvals, first) = gov_planning_pair();
+        record.approval_count = 2;
+        let err = open_planning_governance_from_records(
+            &state, &mut record, &obs, &approvals[..2], &[first], ag(1), &[],
+        )
+        .expect_err("a non-unanimous approval set must refuse governance planning");
+        assert!(format!("{:?}", err).contains("PlanningFailed"));
+        assert_eq!(record.stage, TransitionRecord::SELECTED);
+        assert_eq!(record.planning_deadline, 0);
+    }
+
+    #[test]
+    fn gov_open_planning_refuses_unsealed_and_parent_mismatch() {
+        // Two gate refusals, one cause each: an unsealed state
+        // refuses on `NotSealed`, and a record off the sealed head
+        // refuses on `ParentMismatch`, both before any replay.
+        let (mut state, mut record, obs, approvals, first) = gov_planning_pair();
+        state.sealed = false;
+        let err = open_planning_governance_from_records(
+            &state, &mut record, &obs, &approvals, &[first], ag(1), &[],
+        )
+        .expect_err("an unsealed state must refuse governance planning");
+        assert!(format!("{:?}", err).contains("NotSealed"));
+        assert_eq!(record.stage, TransitionRecord::SELECTED);
+
+        let (mut state, mut record, obs, approvals, first) = gov_planning_pair();
+        state.head_index = 9;
+        let err = open_planning_governance_from_records(
+            &state, &mut record, &obs, &approvals, &[first], ag(1), &[],
+        )
+        .expect_err("a record off the sealed head must refuse governance planning");
+        assert!(format!("{:?}", err).contains("ParentMismatch"));
+        assert_eq!(record.stage, TransitionRecord::SELECTED);
+        assert_eq!(record.planning_deadline, 0);
+    }
+
+    #[test]
+    fn gov_replan_by_proposer_opens_planning() {
+        // The proposer (ag(1), also a seat) re-plans: stage
+        // BLOCKED -> PLANNING, deadline reset to clock 200 +
+        // window 100 = 300, replans 0 -> 1.
+        let (state, mut record, obs, approvals, first) = gov_blocked_pair();
+        let life = open_planning_governance_from_records(
+            &state, &mut record, &obs, &approvals, &[first], ag(1), &[],
+        )
+        .expect("a proposer re-plan must open governance planning");
+        assert_eq!(life, Life::Planning);
+        assert_eq!(record.stage, TransitionRecord::PLANNING);
+        assert_eq!(record.planning_deadline, 300);
+        assert_eq!(record.replans, 1);
+    }
+
+    #[test]
+    fn gov_replan_by_seat_opens_planning() {
+        // The caller ag(2) is a seat but not the proposer, so it
+        // qualifies on the seat ground alone. Note the governance
+        // difference from the ordinary seat test: the proposer
+        // CANNOT be moved to a non-seat agent here, because the
+        // kernel's `register_governance_transition` refuses a
+        // non-seat caller with `NotCouncil` — a governance
+        // record's proposer is a seat by construction, so the
+        // seat-ground test keeps the proposer a seat and varies
+        // the caller instead.
+        let (state, mut record, obs, approvals, first) = gov_blocked_pair();
+        let life = open_planning_governance_from_records(
+            &state, &mut record, &obs, &approvals, &[first], ag(2), &[],
+        )
+        .expect("a seat re-plan must open governance planning");
+        assert_eq!(life, Life::Planning);
+        assert_eq!(record.stage, TransitionRecord::PLANNING);
+        assert_eq!(record.replans, 1);
+    }
+
+    #[test]
+    fn gov_replan_refuses_stranger() {
+        // Neither proposer nor seat: ReplanRefused, and the record
+        // stands exactly as it stood — stage, deadline, count.
+        let (state, mut record, obs, approvals, first) = gov_blocked_pair();
+        let err = open_planning_governance_from_records(
+            &state, &mut record, &obs, &approvals, &[first], [0x77; 32], &[],
+        )
+        .expect_err("a stranger re-plan must refuse");
+        assert!(format!("{:?}", err).contains("ReplanRefused"));
+        assert_eq!(record.stage, TransitionRecord::BLOCKED);
+        assert_eq!(record.planning_deadline, 250);
+        assert_eq!(record.replans, 0);
+    }
+
+    #[test]
+    fn gov_replan_refuses_at_cap() {
+        // MAX_REPLANS (3) already taken: even the proposer refuses,
+        // and the count does not advance past the cap.
+        let (state, mut record, obs, approvals, first) = gov_blocked_pair();
+        record.replans = 3;
+        let err = open_planning_governance_from_records(
+            &state, &mut record, &obs, &approvals, &[first], ag(1), &[],
+        )
+        .expect_err("a capped re-plan must refuse");
+        assert!(format!("{:?}", err).contains("ReplanRefused"));
+        assert_eq!(record.stage, TransitionRecord::BLOCKED);
+        assert_eq!(record.planning_deadline, 250);
+        assert_eq!(record.replans, 3);
+    }
+
+    #[test]
+    fn gov_selected_open_leaves_replans_untouched() {
+        // The Selected path is not a re-plan: replans stays 0.
+        let (state, mut record, obs, approvals, first) = gov_planning_pair();
+        open_planning_governance_from_records(
+            &state, &mut record, &obs, &approvals, &[first], ag(1), &[],
+        )
+        .expect("a Selected governance open must succeed");
+        assert_eq!(record.stage, TransitionRecord::PLANNING);
+        assert_eq!(record.replans, 0);
     }
 
 }
