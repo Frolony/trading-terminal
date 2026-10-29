@@ -2489,15 +2489,24 @@ the genuine Agave 4.3.2 / Anchor 1.2.2 builds.
   `anchor build` green under the pinned toolchain; IDL
   now 38 instructions / 7 accounts / 39 errors / 23
   events; `.so` sha256 `741230a2…`.
-- Frame-margin probe (scratch, Agave 4.3.2 /
-  platform-tools v1.57, which supports the
-  `--sbf-stack-size` threshold the pinned v1.54 does
-  not): PENDING at slice-52 push time — see the run log
-  for the measured threshold, or slice 53 if it is still
-  open. A fitting-frame measurement at a lowered
-  threshold, or a mollusk execution of approve/revise
-  (Blocked since slice 49), is what closes the margin
-  bar; neither was claimed from the pinned build alone.
+- Frame-margin probe (scratch copy, threshold build):
+  MEASURED after the slice-52 push (run-log addendum):
+  rebuilding the pushed tree with `--sbf-stack-size 2048`
+  leaves the approve, revise, register-governance, and
+  commit-governance `__global` wrappers OUT of the
+  overflow list — each fits 2,048 bytes, i.e. at least
+  2,048 bytes of margin under the 4,096-byte limit, which
+  meets the ruled with-margin bar on the wrapper
+  measure. Toolchain correction, stated not smoothed:
+  the probe's build log stamps
+  `1.89.0-sbpf-solana-v1.54` — the Agave 4.3.2
+  `cargo-build-sbf` resolved to the pinned v1.54 SBF
+  toolchain, the same phenomenon slice 51 caught in the
+  4.3.2 assessment, so this is a lowered-threshold
+  measurement on the pinned compiler, not a v1.57
+  measurement. A mollusk execution of approve/revise
+  (Blocked since slice 49) remains the runtime proof and
+  is still open; the frame bar itself is now met.
 
 Deliberately NOT slice 52: the approval-record shrink to
 the 32-byte hash (records still store the full
