@@ -1251,6 +1251,56 @@ pub mod program_v04 {
         Ok(())
     }
 
+    /// Revise governance (§4.1, governance lifecycle row, slice 48):
+    /// overwrite one seated council member's own stored approval
+    /// with a new exact action, closing the slice-33 init-only
+    /// divergence from the kernel. Kernel `approve_governance`
+    /// is a map insert that overwrites, so a seat that approved
+    /// the wrong action could re-approve before registration;
+    /// the program's `init`-only approval record could not, and
+    /// the proposal then failed unanimity with a fresh transition
+    /// id as the only remedy. This instruction mirrors the
+    /// kernel: the same PDA (so only the seat itself can revise
+    /// its own record), the same gates as first approval
+    /// (sealed state, governance-typed `REGISTERED` record,
+    /// seated council signer, action category matching the
+    /// record's type), and — crucially — no approval-count
+    /// change, because the bundle already counts this seat once;
+    /// a revision that incremented the count would corrupt the
+    /// slice-35 self-delimiting bundle. A revision after the
+    /// record leaves `REGISTERED` is refused, exactly as a first
+    /// approval is: once replay runs, the approval set is frozen
+    /// and the kernel's own registration has consumed it. This
+    /// overwrites the stored action only — it does not run
+    /// kernel `approve_governance`; the later governance replay
+    /// runs the kernel call from these stored records, and a
+    /// revised set that is no longer unanimous fails there,
+    /// fail-closed, exactly as a non-unanimous first set does.
+    pub fn revise_governance_approval(
+        ctx: Context<ReviseGovernanceApproval>,
+        transition_id: [u8; 32],
+        action: StoredGovAction,
+    ) -> Result<()> {
+        if ctx.accounts.transition_record.transition_id != transition_id {
+            return Err(error!(ProgramV04Error::RecordMismatch));
+        }
+        let decoded = action.decode()?;
+        revise_governance_approval_record(
+            &ctx.accounts.kernel_state,
+            &ctx.accounts.transition_record,
+            &mut ctx.accounts.approval_record,
+            ctx.accounts.payer.key(),
+            &decoded,
+        )?;
+        let action_kind = ctx.accounts.approval_record.action.kind;
+        emit!(GovernanceApprovalRevised {
+            transition_id,
+            seat: ctx.accounts.payer.key(),
+            action_kind,
+        });
+        Ok(())
+    }
+
     /// Ingest (§4.1, second lifecycle row, v0.4 form): store an
     /// observation as an `ObservationRecord` PDA, gated on the sealed
     /// state, the Observer role of the signing payer's agent id, and the
@@ -3692,6 +3742,29 @@ pub struct ApproveGovernance<'info> {
 }
 
 #[derive(Accounts)]
+#[instruction(transition_id: [u8; 32])]
+pub struct ReviseGovernanceApproval<'info> {
+    #[account(
+        seeds = [b"kernel-state"],
+        bump = kernel_state.bump,
+    )]
+    pub kernel_state: Account<'info, KernelState>,
+    #[account(
+        mut,
+        seeds = [b"transition", transition_id.as_ref()],
+        bump = transition_record.bump,
+    )]
+    pub transition_record: Account<'info, TransitionRecord>,
+    #[account(
+        mut,
+        seeds = [b"gov-approval", transition_id.as_ref(), payer.key().as_ref()],
+        bump = approval_record.bump,
+    )]
+    pub approval_record: Account<'info, GovApprovalRecord>,
+    pub payer: Signer<'info>,
+}
+
+#[derive(Accounts)]
 pub struct SealKernel<'info> {
     #[account(
         mut,
@@ -4314,8 +4387,10 @@ impl StoredGovAction {
 /// seat must approve the exact (id, action) pair, and this record is
 /// that seat's approval, stored with the action it approved. The
 /// `init` constraint refuses a second record for the same seat, so a
-/// seat's first approval stands (see the module docs for the
-/// kernel-overwrite divergence this pins). No stage byte: an approval
+/// seat's first approval stands as the stored record — it is
+/// revised, not replaced, by slice 48's `revise_governance_approval`
+/// (same seat, same PDA, count untouched), which closes the
+/// kernel-overwrite divergence this once pinned. No stage byte: an approval
 /// is either stored or absent, and it is only ever created against a
 /// `REGISTERED` governance record.
 #[account]
@@ -4393,6 +4468,45 @@ pub fn note_governance_approval(transition_record: &mut TransitionRecord) -> Res
         .approval_count
         .checked_add(1)
         .ok_or(error!(ProgramV04Error::GovernanceCommitFailed))?;
+    Ok(())
+}
+
+/// Revise a stored governance approval (slice 48): overwrite the
+/// seat's own stored action with a new one, under exactly the
+/// first-approval gates. The record-identity checks come first:
+/// the stored approval must belong to this transition and to
+/// this seat — the instruction's PDA seeds already enforce the
+/// seat, but the helper refuses a mismatched record outright
+/// rather than overwriting a foreign seat's approval. The
+/// rebuilt record is then validated by
+/// `build_governance_approval_record` (sealed, governance type,
+/// `REGISTERED` stage, seated council, category match) and only
+/// its action is written back, preserving the stored bump and
+/// leaving `TransitionRecord.approval_count` untouched — the
+/// caller (the instruction) deliberately does not call
+/// `note_governance_approval` here, because this seat is already
+/// counted once in the bundle.
+pub fn revise_governance_approval_record(
+    kernel_state: &KernelState,
+    transition_record: &TransitionRecord,
+    approval_record: &mut GovApprovalRecord,
+    seat: Pubkey,
+    action: &GovAction,
+) -> Result<()> {
+    if approval_record.transition_id != transition_record.transition_id {
+        return Err(error!(ProgramV04Error::RecordMismatch));
+    }
+    if approval_record.seat != seat {
+        return Err(error!(ProgramV04Error::RecordMismatch));
+    }
+    let revised = build_governance_approval_record(
+        kernel_state,
+        transition_record,
+        seat,
+        action,
+        approval_record.bump,
+    )?;
+    approval_record.action = revised.action;
     Ok(())
 }
 
@@ -11512,6 +11626,13 @@ pub struct GovernanceApproved {
 }
 
 #[event]
+pub struct GovernanceApprovalRevised {
+    pub transition_id: [u8; 32],
+    pub seat: Pubkey,
+    pub action_kind: u8,
+}
+
+#[event]
 pub struct ObservationIngested {
     pub observation_id: [u8; 32],
     pub observer: Pubkey,
@@ -12552,6 +12673,265 @@ mod tests {
         )
         .expect_err("category mismatch must refuse approval");
         assert!(format!("{:?}", err).contains("GovActionCategoryMismatch"));
+    }
+
+    #[test]
+    fn revise_governance_approval_overwrites_stored_action() {
+        // Slice 48: the kernel's map-insert overwrite, mirrored.
+        // A seat that approved capacity 400 may revise to 500
+        // before registration; seat, transition, and bump are
+        // preserved, only the stored action changes.
+        let state = sealed_state();
+        let record = gov_record(T_GOV_ADJUSTABLE);
+        let old = GovAction::SetCapacity {
+            resource: RES_EXIT_WINDOW,
+            capacity: Amount::from_raw(400 * SCALE),
+        };
+        let mut approval = build_governance_approval_record(
+            &state, &record, Pubkey::new_from_array(ag(1)), &old, 9,
+        )
+        .expect("first approval must build");
+        let new = GovAction::SetCapacity {
+            resource: RES_EXIT_WINDOW,
+            capacity: Amount::from_raw(500 * SCALE),
+        };
+        revise_governance_approval_record(
+            &state, &record, &mut approval, Pubkey::new_from_array(ag(1)), &new,
+        )
+        .expect("own revision must succeed");
+        assert_eq!(approval.transition_id, [0xD1; 32]);
+        assert_eq!(approval.seat, Pubkey::new_from_array(ag(1)));
+        assert_eq!(approval.bump, 9);
+        assert_eq!(approval.action.decode().expect("revised action must decode"), new);
+    }
+
+    #[test]
+    fn revise_governance_approval_changes_kind_within_category() {
+        // Revision is not a capacity edit: any action whose
+        // category matches the record may replace the first one.
+        let state = sealed_state();
+        let record = gov_record(T_GOV_ADJUSTABLE);
+        let old = GovAction::SetCapacity {
+            resource: RES_EXIT_WINDOW,
+            capacity: Amount::from_raw(400 * SCALE),
+        };
+        let mut approval = build_governance_approval_record(
+            &state, &record, Pubkey::new_from_array(ag(1)), &old, 9,
+        )
+        .expect("first approval must build");
+        let new = GovAction::GrantRole { who: ag(2), role: Role::Observer };
+        revise_governance_approval_record(
+            &state, &record, &mut approval, Pubkey::new_from_array(ag(1)), &new,
+        )
+        .expect("same-category revision must succeed");
+        assert_eq!(approval.action.decode().expect("revised action must decode"), new);
+    }
+
+    #[test]
+    fn revise_governance_approval_restores_stored_unanimity() {
+        // The slice-33 failure mode, repaired: seat ag(1) approved
+        // 400 while ag(2) approved 500, so the stored set was
+        // mixed and replay would fail unanimity. After ag(1)
+        // revises to 500, the stored-set decoder reads one action.
+        let state = sealed_state();
+        let record = gov_record(T_GOV_ADJUSTABLE);
+        let old = GovAction::SetCapacity {
+            resource: RES_EXIT_WINDOW,
+            capacity: Amount::from_raw(400 * SCALE),
+        };
+        let new = GovAction::SetCapacity {
+            resource: RES_EXIT_WINDOW,
+            capacity: Amount::from_raw(500 * SCALE),
+        };
+        let mut first = build_governance_approval_record(
+            &state, &record, Pubkey::new_from_array(ag(1)), &old, 9,
+        )
+        .expect("first approval must build");
+        let second = build_governance_approval_record(
+            &state, &record, Pubkey::new_from_array(ag(2)), &new, 8,
+        )
+        .expect("second approval must build");
+        // Mixed by construction: the two stored actions differ,
+        // so no unanimous decode exists before the revision.
+        assert_ne!(
+            first.action.decode().expect("first action must decode"),
+            second.action.decode().expect("second action must decode")
+        );
+        revise_governance_approval_record(
+            &state, &record, &mut first, Pubkey::new_from_array(ag(1)), &new,
+        )
+        .expect("revision must succeed");
+        let (action, seats) = gov_action_and_seats(
+            &[first, second],
+            [0xD1; 32],
+        )
+        .expect("revised stored set must decode unanimously");
+        assert_eq!(action, new);
+        assert_eq!(seats, alloc::vec![ag(1), ag(2)]);
+    }
+
+    #[test]
+    fn revise_governance_approval_leaves_count_untouched() {
+        // The bundle counts seats, not approval writes: revising
+        // an already-counted seat must not increment the
+        // slice-35 anchor, or a later bundle parse would read
+        // past the stored approvals.
+        let state = sealed_state();
+        let mut record = gov_record(T_GOV_ADJUSTABLE);
+        record.approval_count = 1;
+        let old = GovAction::SetCapacity {
+            resource: RES_EXIT_WINDOW,
+            capacity: Amount::from_raw(400 * SCALE),
+        };
+        let mut approval = build_governance_approval_record(
+            &state, &record, Pubkey::new_from_array(ag(1)), &old, 9,
+        )
+        .expect("first approval must build");
+        let new = GovAction::SetCapacity {
+            resource: RES_EXIT_WINDOW,
+            capacity: Amount::from_raw(500 * SCALE),
+        };
+        revise_governance_approval_record(
+            &state, &record, &mut approval, Pubkey::new_from_array(ag(1)), &new,
+        )
+        .expect("revision must succeed");
+        assert_eq!(record.approval_count, 1);
+    }
+
+    #[test]
+    fn revise_governance_approval_refuses_foreign_transition() {
+        // A stored approval naming another transition is never
+        // overwritten under this record's id.
+        let state = sealed_state();
+        let record = gov_record(T_GOV_ADJUSTABLE);
+        let old = GovAction::SetCapacity {
+            resource: RES_EXIT_WINDOW,
+            capacity: Amount::from_raw(400 * SCALE),
+        };
+        let mut approval = build_governance_approval_record(
+            &state, &record, Pubkey::new_from_array(ag(1)), &old, 9,
+        )
+        .expect("first approval must build");
+        approval.transition_id = [0xFF; 32];
+        let new = GovAction::SetCapacity {
+            resource: RES_EXIT_WINDOW,
+            capacity: Amount::from_raw(500 * SCALE),
+        };
+        let err = revise_governance_approval_record(
+            &state, &record, &mut approval, Pubkey::new_from_array(ag(1)), &new,
+        )
+        .expect_err("foreign approval must refuse revision");
+        assert!(format!("{:?}", err).contains("RecordMismatch"));
+        assert_eq!(approval.action.decode().expect("stored action must decode"), old);
+    }
+
+    #[test]
+    fn revise_governance_approval_refuses_other_seat() {
+        // The PDA seeds already bind a record to its seat; the
+        // helper refuses a revision signed by another seat even
+        // when the record is presented directly.
+        let state = sealed_state();
+        let record = gov_record(T_GOV_ADJUSTABLE);
+        let old = GovAction::SetCapacity {
+            resource: RES_EXIT_WINDOW,
+            capacity: Amount::from_raw(400 * SCALE),
+        };
+        let mut approval = build_governance_approval_record(
+            &state, &record, Pubkey::new_from_array(ag(1)), &old, 9,
+        )
+        .expect("first approval must build");
+        let new = GovAction::SetCapacity {
+            resource: RES_EXIT_WINDOW,
+            capacity: Amount::from_raw(500 * SCALE),
+        };
+        let err = revise_governance_approval_record(
+            &state, &record, &mut approval, Pubkey::new_from_array(ag(2)), &new,
+        )
+        .expect_err("another seat must not revise this approval");
+        assert!(format!("{:?}", err).contains("RecordMismatch"));
+        assert_eq!(approval.action.decode().expect("stored action must decode"), old);
+    }
+
+    #[test]
+    fn revise_governance_approval_refuses_wrong_stage() {
+        // Once the record leaves REGISTERED, the approval set is
+        // frozen: a revision then is refused, exactly as a first
+        // approval is, and the stored action stands.
+        let state = sealed_state();
+        let mut record = gov_record(T_GOV_ADJUSTABLE);
+        let old = GovAction::SetCapacity {
+            resource: RES_EXIT_WINDOW,
+            capacity: Amount::from_raw(400 * SCALE),
+        };
+        let mut approval = build_governance_approval_record(
+            &state, &record, Pubkey::new_from_array(ag(1)), &old, 9,
+        )
+        .expect("first approval must build");
+        record.stage = TransitionRecord::KERNEL_REGISTERED;
+        let new = GovAction::SetCapacity {
+            resource: RES_EXIT_WINDOW,
+            capacity: Amount::from_raw(500 * SCALE),
+        };
+        let err = revise_governance_approval_record(
+            &state, &record, &mut approval, Pubkey::new_from_array(ag(1)), &new,
+        )
+        .expect_err("advanced record must refuse revision");
+        assert!(format!("{:?}", err).contains("WrongStage"));
+        assert_eq!(approval.action.decode().expect("stored action must decode"), old);
+    }
+
+    #[test]
+    fn revise_governance_approval_refuses_category_mismatch() {
+        // A revision to an action whose category does not match
+        // the record is refused at revision time, as at approval
+        // time, and the stored action stands.
+        let state = sealed_state();
+        let record = gov_record(T_GOV_COUNCIL);
+        let old = GovAction::InstallCouncil { seats: alloc::vec![ag(1), ag(2), ag(3)] };
+        let mut approval = build_governance_approval_record(
+            &state, &record, Pubkey::new_from_array(ag(1)), &old, 9,
+        )
+        .expect("first approval must build");
+        let new = GovAction::SetCapacity {
+            resource: RES_EXIT_WINDOW,
+            capacity: Amount::from_raw(500 * SCALE),
+        };
+        let err = revise_governance_approval_record(
+            &state, &record, &mut approval, Pubkey::new_from_array(ag(1)), &new,
+        )
+        .expect_err("category mismatch must refuse revision");
+        assert!(format!("{:?}", err).contains("GovActionCategoryMismatch"));
+        assert_eq!(approval.action.decode().expect("stored action must decode"), old);
+    }
+
+    #[test]
+    fn revise_governance_approval_refuses_unsealed() {
+        // No approval work, first or revised, runs before the
+        // kernel state is sealed.
+        let state = genesis_kernel_state().expect("genesis must construct");
+        let record = gov_record(T_GOV_ADJUSTABLE);
+        // gov_record builds against a sealed state; the revision
+        // gate under test is the unsealed state, so the record
+        // itself is built first and only the state is unsealed.
+        let old = GovAction::SetCapacity {
+            resource: RES_EXIT_WINDOW,
+            capacity: Amount::from_raw(400 * SCALE),
+        };
+        let sealed = sealed_state();
+        let mut approval = build_governance_approval_record(
+            &sealed, &record, Pubkey::new_from_array(ag(1)), &old, 9,
+        )
+        .expect("first approval must build");
+        let new = GovAction::SetCapacity {
+            resource: RES_EXIT_WINDOW,
+            capacity: Amount::from_raw(500 * SCALE),
+        };
+        let err = revise_governance_approval_record(
+            &state, &record, &mut approval, Pubkey::new_from_array(ag(1)), &new,
+        )
+        .expect_err("unsealed state must refuse revision");
+        assert!(format!("{:?}", err).contains("NotSealed"));
+        assert_eq!(approval.action.decode().expect("stored action must decode"), old);
     }
 
     #[test]

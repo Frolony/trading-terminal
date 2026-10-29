@@ -2124,11 +2124,122 @@ families, account inventory, and CU golden set are later step-5 slices.
   then the Agave 4.3.2 + Anchor next-stable scratch
   assessments; and CU measurement — later slices.
 
+## Slice 48 — the revise-approval decision, decided and built
+
+- Decision, made under Carlos's 2026-10-27 delegation rule
+  and surfaced here for his audit or override: BUILD the
+  revise instruction; do NOT keep the init-only divergence
+  permanently. The reasoning: kernel-first fidelity decides
+  it. Kernel `approve_governance` is a map insert that
+  overwrites, with no stage gate beyond tick, not-paused,
+  and seated council — so a seat that approved the wrong
+  action can re-approve before registration, and the
+  program bridge that claims to mirror the kernel must
+  not refuse what the kernel permits. The fail-closed
+  alternative (keep init-only, fresh transition id as the
+  only remedy) is safe but is a permanent fidelity gap,
+  not a security property: a revised approval is still
+  gated, still seat-self-only, and still judged by the
+  kernel's unanimity gate at replay. Nothing in the
+  predicate, the design corpus, or the project goals
+  requires the program to be stricter than the kernel
+  here, so the decision is the builder's to make and
+  record, not Carlos's to bottleneck on. Hard gates are
+  untouched: this is a test-branch program instruction,
+  no wallet, transaction, or deployment rides it.
+- `revise_governance_approval` +
+  `revise_governance_approval_record` +
+  `ReviseGovernanceApproval`: the seat's own stored
+  approval, overwritten in place. Gates, in order: the
+  transition record's id matches the instruction id; the
+  stored approval belongs to this transition and to the
+  signing seat (`RecordMismatch` otherwise — the PDA
+  seeds `[\"gov-approval\", transition_id, seat]` already
+  bind a record to its seat, and the helper refuses a
+  mismatched record outright rather than overwriting a
+  foreign seat's approval); then exactly the
+  first-approval gates via
+  `build_governance_approval_record` (sealed state,
+  governance-typed `REGISTERED` record, seated council
+  signer, action category matching the record's type).
+  Only the stored action is written back; the bump is
+  preserved. The approval count is deliberately NOT
+  incremented — the instruction does not call
+  `note_governance_approval` — because the bundle
+  already counts this seat once, and a second count
+  would corrupt the slice-35 self-delimiting bundle
+  parse. A revision after the record leaves `REGISTERED`
+  is refused (`WrongStage`), exactly as a first approval
+  is: once replay runs, the approval set is frozen and
+  the kernel's registration has consumed it. A revised
+  set that is no longer unanimous fails at governance
+  replay, fail-closed, exactly as a non-unanimous first
+  set does. The instruction does not run kernel
+  `approve_governance` itself; replay runs the kernel
+  call from the stored records, as with first approvals.
+  New event `GovernanceApprovalRevised` (id, seat, action
+  kind) so the event log distinguishes a revision from a
+  first approval instead of conflating them under
+  `GovernanceApproved`. The slice-33 honesty bound is
+  closed in the same pass: approval records are still
+  `init`-only as accounts, but a seat's first approval
+  no longer stands unchangeably — it is revised through
+  this instruction, and the fresh-id remedy is retired
+  to a fallback, not the mechanism.
+- Host tests 383/383 (374 prior + 9 slice-48: the stored
+  action overwritten with seat, transition, and bump
+  preserved; a kind change within the same category; a
+  mixed stored set (400 vs 500) restored to unanimity
+  through the stored-set decoder; the approval count
+  untouched by a revision; and the foreign-transition,
+  other-seat, wrong-stage, category-mismatch, and
+  unsealed refusals, each leaving the stored action
+  unchanged). Clippy back to the pre-existing profile
+  (anchor macro `unexpected cfg` noise + the slice-8
+  test helper's `type_complexity` warning, the
+  `record_args` helper); zero warnings naming any
+  slice-48 symbol and none pointing at the new accounts
+  struct. IDL counts move by design (34 instructions, 6
+  accounts, 34 errors, 19 events — +1 instruction and +1
+  event, including `revise_governance_approval` and
+  `GovernanceApprovalRevised`); `.so` 1,630,384 bytes
+  (sha256 `1de0c0a9…`, working-tree build — the
+  slices-45/46 oversight pattern of unreproducible `.so`
+  sha prefixes applies, so this figure is a tree
+  measurement, not a reproducibility claim).
+- Stack-frame finding, recorded not smoothed: the build
+  log now carries six stack-frame lines (was four at
+  slice 47). The two new lines name this slice's handler
+  (estimated frame 5,696 bytes, exceeding the 4,096-byte
+  limit by 1,600) and its accounts struct (4,544 bytes).
+  The class is pre-existing, not new: the slice-33
+  `approve_governance` handler itself estimates 5,760
+  bytes (exceeding by 1,664) — larger than revise — and
+  the sibling-select handlers exceed by 128. `anchor
+  build` still exits 0 and regenerates both artifacts,
+  as it did for those slices. But a frame over the
+  limit is a runtime risk, not just a log line, so this
+  class is now a queued item ahead of the cu-golden
+  freeze: mollusk execution must prove the
+  approve/revise handlers actually run on-chain before
+  any W4.4 deployment relies on them, and a frame-size
+  refactor (avoiding by-value `StoredGovAction` and
+  by-value record returns on the approval path) is the
+  fix if execution proves the risk real. Slice 48 does
+  not smuggle that refactor in: it ships in parity with
+  approve and names the debt.
+- Deliberately NOT slice 48: CU measurement, the
+  stack-frame refactor above, and the Agave 4.3.2 +
+  Anchor next-stable scratch assessments — the queue
+  after this slice is the cu-golden freeze (with the
+  stack-frame execution check riding it), then the
+  toolchain scratch assessments.
+
 ## Build
 
 ```sh
 export RUSTUP_HOME=~/workspace/toolchains/rustup CARGO_HOME=~/workspace/toolchains/cargo
 export PATH=~/workspace/toolchains/cargo/bin:~/workspace/toolchains/solana/bin:$PATH
 ~/workspace/toolchains/anchor/bin/anchor build   # from this directory
-cargo test                                        # host tests, 374/374
+cargo test                                        # host tests, 383/383
 ```
