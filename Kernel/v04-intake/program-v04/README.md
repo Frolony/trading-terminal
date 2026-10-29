@@ -1471,6 +1471,54 @@ families, account inventory, and CU golden set are later step-5 slices.
   instructions alone; a revise-approval instruction; and CU
   measurement — later slices.
 
+## Slice 38 — the governance signal instruction
+
+- `submit_signal_governance` + `submit_signal_governance_from_records`:
+  the slice-15 signal on the governance path. The helper mirrors
+  the ordinary signal with one substitution in the prefix: the
+  slice-37 governance prefix (every stored seat's
+  `approve_governance`, ingest, governance registration,
+  evaluate, mark_eligible) runs at the stored `eligible_at`, so
+  the rebuilt kernel's window IS the stored window, then every
+  supplied prior signal replays at its own `submitted_at`,
+  then the new signal at the state's clock. The kernel's own
+  signal gates refuse duplicates, away-from-mean revisions,
+  deadline signals, unknown agents, and over-range values.
+  Signals do not advance the stage and do not touch the window;
+  only `signal_count` increments, the anchor the governance
+  select slice will check its prior set against. The staged
+  prefix's approval time is a proof, not history, as in slice
+  37: the slice-28 commit re-proof re-runs approvals at the
+  stored `eligible_at`.
+- The instruction's remaining accounts parse as in slice 31
+  (prior COMMITTED bundles first), then the tail splits
+  through the new pure `split_gov_signal_tail` — first
+  exactly `approval_count` `GovApprovalRecord`s, then this
+  transition's prior `SignalRecord`s — refusing a short
+  approval run, a signal inside the approval run, or an
+  approval inside the signal run with `RecordMismatch`
+  before any replay. The payer is fee payer and signal agent
+  in one, as in slice 15; the emitted event is the existing
+  `SignalSubmitted`. No new account or error.
+- Host tests 277/277 (273 prior + 4 slice-38: the first-signal
+  success with the kernel tally (weight 2.0, confidence 1.0),
+  stage and window untouched, count 1; the prior replay with
+  a same-round duplicate refused and the count left at 1; the
+  wrong-stage / ordinary-type / non-unanimous refusals; and
+  the tail-split success plus short / mixed-run refusals).
+  Clippy back to the pre-existing profile (anchor macro
+  `unexpected cfg` noise + the slice-8 test helper's
+  `type_complexity` warning); zero warnings naming any
+  slice-38 symbol. IDL counts move by design (25
+  instructions, 6 accounts, 34 errors, 18 events — +1
+  instruction only, including `submit_signal_governance`);
+  `.so` 1,332,168 bytes (sha256 `d470713d…`).
+- Deliberately NOT slice 38: the governance select,
+  planning, reconcile, validate, and declare stages — a
+  governance record still cannot reach `DECLARED` through
+  instructions alone; a revise-approval instruction; and CU
+  measurement — later slices.
+
 ## Build
 
 ```sh

@@ -2285,6 +2285,77 @@ pub mod program_v04 {
         emit!(TransitionMarkedEligible { transition_id, stage: TransitionRecord::ELIGIBLE });
         Ok(())
     }
+
+    /// Submit a signal governance (§4.1, governance replay row,
+    /// slice 38): the slice-15 signal on the governance path —
+    /// run kernel `submit_round_signal` on an `ELIGIBLE`
+    /// governance record pair and persist the new
+    /// `SignalRecord`, advancing only the record's
+    /// `signal_count`. Remaining accounts begin with
+    /// `prior_bundle_count` prior COMMITTED bundles (head
+    /// order, self-delimited as in slice 31); the tail is the
+    /// governance signal evidence — first exactly
+    /// `approval_count` `GovApprovalRecord`s, then this
+    /// transition's prior `SignalRecord`s — split by
+    /// `split_gov_signal_tail` before any replay. The payer is
+    /// a fee payer and the signal's agent in one, as in slice
+    /// 15: the identity mapping means the signer proves the
+    /// agent by signing, and no other agent's signal can be
+    /// submitted through this instruction. The round is an
+    /// instruction argument the helper re-derives from the
+    /// stored window and refuses on mismatch, never trusts.
+    /// Signals do not advance the stage and do not touch the
+    /// window; the governance select slice will check the
+    /// supplied prior set against `signal_count`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn submit_signal_governance(
+        ctx: Context<SubmitSignalGovernance>,
+        transition_id: [u8; 32],
+        observation_id: [u8; 32],
+        round: u64,
+        raw: u64,
+        support_raw: u64,
+        has_support: bool,
+        prior_bundle_count: u32,
+    ) -> Result<()> {
+        if ctx.accounts.transition_record.transition_id != transition_id
+            || ctx.accounts.observation_record.observation_id != observation_id
+        {
+            return Err(error!(ProgramV04Error::RecordMismatch));
+        }
+        let (bundles, tail) = split_prior_bundles(
+            classify_remaining_accounts(ctx.remaining_accounts)?,
+            prior_bundle_count as usize,
+        )?;
+        let prior_entries = prior_entries_of(&bundles);
+        let (approvals, priors) = split_gov_signal_tail(
+            tail,
+            ctx.accounts.transition_record.approval_count as usize,
+        )?;
+        let (record, total, confidence) = submit_signal_governance_from_records(
+            &ctx.accounts.kernel_state,
+            &mut ctx.accounts.transition_record,
+            &ctx.accounts.observation_record,
+            &approvals,
+            &priors,
+            ctx.accounts.payer.key(),
+            round,
+            raw,
+            support_raw,
+            has_support,
+            ctx.bumps.signal_record,
+            &prior_entries,
+        )?;
+        *ctx.accounts.signal_record = record;
+        emit!(SignalSubmitted {
+            transition_id,
+            agent: ctx.accounts.payer.key(),
+            round,
+            total_weight_raw: total.raw(),
+            confidence_raw: confidence.raw(),
+        });
+        Ok(())
+    }
 }
 
 #[derive(Accounts)]
@@ -2589,6 +2660,38 @@ pub struct SelectCandidateWithSiblings<'info> {
 #[derive(Accounts)]
 #[instruction(transition_id: [u8; 32], observation_id: [u8; 32], round: u64, raw: u64, support_raw: u64, has_support: bool)]
 pub struct SubmitSignal<'info> {
+    #[account(
+        seeds = [b"kernel-state"],
+        bump = kernel_state.bump,
+    )]
+    pub kernel_state: Account<'info, KernelState>,
+    #[account(
+        mut,
+        seeds = [b"transition", transition_id.as_ref()],
+        bump = transition_record.bump,
+    )]
+    pub transition_record: Account<'info, TransitionRecord>,
+    #[account(
+        seeds = [b"observation", observation_id.as_ref()],
+        bump = observation_record.bump,
+    )]
+    pub observation_record: Account<'info, ObservationRecord>,
+    #[account(
+        init,
+        payer = payer,
+        space = SignalRecord::SPACE,
+        seeds = [b"signal", transition_id.as_ref(), payer.key().as_ref(), &round.to_le_bytes()],
+        bump,
+    )]
+    pub signal_record: Account<'info, SignalRecord>,
+    #[account(mut)]
+    pub payer: Signer<'info>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+#[instruction(transition_id: [u8; 32], observation_id: [u8; 32], round: u64, raw: u64, support_raw: u64, has_support: bool)]
+pub struct SubmitSignalGovernance<'info> {
     #[account(
         seeds = [b"kernel-state"],
         bump = kernel_state.bump,
@@ -6346,6 +6449,42 @@ pub fn split_gov_stage_tail(
     Ok(approvals)
 }
 
+/// Split a governance signal tail (slice 38): the first
+/// `approval_count` accounts must be `GovApprovalRecord`s and
+/// every remaining account must be a `SignalRecord`, in that
+/// order — the approvals prove the governance registration the
+/// signal replays, the signals are the prior tally it extends.
+/// Any other shape refuses with `RecordMismatch` before any
+/// replay: a tail short of its approval count, a signal inside
+/// the approval run, or an approval inside the signal run.
+pub fn split_gov_signal_tail(
+    tail: alloc::vec::Vec<ParsedAccount>,
+    approval_count: usize,
+) -> Result<(
+    alloc::vec::Vec<GovApprovalRecord>,
+    alloc::vec::Vec<SignalRecord>,
+)> {
+    if tail.len() < approval_count {
+        return Err(error!(ProgramV04Error::RecordMismatch));
+    }
+    let mut approvals: alloc::vec::Vec<GovApprovalRecord> = alloc::vec::Vec::new();
+    let mut signals: alloc::vec::Vec<SignalRecord> = alloc::vec::Vec::new();
+    for (i, item) in tail.into_iter().enumerate() {
+        if i < approval_count {
+            match item {
+                ParsedAccount::GovApproval(approval) => approvals.push(*approval),
+                _ => return Err(error!(ProgramV04Error::RecordMismatch)),
+            }
+        } else {
+            match item {
+                ParsedAccount::Signal(signal) => signals.push(signal),
+                _ => return Err(error!(ProgramV04Error::RecordMismatch)),
+            }
+        }
+    }
+    Ok((approvals, signals))
+}
+
 /// Replay a stored governance transition pair through the real
 /// kernel (slice 37): the slice-10 replay on the governance
 /// path. Pure except for the record's stage, which advances to
@@ -6668,6 +6807,220 @@ pub fn mark_eligible_governance_from_records(
             .ok_or(error!(ProgramV04Error::EligibleFailed))?;
     }
     Ok(life)
+}
+
+/// Submit a signal through the real kernel on the governance
+/// path (slice 38): the slice-15 signal with the slice-37
+/// prefix. Pure except for the returned record and the
+/// record's `signal_count`, which increments by one on success
+/// only: signals do not advance the stage and do not touch the
+/// window, and every refusal leaves everything untouched.
+/// Gates, in order: sealed state; stage exactly `ELIGIBLE`;
+/// parent exactly the sealed head; observation linkage; a
+/// governance type (`NotGovernanceTransition` otherwise — an
+/// ordinary record signals through `submit_signal_from_records`,
+/// never here); the approval-count anchor (the supplied set
+/// numbering exactly `approval_count`); a proven window
+/// (`eligible_at` nonzero and the deadline after it) and a
+/// round argument equal to the derived round
+/// (`SignalFailed`); every prior belonging to this transition
+/// with a stored round matching its own `submitted_at`
+/// (`RecordMismatch`); proposer/observer gates against the
+/// sealed profile (`UnknownProposer`/`NotObserver`). The
+/// kernel calls run against a freshly rebuilt sealed launch
+/// kernel under `ProgramEnv`: the slice-37 prefix (every
+/// stored seat's `approve_governance`, ingest, governance
+/// registration, evaluate, mark_eligible) all at the stored
+/// `eligible_at` — so the rebuilt kernel's window IS the
+/// stored window, exactly as the ordinary helper replays its
+/// prefix at `eligible_at` — then every supplied prior signal
+/// at its own `submitted_at` in order, then the new signal at
+/// the state's clock. The kernel's own signal gates refuse a
+/// same-round duplicate, a revision away from the last
+/// round's mean, a signal at or past the deadline, an
+/// unknown/inactive agent, and an over-range raw or support,
+/// all mapped to `SignalFailed`. The staged prefix's approval
+/// time is a proof, not history, as in slice 37: the
+/// slice-28 commit re-proof re-runs approvals at the stored
+/// `eligible_at`, so this replay proves registrability plus
+/// the tally at the current clock and the commit proves the
+/// stored chain. On success the return is the new record plus
+/// the kernel's tally after it — total weight and confidence
+/// in raw units — so the governance select slice reads a
+/// kernel-proven tally, not a program-side sum. The
+/// completeness bound is the ordinary one: this helper replays
+/// the priors it is given, and the governance select slice
+/// will check the supplied set against `signal_count`.
+#[allow(clippy::too_many_arguments)]
+pub fn submit_signal_governance_from_records(
+    kernel_state: &KernelState,
+    transition_record: &mut TransitionRecord,
+    observation_record: &ObservationRecord,
+    approval_records: &[GovApprovalRecord],
+    prior_signals: &[SignalRecord],
+    agent: Pubkey,
+    round: u64,
+    raw: u64,
+    support_raw: u64,
+    has_support: bool,
+    bump: u8,
+    prior_entries: &[PriorEntry],
+) -> Result<(SignalRecord, Amount, Amount)> {
+    if !kernel_state.sealed {
+        return Err(error!(ProgramV04Error::NotSealed));
+    }
+    if transition_record.stage != TransitionRecord::ELIGIBLE {
+        return Err(error!(ProgramV04Error::WrongStage));
+    }
+    if transition_record.parent_index != kernel_state.head_index
+        || transition_record.parent_hash != kernel_state.head_hash
+    {
+        return Err(error!(ProgramV04Error::ParentMismatch));
+    }
+    if transition_record.observation_id != observation_record.observation_id {
+        return Err(error!(ProgramV04Error::RecordMismatch));
+    }
+    if !is_gov_type(&transition_record.transition_type) {
+        return Err(error!(ProgramV04Error::NotGovernanceTransition));
+    }
+    if approval_records.len() as u64 != transition_record.approval_count {
+        return Err(error!(ProgramV04Error::RecordMismatch));
+    }
+    if transition_record.eligible_at == 0
+        || transition_record.consensus_deadline <= transition_record.eligible_at
+    {
+        return Err(error!(ProgramV04Error::SignalFailed));
+    }
+    let derived = signal_round(
+        transition_record.eligible_at,
+        transition_record.consensus_deadline,
+        kernel_state.clock,
+    );
+    if derived != round {
+        return Err(error!(ProgramV04Error::SignalFailed));
+    }
+    for prior in prior_signals {
+        if prior.transition_id != transition_record.transition_id {
+            return Err(error!(ProgramV04Error::RecordMismatch));
+        }
+        if signal_round(
+            transition_record.eligible_at,
+            transition_record.consensus_deadline,
+            prior.submitted_at,
+        ) != prior.round
+        {
+            return Err(error!(ProgramV04Error::RecordMismatch));
+        }
+    }
+    let (action, seats) =
+        gov_action_and_seats(approval_records, transition_record.transition_id)?;
+    let proposer = resolve_proposer(kernel_state, transition_record.proposer)?;
+    let observer_id = resolve_agent_id(observation_record.observer);
+    let mut k = kernel_at_head_from_entries(kernel_state, prior_entries)?;
+    if !k.has_role(&observer_id, Role::Observer) {
+        return Err(error!(ProgramV04Error::NotObserver));
+    }
+    let relevant_groups = match k.agent(&proposer) {
+        Some(profile) => profile.groups.clone(),
+        None => return Err(error!(ProgramV04Error::UnknownProposer)),
+    };
+    let observation = Observation {
+        id: observation_record.observation_id,
+        timestamp: observation_record.timestamp,
+        expiry: observation_record.expiry,
+        confidence: Amount::from_raw(observation_record.confidence_raw),
+    };
+    let eligible_at = transition_record.eligible_at;
+    for seat in &seats {
+        k.approve_governance(seat, transition_record.transition_id, action.clone(), eligible_at)
+            .map_err(|_| error!(ProgramV04Error::SignalFailed))?;
+    }
+    k.ingest_observation(&observer_id, observation, eligible_at)
+        .map_err(|_| error!(ProgramV04Error::SignalFailed))?;
+    let manifest = Manifest {
+        transition_type: transition_record.transition_type,
+        parent_index: transition_record.parent_index,
+        parent_hash: transition_record.parent_hash,
+        declared_next_hash: transition_record.declared_next_hash,
+        observation_id: transition_record.observation_id,
+        expires_at: transition_record.expires_at,
+        relevant_groups,
+        action: None,
+    };
+    k.register_governance_transition(
+        &proposer,
+        transition_record.transition_id,
+        manifest,
+        action,
+        eligible_at,
+    )
+    .map_err(|_| error!(ProgramV04Error::SignalFailed))?;
+    k.evaluate_transition(&transition_record.transition_id, eligible_at)
+        .map_err(|_| error!(ProgramV04Error::SignalFailed))?;
+    k.mark_eligible(&transition_record.transition_id, eligible_at)
+        .map_err(|_| error!(ProgramV04Error::SignalFailed))?;
+    match k.life_of(&transition_record.transition_id) {
+        Some(Life::Eligible) => {}
+        _ => return Err(error!(ProgramV04Error::SignalFailed)),
+    }
+    let mut priors: alloc::vec::Vec<SignalRecord> = prior_signals.to_vec();
+    priors.sort_by_key(|s| s.submitted_at);
+    for prior in &priors {
+        let support = if prior.has_support {
+            Some(Amount::from_raw(prior.support_raw))
+        } else {
+            None
+        };
+        k.submit_round_signal(
+            &prior.agent.to_bytes(),
+            &transition_record.transition_id,
+            Amount::from_raw(prior.raw),
+            support,
+            prior.submitted_at,
+        )
+        .map_err(|_| error!(ProgramV04Error::SignalFailed))?;
+    }
+    let agent_id = resolve_agent_id(agent);
+    let support = if has_support {
+        Some(Amount::from_raw(support_raw))
+    } else {
+        None
+    };
+    k.submit_round_signal(
+        &agent_id,
+        &transition_record.transition_id,
+        Amount::from_raw(raw),
+        support,
+        kernel_state.clock,
+    )
+    .map_err(|_| error!(ProgramV04Error::SignalFailed))?;
+    let total = k
+        .total_weight(&transition_record.transition_id)
+        .map_err(|_| error!(ProgramV04Error::SignalFailed))?;
+    let confidence = k
+        .confidence(&transition_record.transition_id)
+        .map_err(|_| error!(ProgramV04Error::SignalFailed))?;
+    let record = SignalRecord {
+        transition_id: transition_record.transition_id,
+        agent,
+        round,
+        raw,
+        support_raw: if has_support { support_raw } else { 0 },
+        has_support,
+        submitted_at: kernel_state.clock,
+        bump,
+    };
+    // Slice 16's anchor, on the governance path: the count
+    // increments exactly once per created record, after the
+    // kernel has proven the signal — a refusal above leaves
+    // the count untouched, and the count failure here cannot
+    // strand a half-created signal, since the kernel object is
+    // local and discarded on error.
+    transition_record.signal_count = transition_record
+        .signal_count
+        .checked_add(1)
+        .ok_or_else(|| error!(ProgramV04Error::SignalFailed))?;
+    Ok((record, total, confidence))
 }
 
 /// One prior committed transition offered to a replay-from-head
@@ -14861,6 +15214,193 @@ mod tests {
         ];
         let err = split_gov_stage_tail(mixed, 3)
             .expect_err("a signal in the approval run must refuse");
+        assert!(format!("{:?}", err).contains("RecordMismatch"));
+    }
+
+    fn gov_eligible_pair() -> (
+        KernelState,
+        TransitionRecord,
+        ObservationRecord,
+        [GovApprovalRecord; 3],
+    ) {
+        // A governance record driven through the slice-37 chain
+        // to ELIGIBLE: the proven window is `eligible_at` 100,
+        // deadline 200 at the genesis clock 100, exactly as the
+        // ordinary `signal_pair` window — so a governance
+        // signal at round 0 submits at the state's clock.
+        let (mut state, mut record, obs, approvals) = gov_registered_pair();
+        replay_governance_from_records(&state, &mut record, &obs, &approvals, &[])
+            .expect("pair must replay before governance signal");
+        evaluate_governance_from_records(&state, &mut record, &obs, &approvals, &[])
+            .expect("pair must evaluate before governance signal");
+        mark_eligible_governance_from_records(&mut state, &mut record, &obs, &approvals, &[])
+            .expect("pair must mark eligible before governance signal");
+        assert_eq!(record.stage, TransitionRecord::ELIGIBLE);
+        assert_eq!(record.eligible_at, 100);
+        assert_eq!(record.consensus_deadline, 200);
+        (state, record, obs, approvals)
+    }
+
+    #[test]
+    fn gov_signal_accepts_first_signal_and_reports_kernel_tally() {
+        // The slice-38 success path, mirroring the ordinary
+        // first signal: agent 2 signals raw 1.0 with support
+        // 1.0 at round 0, the kernel tally is weight 2.0 and
+        // confidence 1.0, the stage stays ELIGIBLE, the window
+        // is untouched, and only `signal_count` moves, to 1.
+        let (state, mut record, obs, approvals) = gov_eligible_pair();
+        let (signal, total, confidence) = submit_signal_governance_from_records(
+            &state, &mut record, &obs, &approvals, &[],
+            Pubkey::new_from_array(ag(2)), 0, SCALE, SCALE, true, 7, &[],
+        )
+        .expect("first governance signal at the genesis clock must submit");
+        assert_eq!(signal.transition_id, [0xD2; 32]);
+        assert_eq!(signal.agent, Pubkey::new_from_array(ag(2)));
+        assert_eq!(signal.round, 0);
+        assert_eq!(signal.raw, SCALE);
+        assert_eq!(signal.support_raw, SCALE);
+        assert!(signal.has_support);
+        assert_eq!(signal.submitted_at, 100);
+        assert_eq!(signal.bump, 7);
+        assert_eq!(total.raw(), 2 * SCALE);
+        assert_eq!(confidence.raw(), SCALE);
+        assert_eq!(record.stage, TransitionRecord::ELIGIBLE);
+        assert_eq!(record.eligible_at, 100);
+        assert_eq!(record.consensus_deadline, 200);
+        assert_eq!(record.signal_count, 1);
+    }
+
+    #[test]
+    fn gov_signal_replays_prior_and_refuses_same_round_duplicate() {
+        // The prior replay: a first signal, then a second call
+        // carrying it as the prior set, refuses on the kernel's
+        // same-round duplicate arm — and the refusal leaves
+        // `signal_count` at 1, not 2.
+        let (state, mut record, obs, approvals) = gov_eligible_pair();
+        let first = {
+            let (signal, _, _) = submit_signal_governance_from_records(
+                &state, &mut record, &obs, &approvals, &[],
+                Pubkey::new_from_array(ag(2)), 0, SCALE, SCALE, true, 7, &[],
+            )
+            .expect("first governance signal must submit");
+            signal
+        };
+        assert_eq!(record.signal_count, 1);
+        let err = submit_signal_governance_from_records(
+            &state, &mut record, &obs, &approvals, &[first],
+            Pubkey::new_from_array(ag(2)), 0, SCALE, SCALE, true, 7, &[],
+        )
+        .expect_err("a same-round duplicate governance signal must refuse");
+        assert!(format!("{:?}", err).contains("SignalFailed"));
+        assert_eq!(record.signal_count, 1);
+        assert_eq!(record.stage, TransitionRecord::ELIGIBLE);
+    }
+
+    #[test]
+    fn gov_signal_refuses_wrong_stage_ordinary_type_and_non_unanimous() {
+        // Three refusals, one cause each: a merely-evaluated
+        // governance record refuses on stage; an ordinary-typed
+        // record refuses at the type gate, never reaching the
+        // kernel; and two approvals against a count of two pass
+        // the decoder but fail the kernel's unanimity gate, so
+        // the signal refuses with `SignalFailed` and the record
+        // stands ELIGIBLE with its count untouched.
+        let (state, mut record, obs, approvals) = gov_registered_pair();
+        replay_governance_from_records(&state, &mut record, &obs, &approvals, &[])
+            .expect("pair must replay before governance evaluate");
+        evaluate_governance_from_records(&state, &mut record, &obs, &approvals, &[])
+            .expect("pair must evaluate before the stage refusal");
+        let err = submit_signal_governance_from_records(
+            &state, &mut record, &obs, &approvals, &[],
+            Pubkey::new_from_array(ag(2)), 0, SCALE, SCALE, true, 7, &[],
+        )
+        .expect_err("a merely-evaluated record has no window to signal in");
+        assert!(format!("{:?}", err).contains("WrongStage"));
+
+        let (state, mut record, obs, approvals) = gov_eligible_pair();
+        record.transition_type = TT;
+        let err = submit_signal_governance_from_records(
+            &state, &mut record, &obs, &approvals, &[],
+            Pubkey::new_from_array(ag(2)), 0, SCALE, SCALE, true, 7, &[],
+        )
+        .expect_err("an ordinary-typed record must refuse the governance signal");
+        assert!(format!("{:?}", err).contains("NotGovernanceTransition"));
+
+        let (state, mut record, obs, approvals) = gov_eligible_pair();
+        record.approval_count = 2;
+        let err = submit_signal_governance_from_records(
+            &state, &mut record, &obs, &approvals[..2], &[],
+            Pubkey::new_from_array(ag(2)), 0, SCALE, SCALE, true, 7, &[],
+        )
+        .expect_err("a non-unanimous approval set must refuse the governance signal");
+        assert!(format!("{:?}", err).contains("SignalFailed"));
+        assert_eq!(record.stage, TransitionRecord::ELIGIBLE);
+        assert_eq!(record.signal_count, 0);
+    }
+
+    #[test]
+    fn gov_signal_tail_split_succeeds_and_refuses() {
+        // The instruction's tail parse, host-proven: three
+        // approvals followed by one prior signal split cleanly;
+        // a run short of its approval count, a signal inside
+        // the approval run, and an approval inside the signal
+        // run each refuse with RecordMismatch before any replay.
+        let (_state, _record, _obs, approvals) = gov_registered_pair();
+        let [a0, a1, a2] = approvals;
+        let signal = SignalRecord {
+            transition_id: [0xD2; 32],
+            agent: Pubkey::new_from_array(ag(2)),
+            round: 0,
+            raw: SCALE,
+            support_raw: SCALE,
+            has_support: true,
+            submitted_at: 100,
+            bump: 7,
+        };
+        let tail = alloc::vec![
+            ParsedAccount::GovApproval(Box::new(a0)),
+            ParsedAccount::GovApproval(Box::new(a1)),
+            ParsedAccount::GovApproval(Box::new(a2)),
+            ParsedAccount::Signal(signal),
+        ];
+        let (parsed_approvals, parsed_signals) = split_gov_signal_tail(tail, 3)
+            .expect("a well-formed governance signal tail must split");
+        assert_eq!(parsed_approvals.len(), 3);
+        assert_eq!(parsed_signals.len(), 1);
+
+        let (_state, _record, _obs, approvals) = gov_registered_pair();
+        let [a0, a1, _a2] = approvals;
+        let short = alloc::vec![
+            ParsedAccount::GovApproval(Box::new(a0)),
+            ParsedAccount::GovApproval(Box::new(a1)),
+        ];
+        let err = split_gov_signal_tail(short, 3)
+            .expect_err("a tail short of its approval count must refuse");
+        assert!(format!("{:?}", err).contains("RecordMismatch"));
+
+        let (_state, _record, _obs, approvals) = gov_registered_pair();
+        let [a0, _a1, a2] = approvals;
+        let mixed_approval_run = alloc::vec![
+            ParsedAccount::GovApproval(Box::new(a0)),
+            ParsedAccount::Signal(signal),
+            ParsedAccount::GovApproval(Box::new(a2)),
+        ];
+        let err = split_gov_signal_tail(mixed_approval_run, 3)
+            .expect_err("a signal in the approval run must refuse");
+        assert!(format!("{:?}", err).contains("RecordMismatch"));
+
+        let (_state, _record, _obs, approvals) = gov_registered_pair();
+        let [a0, a1, a2] = approvals;
+        let (_state, _record, _obs, extra) = gov_registered_pair();
+        let [stray, _, _] = extra;
+        let mixed_signal_run = alloc::vec![
+            ParsedAccount::GovApproval(Box::new(a0)),
+            ParsedAccount::GovApproval(Box::new(a1)),
+            ParsedAccount::GovApproval(Box::new(a2)),
+            ParsedAccount::GovApproval(Box::new(stray)),
+        ];
+        let err = split_gov_signal_tail(mixed_signal_run, 3)
+            .expect_err("an approval in the signal run must refuse");
         assert!(format!("{:?}", err).contains("RecordMismatch"));
     }
 
