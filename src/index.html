@@ -2986,6 +2986,9 @@ function evaluateDcaSchedules(list,getSpot,now){ // pure engine: at most one fil
      quoted?, status, txSig, error?, note?}
    kinds: market-fill | swap-fill | limit-create | limit-cancel | limit-fill | paper-limit-fill | dca-create | dca-fill
    status: open | filled | cancelled | expired | failed.
+   orderId (optional, N5.31): the limit order's id, carried by its create row
+   and by its terminal fill/cancel row so the panel can resolve the create
+   row's current status at render time without mutating the append-only store.
    The History list shows every event except nothing is hidden — limit-create
    events (status open) are the order's birth record; the Open-orders panel
    remains the actionable view for open orders. */
@@ -3067,6 +3070,8 @@ function histRecord(evt){
     status:HIST_STATUSES.indexOf(evt.status)>=0?evt.status:'filled',
     txSig:typeof evt.txSig==='string'&&evt.txSig?evt.txSig:null
   };
+  /* N5.31: carry the limit-order link through (validated string only). */
+  if(typeof evt.orderId==='string'&&evt.orderId)e.orderId=evt.orderId.slice(0,64);
   if(evt.quoted&&Number.isFinite(Number(evt.quoted.minOut))&&Number.isFinite(Number(evt.quoted.slippageBps)))e.quoted={minOut:Number(evt.quoted.minOut),slippageBps:Number(evt.quoted.slippageBps),minOutUnit:String(evt.quoted.minOutUnit||e.pair.quoteSymbol).slice(0,10)};
   if(typeof evt.error==='string'&&evt.error)e.error=evt.error.slice(0,500);
   if(typeof evt.note==='string'&&evt.note)e.note=evt.note.slice(0,500);
@@ -3113,7 +3118,48 @@ function histRelTime(ts,nowMs){
   return Math.floor(h/24)+'d ago';
 }
 function histKindLabel(k){
-  return{'market-fill':'Market fill','swap-fill':'Swap fill','limit-create':'Limit created','limit-cancel':'Limit cancelled','limit-fill':'Limit fill','paper-limit-fill':'Limit fill','dca-create':'DCA scheduled','dca-fill':'DCA fill'}[k]||k;
+  /* N5.31 (A19): paper-limit-fill and limit-fill are distinct filter kinds
+     (exact-equality filter, different event sets), so they get distinct
+     labels instead of two identical 'Limit fill' options. limit-fill is the
+     generic/live-reserved kind; paper-limit-fill is the paper engine's. */
+  return{'market-fill':'Market fill','swap-fill':'Swap fill','limit-create':'Limit created','limit-cancel':'Limit cancelled','limit-fill':'Limit fill','paper-limit-fill':'Limit fill (paper)','dca-create':'DCA scheduled','dca-fill':'DCA fill'}[k]||k;
+}
+/* === N5.31 (A20): limit-create rows resolve their current status ===
+   The store stays append-only: a create row's stored status is never
+   rewritten. At render time, histLimitCreateStatus derives the effective
+   status from the order's terminal row (fill/cancel/expiry), linked by
+   orderId when present. Legacy rows (pre-N5.31, no orderId) fall back to a
+   strict match — same mode, pair, side, limit price and size, terminal at
+   or after the create — applied ONLY when exactly one candidate matches,
+   so an ambiguous legacy pair is never guessed. DCA create rows are out of
+   scope here and keep their stored status. */
+const HIST_LIMIT_TERMINAL_KINDS=['limit-cancel','paper-limit-fill','limit-fill'];
+function histLimitTerminalFor(events,create){
+  if(!Array.isArray(events)||!create||create.kind!=='limit-create')return null;
+  if(typeof create.orderId==='string'&&create.orderId){
+    const m=events.find(e=>e&&e.id!==create.id&&e.mode===create.mode&&HIST_LIMIT_TERMINAL_KINDS.indexOf(e.kind)>=0&&e.orderId===create.orderId);
+    if(m)return m;
+  }
+  /* A terminal row carrying a DIFFERENT orderId is definitively another
+     order and is excluded; a row with no orderId stays a fallback candidate
+     (a pre-N5.31 create can gain a post-N5.31 terminal across an upgrade). */
+  const cands=events.filter(e=>e&&e.id!==create.id&&e.mode===create.mode&&HIST_LIMIT_TERMINAL_KINDS.indexOf(e.kind)>=0
+    &&!(typeof e.orderId==='string'&&e.orderId&&typeof create.orderId==='string'&&create.orderId&&e.orderId!==create.orderId)
+    &&e.pair&&create.pair&&e.pair.baseMint===create.pair.baseMint&&e.side===create.side
+    &&Number(e.execPrice)===Number(create.execPrice)&&Number(e.sizeBase)===Number(create.sizeBase)
+    &&Number(e.ts)>=Number(create.ts));
+  return cands.length===1?cands[0]:null;
+}
+function histLimitCreateStatus(events,create){
+  if(!create||create.kind!=='limit-create')return create?create.status:'open';
+  const t=histLimitTerminalFor(events,create);
+  return t?t.status:create.status;
+}
+function histLimitOutcomeNote(status){
+  return status==='filled'?'This order filled — the fill row records the execution.'
+    :status==='cancelled'?'This order was cancelled — the cancel row records it.'
+    :status==='expired'?'This order expired unfilled — the expiry row records it.'
+    :null;
 }
 function histCsvCell(v){
   const s=v===null||v===undefined?'':String(v);
@@ -3149,21 +3195,21 @@ function histEventFromMarketFill(o,amountQuote,quoted){
     quoted:quoted||null,status:'filled',txSig:null,note:HIST_PAPER_NOTE};
 }
 function histEventFromLimitCreate(lo){
-  return{mode:'paper',kind:'limit-create',wallet:null,
+  return{mode:'paper',kind:'limit-create',wallet:null,orderId:lo.id,
     pair:{baseMint:lo.baseMint,quoteMint:histQuoteMint(lo.quoteSymbol),baseSymbol:lo.baseSymbol,quoteSymbol:lo.quoteSymbol},
     side:lo.side,sizeBase:lo.amountQuote/lo.limitPrice,execPrice:lo.limitPrice,notionalQuote:lo.amountQuote*lo.quoteUsd,
     fees:{networkLamports:0,protocolQuote:0,label:'— (simulated: no on-chain keeper fee)'},
     status:'open',txSig:null,note:HIST_PAPER_NOTE};
 }
 function histEventFromLimitFill(o,lo){
-  return{mode:'paper',kind:'paper-limit-fill',wallet:null,
+  return{mode:'paper',kind:'paper-limit-fill',wallet:null,orderId:lo.id,
     pair:{baseMint:lo.baseMint,quoteMint:histQuoteMint(lo.quoteSymbol),baseSymbol:lo.baseSymbol,quoteSymbol:lo.quoteSymbol},
     side:lo.side,sizeBase:o.qty,execPrice:lo.limitPrice,notionalQuote:lo.amountQuote*lo.quoteUsd,
     fees:{networkLamports:0,protocolQuote:0,label:'— (simulated: no on-chain keeper fee)'},
     status:'filled',txSig:null,note:'Filled at the limit price. '+HIST_PAPER_NOTE};
 }
 function histEventFromLimitCancel(lo,expired){
-  return{mode:'paper',kind:'limit-cancel',wallet:null,
+  return{mode:'paper',kind:'limit-cancel',wallet:null,orderId:lo.id,
     pair:{baseMint:lo.baseMint,quoteMint:histQuoteMint(lo.quoteSymbol),baseSymbol:lo.baseSymbol,quoteSymbol:lo.quoteSymbol},
     side:lo.side,sizeBase:lo.amountQuote/lo.limitPrice,execPrice:lo.limitPrice,notionalQuote:lo.amountQuote*lo.quoteUsd,
     fees:{networkLamports:0,protocolQuote:0,label:'— (simulated: no on-chain keeper fee)'},
@@ -5186,11 +5232,18 @@ function histCurrentView(){
   return histVisible(s,{mode:histFilter.mode,wallet:histWalletAddr(),pair:histFilter.pair,kind:histFilter.kind,sig:histFilter.sig});
 }
 function histChip(txt){return '<span class="pill" style="font-size:10px;padding:2px 7px">'+esc(txt)+'</span>';}
-function histRowHtml(e){
+function histRowHtml(e,allEvents){
   const open=histExpanded.has(e.id);
   const sideCls=e.side==='buy'?'positive':'negative';
   const limitTag=(e.kind==='limit-create'||e.kind==='limit-cancel'||e.kind==='paper-limit-fill')?' '+histChip('LIMIT'):'';
-  const statusTag=e.status==='filled'?'':(e.status==='open'?' '+histChip('OPEN'):' '+histChip(e.status.toUpperCase()));
+  /* N5.31 (A20): a limit-create row shows its DERIVED status, so a filled /
+     cancelled / expired order no longer reads OPEN. Other kinds keep the
+     existing chip rule (filled rows show no chip) — fill/cancel rows are
+     unchanged. allEvents defaults to [e] when the caller passes none. */
+  const effStatus=e.kind==='limit-create'?histLimitCreateStatus(Array.isArray(allEvents)?allEvents:[e],e):e.status;
+  const statusTag=e.kind==='limit-create'?' '+histChip(effStatus.toUpperCase())
+    :(e.status==='filled'?'':(e.status==='open'?' '+histChip('OPEN'):' '+histChip(e.status.toUpperCase())));
+  const outcomeNote=e.kind==='limit-create'?histLimitOutcomeNote(effStatus):null;
   let det='';
   if(open){
     const netSol=(e.fees.networkLamports/1e9).toFixed(9).replace(/\.?0+$/,'');
@@ -5211,6 +5264,7 @@ function histRowHtml(e){
       +tx
       +(e.error?'<div class="walletrow"><span>Error</span><strong class="negative">'+esc(e.error)+'</strong></div>':'')
       +(e.note?'<div class="sub" style="margin-top:6px">'+esc(e.note)+'</div>':'')
+      +(outcomeNote?'<div class="sub" style="margin-top:6px">'+esc(outcomeNote)+'</div>':'')
       +'</div>';
   }
   return '<div class="histrow'+(open?' open':'')+'" data-hist="'+esc(e.id)+'">'
@@ -5243,7 +5297,10 @@ function renderHistory(){
     const empty=histFilter.mode==='live'?'No live trades recorded for this wallet yet.':(histFilter.mode==='paper'?'No trades yet — place a paper order to start.':'No trade events yet — paper fills and limit orders land here.');
     list.innerHTML='<div class="empty">'+empty+'</div>';
   }else{
-    list.innerHTML=evs.map(histRowHtml).join('');
+    /* N5.31: derivation reads the whole store, not the filtered view, so a
+       create row still resolves when its terminal row is filtered out. */
+    const allEvs=s.paper.concat(wa?(s.live[wa]||[]):[]);
+    list.innerHTML=evs.map(e=>histRowHtml(e,allEvs)).join('');
     list.querySelectorAll('[data-hist]').forEach(r=>r.addEventListener('click',ev=>{
       if(ev.target.closest&&ev.target.closest('[data-hist-copy]'))return;
       const id=r.dataset.hist;
