@@ -9,108 +9,108 @@
       "result": "Success"
     },
     {
-      "cu": 17756,
+      "cu": 17772,
       "instruction": "initialize_kernel",
       "note": "slice-1 baseline (no design estimate exists for the v0.4 program)",
       "result": "Success"
     },
     {
-      "cu": 18028,
+      "cu": 18045,
       "instruction": "seal_kernel",
       "note": "slice-1 baseline (no design estimate exists for the v0.4 program)",
       "result": "Success"
     },
     {
-      "cu": 4158,
+      "cu": 4175,
       "instruction": "advance_clock",
       "note": "slice-1 baseline (no design estimate exists for the v0.4 program)",
       "result": "Success"
     },
     {
-      "cu": 11395,
+      "cu": 11415,
       "instruction": "register_transition",
       "note": "slice-1 baseline (no design estimate exists for the v0.4 program)",
       "result": "Success"
     },
     {
-      "cu": 24383,
+      "cu": 24403,
       "instruction": "ingest_observation",
       "note": "slice-1 baseline (no design estimate exists for the v0.4 program)",
       "result": "Success"
     },
     {
-      "cu": 8427,
+      "cu": 8447,
       "instruction": "init_gov_action",
       "note": "slice-1 baseline (no design estimate exists for the v0.4 program)",
       "result": "Success"
     },
     {
-      "cu": 4660,
+      "cu": 4681,
       "instruction": "append_gov_action_chunk@0",
       "note": "slice-2 account-carried chain (program slices 51-53)",
       "result": "Success"
     },
     {
-      "cu": 4660,
+      "cu": 4681,
       "instruction": "append_gov_action_chunk@512",
       "note": "slice-2 account-carried chain (program slices 51-53)",
       "result": "Success"
     },
     {
-      "cu": 4660,
+      "cu": 4681,
       "instruction": "append_gov_action_chunk@1024",
       "note": "slice-2 account-carried chain (program slices 51-53)",
       "result": "Success"
     },
     {
-      "cu": 7285,
+      "cu": 7306,
       "instruction": "finalize_gov_action",
       "note": "slice-1 baseline (no design estimate exists for the v0.4 program)",
       "result": "Success"
     },
     {
-      "cu": 26100,
+      "cu": 26120,
       "instruction": "register_governance_transition",
       "note": "slice-1 baseline (no design estimate exists for the v0.4 program)",
       "result": "Success"
     },
     {
-      "cu": 37577,
+      "cu": 37632,
       "instruction": "approve_governance",
       "note": "slice-1 baseline (no design estimate exists for the v0.4 program)",
       "result": "Success"
     },
     {
-      "cu": 32917,
+      "cu": 32973,
       "instruction": "revise_governance_approval",
       "note": "slice-1 baseline (no design estimate exists for the v0.4 program)",
       "result": "Success"
     },
     {
-      "cu": 14427,
+      "cu": 14447,
       "instruction": "init_gov_action_abandoned",
       "note": "slice-1 baseline (no design estimate exists for the v0.4 program)",
       "result": "Success"
     },
     {
-      "cu": 4660,
+      "cu": 4681,
       "instruction": "append_gov_action_chunk_abandoned",
       "note": "slice-1 baseline (no design estimate exists for the v0.4 program)",
       "result": "Success"
     },
     {
-      "cu": 3903,
+      "cu": 3913,
       "instruction": "close_gov_action",
       "note": "slice-1 baseline (no design estimate exists for the v0.4 program)",
       "result": "Success"
     }
   ],
-  "mollusk_svm": "0.16.2",
+  "mollusk_svm": "0.16.4",
   "program": "program_v04",
   "program_id": "FzxnCtig4asxnCxGhjcbCDY5zkfcpfTb5GcXNL9UaGg6",
   "refusals": [
     {
-      "cu": 5328,
+      "cu": 5332,
       "error": "GovActionAlreadyFinalized (6034)",
       "instruction": "close_gov_action_finalized",
       "note": "slice-3 lifetime gate: a finalized account stays open until the transition settles",
@@ -118,6 +118,6 @@
     }
   ],
   "slice": "cu-golden slice 3: genesis + governance registration + account-carried approval chain (program slices 51-53) + close_gov_action rent-reclaim and finalized-refusal gate",
-  "so_sha256": "cb2bf9577169737befb4c68ce12aa0e11d8978a6d4fdb8d6d375f1d22662547d",
-  "toolchain": "Anchor 1.2.1 / Solana 4.1.2 / platform-tools v1.54"
+  "so_sha256": "3afca38f4adea2f6af776d302233fe30471ffcb437a8f2c7badb58780998699c",
+  "toolchain": "Anchor 1.2.2 / Solana 4.3.2 / platform-tools v1.57"
 }

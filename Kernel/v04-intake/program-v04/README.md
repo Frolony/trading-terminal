@@ -1,9 +1,11 @@
 # program-v04 — migration step 5, slice 5: the program scaffold
 
 The delivered v0.4.1 kernel crate compiled into an Anchor program under
-the pinned toolchain (Anchor 1.2.1 / Solana 4.1.2 / platform-tools
-v1.54). One probe instruction only (`probe_kernel`); the instruction
-families, account inventory, and CU golden set are later step-5 slices.
+the v04-line toolchain (Anchor 1.2.2 / Solana 4.3.2 / platform-tools
+v1.57, migrated 2026-10-29 under Carlos's pin-migration ruling; the
+1.2.1 / 4.1.2 / v1.54 pins are superseded for this program). One probe
+instruction only (`probe_kernel`); the instruction families, account
+inventory, and CU golden set are later step-5 slices.
 
 ## What it proves
 

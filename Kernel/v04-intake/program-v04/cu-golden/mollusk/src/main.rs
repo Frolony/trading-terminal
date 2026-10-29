@@ -1,7 +1,7 @@
 //! V0.4 program CU golden-test harness (mollusk-svm path), slice 1.
 //!
 //! Measures real compute units per instruction for `program-v04` by
-//! executing the real `.so` in-process (mollusk-svm 0.16.2) — not
+//! executing the real `.so` in-process (mollusk-svm 0.16.4) — not
 //! estimates, not host-test timings. Every measured instruction must
 //! succeed; any failure aborts with a non-zero exit, so a golden file
 //! is never written from a failed chain.
@@ -134,7 +134,40 @@ use std::str::FromStr;
 
 const PROGRAM_ID: &str = "FzxnCtig4asxnCxGhjcbCDY5zkfcpfTb5GcXNL9UaGg6";
 const SYSTEM_ID: &str = "11111111111111111111111111111111";
-const MOLLUSK_SVM_VERSION: &str = "0.16.2";
+const MOLLUSK_SVM_VERSION: &str = "0.16.4";
+const TOOLCHAIN: &str = "Anchor 1.2.2 / Solana 4.3.2 / platform-tools v1.57";
+
+/// Stamp==resolved check (Carlos's 2026-10-29 migration condition 2):
+/// the golden JSON's `mollusk_svm` field must equal the version the
+/// harness's own Cargo.lock actually resolves. A drifted lock (or a
+/// copy run against a different lock) aborts before any measurement
+/// is written, so the stamp can never again silently mislabel the
+/// measurement environment (the 0.16.2-stamp-under-0.16.4 gap).
+fn assert_mollusk_stamp_matches_lock() {
+    let lock_path = format!("{}/Cargo.lock", env!("CARGO_MANIFEST_DIR"));
+    let lock = std::fs::read_to_string(&lock_path)
+        .unwrap_or_else(|e| panic!("cannot read {lock_path} for stamp check: {e}"));
+    let mut in_package = false;
+    let mut is_mollusk = false;
+    let mut resolved: Option<String> = None;
+    for line in lock.lines() {
+        let line = line.trim();
+        if line == "[[package]]" {
+            in_package = true;
+            is_mollusk = false;
+        } else if in_package && line == "name = \"mollusk-svm\"" {
+            is_mollusk = true;
+        } else if in_package && is_mollusk && line.starts_with("version = ") {
+            resolved = Some(line.trim_start_matches("version = ").trim_matches('"').to_string());
+            break;
+        }
+    }
+    let resolved = resolved.expect("mollusk-svm entry missing from harness Cargo.lock");
+    assert_eq!(
+        resolved, MOLLUSK_SVM_VERSION,
+        "mollusk stamp drift: golden would stamp {MOLLUSK_SVM_VERSION} but lock resolves {resolved}"
+    );
+}
 
 // Pinned launch profile constants (program-v04 lib.rs, slices 7/33).
 const GOV_TID: [u8; 32] = [0xD1; 32];
@@ -271,6 +304,7 @@ fn u64_at(data: &[u8], off: usize) -> u64 {
 }
 
 fn main() {
+    assert_mollusk_stamp_matches_lock();
     let out_path = std::env::args()
         .nth(1)
         .unwrap_or_else(|| "cu-golden-mollusk.json".to_string());
@@ -749,7 +783,7 @@ fn main() {
         "program_id": PROGRAM_ID,
         "so_sha256": so_sha256,
         "mollusk_svm": MOLLUSK_SVM_VERSION,
-        "toolchain": "Anchor 1.2.1 / Solana 4.1.2 / platform-tools v1.54",
+        "toolchain": TOOLCHAIN,
         "slice": "cu-golden slice 3: genesis + governance registration + account-carried approval chain (program slices 51-53) + close_gov_action rent-reclaim and finalized-refusal gate",
         "measured": measured,
         "refusals": refusals,

@@ -18,7 +18,7 @@ default = []
 idl-build = ["anchor-lang/idl-build"]
 
 [dependencies]
-anchor-lang = { version = "=1.2.1", features = ["init-if-needed"] }
+anchor-lang = { version = "=1.2.2", features = ["init-if-needed"] }
 
 # Placement C (design §1.2, v0.4 line): the delivered kernel crate,
 # compiled into the program (no_std SBF). `default-features = false`

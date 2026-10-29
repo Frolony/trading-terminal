@@ -271,13 +271,80 @@ measured against, now frozen rather than merely fresh:
   frozen sha, that is a new finding to record, not a value
   to overwrite quietly.
 
+## Pin migration (2026-10-29, Carlos's migration-before-freeze ruling)
+
+Program-v04 now builds and measures under **Agave 4.3.2 /
+Anchor 1.2.2 / mollusk-svm 0.16.4** (branch `kernel-v04` only;
+the main program still runs on 4.1.2 / 1.2.1 / 0.16.2 until its
+own migration pass, and its OWN_IDL_DESIGN §2.2 figures are
+therefore NOT updated by this pass — v04 figures live here,
+not there). The four ruled conditions, as landed:
+
+1. **Pinned lockfiles committed.** Program `Cargo.lock`
+   (anchor-lang 1.2.2) and harness `Cargo.lock`
+   (mollusk-svm 0.16.4, solana-program-runtime held at 4.3.2)
+   are pushed with the manifests; the harness runs
+   `cargo run --locked --offline`, so any fresh resolution
+   fails the run instead of silently re-measuring under a
+   different tree. Mollusk 0.16.4 builds ONLY on the pinned
+   4.3.x lock — a fresh 4.4.0 lock fails (its `new_builtin`
+   two-argument call was removed in 4.4.0) — so the pinned
+   route (`cargo update -p mollusk-svm --precise 0.16.4` on
+   the existing lock) is the only adoption route.
+2. **Harness label fixed, stamp==resolved enforced.** The
+   golden JSON now stamps `mollusk_svm 0.16.4` and
+   `toolchain "Anchor 1.2.2 / Solana 4.3.2 / platform-tools
+   v1.57"` from constants, and the harness reads its own
+   `Cargo.lock` at startup and aborts if the resolved
+   mollusk-svm version differs from the stamped version —
+   the 0.16.2-stamp-under-0.16.4 gap cannot recur. The
+   negative case was proven this pass: a scratch harness
+   copy stamped 0.16.4 against a 0.16.2 lock aborted before
+   any measurement was written.
+3. **Frames re-measured under the new toolchain, not just
+   CU.** `anchor build` (1.2.2 CLI, v1.57) overflow list at
+   4,096: exactly one entry, the pre-existing BTreeMap-insert
+   helper at 4,672 bytes — no instruction wrapper overflows.
+   The 2,048-byte threshold build (`cargo build-sbf
+   --sbf-stack-size 2048`, complete 47-function overflow
+   list, same count as the slice-53 probe) lists exactly
+   four `__global` wrappers — the slice-51 gov-action
+   lifecycle wrappers (init 3,520; close 3,456; finalize
+   3,456; append 3,584) — and NO approve, revise, register,
+   commit, or sibling-select wrapper: each fits 2,048 bytes,
+   so the with-margin bar still holds under 1.2.2/v1.57.
+   (The one `commit_governance` hit in the threshold log is
+   the `commit_governance_from_records` helper at 3,200
+   bytes, not an instruction wrapper.)
+4. **Pins + figures recorded together.** Pins in TOOLS.md
+   (v04-line section) and here: new `.so` sha
+   `3afca38f4adea2f6af776d302233fe30471ffcb437a8f2c7badb58780998699c`
+   (canonical staging path; IDL byte-identical to the pinned
+   build, sha `967c43ee…`, 38 instr / 7 accounts / 39 errors /
+   23 events; host tests 392/392 under anchor-lang 1.2.2).
+   Golden re-measured against that `.so` (17 measured,
+   blocked `[]`): probe 7,705; initialize 17,772; seal 18,045;
+   advance_clock 4,175; register_transition 11,415;
+   ingest_observation 24,403; init_gov_action 8,447; append
+   4,681 each; finalize 7,306; register_governance_transition
+   26,120; approve 37,632; revise 32,973; abandoned second
+   init 14,447 (the +6,000 observation, unchanged in shape);
+   close 3,913; finalized-close refusal 5,332 (6034). Every
+   value matches the Anchor 1.2.2 scratch assessment exactly.
+   **This `.so` is NOT the golden freeze** — the freeze
+   happens once, after the post-settle reclaim decision, per
+   the ruled sequence; until then `3afca38f…` is the
+   migrated-build sha, not a frozen sha.
+
 ## Layout
 
 - `mollusk/` — standalone Rust crate (its own `[workspace]`
   root, so the parent program-v04 workspace does not claim it).
   Loads `target/deploy/program_v04.so` (built by `anchor build`
-  on the pinned toolchain: Anchor 1.2.1 / Solana 4.1.2 /
-  platform-tools v1.54).
+  on the v04-line toolchain: Anchor 1.2.2 / Solana 4.3.2 /
+  platform-tools v1.57 — migrated 2026-10-29 under Carlos's
+  pin-migration ruling; the 1.2.1 / 4.1.2 / v1.54 pins are
+  superseded for this program).
 - `cu-golden-mollusk.json` — the golden file: measured CU per
   instruction, with the program `.so` hash and measurement
   environment it was measured against.
@@ -286,8 +353,8 @@ measured against, now frozen rather than merely fresh:
 ## Setup
 
 ```sh
-~/workspace/toolchains/anchor/bin/anchor build   # from program-v04/
-./run-mollusk.sh   # from cu-golden/
+~/workspace/toolchains/anchor-122-scratch/bin/anchor build   # from program-v04/
+./run-mollusk.sh   # from cu-golden/ (pins the Agave 4.3.2 bin dir on PATH)
 ```
 
 ## Later slices (not this slice)

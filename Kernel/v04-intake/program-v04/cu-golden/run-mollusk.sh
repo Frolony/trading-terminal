@@ -11,5 +11,9 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 export SBF_OUT_DIR="${SBF_OUT_DIR:-$HERE/../target/deploy}"
 export RUSTUP_HOME="${RUSTUP_HOME:-$HOME/workspace/toolchains/rustup}"
 export CARGO_HOME="${CARGO_HOME:-$HOME/workspace/toolchains/cargo}"
-export PATH="$CARGO_HOME/bin:$HOME/workspace/toolchains/solana/bin:$PATH"
+# v04-line toolchain (Carlos's 2026-10-29 migration ruling): Agave 4.3.2 /
+# Anchor 1.2.2 / mollusk 0.16.4. The canonical ~/workspace/toolchains/solana
+# (4.1.2) and anchor (1.2.1) dirs still serve the main program until its
+# own migration pass lands; this script pins the v04 line explicitly.
+export PATH="$CARGO_HOME/bin:$HOME/workspace/toolchains/solana-4.3.2-scratch/active_release/bin:$PATH"
 cargo run --locked --offline --release --manifest-path "$HERE/mollusk/Cargo.toml" -- "$HERE/cu-golden-mollusk.json"
