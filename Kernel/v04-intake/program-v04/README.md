@@ -1656,6 +1656,54 @@ families, account inventory, and CU golden set are later step-5 slices.
   revise-approval instruction; and CU measurement —
   later slices.
 
+## Slice 41 — the already-selected governance sibling re-proof
+
+- `select_candidate_governance_from_records_with_siblings`
+  (helper only — no new instruction, account, or error): the
+  slice-18 re-proof on the governance path. The sibling gate
+  now admits stage `SELECTED` (4) as well as `ELIGIBLE` (3);
+  every other non-`ELIGIBLE` stage still refuses, and at most
+  one `SELECTED` sibling is admitted — a parent can have only
+  one selected transition, so two supplied `SELECTED` siblings
+  refuse at the gate, before any replay. After the merged
+  timeline, kernel `select_candidate` runs on the supplied
+  `SELECTED` sibling at the state's clock and its life must
+  become `Selected`: the stage label is re-proven, never
+  trusted. Only then does kernel `select_candidate` run on
+  the target, where it meets the kernel's
+  `ParentAlreadyHasASelectedTransition` arm. A `SELECTED`
+  sibling whose own select cannot be proven — unqualified
+  tally, an outranking target, a window not yet closed —
+  refuses the whole helper with `SelectFailed`, and the
+  target stays `ELIGIBLE`: a stored stage that history
+  cannot reproduce is an inconsistent record, not a block.
+  Only a `Life::Selected` life advances the target's stage,
+  to `SELECTED` (4); sibling records are read, never written.
+  IDL counts unchanged by design (27 instructions, 6
+  accounts, 34 errors, 18 events); `.so` 1,401,472 bytes
+  (sha256 `e778fa6f…`).
+- Host tests 300/300 (294 prior − 1 replaced + 7 slice-41:
+  the slice-40 selected-stage gate-refusal test is replaced
+  by the blocks-target test, its gate premise amended as
+  slice 18 amended slice 17's — a proven selected sibling
+  now blocks through the kernel's arm, not the gate; plus
+  the unqualified, outranked, and open-window re-proof
+  refusals; the two-selected-siblings gate refusal; the
+  selected-plus-eligible mixed field blocking the target;
+  and the incomplete selected-sibling signal-set anchor
+  refusal). Clippy back to the pre-existing profile (anchor
+  macro `unexpected cfg` noise + the slice-8 test helper's
+  `type_complexity` warning, line shifted by this slice's
+  inserts); zero warnings naming any slice-41 symbol.
+- Deliberately NOT slice 41: the mixed-field select (an
+  ordinary competitor at the same parent is still
+  fail-closed by the census gate, not judged — neither
+  single-type replay path can replay the other type); the
+  governance planning, reconcile, validate, and declare
+  stages — a governance record still cannot reach
+  `DECLARED` through instructions alone; a revise-approval
+  instruction; and CU measurement — later slices.
+
 ## Build
 
 ```sh

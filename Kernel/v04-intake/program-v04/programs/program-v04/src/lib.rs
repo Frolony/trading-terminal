@@ -2433,12 +2433,17 @@ pub mod program_v04 {
     /// refuses with `RecordMismatch` before any replay. The
     /// payer is a fee payer only, as in slice 39. Only the
     /// target record's stage advances; sibling records are
-    /// read, never written. A sibling at stage `SELECTED`
-    /// refuses at the helper's gate — its already-selected
-    /// re-proof is the next slice, not smuggled in here — and
-    /// an ordinary-typed sibling refuses at the type gate, so
-    /// a mixed field is fail-closed by the census gate rather
-    /// than judged by this instruction.
+    /// read, never written. A sibling at stage `SELECTED` is
+    /// admitted (slice 41, the governance analogue of slice
+    /// 18): its own select is re-proven in the rebuilt kernel
+    /// before the target's select, so a proven selected
+    /// sibling blocks the target through the kernel's
+    /// `ParentAlreadyHasASelectedTransition` arm, while an
+    /// unprovable `SELECTED` label refuses the whole call
+    /// rather than blocking on trust. An ordinary-typed
+    /// sibling refuses at the type gate, so a mixed field is
+    /// fail-closed by the census gate rather than judged by
+    /// this instruction.
     pub fn select_candidate_governance_with_siblings(
         ctx: Context<SelectCandidateGovernanceWithSiblings>,
         transition_id: [u8; 32],
@@ -7460,12 +7465,20 @@ pub fn select_candidate_governance_from_records(
 /// `submitted_at`; no duplicated (agent, round) in the target
 /// set. Sibling gates, per sibling: an id distinct from the
 /// target and from every other supplied sibling; stage exactly
-/// `ELIGIBLE` — a `SELECTED` sibling refuses here, as in slice
-/// 17's original bound: its already-selected re-proof is the
-/// next slice's work, and the refusal is the correct outcome
-/// (the target cannot select past a selected competitor) by
-/// the gate rather than by the kernel's
-/// `ParentAlreadyHasASelectedTransition` arm; parent exactly
+/// `ELIGIBLE` or `SELECTED` (slice 41, the governance analogue
+/// of slice 18: every other non-`ELIGIBLE` stage still refuses;
+/// a `SELECTED` stage label is NOT trusted as proof of
+/// selection — the helper replays the sibling's own select in
+/// the rebuilt kernel, at the state's clock, after the merged
+/// timeline and before the target's select, and verifies the
+/// sibling's life becomes `Selected` there; only then can the
+/// kernel's `ParentAlreadyHasASelectedTransition` arm fire on
+/// the target's select; a `SELECTED` sibling whose own select
+/// cannot be proven refuses the whole helper with
+/// `SelectFailed`, and the target stays `ELIGIBLE`); at most
+/// one `SELECTED` sibling is admitted — a parent can have only
+/// one selected transition, so two supplied `SELECTED`
+/// siblings refuse before any replay; parent exactly
 /// the target's parent (hence the sealed head); observation
 /// linkage to its own observation record; a governance type
 /// (`NotGovernanceTransition` otherwise — an ordinary sibling
@@ -7485,7 +7498,13 @@ pub fn select_candidate_governance_from_records(
 /// before the target on an equal `eligible_at` — the
 /// fail-closed tie rule); then kernel `select_candidate` runs
 /// on the target at the state's clock, where the kernel's
-/// `SiblingsStillOpen` / `OutrankedBySibling` arms can fire. A
+/// `SiblingsStillOpen` / `OutrankedBySibling` arms can fire —
+/// and, if a `SELECTED` sibling was supplied, kernel
+/// `select_candidate` runs on that sibling first at the state's
+/// clock and its life must become `Selected` (slice 41: the
+/// stage label is re-proven, never trusted), so the target's
+/// select then meets the kernel's
+/// `ParentAlreadyHasASelectedTransition` arm. A
 /// kernel refusal in any call maps to `SelectFailed`: a
 /// still-open target or sibling window, an unmet quorum,
 /// confidence below the launch threshold, an outranking
@@ -7568,7 +7587,9 @@ pub fn select_candidate_governance_from_records_with_siblings(
             {
                 return Err(error!(ProgramV04Error::SelectFailed));
             }
-            if srec.stage != TransitionRecord::ELIGIBLE {
+            if srec.stage != TransitionRecord::ELIGIBLE
+                && srec.stage != TransitionRecord::SELECTED
+            {
                 return Err(error!(ProgramV04Error::SelectFailed));
             }
             if srec.parent_index != transition_record.parent_index
@@ -7606,6 +7627,19 @@ pub fn select_candidate_governance_from_records_with_siblings(
                 }
             }
         }
+    }
+    // Slice 41: a parent can have only one selected transition, so
+    // two supplied SELECTED siblings are an inconsistent field even
+    // before any replay — the first one's select would already make
+    // the second's impossible, and the kernel would refuse it there;
+    // refusing here names the inconsistency at the gate instead.
+    if siblings
+        .iter()
+        .filter(|s| s.transition_record.stage == TransitionRecord::SELECTED)
+        .count()
+        > 1
+    {
+        return Err(error!(ProgramV04Error::SelectFailed));
     }
     // Slice 19, on the governance path: the supplied field plus
     // the target must number exactly the census at the target's
@@ -7704,6 +7738,34 @@ pub fn select_candidate_governance_from_records_with_siblings(
                 )
                 .map_err(|_| error!(ProgramV04Error::SelectFailed))?;
             }
+        }
+    }
+    // Slice 41: re-prove a supplied SELECTED sibling's own select
+    // before the target's. The sibling's chain and signals are
+    // already in the rebuilt kernel from the merged timeline above,
+    // so this call judges exactly what its stored stage claims: that
+    // it won a select. It runs at the state's clock — the same clock
+    // the target's select runs at next, `tick` accepting the equal
+    // time — and call order is what makes it "already" selected:
+    // after this call `selected_for` names the sibling, so the
+    // target's select below meets the kernel's
+    // `ParentAlreadyHasASelectedTransition` arm rather than a
+    // sibling-loop comparison against a merely eligible record. A
+    // sibling that cannot win here (unqualified tally, an outranking
+    // target, a window not yet closed) refuses the whole helper,
+    // and the target's stage is left untouched.
+    for sibling in siblings {
+        if sibling.transition_record.stage != TransitionRecord::SELECTED {
+            continue;
+        }
+        k.select_candidate(
+            &sibling.transition_record.transition_id,
+            kernel_state.clock,
+        )
+        .map_err(|_| error!(ProgramV04Error::SelectFailed))?;
+        match k.life_of(&sibling.transition_record.transition_id) {
+            Some(Life::Selected) => {}
+            _ => return Err(error!(ProgramV04Error::SelectFailed)),
         }
     }
     k.select_candidate(&transition_record.transition_id, kernel_state.clock)
@@ -8655,7 +8717,9 @@ pub struct SiblingReplay<'a> {
 }
 
 /// One governance sibling transition offered to a sibling-aware
-/// governance select (slice 40): the sibling's stored transition
+/// governance select (slice 40; slice 41 admits a `SELECTED`
+/// sibling whose own select is re-proven in the rebuilt kernel
+/// before the target's): the sibling's stored transition
 /// record, its observation record, its stored council approval
 /// records, and its stored signal records. All four are read,
 /// never written: the replay proves the sibling's tally in a
@@ -16663,23 +16727,71 @@ mod tests {
         assert_eq!(target.stage, TransitionRecord::ELIGIBLE);
     }
 
+    // Slice 41 fixtures: a SELECTED governance sibling is an
+    // ELIGIBLE governance sibling whose stored stage has been
+    // advanced to 4, exactly as the slice-39 select instruction
+    // would have advanced it after its own selection — the
+    // helper must re-prove that selection from the chain and
+    // signals, not trust the stage value. This replaces the
+    // slice-40 `refuses_selected_stage_sibling` test, whose
+    // gate premise slice 41 amends (as slice 18 amended slice
+    // 17's): a SELECTED sibling is now admitted and re-proven,
+    // not refused at the gate.
+
     #[test]
-    fn gov_select_with_siblings_refuses_selected_stage_sibling() {
-        // A sibling already at stage SELECTED refuses at the
-        // helper's gate: its already-selected re-proof is the
-        // next slice, and the target cannot select past it
-        // through this instruction. The refusal is by the
-        // gate, not by the kernel's selected arm, and the
-        // target stays ELIGIBLE.
+    fn gov_select_with_selected_sibling_blocks_target() {
+        // Sibling eligible at 100, target at 150, both confidence
+        // 1.0, both windows closed at 250: the sibling's own select
+        // is replayed first and wins its tie (earlier eligibility),
+        // so the target's select meets the kernel's
+        // ParentAlreadyHasASelected arm and refuses. The target
+        // stays ELIGIBLE and the sibling record is untouched — the
+        // helper never writes sibling records.
+        let mut state = select_state_at(250);
+        state.eligible_sibling_count = 2;
+        let (_, mut sib, sib_obs, sib_approvals) =
+            gov_eligible_pair_at([0xD2; 32], [0xC1; 32], [0xE2; 32], 100);
+        let sib_sig =
+            gov_sibling_signal_at(&mut sib, &sib_obs, &sib_approvals, &[], 2, SCALE, 100);
+        // Mutated after the signal is built: the signal helper
+        // itself gates on ELIGIBLE stage, so the mutation must
+        // follow it, not precede it.
+        sib.stage = TransitionRecord::SELECTED;
+        let (_, mut target, target_obs, target_approvals) =
+            gov_eligible_pair_at([0xD1; 32], [0xC0; 32], [0xE1; 32], 150);
+        let target_sig = gov_sibling_signal_at(
+            &mut target, &target_obs, &target_approvals, &[], 2, SCALE, 150,
+        );
+        let sibling = GovSiblingReplay {
+            transition_record: &sib,
+            observation_record: &sib_obs,
+            approval_records: &sib_approvals,
+            prior_signals: &[sib_sig],
+        };
+        let err = select_candidate_governance_from_records_with_siblings(
+            &state, &mut target, &target_obs, &target_approvals, &[target_sig], &[sibling], &[],
+        )
+        .expect_err("an already-selected governance sibling must block the target");
+        assert!(format!("{:?}", err).contains("SelectFailed"));
+        assert_eq!(target.stage, TransitionRecord::ELIGIBLE);
+        assert_eq!(sib.stage, TransitionRecord::SELECTED);
+    }
+
+    #[test]
+    fn gov_select_with_selected_sibling_refuses_unqualified() {
+        // A SELECTED stage label with a confidence-0 tally (one
+        // support-0 signal) cannot be proven selected: the sibling's
+        // own select fails its confidence threshold, the whole
+        // helper refuses, and the target — which would otherwise
+        // select over a merely eligible confidence-0 sibling — stays
+        // ELIGIBLE. The stage label alone never blocks.
         let mut state = select_state_at(200);
         state.eligible_sibling_count = 2;
         let (_, mut target, target_obs, target_approvals, first) = gov_selected_pair();
         let (_, mut sib, sib_obs, sib_approvals) =
             gov_eligible_pair_at([0xD3; 32], [0xC1; 32], [0xE3; 32], 100);
-        let sib_sig = gov_sibling_signal_at(&mut sib, &sib_obs, &sib_approvals, &[], 2, 0, 100);
-        // Mutated after the signal is built: the signal helper
-        // itself gates on ELIGIBLE stage, so the mutation must
-        // follow it, not precede it.
+        let sib_sig =
+            gov_sibling_signal_at(&mut sib, &sib_obs, &sib_approvals, &[], 2, 0, 100);
         sib.stage = TransitionRecord::SELECTED;
         let sibling = GovSiblingReplay {
             transition_record: &sib,
@@ -16690,7 +16802,190 @@ mod tests {
         let err = select_candidate_governance_from_records_with_siblings(
             &state, &mut target, &target_obs, &target_approvals, &[first], &[sibling], &[],
         )
-        .expect_err("a selected-stage sibling must refuse this instruction");
+        .expect_err("an unqualified selected governance sibling must refuse");
+        assert!(format!("{:?}", err).contains("SelectFailed"));
+        assert_eq!(target.stage, TransitionRecord::ELIGIBLE);
+    }
+
+    #[test]
+    fn gov_select_with_selected_sibling_refuses_outranked() {
+        // A SELECTED sibling at confidence 0.5 (supports 1.0 and 0)
+        // against a confidence-1.0 target: the sibling's own select
+        // fails OutrankedBySibling, so the helper refuses instead of
+        // letting the stage label block a target that genuinely
+        // outranks it.
+        let mut state = select_state_at(200);
+        state.eligible_sibling_count = 2;
+        let (_, mut target, target_obs, target_approvals, first) = gov_selected_pair();
+        let (_, mut sib, sib_obs, sib_approvals) =
+            gov_eligible_pair_at([0xD3; 32], [0xC1; 32], [0xE3; 32], 100);
+        let sib_first =
+            gov_sibling_signal_at(&mut sib, &sib_obs, &sib_approvals, &[], 2, SCALE, 100);
+        let sib_second = gov_sibling_signal_at(
+            &mut sib, &sib_obs, &sib_approvals, &[sib_first], 3, 0, 100,
+        );
+        sib.stage = TransitionRecord::SELECTED;
+        let sibling = GovSiblingReplay {
+            transition_record: &sib,
+            observation_record: &sib_obs,
+            approval_records: &sib_approvals,
+            prior_signals: &[sib_first, sib_second],
+        };
+        let err = select_candidate_governance_from_records_with_siblings(
+            &state, &mut target, &target_obs, &target_approvals, &[first], &[sibling], &[],
+        )
+        .expect_err("an outranked selected governance sibling must refuse");
+        assert!(format!("{:?}", err).contains("SelectFailed"));
+        assert_eq!(target.stage, TransitionRecord::ELIGIBLE);
+    }
+
+    #[test]
+    fn gov_select_with_selected_sibling_refuses_open_window() {
+        // The selected sibling's window (150/250) is still open at
+        // the select clock 200 while the target's (100/200) is
+        // closed: the sibling's own select cannot run before its
+        // deadline, so the helper refuses and the target stays
+        // ELIGIBLE.
+        let mut state = select_state_at(200);
+        state.eligible_sibling_count = 2;
+        let (_, mut target, target_obs, target_approvals, first) = gov_selected_pair();
+        let (_, mut sib, sib_obs, sib_approvals) =
+            gov_eligible_pair_at([0xD3; 32], [0xC1; 32], [0xE3; 32], 150);
+        let sib_sig =
+            gov_sibling_signal_at(&mut sib, &sib_obs, &sib_approvals, &[], 2, SCALE, 150);
+        sib.stage = TransitionRecord::SELECTED;
+        let sibling = GovSiblingReplay {
+            transition_record: &sib,
+            observation_record: &sib_obs,
+            approval_records: &sib_approvals,
+            prior_signals: &[sib_sig],
+        };
+        let err = select_candidate_governance_from_records_with_siblings(
+            &state, &mut target, &target_obs, &target_approvals, &[first], &[sibling], &[],
+        )
+        .expect_err("a selected governance sibling with an open window must refuse");
+        assert!(format!("{:?}", err).contains("SelectFailed"));
+        assert_eq!(target.stage, TransitionRecord::ELIGIBLE);
+    }
+
+    #[test]
+    fn gov_select_with_two_selected_siblings_refuses() {
+        // A parent can have only one selected transition: two
+        // supplied SELECTED siblings are an inconsistent field and
+        // refuse at the gate, before any replay, with the target
+        // left ELIGIBLE.
+        let mut state = select_state_at(200);
+        state.eligible_sibling_count = 3;
+        let (_, mut target, target_obs, target_approvals, first) = gov_selected_pair();
+        let (_, mut sib1, sib1_obs, sib1_approvals) =
+            gov_eligible_pair_at([0xD2; 32], [0xC1; 32], [0xE2; 32], 100);
+        let sib1_sig = gov_sibling_signal_at(
+            &mut sib1, &sib1_obs, &sib1_approvals, &[], 2, SCALE, 100,
+        );
+        sib1.stage = TransitionRecord::SELECTED;
+        let (_, mut sib2, sib2_obs, sib2_approvals) =
+            gov_eligible_pair_at([0xD4; 32], [0xC2; 32], [0xE4; 32], 100);
+        let sib2_sig = gov_sibling_signal_at(
+            &mut sib2, &sib2_obs, &sib2_approvals, &[], 2, SCALE, 100,
+        );
+        sib2.stage = TransitionRecord::SELECTED;
+        let first_sibling = GovSiblingReplay {
+            transition_record: &sib1,
+            observation_record: &sib1_obs,
+            approval_records: &sib1_approvals,
+            prior_signals: &[sib1_sig],
+        };
+        let second_sibling = GovSiblingReplay {
+            transition_record: &sib2,
+            observation_record: &sib2_obs,
+            approval_records: &sib2_approvals,
+            prior_signals: &[sib2_sig],
+        };
+        let err = select_candidate_governance_from_records_with_siblings(
+            &state, &mut target, &target_obs, &target_approvals, &[first],
+            &[first_sibling, second_sibling], &[],
+        )
+        .expect_err("two selected governance siblings must refuse");
+        assert!(format!("{:?}", err).contains("SelectFailed"));
+        assert_eq!(target.stage, TransitionRecord::ELIGIBLE);
+    }
+
+    #[test]
+    fn gov_select_with_selected_and_eligible_siblings_blocks_target() {
+        // Mixed field: a winning SELECTED sibling (eligible 100,
+        // confidence 1.0) plus a weaker ELIGIBLE sibling (confidence
+        // 0) against a confidence-1.0 target eligible at 150, all
+        // windows closed at 250. The selected sibling's own select
+        // succeeds over both, then the target meets
+        // ParentAlreadyHasASelected and refuses.
+        let mut state = select_state_at(250);
+        state.eligible_sibling_count = 3;
+        let (_, mut selected, selected_obs, selected_approvals) =
+            gov_eligible_pair_at([0xD2; 32], [0xC1; 32], [0xE2; 32], 100);
+        let selected_sig = gov_sibling_signal_at(
+            &mut selected, &selected_obs, &selected_approvals, &[], 2, SCALE, 100,
+        );
+        selected.stage = TransitionRecord::SELECTED;
+        let (_, mut weaker, weaker_obs, weaker_approvals) =
+            gov_eligible_pair_at([0xD3; 32], [0xC2; 32], [0xE3; 32], 100);
+        let weaker_sig = gov_sibling_signal_at(
+            &mut weaker, &weaker_obs, &weaker_approvals, &[], 2, 0, 100,
+        );
+        let (_, mut target, target_obs, target_approvals) =
+            gov_eligible_pair_at([0xD1; 32], [0xC0; 32], [0xE1; 32], 150);
+        let target_sig = gov_sibling_signal_at(
+            &mut target, &target_obs, &target_approvals, &[], 2, SCALE, 150,
+        );
+        let selected_sibling = GovSiblingReplay {
+            transition_record: &selected,
+            observation_record: &selected_obs,
+            approval_records: &selected_approvals,
+            prior_signals: &[selected_sig],
+        };
+        let weaker_sibling = GovSiblingReplay {
+            transition_record: &weaker,
+            observation_record: &weaker_obs,
+            approval_records: &weaker_approvals,
+            prior_signals: &[weaker_sig],
+        };
+        let err = select_candidate_governance_from_records_with_siblings(
+            &state, &mut target, &target_obs, &target_approvals, &[target_sig],
+            &[selected_sibling, weaker_sibling], &[],
+        )
+        .expect_err("a mixed governance field with a selected winner must block the target");
+        assert!(format!("{:?}", err).contains("SelectFailed"));
+        assert_eq!(target.stage, TransitionRecord::ELIGIBLE);
+    }
+
+    #[test]
+    fn gov_select_with_selected_sibling_refuses_incomplete_set() {
+        // The selected sibling's count is 2 but only its first
+        // signal is supplied: the per-sibling completeness anchor
+        // refuses before any replay, so the target cannot select
+        // over a partially proven field — and the anchor fires
+        // before the re-proof, not after it.
+        let mut state = select_state_at(200);
+        state.eligible_sibling_count = 2;
+        let (_, mut target, target_obs, target_approvals, first) = gov_selected_pair();
+        let (_, mut sib, sib_obs, sib_approvals) =
+            gov_eligible_pair_at([0xD3; 32], [0xC1; 32], [0xE3; 32], 100);
+        let sib_first =
+            gov_sibling_signal_at(&mut sib, &sib_obs, &sib_approvals, &[], 2, SCALE, 100);
+        let _sib_second = gov_sibling_signal_at(
+            &mut sib, &sib_obs, &sib_approvals, &[sib_first], 3, 0, 100,
+        );
+        assert_eq!(sib.signal_count, 2);
+        sib.stage = TransitionRecord::SELECTED;
+        let sibling = GovSiblingReplay {
+            transition_record: &sib,
+            observation_record: &sib_obs,
+            approval_records: &sib_approvals,
+            prior_signals: &[sib_first],
+        };
+        let err = select_candidate_governance_from_records_with_siblings(
+            &state, &mut target, &target_obs, &target_approvals, &[first], &[sibling], &[],
+        )
+        .expect_err("a short selected governance sibling signal set must refuse");
         assert!(format!("{:?}", err).contains("SelectFailed"));
         assert_eq!(target.stage, TransitionRecord::ELIGIBLE);
     }
