@@ -472,6 +472,48 @@ the brief outline flash marks the landing panel without touching its copy.*/
 .onb-nav{display:flex;gap:8px;justify-content:space-between;padding:12px 14px;border-top:1px solid var(--line)}
 .onb-nav button{border:1px solid var(--line);background:var(--btnbg);color:var(--btntext);border-radius:6px;padding:7px 14px;font-size:12px}
 .onb-nav button:disabled{opacity:.45;cursor:default}
+/* N5.38 (2026-10-29, A124): phone-width layout — CSS ONLY, no feature, endpoint,
+   or layout-state change. Every rule below lives inside a max-width query, so
+   desktop widths render byte-identically to the pre-change tree (verified by
+   diffing the stylesheet outside these blocks). Why each rule exists:
+   - .sidecol was a 2-column grid at 641-980px, so at 768px side-column panels
+     sat side by side instead of stacking; flex column restores one column.
+   - Flex/grid items default to min-width:auto, so the header, chart head,
+     panel heads, and the stat-strip/holders/dashboard grids refused to shrink
+     below their longest content (long supply figures, nowrap chips) and pushed
+     the page wider than the viewport; min-width:0 + anywhere-wrapping fixes
+     the shrink without changing any value.
+   - Discovery result rows (.discpair min-width:190px + action cluster) were
+     wider than a 390px panel; wrapping the row keeps pair and actions visible.
+   - Holder/activity rows carry a 44-char mono address plus a value; wrapping
+     the row at phone widths keeps both visible instead of overflowing.
+   - The chain rail keeps its designed in-rail horizontal scroll (overflow-x
+     on the rail itself, not the page); nothing here touches it. */
+@media(max-width:768px){
+.top{flex-wrap:wrap}
+.top,.topright,.brand,.charthead,.coinname,.panelhead,.pagebtns{min-width:0}
+.charthead{flex-wrap:wrap}
+.panelhead{flex-wrap:wrap}
+.pagebtns{flex-wrap:wrap}
+.range{flex-wrap:wrap}
+.stats{grid-template-columns:repeat(2,minmax(0,1fr))}
+.statstrip-grid,.holders-grid,.dashgrid{min-width:0}
+.statstrip-cell,.holders-cell,.dashstat,.stat{min-width:0}
+.stat .big,.dashstat .v,.statstrip-cell b,.holders-cell b{overflow-wrap:anywhere}
+.sidecol{display:flex;flex-direction:column}
+.result{flex-wrap:wrap;min-width:0}
+.discpair{min-width:0}
+.jupstrip{min-width:0}
+.toast{max-width:calc(100vw - 24px)}
+.discxcard{max-width:calc(100vw - 24px)}
+}
+@media(max-width:480px){
+.statstrip-grid{grid-template-columns:repeat(2,1fr)}
+.holders-grid{grid-template-columns:repeat(2,1fr)}
+.dashgrid{grid-template-columns:1fr}
+.holders-row,.walletact-row{flex-wrap:wrap}
+.holders-row .holders-addr,.walletact-row .walletact-addr{min-width:0}
+}
 </style></head><body><div class="app">
 <header class="top"><div class="brand"><div class="mark">T</div><div><h1>TURNPOOL</h1><small>Solana market intelligence</small></div></div><div class="topright"><div class="pagebtns" role="tablist" aria-label="Pages"><button type="button" id="tabTerminal" class="active" role="tab" aria-selected="true">Terminal</button><button type="button" id="tabDashboard" role="tab" aria-selected="false">Dashboard</button><button type="button" id="tabLab" role="tab" aria-selected="false">Strategy Lab</button></div><span class="pill">NETWORK&nbsp; / &nbsp;SOLANA</span><span class="status"><i class="dot"></i><span id="feedStatus" data-testid="feed-badge">CONNECTING DATA</span></span><button id="cmdPaletteBtn" class="action" type="button" title="Open command palette (Ctrl/Cmd+K)">&#8984;K Commands</button><span class="wwrap"><button id="walletBtn" class="walletbtn" type="button">Connect Wallet</button><span id="syncDot" style="display:none;width:8px;height:8px;border-radius:50%;background:#888;vertical-align:middle;margin-left:2px" title="Sync"></span><div class="wdd" id="walletDd" hidden><div class="wactive-card"><div class="wcard-top"><span class="wavatar" id="walletDdAvatar">W</span><div class="wcard-meta"><div class="wcard-name" id="walletDdName">Wallet</div><button type="button" class="waddr" id="walletDdAddr" title="Copy address"></button><span class="wcard-addr" id="walletDdChain"></span></div><span class="wchip chip-off" id="walletSyncChip">Sync off</span></div><div class="wsyncrow"><span class="wsync-label">Sync</span><span class="wsync-value" id="walletSyncLine">Sync off</span></div><button type="button" class="wfull" id="walletSyncTapBtn" hidden>Sign in to sync</button></div><div class="wbal-card"><div class="walletrow"><span>SOL balance</span><strong id="walletSol">—</strong></div><div class="walletrow"><span>USDC balance</span><strong id="walletUsdc">—</strong></div><div class="walletrow"><span>USDT balance</span><strong id="walletUsdt">—</strong></div><div class="wrowbtn"><button type="button" id="walletCopy">Copy address</button><button type="button" id="walletRetryBal">Retry balances</button></div></div><div id="walletRoster"></div><div class="wrowbtn wbottom"><button type="button" class="wfull" id="walletAddBtn">+ Add New Wallet</button><button type="button" id="walletDisconnect" class="danger">Disconnect active wallet</button></div></div></span><!-- N2.7 amendment 2026-10-24 (Carlos 17:47 CST): sign-in moves into the banner; the signed-out header carries no sign-in control, Log out lives in the header only when signed in. --><span class="wwrap"><button id="acctBtn" class="walletbtn" type="button" title="Email account — optional sign-in" style="display:none">Log out</button><span id="acctEmail" style="display:none;font-size:11px;color:var(--muted);max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="Signed-in email account"></span></span><span class="pill">PAPER MODE</span><button id="howItWorksLink" class="howlink" type="button" data-testid="how-it-works-link" title="How the terminal handles orders — simulated paper trading and wallet-signed swaps">How this works</button><span class="wwrap"><button id="layoutBtn" class="iconbtn" type="button" aria-label="Open layout" title="Layout">▦</button><div class="lpop" id="layoutPop" hidden role="dialog" aria-label="Layout"><div class="lpop-head"><strong>Layout</strong><button class="wclose" id="layoutPopClose" type="button" aria-label="Close layout">×</button></div><div class="lpop-note">Three pages — Terminal, Dashboard, Strategy Lab — share one layout. Drag any panel by its header to move it anywhere — the arrows reorder panels within each column; each row's page control moves the panel to another page — it appears there, visible, in its home column.</div><div id="layoutPanelList"></div><div class="lpop-hidden" id="layoutHiddenNote" hidden></div><div class="lpop-sec">Workspaces</div><div id="layoutWsList"></div><div class="searchrow" style="margin-top:8px"><input id="layoutWsName" maxlength="40" placeholder="Name this layout" aria-label="Workspace name" autocomplete="off" spellcheck="false"><button id="layoutWsSave" type="button">Save</button></div></div></span><button id="resetUiBtn" class="resetuibtn" type="button" data-testid="reset-ui-btn" aria-label="Reset UI layout" title="Reset UI layout — restore every panel to its home position">↺ Reset UI</button><!-- N5.13 2026-10-24 (A58): the swap door lives in the header now — the floating pill is gone (see scripts/preserve-gecko.mjs). --><a id="swapHeaderBtn" class="swapheadbtn" href="/raydium/" data-testid="swap-header-btn" title="Open the Raydium swap page">Swap on Raydium</a><button id="settingsBtn" class="iconbtn" type="button" aria-label="Open settings" title="Settings">⚙</button></div></header>
 <div id="acctBanner" class="acctbanner" hidden><span class="acctbanner-text"><strong>Create a free account or sign in</strong> — your paper trading follows you across devices. <span class="acctbanner-never">We never sell your email.</span></span><span class="acctbanner-form"><input id="acctBannerEmail" type="email" inputmode="email" autocomplete="email" maxlength="254" placeholder="you@example.com" aria-label="Email for a free account"><button id="acctBannerSubmit" type="button">Create free account</button><button id="acctBannerSignin" type="button">Sign in</button><button id="acctBannerDismiss" type="button" aria-label="Dismiss sign-up banner">×</button></span></div>
