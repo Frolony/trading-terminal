@@ -200,11 +200,55 @@ here rather than smoothed over; a future slice may isolate it.
 With this slice, every slice-51 carrier instruction is measured
 (init / append / finalize / close) and the slice-51 CU set is
 closed. Remaining carried debts: genuine Agave 4.3.2 /
-Anchor 1.2.2 builds, the post-settle reclaim decision (close
+Anchor 1.2.2 builds, and the post-settle reclaim decision (close
 after settle is still unbuilt — this slice proves only the
-abandoned-account reclaim and the finalized refusal), and the
-golden-`.so` sha debt (`cb2bf957…` is still the freshly built
-current source, not a frozen golden).
+abandoned-account reclaim and the finalized refusal). The
+golden-`.so` sha debt below is CLOSED by the freeze section
+that follows.
+
+## Golden `.so` freeze (2026-10-29)
+
+**FROZEN — program_v04 `.so` sha256
+`cb2bf9577169737befb4c68ce12aa0e11d8978a6d4fdb8d6d375f1d22662547d`.**
+This is the binary the slice-2/slice-3 golden CU values were
+measured against, now frozen rather than merely fresh:
+
+- Source: the slice-53 program source (pushed as `dde06b67`
+  on branch `kernel-v04`); this run verified the staging
+  `lib.rs` byte-identical to the branch-staging copy.
+- Reproducibility proof, this run: a forced rebuild
+  (`touch` on `lib.rs`, pinned-toolchain `anchor build`,
+  Anchor 1.2.1 / Solana 4.1.2 / platform-tools v1.54) produced
+  a byte-identical `.so` — same sha, same 1,663,024 bytes.
+  The known pinned overflow-list item (the pre-existing
+  BTreeMap-insert frame, 4,672 bytes) still reports during the
+  build and does not change the output.
+- Measurement proof, this run: the mollusk harness re-run
+  against the rebuilt `.so` reproduced all 17 measured CU
+  values, the finalized-close refusal (5,328 CU, 6034), and
+  the empty `blocked` list exactly; the regenerated golden
+  JSON is text-identical to the slice-3 file.
+- The binary itself is NOT committed: the snapshot push path
+  accepts UTF-8 files only, so the freeze is this sha plus
+  the reproducibility proof above — any holder of the pushed
+  source and the pinned toolchain rebuilds the frozen binary
+  byte for byte. The frozen sha is pinned-toolchain-only; a
+  build under another toolchain is not expected to match and
+  does not invalidate the freeze.
+- Freeze rule going forward: before trusting any CU run,
+  check `sha256sum target/deploy/program_v04.so` against the
+  frozen sha above. A source change requires an explicit
+  re-freeze (new sha + full re-measurement), never silent
+  drift — the golden file's `so_sha256` field is the check,
+  and a mismatch is a stop, not a rounding error.
+- Carried caveat, not smoothed: slice 51 recorded a golden
+  sha (`1de0c0a2…`) that two pinned-toolchain rebuilds did
+  NOT reproduce (`407907c8…` twice). That debt belonged to
+  the slice-51 build context and source state; for the
+  slice-53 source the pinned rebuild reproduces, as proven
+  above. If a future rebuild ever fails to reproduce the
+  frozen sha, that is a new finding to record, not a value
+  to overwrite quietly.
 
 ## Layout
 
