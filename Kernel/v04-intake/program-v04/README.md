@@ -1836,6 +1836,71 @@ families, account inventory, and CU golden set are later step-5 slices.
   instructions alone; a revise-approval instruction; and
   CU measurement — later slices.
 
+## Slice 44 — the governance submit-plan instruction
+
+- `submit_plan_governance` +
+  `submit_plan_governance_from_records` +
+  `SubmitPlanGovernance` + `split_gov_plan_tail`: the
+  slice-21 submit plan on the governance path. Gates, in
+  order: sealed state; stage exactly `PLANNING`; parent
+  exactly the sealed head; observation linkage; a
+  governance type (`NotGovernanceTransition` otherwise —
+  an ordinary record submits a plan through the ordinary
+  helper, never here); the approval-count anchor; a proven
+  planning window (a nonzero stored deadline, the state's
+  clock strictly inside it); the new plan's expiry strictly
+  after the stored deadline; the prior-signal anchor
+  (supplied signals numbering exactly `signal_count`,
+  every prior belonging to the transition with a stored
+  round matching its own `submitted_at`, no duplicated
+  (agent, round)); the prior-plan anchor (supplied plans
+  numbering exactly `plan_count`, every prior belonging
+  to the transition, no duplicated resource inside a
+  prior's claims); the new claim list bounded (8) and
+  duplicate-free. Replay runs the slice-37 governance
+  prefix (approvals + ingest + governance registration)
+  at the stored `eligible_at`, then evaluate and
+  mark_eligible at the same clock, then each prior signal
+  at its `submitted_at` in order, then select and
+  open_planning at the derived open clock (so the
+  replayed deadline equals the stored deadline, by
+  construction), then each prior plan and the new plan at
+  the state's clock. Only a `Life::Planning` life at each
+  stage advances anything, and the stage stays `PLANNING`
+  throughout — `plan_count` increments on success only.
+  The instruction's remaining accounts parse as in slice
+  31's submit plan, with the governance tail first:
+  prior COMMITTED bundles first, then approvals, then
+  prior signals, then prior plans, split by the new
+  `split_gov_plan_tail`. No new account, error, or event;
+  the emitted event is the existing `PlanSubmitted`.
+- No governance difference surfaced by a failing test
+  this slice: the first plan from a seeded agent, the
+  second agent replaying the prior plan, and all eleven
+  refusals (wrong stage, at-deadline, expiry-at-deadline,
+  unknown agent, duplicate agent, duplicate resource,
+  incomplete prior plans, incomplete prior signals,
+  unsealed, ordinary type, non-unanimous approvals)
+  passed in their first faithful form — the kernel's
+  agent gate and unanimity gate behave on the governance
+  path exactly as on the ordinary one.
+- Host tests 337/337 (324 prior + 13 slice-44). Clippy
+  back to the pre-existing profile (anchor macro
+  `unexpected cfg` noise + the slice-8 test helper's
+  `type_complexity` warning at lib.rs:11055, the
+  `record_args` helper — line shifted by this slice's
+  inserts); zero warnings naming any slice-44 symbol and
+  none pointing at the new accounts struct. IDL counts
+  move by design (30 instructions, 6 accounts, 34 errors,
+  18 events — +1 instruction only, including
+  `submit_plan_governance`); `.so` 1,517,376 bytes
+  (sha256 `8450b572…`).
+- Deliberately NOT slice 44: the governance reconcile,
+  validate, and declare stages — a governance record
+  still cannot reach `DECLARED` through instructions
+  alone; a revise-approval instruction; and CU
+  measurement — later slices.
+
 ## Build
 
 ```sh
