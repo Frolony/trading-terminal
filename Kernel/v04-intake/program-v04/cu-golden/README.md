@@ -230,11 +230,18 @@ measured against, now frozen rather than merely fresh:
   JSON is text-identical to the slice-3 file.
 - The binary itself is NOT committed: the snapshot push path
   accepts UTF-8 files only, so the freeze is this sha plus
-  the reproducibility proof above — any holder of the pushed
-  source and the pinned toolchain rebuilds the frozen binary
-  byte for byte. The frozen sha is pinned-toolchain-only; a
-  build under another toolchain is not expected to match and
-  does not invalidate the freeze.
+  the reproducibility proof above. Reproduction is
+  path-sensitive, stated plainly: the proof above rebuilds
+  from the same staging directory, and oversight's scratch
+  copy of identical source built a different sha
+  (`7c9ab3fb…`, roadmap 10:2x entry — attributed there to
+  embedded build-directory paths, source diff clean, CU
+  reproduction exact). So the frozen sha is
+  pinned-toolchain-plus-canonical-path, not toolchain alone:
+  a mismatch from a same-path rebuild is a stop; a mismatch
+  from a different build directory is a procedure difference
+  to re-check from the canonical path first, not automatic
+  proof of source drift.
 - Freeze rule going forward: before trusting any CU run,
   check `sha256sum target/deploy/program_v04.so` against the
   frozen sha above. A source change requires an explicit
