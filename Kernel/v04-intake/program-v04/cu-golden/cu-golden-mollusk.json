@@ -1,59 +1,88 @@
 {
-  "blocked": [
-    {
-      "error": "Anchor 3005 AccountNotEnoughKeys (kernel_state), before any handler gate",
-      "instruction": "approve_governance",
-      "note": "Slice-50 ROOT CAUSE PROVEN (see main.rs header): __global wrapper frame 5,760 bytes over the 4,096-byte BPF stack limit corrupts the accounts slice; not mollusk-specific, cannot execute on-chain as built. Fix pending design decision (compact action encoding or account-carried action), frame-measured as well as tx-measured.",
-      "result": "Blocked"
-    },
-    {
-      "error": "Anchor 3005 AccountNotEnoughKeys (kernel_state), before any handler gate",
-      "instruction": "revise_governance_approval",
-      "note": "Slice-50 ROOT CAUSE PROVEN (see main.rs header): __global wrapper frame 5,696 bytes over the 4,096-byte BPF stack limit corrupts the accounts slice; controlled experiment (same struct+arg, trivial body loads, exact body 3005s) isolates the frame. Same pending design decision as approve_governance.",
-      "result": "Blocked"
-    }
-  ],
-  "design_finding": "approve/revise carry the 1524-byte StoredGovAction by value (1564 bytes of instruction data); with a 64-byte signature that already exceeds Solana's 1232-byte transaction size limit before any account key or blockhash, so neither instruction could be submitted as a single real transaction as currently encoded. Needs a design decision (compact action encoding or account-carried action); not redesigned in this slice.",
+  "blocked": [],
+  "design_finding_resolved": "Slice-49/50 findings CLOSED by the account-carried action (program slices 51-53, Carlos's 2026-10-29 ruling): approve/revise no longer carry the 1524-byte StoredGovAction by value (the 1564-byte instruction-data / tx-size finding is gone — the largest new instruction is a 512-byte chunk), and the rewired wrappers frame-measure fitting 2048 bytes (slice 53). This run proves both instructions execute in-process against the real .so: approve stores the finalized action hash and increments the approval count to 1; revise re-binds the same finalized action with count and hash unchanged.",
   "measured": [
     {
-      "cu": 9795,
+      "cu": 7705,
       "instruction": "probe_kernel",
       "note": "slice-1 baseline (no design estimate exists for the v0.4 program)",
       "result": "Success"
     },
     {
-      "cu": 20369,
+      "cu": 17756,
       "instruction": "initialize_kernel",
       "note": "slice-1 baseline (no design estimate exists for the v0.4 program)",
       "result": "Success"
     },
     {
-      "cu": 21346,
+      "cu": 18028,
       "instruction": "seal_kernel",
       "note": "slice-1 baseline (no design estimate exists for the v0.4 program)",
       "result": "Success"
     },
     {
-      "cu": 4317,
+      "cu": 4158,
       "instruction": "advance_clock",
       "note": "slice-1 baseline (no design estimate exists for the v0.4 program)",
       "result": "Success"
     },
     {
-      "cu": 11872,
+      "cu": 11395,
       "instruction": "register_transition",
       "note": "slice-1 baseline (no design estimate exists for the v0.4 program)",
       "result": "Success"
     },
     {
-      "cu": 28013,
+      "cu": 24383,
       "instruction": "ingest_observation",
       "note": "slice-1 baseline (no design estimate exists for the v0.4 program)",
       "result": "Success"
     },
     {
-      "cu": 27532,
+      "cu": 8427,
+      "instruction": "init_gov_action",
+      "note": "slice-1 baseline (no design estimate exists for the v0.4 program)",
+      "result": "Success"
+    },
+    {
+      "cu": 4660,
+      "instruction": "append_gov_action_chunk@0",
+      "note": "slice-2 account-carried chain (program slices 51-53)",
+      "result": "Success"
+    },
+    {
+      "cu": 4660,
+      "instruction": "append_gov_action_chunk@512",
+      "note": "slice-2 account-carried chain (program slices 51-53)",
+      "result": "Success"
+    },
+    {
+      "cu": 4660,
+      "instruction": "append_gov_action_chunk@1024",
+      "note": "slice-2 account-carried chain (program slices 51-53)",
+      "result": "Success"
+    },
+    {
+      "cu": 7285,
+      "instruction": "finalize_gov_action",
+      "note": "slice-1 baseline (no design estimate exists for the v0.4 program)",
+      "result": "Success"
+    },
+    {
+      "cu": 26100,
       "instruction": "register_governance_transition",
+      "note": "slice-1 baseline (no design estimate exists for the v0.4 program)",
+      "result": "Success"
+    },
+    {
+      "cu": 37577,
+      "instruction": "approve_governance",
+      "note": "slice-1 baseline (no design estimate exists for the v0.4 program)",
+      "result": "Success"
+    },
+    {
+      "cu": 32917,
+      "instruction": "revise_governance_approval",
       "note": "slice-1 baseline (no design estimate exists for the v0.4 program)",
       "result": "Success"
     }
@@ -61,7 +90,7 @@
   "mollusk_svm": "0.16.2",
   "program": "program_v04",
   "program_id": "FzxnCtig4asxnCxGhjcbCDY5zkfcpfTb5GcXNL9UaGg6",
-  "slice": "cu-golden slice 1: genesis + governance registration",
-  "so_sha256": "1de0c0a90b9a033a22bed11b9469f23ba55d769f48152a50495bdb99f9b03cf7",
+  "slice": "cu-golden slice 2: genesis + governance registration + account-carried approval chain (program slices 51-53)",
+  "so_sha256": "cb2bf9577169737befb4c68ce12aa0e11d8978a6d4fdb8d6d375f1d22662547d",
   "toolchain": "Anchor 1.2.1 / Solana 4.1.2 / platform-tools v1.54"
 }

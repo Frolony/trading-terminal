@@ -109,6 +109,60 @@ All slice-1 values are BASELINE: no design estimate exists for
 the v0.4 program (the design doc's §2.2 estimates are for the
 v0.2 treasury program), so nothing here is gated against a band.
 
+## Slice 52/53 follow-up — the account-carried approval chain, MEASURED (2026-10-29)
+
+The slice-49/50 block is CLOSED by runtime proof, not just by
+frame measurement. The harness chain now runs, against the real
+`.so` (sha256 `cb2bf957…`, pinned-toolchain `anchor build`,
+exit 0), the full account-carried sequence the program slices
+51–53 built: `init_gov_action` (writer seat1, expected hash =
+SHA-256 of the serialized action), three `append_gov_action_chunk`
+calls (512 + 512 + 500 = 1,524 bytes, sequential-prefix rule),
+`finalize_gov_action` (on-chain hash, write-once seal), the
+slice-52 `register_governance_transition` (finalized action
+account riding between record and payer), `approve_governance`,
+and `revise_governance_approval`. The action is a hand-serialized
+`GrantRole` (Guardian) to `[0x99;32]` in the fixed
+`StoredGovAction` Borsh layout; its category is `GOV_ADJUSTABLE`,
+matching the record type. State assertions held on every new
+step (finalize stores the expected hash with 1,524 bytes written
+and sealed; approval count 0 → 1 on approve, still 1 after
+revise; the approval record binds the finalized action hash
+through both approve and revise — revise re-binds the same
+sealed action, the only action this transition id can carry).
+
+Measured CU (mollusk-svm 0.16.2, same `.so` as the re-measured
+slice-1 chain — the slice-1 values below shifted slightly from
+the stale golden file because that file predated the slice-52
+registration gate and the current `.so`):
+
+| instruction | CU | result |
+| --- | ---: | --- |
+| probe_kernel | 7,705 | Success |
+| initialize_kernel | 17,756 | Success |
+| seal_kernel | 18,028 | Success |
+| advance_clock (100 -> 200) | 4,158 | Success |
+| register_transition | 11,395 | Success |
+| ingest_observation | 24,383 | Success |
+| init_gov_action | 8,427 | Success |
+| append_gov_action_chunk (each of 3) | 4,660 | Success |
+| finalize_gov_action | 7,285 | Success |
+| register_governance_transition | 26,100 | Success |
+| approve_governance | 37,577 | Success |
+| revise_governance_approval | 32,917 | Success |
+
+The golden file's `blocked` list is now empty and its
+`design_finding` is replaced by `design_finding_resolved`: the
+by-value 1,564-byte instruction-data finding is gone (the
+largest new instruction is a 512-byte chunk), and the wrappers
+that 3005'd at 5,760/5,696 bytes now execute. Remaining
+carried debts are unchanged: genuine Agave 4.3.2 / Anchor 1.2.2
+builds, cu-golden for the slice-51 instructions beyond this
+chain's init/append/finalize (close is unmeasured), the
+post-settle reclaim decision, and the golden-`.so` sha debt —
+this run's `.so` (`cb2bf957…`) is the freshly built current
+source, not the stale slice-49 golden sha.
+
 ## Layout
 
 - `mollusk/` — standalone Rust crate (its own `[workspace]`
