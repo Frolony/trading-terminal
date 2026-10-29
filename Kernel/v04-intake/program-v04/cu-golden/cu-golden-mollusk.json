@@ -1,0 +1,67 @@
+{
+  "blocked": [
+    {
+      "error": "Anchor 3005 AccountNotEnoughKeys (kernel_state), before any handler gate",
+      "instruction": "approve_governance",
+      "note": "See main.rs header: ten probes proved the failure intrinsic under mollusk; the stack-frame execution check is NOT closed by this slice.",
+      "result": "Blocked"
+    },
+    {
+      "error": "Anchor 3005 AccountNotEnoughKeys (kernel_state), before any handler gate",
+      "instruction": "revise_governance_approval",
+      "note": "See main.rs header: same ten-probe evidence as approve_governance.",
+      "result": "Blocked"
+    }
+  ],
+  "design_finding": "approve/revise carry the 1524-byte StoredGovAction by value (1564 bytes of instruction data); with a 64-byte signature that already exceeds Solana's 1232-byte transaction size limit before any account key or blockhash, so neither instruction could be submitted as a single real transaction as currently encoded. Needs a design decision (compact action encoding or account-carried action); not redesigned in this slice.",
+  "measured": [
+    {
+      "cu": 9795,
+      "instruction": "probe_kernel",
+      "note": "slice-1 baseline (no design estimate exists for the v0.4 program)",
+      "result": "Success"
+    },
+    {
+      "cu": 20369,
+      "instruction": "initialize_kernel",
+      "note": "slice-1 baseline (no design estimate exists for the v0.4 program)",
+      "result": "Success"
+    },
+    {
+      "cu": 21346,
+      "instruction": "seal_kernel",
+      "note": "slice-1 baseline (no design estimate exists for the v0.4 program)",
+      "result": "Success"
+    },
+    {
+      "cu": 4317,
+      "instruction": "advance_clock",
+      "note": "slice-1 baseline (no design estimate exists for the v0.4 program)",
+      "result": "Success"
+    },
+    {
+      "cu": 11872,
+      "instruction": "register_transition",
+      "note": "slice-1 baseline (no design estimate exists for the v0.4 program)",
+      "result": "Success"
+    },
+    {
+      "cu": 28013,
+      "instruction": "ingest_observation",
+      "note": "slice-1 baseline (no design estimate exists for the v0.4 program)",
+      "result": "Success"
+    },
+    {
+      "cu": 27532,
+      "instruction": "register_governance_transition",
+      "note": "slice-1 baseline (no design estimate exists for the v0.4 program)",
+      "result": "Success"
+    }
+  ],
+  "mollusk_svm": "0.16.2",
+  "program": "program_v04",
+  "program_id": "FzxnCtig4asxnCxGhjcbCDY5zkfcpfTb5GcXNL9UaGg6",
+  "slice": "cu-golden slice 1: genesis + governance registration",
+  "so_sha256": "1de0c0a90b9a033a22bed11b9469f23ba55d769f48152a50495bdb99f9b03cf7",
+  "toolchain": "Anchor 1.2.1 / Solana 4.1.2 / platform-tools v1.54"
+}

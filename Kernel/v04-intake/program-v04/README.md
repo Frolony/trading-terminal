@@ -2235,6 +2235,69 @@ families, account inventory, and CU golden set are later step-5 slices.
   stack-frame execution check riding it), then the
   toolchain scratch assessments.
 
+## Slice 49 — cu-golden freeze, slice 1 (2026-10-29)
+
+New: `cu-golden/` — a mollusk-svm 0.16.2 harness executing the
+real `.so` in-process (no validator, no devnet, no mainnet).
+Locked dependencies: the lockfile is copied from the main
+treasury program's proven cu-golden lock (fresh resolution
+picked solana crates newer than mollusk-svm 0.16.2 compiles
+against — 18 compile errors — so the lock is load-bearing, not
+decorative). Run from `cu-golden/` with `./run-mollusk.sh`
+after `anchor build`; the golden file is
+`cu-golden/cu-golden-mollusk.json`.
+
+Measured (BASELINE — no design estimate exists for the v0.4
+program, so nothing is gated): probe_kernel 9,795 CU;
+initialize_kernel 20,369; seal_kernel 21,346; advance_clock
+(100 -> 200) 4,317; register_transition 11,872;
+ingest_observation 28,013; register_governance_transition
+27,532. State assertions held on every step (genesis
+unsealed/head 0/clock 0; sealed clock 100; clock 200; both
+records REGISTERED; governance approval count 0). Anchor build
+exit 0, IDL unchanged 34 instructions / 6 accounts / 34 errors /
+19 events, `.so` 1,630,384 bytes (same size as slice 48).
+
+BLOCKED, NOT MEASURED — `approve_governance` and
+`revise_governance_approval`: under mollusk both refuse with
+Anchor 3005 (`AccountNotEnoughKeys`, attributed to
+`kernel_state`) before any handler gate runs, despite correct
+account metas. Ten probes proved the failure intrinsic to these
+two instructions under mollusk, not to account state, meta
+order, payer identity, or data size: reversed metas, a minimal
+account vec, a non-seat payer, a fully pre-initialized valid
+approval record, and a padded `advance_clock` (1516 bytes of
+data, Success) all leave the 3005 unchanged, while
+`replay_transition` on the same governance record reaches its
+third account (3012) as expected and truncated revise data
+gives the args-deserialize error (102) instead. An Anchor-debug
+scratch build confirmed the failure sits inside
+`Account::<KernelState>::try_accounts` (only the kernel_state
+name logs before the failure; no transition_record line). The
+stack-frame execution check is therefore NOT closed by this
+slice — it stays queued behind resolving the 3005, and both
+instructions are recorded as `Blocked` in the golden file,
+never as fake measurements.
+
+DESIGN FINDING (independent of the mollusk 3005):
+`approve`/`revise` carry the 1524-byte `StoredGovAction` by
+value, so instruction data alone is 1564 bytes; with a 64-byte
+signature that already exceeds Solana's 1232-byte transaction
+size limit before any account key or blockhash, so neither
+instruction could be submitted as a single real transaction as
+currently encoded. The slice-33 by-value encoding choice also
+explains the stack-frame overages (approve 5,760, revise 5,696,
+both over the 4,096-byte limit). Needs a design decision
+(compact action encoding or an account-carried action); not
+redesigned in this slice.
+
+Deliberately NOT slice 49: the 3005 resolution, the
+stack-frame execution check, the later cu-golden slices
+(stage instructions through commit_governance), and the Agave
+4.3.2 + Anchor 1.2.2 scratch assessments — the queue after
+this slice is the 3005 resolution + stack-frame check, then
+the toolchain scratch assessments.
+
 ## Build
 
 ```sh
