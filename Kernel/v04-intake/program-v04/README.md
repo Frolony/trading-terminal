@@ -2520,11 +2520,123 @@ decision for finalized accounts; cu-golden measurements
 for the slice-51 instructions; the genuine Agave 4.3.2 /
 Anchor 1.2.2 builds.
 
+## Slice 53 — the approval-record shrink (2026-10-29)
+
+- `GovApprovalRecord.action` (the full 1,524-byte
+  `StoredGovAction`) is replaced by `action_hash:
+  [u8; 32]`; SPACE 1,597 → 105. The record no longer
+  carries action bytes at all, so no replay path can
+  decode the action from an approval record any more —
+  the slice-51 fix-run requirement, confirmed: every
+  path that used to decode from records now reads the
+  action from the finalized `GovActionAccount`.
+- `gov_action_hash` (new): SHA-256 of the canonical
+  stored serialization — the same bytes finalize hashes
+  in the `GovActionAccount`, so an approval record's hash
+  binds the seat to exactly the finalized action.
+  `gov_action_from_account` (new): requires finalized,
+  requires the stored bytes to hash to the finalized
+  `action_hash`, then decodes.
+- The shared decoder changes shape:
+  `gov_action_and_seats(action, records, tid)` no longer
+  returns the action — it verifies the seats against a
+  supplied action: every record names the transition,
+  seats are unique, every record's `action_hash` equals
+  `gov_action_hash(action)`, and the set is non-empty.
+  A tampered hash refuses with `GovActionHashMismatch`;
+  there is no longer a corrupt-decode path from approval
+  records (`GovActionDecode` survives only for corrupt
+  stored-action bytes inside an account buffer).
+- Threading: the eleven governance `*_from_records`
+  helpers plus `commit_governance_from_stored` take
+  `action: &GovAction` (after `approval_records`);
+  `GovPriorCommit` gains `action: Option<&GovAction>`;
+  `OwnedPriorBundle` gains `action: Option<GovAction>`
+  (decoded at parse time, with the exactly-one action
+  account + hash checks in `split_prior_bundles`);
+  `replay_governance_transition_chain` takes the action;
+  the stage / signal / plan splits return the decoded
+  action from the trailing finalized `GovActionAccount`
+  (stage: approvals then exactly one action account;
+  signal: approvals, signals, action last; plan:
+  approvals, signals, plans until the trailing action
+  account); sibling handlers collect `GovAction`
+  accounts and resolve them by (transition id,
+  proposer) with an exactly-one requirement, and the
+  sibling replay structs carry the action owned
+  (`GovSiblingReplay.action`, `MixedSiblingReplay.action`).
+  Approve/revise event kind now comes from
+  `StoredGovAction::encode(&decoded)?.kind`.
+- Frame result (pinned toolchain): the overflow list is
+  now EXACTLY ONE function — the pre-existing
+  BTreeMap-insert at 4,672 bytes, not an instruction
+  wrapper. Approve, revise, register-governance, commit-
+  governance, AND both sibling-select wrappers now fit
+  at 4,096: the shrink fixed the sibling wrappers as
+  predicted (the 1,597-byte record copies were the frame
+  driver; sibling wrappers previously overflowed by only
+  128 bytes). The record shrink is the fix; the slice-52
+  boxing stays as side relief.
+- Frame-margin probe: NOT measured this run. The
+  2,048-byte lowered-threshold probe could not complete:
+  the sandbox session intermittently denies child-
+  process writes with EPERM (`Operation not permitted`
+  on fingerprint `invoked.timestamp` writes and on
+  scratch copies), so the threshold build fails before
+  emitting a frame list. The margin is therefore recorded
+  as "fits 4,096, margin unquantified" — the ruled
+  with-margin bar is NOT yet measured for slice 53.
+  Structural reasoning, stated as reasoning and not as
+  measurement: the shrink cut ~1,492 bytes per copied
+  record from the copy-heavy paths, and the sibling
+  wrappers previously overflowed by only 128 bytes.
+  The probe rides the next healthy session; it is a
+  measurement debt, not a design finding.
+- Host tests 392/392 (390 prior + 2 slice-53: the
+  approval hash rule equals the finalize hash rule, and
+  a hash-tampered approval set refuses stage replay with
+  `GovActionHashMismatch` before any kernel call).
+  Corrupt-action tests were redesigned, not smoothed:
+  hash-tamper cases now expect `GovActionHashMismatch`.
+  Coverage gap, noted not hidden: no dedicated
+  `split_gov_plan_tail` test existed and none was added
+  — plan tails are covered only via the
+  submit_plan/reconcile/validate/declare helper tests.
+  Clippy could not complete this session (the same
+  sandbox I/O failure; the lib pass reported only the
+  pre-existing custom-heap cfg warning and no new lint
+  before the driver output parse failed on EPERM) —
+  re-run clippy in a healthy session before treating
+  the lint bar as re-confirmed. Delivered v0.4.1 crate
+  re-run unmodified and green, 39/39. IDL unchanged:
+  38 instructions / 7 accounts / 39 errors / 23 events
+  (Anchor 1.2.1 IDL accounts carry only names +
+  discriminators, and neither changed). Pinned
+  `anchor build` green; `.so` sha256 `e2b474e7…`.
+  Doc comments were swept in the same pass: handler,
+  helper, split, and decoder docs that still said the
+  action is "decoded from stored approvals alone" now
+  say the action comes from the finalized account and
+  the approvals are hash-verified against it; the
+  historical slice notes (slices 34/36/37) are left as
+  written — they describe what was true then.
+
+Deliberately NOT slice 53: the 2,048-byte margin probe
+(blocked environmentally, rides the next healthy
+session); the mollusk execution of approve/revise
+(Blocked since slice 49, still the runtime proof);
+the genuine Agave 4.3.2 / Anchor 1.2.2 builds;
+cu-golden measurements for the slice-51 instructions;
+the post-settle reclaim decision for finalized
+accounts; the golden `.so` sha debt (slice-49
+`1de0c0a2…` still not reproducible from current source
++ pinned toolchain).
+
 ## Build
 
 ```sh
 export RUSTUP_HOME=~/workspace/toolchains/rustup CARGO_HOME=~/workspace/toolchains/cargo
 export PATH=~/workspace/toolchains/cargo/bin:~/workspace/toolchains/solana/bin:$PATH
 ~/workspace/toolchains/anchor/bin/anchor build   # from this directory
-cargo test                                        # host tests, 390/390
+cargo test                                        # host tests, 392/392
 ```
