@@ -31,6 +31,19 @@
 // below is unchanged by this extension; the two paths share only the
 // RPC helper, the cache discipline (fully-successful only, 30 s), and
 // the client-safe error strings.
+//
+// N5.40 (2026-10-29, A126): this route also serves the mint/freeze
+// authority display (GET /api/balances?mode=mint-authority&mint=<base58>):
+// getAccountInfo for the mint, parsed server-side from the SPL Mint
+// layout (mintAuthorityOption u32 + 32-byte authority at bytes 0..36,
+// freezeAuthorityOption + authority at bytes 46..82). Merged here, not
+// a new api/*.rs file, because Vercel Hobby allows 12 serverless
+// functions and this project already uses all 12 (see the N4.21 merge
+// note in api/solscan/holders.rs). DISPLAY FACTS ONLY: the response
+// carries the two authority addresses (or null = no authority) and no
+// verdict; an unknown/unreadable mint answers ok:false, never a
+// guessed authority. The owner guard (Token / Token-2022 program only)
+// keeps a non-mint account from being parsed as a mint.
 #[path = "../src/raydium_common.rs"]
 mod common;
 
@@ -98,6 +111,164 @@ fn query_owner(req: &Request) -> Option<String> {
         }
     }
     None
+}
+
+fn query_param(req: &Request, wanted: &str) -> Option<String> {
+    let qs = req.uri().query()?;
+    for kv in qs.split('&') {
+        let mut it = kv.splitn(2, '=');
+        if let (Some(k), Some(v)) = (it.next(), it.next()) {
+            if k == wanted {
+                return Some(url_decode(v));
+            }
+        }
+    }
+    None
+}
+
+fn query_mint_authority(req: &Request) -> bool {
+    query_param(req, "mode").as_deref() == Some("mint-authority")
+}
+
+/// SPL Mint account layout (82 bytes, both Token and Token-2022):
+/// bytes 0..4 mintAuthorityOption (u32 LE: 0 = none, 1 = some),
+/// 4..36 mint authority, 36..44 supply, 44 decimals, 45 initialized,
+/// 46..50 freezeAuthorityOption, 50..82 freeze authority. Any other
+/// option word, or a buffer shorter than 82 bytes, is malformed —
+/// never parsed into a guessed authority.
+fn parse_mint_authorities(data: &[u8]) -> Option<(Option<String>, Option<String>)> {
+    if data.len() < 82 {
+        return None;
+    }
+    let opt = |at: usize| -> Option<Option<String>> {
+        let word = u32::from_le_bytes([data[at], data[at + 1], data[at + 2], data[at + 3]]);
+        match word {
+            0 => Some(None),
+            1 => Some(Some(bs58::encode(&data[at + 4..at + 36]).into_string())),
+            _ => None,
+        }
+    };
+    let mint = opt(0)?;
+    let freeze = opt(46)?;
+    Some((mint, freeze))
+}
+
+const TOKEN_PROGRAM: &str = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
+const TOKEN_2022_PROGRAM: &str = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb";
+
+/// N5.40 mint-authority branch: fully-successful responses only are
+/// cached (30 s, own cache key so an authority response can never be
+/// served as a balance or supply response).
+async fn mint_auth_handler(req: &Request) -> Result<Value, Error> {
+    let mint = match query_param(req, "mint") {
+        Some(m) => m,
+        None => {
+            return Ok(common::api_error(
+                "INVALID_MINT",
+                "Query parameter mint=<base58 mint> is required.",
+            ))
+        }
+    };
+    if !common::valid_pubkey(&mint) {
+        return Ok(common::api_error(
+            "INVALID_MINT",
+            "mint is not a valid Solana public key.",
+        ));
+    }
+    let key = format!("mint-auth:{}", mint);
+    if let Ok(guard) = cache().lock() {
+        if let Some((at, val)) = guard.get(&key) {
+            if at.elapsed() < CACHE_TTL {
+                let mut hit = val.clone();
+                if let Some(obj) = hit.as_object_mut() {
+                    obj.insert("cached".to_string(), json!(true));
+                }
+                return Ok(hit);
+            }
+        }
+    }
+    let client = match common::client() {
+        Ok(c) => c,
+        Err(_) => {
+            return Ok(common::api_error(
+                "UPSTREAM_FAILED",
+                "Could not build the upstream RPC client.",
+            ))
+        }
+    };
+    let result = match rpc_call(
+        &client,
+        "getAccountInfo",
+        json!([mint, {"encoding": "base64", "commitment": "confirmed"}]),
+    )
+    .await
+    {
+        Ok(v) => v,
+        Err(e) => {
+            return Ok(common::api_error("UPSTREAM_FAILED", &e));
+        }
+    };
+    let value = match result.get("value") {
+        Some(v) if !v.is_null() => v,
+        _ => {
+            return Ok(common::api_error(
+                "ACCOUNT_NOT_FOUND",
+                "No account exists at that mint address.",
+            ))
+        }
+    };
+    let owner = value.get("owner").and_then(|o| o.as_str()).unwrap_or("");
+    if owner != TOKEN_PROGRAM && owner != TOKEN_2022_PROGRAM {
+        return Ok(common::api_error(
+            "NOT_A_MINT",
+            "That account is not owned by a token program, so it is not a token mint.",
+        ));
+    }
+    let b64 = match value
+        .get("data")
+        .and_then(|d| d.as_array())
+        .and_then(|a| a.first())
+        .and_then(|s| s.as_str())
+    {
+        Some(s) => s,
+        None => {
+            return Ok(common::api_error(
+                "UPSTREAM_FAILED",
+                "Upstream account data was not base64.",
+            ))
+        }
+    };
+    use base64::Engine;
+    let bytes = match base64::engine::general_purpose::STANDARD.decode(b64) {
+        Ok(b) => b,
+        Err(_) => {
+            return Ok(common::api_error(
+                "UPSTREAM_FAILED",
+                "Upstream account data was not decodable base64.",
+            ))
+        }
+    };
+    let (mint_authority, freeze_authority) = match parse_mint_authorities(&bytes) {
+        Some(pair) => pair,
+        None => {
+            return Ok(common::api_error(
+                "UPSTREAM_FAILED",
+                "Mint account data did not match the expected layout.",
+            ))
+        }
+    };
+    let out = json!({
+        "ok": true,
+        "mint": mint,
+        "source": RPC_URL,
+        "mintAuthority": mint_authority,
+        "freezeAuthority": freeze_authority,
+        "cached": false,
+    });
+    if let Ok(mut guard) = cache().lock() {
+        guard.insert(key, (Instant::now(), out.clone()));
+    }
+    Ok(out)
 }
 
 /// One JSON-RPC call. Err strings are already client-safe: they name the
@@ -291,6 +462,9 @@ async fn handler(req: Request) -> Result<Value, Error> {
     if query_supply(&req) {
         return supply_handler(&req).await;
     }
+    if query_mint_authority(&req) {
+        return mint_auth_handler(&req).await;
+    }
     let owner = match query_owner(&req) {
         Some(o) => o,
         None => {
@@ -469,5 +643,60 @@ mod n418_tests {
             {"account": {"data": "base64-blob"}},
         ]});
         assert_eq!(parse_spl(&v).unwrap(), 2.0);
+    }
+}
+
+#[cfg(test)]
+mod n540_tests {
+    use super::*;
+
+    fn mint_bytes(mint_opt: u32, mint_auth: &[u8; 32], freeze_opt: u32, freeze_auth: &[u8; 32]) -> Vec<u8> {
+        let mut b = vec![0u8; 82];
+        b[0..4].copy_from_slice(&mint_opt.to_le_bytes());
+        b[4..36].copy_from_slice(mint_auth);
+        b[36..44].copy_from_slice(&1_000_000u64.to_le_bytes());
+        b[44] = 6;
+        b[45] = 1;
+        b[46..50].copy_from_slice(&freeze_opt.to_le_bytes());
+        b[50..82].copy_from_slice(freeze_auth);
+        b
+    }
+
+    #[test]
+    fn closed_mint_reads_none_on_both_lines() {
+        let data = mint_bytes(0, &[0u8; 32], 0, &[0u8; 32]);
+        assert_eq!(parse_mint_authorities(&data).unwrap(), (None, None));
+    }
+
+    #[test]
+    fn open_authorities_round_trip_through_base58() {
+        let m = bs58::decode("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")
+            .into_vec()
+            .unwrap();
+        let f = bs58::decode("11111111111111111111111111111111")
+            .into_vec()
+            .unwrap();
+        let mut ma = [0u8; 32];
+        let mut fa = [0u8; 32];
+        ma.copy_from_slice(&m);
+        fa.copy_from_slice(&f);
+        let data = mint_bytes(1, &ma, 1, &fa);
+        let (mint, freeze) = parse_mint_authorities(&data).unwrap();
+        assert_eq!(
+            mint.as_deref(),
+            Some("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")
+        );
+        assert_eq!(freeze.as_deref(), Some("11111111111111111111111111111111"));
+    }
+
+    #[test]
+    fn short_buffer_and_bad_option_word_are_malformed_not_guessed() {
+        assert!(parse_mint_authorities(&[0u8; 81]).is_none());
+        let mut data = mint_bytes(1, &[7u8; 32], 0, &[0u8; 32]);
+        data[0..4].copy_from_slice(&2u32.to_le_bytes());
+        assert!(parse_mint_authorities(&data).is_none());
+        let mut data2 = mint_bytes(0, &[0u8; 32], 1, &[9u8; 32]);
+        data2[46..50].copy_from_slice(&9u32.to_le_bytes());
+        assert!(parse_mint_authorities(&data2).is_none());
     }
 }
