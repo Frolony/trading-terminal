@@ -54,6 +54,10 @@ path = "api/balances.rs"
 name = "solscan_holders"
 path = "api/solscan/holders.rs"
 
+[[bin]]
+name = "solscan_activity"
+path = "api/solscan/activity.rs"
+
 [profile.release]
 codegen-units = 1
 lto = true
