@@ -1428,11 +1428,54 @@ families, account inventory, and CU golden set are later step-5 slices.
   governance-state persistence beyond the slice-34 head
   replay, and CU measurement — later slices.
 
+## Slice 37 — the governance stage chain, first three stages
+
+- `replay_governance`, `evaluate_governance`, and
+  `mark_eligible_governance`: each mirrors its ordinary
+  slice (10 / 12 / 13) with one substitution at the head of
+  the prefix — the shared slice-36 decoder derives the
+  action and seats from the supplied stored approvals, then
+  every stored seat's `approve_governance` runs and kernel
+  `register_governance_transition` replaces
+  `register_transition` at the state's clock. The staged
+  replay's approval time is a proof, not history: the
+  slice-28 commit re-proof re-runs approvals at the stored
+  `eligible_at`, so replay at the current clock proves
+  registrability and the commit proves the stored chain.
+  Remaining accounts parse as in slice 36's commit, minus
+  the signal/plan tail: prior bundles first, then the tail
+  through the pure `split_gov_stage_tail` — every account a
+  `GovApprovalRecord` numbering exactly `approval_count`,
+  else `RecordMismatch` before any replay. The
+  mark-eligible helper advances the slice-19 sibling census
+  exactly as the ordinary one does, so a governance
+  transition that becomes eligible counts as a competitor at
+  its parent. No new account or error; the three
+  instructions reuse the existing stage events.
+- Host tests 273/273 (268 prior + 5 slice-37: the replay
+  success with once-only refusal, the non-unanimous and
+  ordinary-type replay refusals, the evaluate chain with
+  once-only and wrong-stage refusals, the eligible chain
+  with the persisted window (`eligible_at` 100, deadline
+  200) and census advance to 1 plus once-only refusal, and
+  the stage-tail split success plus short / past / mis-typed
+  refusals). Clippy back to the pre-existing profile
+  (anchor macro `unexpected cfg` noise + the slice-8 test
+  helper's `type_complexity` warning); zero new warnings.
+  IDL counts move by design (24 instructions, 6 accounts,
+  34 errors, 18 events — +3 instructions only); `.so`
+  1,287,336 bytes (sha256 `06043724…`).
+- Deliberately NOT slice 37: the governance signal, select,
+  planning, reconcile, validate, and declare stages — a
+  governance record still cannot reach `DECLARED` through
+  instructions alone; a revise-approval instruction; and CU
+  measurement — later slices.
+
 ## Build
 
 ```sh
 export RUSTUP_HOME=~/workspace/toolchains/rustup CARGO_HOME=~/workspace/toolchains/cargo
 export PATH=~/workspace/toolchains/cargo/bin:~/workspace/toolchains/solana/bin:$PATH
 ~/workspace/toolchains/anchor/bin/anchor build   # from this directory
-cargo test                                        # host tests, 268/268
+cargo test                                        # host tests, 273/273
 ```
