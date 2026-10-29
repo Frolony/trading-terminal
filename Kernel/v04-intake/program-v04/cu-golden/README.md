@@ -61,6 +61,50 @@ explains the stack-frame overages. Needs a design decision
 (compact action encoding or an account-carried action); not
 redesigned in this slice.
 
+## Slice 50 — the 3005 ROOT CAUSE, proven (2026-10-29)
+
+The slice-49 3005 is NOT a mollusk artifact and NOT an Anchor
+bug: it is the program's own oversized BPF stack frame. The SBF
+linker reports the `__global` wrapper frames at approve 5,760
+bytes and revise 5,696 bytes, both over the 4,096-byte BPF stack
+limit (build warnings the build still exits 0 on). A scratch
+variant program proved the link by controlled experiment, all
+against the same binary, same accounts, same data: a probe
+instruction with fields byte-identical to
+`ReviseGovernanceApproval` and the same `StoredGovAction` arg
+but a trivial body loads accounts fine (fails later, 3012, on
+the empty approval record, as it should); the same probe with
+revise's exact body overflows identically (5,696 bytes) and
+3005s identically (same CU, 5,384–5,386). The only variable is
+the body, i.e. the frame size. Anchor-debug confirms the failure
+sits inside the first field's `try_accounts` with an empty
+slice: the wrapper's accounts slice is corrupted by the frame
+overflow (BPF stack overflow is undefined behavior by the
+linker's own warning; here it surfaces deterministically as a
+zero-length slice, hence 3005 at `kernel_state`). Shape, data
+size, meta order, payer identity, and account state were all
+separately exonerated: `submit_signal` (same `init` +
+payer-key-seed shape) and a 1,568-byte `submit_plan` load fine.
+
+Consequences: (a) approve/revise cannot execute on-chain as
+built — not just under mollusk — until their frames come under
+4,096 bytes; (b) the tx-size design finding above stands
+independently (1564 bytes of instruction data still exceeds a
+real transaction), so the pending design decision (compact
+action encoding or an account-carried action) is now the fix for
+BOTH findings, and any fix must also be frame-measured, not
+just tx-measured; (c) FORWARD WARNING: the sibling-select
+wrappers `select_candidate_governance_with_siblings` and
+`select_candidate_mixed_with_siblings` also overflow (4,224
+bytes each) and are predicted to fail the same way when the
+golden chain reaches them — the `try_accounts`-frame overflows
+also reported (e.g. `ApproveGovernance::try_accounts` 4,480)
+are NOT the discriminator (a fitting-wrapper probe whose
+`try_accounts` overflows at 4,544 still loads), only the
+`__global` wrapper frame decides it. The two instructions stay
+`Blocked` in the golden file until a frame-fitting fix lands
+and is re-measured; no fake measurements.
+
 All slice-1 values are BASELINE: no design estimate exists for
 the v0.4 program (the design doc's §2.2 estimates are for the
 v0.2 treasury program), so nothing here is gated against a band.

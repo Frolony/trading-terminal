@@ -27,19 +27,48 @@
 //! the 3005 unchanged, while `replay_transition` on the same
 //! governance record reaches its third account (3012) as expected
 //! and truncated revise data gives the args-deserialize error (102)
-//! instead. The stack-frame execution check the cu-golden freeze was
-//! queued to carry (approve handler 5,760 bytes, revise 5,696, both
-//! over the 4,096-byte limit) is therefore NOT closed by this slice:
-//! it stays queued behind resolving the 3005. A second, independent
-//! design finding rides the same instructions: `approve`/`revise`
-//! carry the 1524-byte `StoredGovAction` by value, so instruction
-//! data alone is 1564 bytes — plus a 64-byte signature that already
-//! exceeds Solana's 1232-byte transaction size limit before any
-//! account key or blockhash, so no real caller could submit either
-//! instruction as a single transaction as currently encoded. That
-//! encoding choice (slice 33) also explains the stack-frame overages.
-//! Both findings need a design decision (compact action encoding or
-//! an account-carried action); neither is redesigned in this slice.
+//! instead. A second, independent design finding rides the same
+//! instructions: `approve`/`revise` carry the 1524-byte
+//! `StoredGovAction` by value, so instruction data alone is 1564
+//! bytes — plus a 64-byte signature that already exceeds Solana's
+//! 1232-byte transaction size limit before any account key or
+//! blockhash, so no real caller could submit either instruction as
+//! a single transaction as currently encoded.
+//!
+//! SLICE-50 ADDENDUM — the 3005 ROOT CAUSE IS PROVEN, and it is
+//! the stack frame, not the harness: the SBF linker reports the
+//! `__global` wrapper frames at approve 5,760 bytes and revise
+//! 5,696 bytes, both over the 4,096-byte BPF stack limit. A scratch
+//! variant program proved it by controlled experiment (same
+//! binary, same accounts, same data): a probe with fields
+//! byte-identical to `ReviseGovernanceApproval` and the same
+//! `StoredGovAction` arg but a trivial body loads fine (3012 on
+//! the empty approval record, as it should); the same probe with
+//! revise's exact body overflows identically (5,696 bytes) and
+//! 3005s identically. Anchor-debug confirms the failure inside the
+//! first field's `try_accounts` with an empty slice. So the frame
+//! overflow corrupts the wrapper's accounts slice (undefined
+//! behavior by the linker's own warning; here deterministically a
+//! zero-length slice, hence 3005 at `kernel_state`). This is NOT
+//! mollusk-specific: the same overflow breaks on-chain execution
+//! too. Shape, data size, meta order, payer identity, and account
+//! state were separately exonerated (`submit_signal` with the same
+//! `init` + payer-key-seed shape loads; a 1,568-byte `submit_plan`
+//! loads). FORWARD WARNING: the sibling-select wrappers
+//! (`select_candidate_governance_with_siblings`,
+//! `select_candidate_mixed_with_siblings`, 4,224 bytes each) also
+//! overflow and are predicted to fail the same way when the chain
+//! reaches them; `try_accounts`-frame overflows (e.g.
+//! `ApproveGovernance::try_accounts` 4,480) are NOT the
+//! discriminator (a fitting-wrapper probe whose `try_accounts`
+//! overflows at 4,544 still loads) — only the `__global` wrapper
+//! frame decides it. The tx-size finding above stands
+//! independently, so the pending design decision (compact action
+//! encoding or an account-carried action) is now the fix for BOTH
+//! findings, and any fix must be frame-measured as well as
+//! tx-measured. Neither is redesigned in this slice; both
+//! instructions stay `Blocked` until a frame-fitting fix lands
+//! and is re-measured.
 //!
 //! No §2.2-style estimate exists for the v0.4 program (the design
 //! doc's §2.2 estimates are for the v0.2 treasury program), so every
@@ -345,13 +374,13 @@ fn main() {
                 "instruction": "approve_governance",
                 "result": "Blocked",
                 "error": "Anchor 3005 AccountNotEnoughKeys (kernel_state), before any handler gate",
-                "note": "See main.rs header: ten probes proved the failure intrinsic under mollusk; the stack-frame execution check is NOT closed by this slice.",
+                "note": "Slice-50 ROOT CAUSE PROVEN (see main.rs header): __global wrapper frame 5,760 bytes over the 4,096-byte BPF stack limit corrupts the accounts slice; not mollusk-specific, cannot execute on-chain as built. Fix pending design decision (compact action encoding or account-carried action), frame-measured as well as tx-measured.",
             },
             {
                 "instruction": "revise_governance_approval",
                 "result": "Blocked",
                 "error": "Anchor 3005 AccountNotEnoughKeys (kernel_state), before any handler gate",
-                "note": "See main.rs header: same ten-probe evidence as approve_governance.",
+                "note": "Slice-50 ROOT CAUSE PROVEN (see main.rs header): __global wrapper frame 5,696 bytes over the 4,096-byte BPF stack limit corrupts the accounts slice; controlled experiment (same struct+arg, trivial body loads, exact body 3005s) isolates the frame. Same pending design decision as approve_governance.",
             },
         ],
         "design_finding": "approve/revise carry the 1524-byte StoredGovAction by value (1564 bytes of instruction data); with a 64-byte signature that already exceeds Solana's 1232-byte transaction size limit before any account key or blockhash, so neither instruction could be submitted as a single real transaction as currently encoded. Needs a design decision (compact action encoding or account-carried action); not redesigned in this slice.",

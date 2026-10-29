@@ -2298,6 +2298,48 @@ stack-frame execution check, the later cu-golden slices
 this slice is the 3005 resolution + stack-frame check, then
 the toolchain scratch assessments.
 
+## Slice 50 — the 3005 root cause, proven (2026-10-29, docs only; no program change)
+
+The slice-49 3005 is the program's own oversized BPF stack
+frame, not a mollusk artifact and not an Anchor bug. The SBF
+linker reports the `__global` wrapper frames at approve 5,760
+bytes and revise 5,696 bytes, both over the 4,096-byte limit
+(build warnings the build still exits 0 on). A scratch variant
+program proved it by controlled experiment (same binary, same
+accounts, same data): a probe with fields byte-identical to
+`ReviseGovernanceApproval` and the same `StoredGovAction` arg
+but a trivial body loads accounts fine (3012 on the empty
+approval record, as it should); the same probe with revise's
+exact body overflows identically (5,696 bytes) and 3005s
+identically. Anchor-debug confirms the failure inside the
+first field's `try_accounts` with an empty slice. Shape, data
+size, meta order, payer identity, and account state were all
+separately exonerated. Consequences: approve/revise cannot
+execute on-chain as built (not just under mollusk) until their
+frames come under 4,096 bytes; the tx-size design finding
+stands independently, so the pending design decision (compact
+action encoding or an account-carried action) is now the fix
+for BOTH findings and any fix must be frame-measured as well
+as tx-measured. FORWARD WARNING: the sibling-select wrappers
+(`select_candidate_governance_with_siblings`,
+`select_candidate_mixed_with_siblings`, 4,224 bytes each) also
+overflow and are predicted to fail the same way when the
+golden chain reaches them. The `try_accounts`-frame overflows
+also reported are NOT the discriminator (a fitting-wrapper
+probe whose `try_accounts` overflows at 4,544 still loads).
+Both instructions stay `Blocked` in the golden file until a
+frame-fitting fix lands and is re-measured. Full evidence:
+run log `hidden_files/kernel-build-run-2026-10-29-0228.md`;
+scratch probes were run under
+`hidden_files/v04-3005-scratch/` (scratch only — the variant
+sources are not canonical and must never be measured against
+or pushed).
+
+Deliberately NOT slice 50: the frame-fitting fix itself (a
+design decision for Carlos, folded into the pending encoding
+decision), the later cu-golden slices, and the Agave 4.3.2 +
+Anchor 1.2.2 scratch assessments.
+
 ## Build
 
 ```sh

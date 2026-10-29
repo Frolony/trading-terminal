@@ -3,13 +3,13 @@
     {
       "error": "Anchor 3005 AccountNotEnoughKeys (kernel_state), before any handler gate",
       "instruction": "approve_governance",
-      "note": "See main.rs header: ten probes proved the failure intrinsic under mollusk; the stack-frame execution check is NOT closed by this slice.",
+      "note": "Slice-50 ROOT CAUSE PROVEN (see main.rs header): __global wrapper frame 5,760 bytes over the 4,096-byte BPF stack limit corrupts the accounts slice; not mollusk-specific, cannot execute on-chain as built. Fix pending design decision (compact action encoding or account-carried action), frame-measured as well as tx-measured.",
       "result": "Blocked"
     },
     {
       "error": "Anchor 3005 AccountNotEnoughKeys (kernel_state), before any handler gate",
       "instruction": "revise_governance_approval",
-      "note": "See main.rs header: same ten-probe evidence as approve_governance.",
+      "note": "Slice-50 ROOT CAUSE PROVEN (see main.rs header): __global wrapper frame 5,696 bytes over the 4,096-byte BPF stack limit corrupts the accounts slice; controlled experiment (same struct+arg, trivial body loads, exact body 3005s) isolates the frame. Same pending design decision as approve_governance.",
       "result": "Blocked"
     }
   ],
