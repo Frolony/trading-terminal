@@ -2752,6 +2752,96 @@ accounts; the golden `.so` sha debt (slice-49
   ruling — this slice supplies the `SETTLED` stage that
   ruling's gate will check.
 
+## Slice 55 — the settle tail at helper level, governance path (2026-10-29)
+
+- `settle_governance_transition_from_records`: `COMMITTED`
+  (10) -> `SETTLED` (11), the mirror of slice 54 on the
+  governance path. The helper re-proves the governance
+  commit in a rebuilt kernel — council approvals of the
+  exact action at the stored `eligible_at`, then ingest +
+  register_governance + evaluate + mark_eligible at
+  `eligible_at`, signals at their `submitted_at`, select +
+  open_planning + plans at the derived open clock,
+  reconcile + validate + declare + commit_governance at
+  the stored planning deadline (the slice-29 clock rule
+  for historical reproduction, exactly as in slice 54) —
+  and only then runs the tail at the state's clock:
+  `start_execution` by the launch Executor, two
+  `attest_settlement` calls by the launch Settlers on the
+  supplied realized hash (threshold 2, so the first must
+  return false and the second true), and the `Settled`
+  life assertion. On success only the record's stage
+  advances: the sealed head and the slice-27 ledger are
+  untouched, because settle closes a commit that already
+  moved both.
+- Gates, in order: sealed state (`NotSealed`); stage
+  exactly `COMMITTED` (`WrongStage` — a settled record
+  settles once only); observation linkage
+  (`RecordMismatch`); a governance type
+  (`NotGovernanceTransition` otherwise — the reverse of
+  slice 54's `GovernanceSettleRequired` gate); the
+  signal/plan count anchors and ownership/round rules;
+  proposer / observer gates against the running kernel
+  (`UnknownProposer` / `NotObserver`); the council
+  approval replay (every listed seat approves this exact
+  (id, action) pair before registration — a missing seat,
+  or a foreign seat standing in for a sitting one,
+  refuses with `GovernanceSettleFailed`, so the stored
+  `COMMITTED` label cannot launder a non-unanimous
+  council); the stored `compatible` verdict cross-checked
+  against the recomputed mirror, exactly as in the commit
+  path.
+- The parent-head build, the ledger discipline, and the
+  honesty bounds are slice 54's, unchanged: the earlier
+  chain replays against a parent state (the live head is
+  NOT required to equal the declared hash); the slice-27
+  ledger gate is NOT re-applied (the ledger already
+  contains this transition's claims); the step-2
+  `SettlerGate` ledger binding is NOT enforced at helper
+  level (no on-chain evidence record exists yet — it
+  rides the instruction slice, which will source the hash
+  from stored evidence instead of a caller argument); and
+  an inexact settle still settles here, the halved-credit
+  rule biting at outcome time. The applied rule itself is
+  NOT persisted by this helper (the rebuilt kernel is
+  discarded, as in slice 28) — governance-state
+  persistence is a later slice, and the stored-approval
+  binding (`gov_action_and_seats` over
+  `GovApprovalRecord`s, as in slice 36) rides the
+  instruction slice, which decodes the action from the
+  finalized `GovActionAccount` instead of taking it as a
+  caller argument.
+- Host tests 412/412 (402 prior + 10 slice-55: exact
+  settle with head and ledger untouched (ledger zeros —
+  governance plans claim no stock), inexact settle,
+  once-only, ordinary-type, unanimity re-proof,
+  seat-set re-proof (foreign seat ag(9) for a sitting
+  seat), wrong-stage, past-execution-deadline (clock
+  1301 against the 300 + 1000 window), unsealed,
+  overshooting-prior-chain). Clippy back to the
+  pre-existing profile, zero new warnings — one doc-wrap
+  fix was needed to keep it there (a doc line starting
+  with `+` parsed as a rustdoc list marker, the slice-26
+  trap, caught in this run's own doc comment).
+  `anchor build` green under the pinned toolchain
+  (Anchor 1.2.2 / Agave 4.3.2 / platform-tools v1.57);
+  IDL counts move by design (38 instructions, 7 accounts,
+  42 errors incl. `GovernanceSettleFailed`, 24 events —
+  no new instruction or account, as designed); `.so`
+  1,659,392 bytes (sha256 `a263117a…`). Cu-golden
+  re-measured against the new `.so` (17 measured,
+  blocked `[]`): append 4,683 (was 4,682), approve
+  37,628 (was 37,629), the other twelve values exact —
+  layout noise from the source change, not a behavior
+  change; the golden JSON + cu-golden README carry the
+  new values in the same pass.
+- Deliberately NOT slice 55: the `settle_transition`
+  instruction (remaining-account parse + the evidence
+  record the SettlerGate binding needs + the
+  stored-approval binding for the governance path);
+  outcome recording; and the golden `.so` freeze, which
+  still waits on the post-settle reclaim ruling.
+
 ## Build
 
 ```sh

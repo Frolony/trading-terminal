@@ -45,19 +45,19 @@
       "result": "Success"
     },
     {
-      "cu": 4682,
+      "cu": 4683,
       "instruction": "append_gov_action_chunk@0",
       "note": "slice-2 account-carried chain (program slices 51-53)",
       "result": "Success"
     },
     {
-      "cu": 4682,
+      "cu": 4683,
       "instruction": "append_gov_action_chunk@512",
       "note": "slice-2 account-carried chain (program slices 51-53)",
       "result": "Success"
     },
     {
-      "cu": 4682,
+      "cu": 4683,
       "instruction": "append_gov_action_chunk@1024",
       "note": "slice-2 account-carried chain (program slices 51-53)",
       "result": "Success"
@@ -75,7 +75,7 @@
       "result": "Success"
     },
     {
-      "cu": 37629,
+      "cu": 37628,
       "instruction": "approve_governance",
       "note": "slice-1 baseline (no design estimate exists for the v0.4 program)",
       "result": "Success"
@@ -93,7 +93,7 @@
       "result": "Success"
     },
     {
-      "cu": 4682,
+      "cu": 4683,
       "instruction": "append_gov_action_chunk_abandoned",
       "note": "slice-1 baseline (no design estimate exists for the v0.4 program)",
       "result": "Success"
@@ -118,6 +118,6 @@
     }
   ],
   "slice": "cu-golden slice 3: genesis + governance registration + account-carried approval chain (program slices 51-53) + close_gov_action rent-reclaim and finalized-refusal gate",
-  "so_sha256": "cb5bec94c3ae3c142a4df858939704721f3ea46b581d2c7f052bc633bd8f1fc1",
+  "so_sha256": "a263117a671f1ff7923d13b35052364502b4840d2c9a6230993559150fb8d150",
   "toolchain": "Anchor 1.2.2 / Solana 4.3.2 / platform-tools v1.57"
 }

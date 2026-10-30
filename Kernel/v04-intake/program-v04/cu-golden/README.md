@@ -351,6 +351,21 @@ values is layout noise, not behavior: append
 the other fourteen values reproduce exactly, blocked `[]`
 still. This `.so` is likewise NOT the golden freeze.
 
+## Slice-55 re-measurement (2026-10-29, same pins)
+
+Slice 55 (the governance settle mirror, no new
+instruction) changed the program source, so the golden file
+was re-measured against the new `.so` sha
+`a263117a671f1ff7923d13b35052364502b4840d2c9a6230993559150fb8d150`
+(host tests 412/412; IDL now 38 instr / 7 accounts /
+42 errors / 24 events — the one new
+`GovernanceSettleFailed` error; no new instruction,
+account, or event). Drift from the slice-54 values is
+layout noise, not behavior: append 4,682 -> 4,683 (all
+four append entries), approve 37,629 -> 37,628; the other
+twelve values reproduce exactly, blocked `[]` still.
+This `.so` is likewise NOT the golden freeze.
+
 ## Layout
 
 - `mollusk/` — standalone Rust crate (its own `[workspace]`

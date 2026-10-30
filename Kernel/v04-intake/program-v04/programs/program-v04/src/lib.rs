@@ -9057,6 +9057,355 @@ pub fn settle_transition_from_records(
     Ok(Life::Settled)
 }
 
+/// Settle a committed governance transition (slice 55):
+/// `COMMITTED` (10) -> `SETTLED` (11), the mirror of slice
+/// 54 on the governance path. The helper re-proves the
+/// governance commit in a rebuilt kernel — council approvals
+/// of the exact action at the stored `eligible_at`, then
+/// ingest, register_governance, evaluate, and mark_eligible
+/// at `eligible_at`, signals at their `submitted_at`, and
+/// select, open_planning, and plans at the derived open clock,
+/// reconcile + validate + declare + commit_governance at
+/// the stored planning deadline (the slice-29 clock rule
+/// for historical reproduction, exactly as in slice 54) —
+/// and only then runs the settle tail at the state's clock:
+/// `start_execution` by the launch Executor, two
+/// `attest_settlement` calls by the launch Settlers on the
+/// supplied realized hash (threshold 2, so the first must
+/// return false and the second true), and the life
+/// assertion `Settled`. On success only the record's stage
+/// advances; the sealed head and the slice-27 ledger are
+/// untouched — settle moves no declaration and no capacity,
+/// it closes a commit that already moved both. A refusal
+/// writes nothing: the record stands `COMMITTED` and the
+/// head stands.
+///
+/// The parent-head build, the ledger discipline, and the
+/// honesty bounds are slice 54's, unchanged: the earlier
+/// chain replays against a parent state, so the landing
+/// check becomes the parent check and the live head is NOT
+/// required to equal the declared hash; the slice-27 ledger
+/// gate is NOT re-applied (the ledger already contains
+/// this transition's claims); the step-2 `SettlerGate`
+/// ledger binding is NOT enforced at helper level (no
+/// on-chain evidence record exists yet — it rides the
+/// instruction slice); and an inexact settle still settles
+/// here, the halved-credit rule biting at outcome time.
+/// The governance differences are the type gate (an
+/// ordinary record refuses with `NotGovernanceTransition`,
+/// mirroring the ordinary helper's
+/// `GovernanceSettleRequired` gate in reverse), the
+/// approval replay (every listed seat approves this exact
+/// (id, action) pair before registration, so a seat set
+/// the stored `COMMITTED` label does not prove — a missing
+/// seat, or a foreign seat standing in for a sitting one —
+/// refuses here), and the commit step itself
+/// (`commit_governance`, which applies the action in the
+/// rebuilt kernel, discarded like slice 28's). The
+/// stored-approval binding (`gov_action_and_seats` over
+/// `GovApprovalRecord`s, as in slice 36) is NOT this
+/// helper's job: it rides the instruction slice, which
+/// decodes the action from the finalized `GovActionAccount`
+/// instead of taking it as a caller argument.
+#[allow(clippy::too_many_arguments)]
+pub fn settle_governance_transition_from_records(
+    kernel_state: &KernelState,
+    transition_record: &mut TransitionRecord,
+    observation_record: &ObservationRecord,
+    prior_signals: &[SignalRecord],
+    prior_plans: &[PlanRecord],
+    action: &GovAction,
+    approvals: &[[u8; 32]],
+    prior_entries: &[PriorEntry],
+    realized: [u8; 32],
+) -> Result<Life> {
+    if !kernel_state.sealed {
+        return Err(error!(ProgramV04Error::NotSealed));
+    }
+    if transition_record.stage != TransitionRecord::COMMITTED {
+        return Err(error!(ProgramV04Error::WrongStage));
+    }
+    if transition_record.observation_id != observation_record.observation_id {
+        return Err(error!(ProgramV04Error::RecordMismatch));
+    }
+    if !is_gov_type(&transition_record.transition_type) {
+        return Err(error!(ProgramV04Error::NotGovernanceTransition));
+    }
+    if transition_record.planning_deadline == 0 {
+        return Err(error!(ProgramV04Error::GovernanceSettleFailed));
+    }
+    let open_clock = transition_record
+        .planning_deadline
+        .checked_sub(launch_policy().planning_window)
+        .ok_or(error!(ProgramV04Error::GovernanceSettleFailed))?;
+    if prior_signals.len() as u64 != transition_record.signal_count {
+        return Err(error!(ProgramV04Error::GovernanceSettleFailed));
+    }
+    for prior in prior_signals {
+        if prior.transition_id != transition_record.transition_id {
+            return Err(error!(ProgramV04Error::RecordMismatch));
+        }
+        if signal_round(
+            transition_record.eligible_at,
+            transition_record.consensus_deadline,
+            prior.submitted_at,
+        ) != prior.round
+        {
+            return Err(error!(ProgramV04Error::RecordMismatch));
+        }
+    }
+    {
+        let mut seen: BTreeSet<([u8; 32], u64)> = BTreeSet::new();
+        for prior in prior_signals {
+            if !seen.insert((prior.agent.to_bytes(), prior.round)) {
+                return Err(error!(ProgramV04Error::GovernanceSettleFailed));
+            }
+        }
+    }
+    if prior_plans.len() as u64 != transition_record.plan_count {
+        return Err(error!(ProgramV04Error::GovernanceSettleFailed));
+    }
+    for prior in prior_plans {
+        if prior.transition_id != transition_record.transition_id {
+            return Err(error!(ProgramV04Error::RecordMismatch));
+        }
+        if prior.claim_count as usize > PlanRecord::MAX_PLAN_CLAIMS {
+            return Err(error!(ProgramV04Error::GovernanceSettleFailed));
+        }
+        let mut seen: BTreeSet<u16> = BTreeSet::new();
+        for resource in &prior.claim_resources[..prior.claim_count as usize] {
+            if !seen.insert(*resource) {
+                return Err(error!(ProgramV04Error::GovernanceSettleFailed));
+            }
+        }
+    }
+    let proposer = resolve_proposer(kernel_state, transition_record.proposer)
+        .map_err(|_| error!(ProgramV04Error::GovernanceSettleFailed))?;
+    let observer_id = resolve_agent_id(observation_record.observer);
+    // The parent state: the program state as it stood before
+    // this commit, head-wise — slice 54's build, unchanged.
+    let parent_state = KernelState {
+        sealed: kernel_state.sealed,
+        head_index: transition_record.parent_index,
+        head_hash: transition_record.parent_hash,
+        clock: kernel_state.clock,
+        eligible_sibling_parent_index: kernel_state.eligible_sibling_parent_index,
+        eligible_sibling_parent_hash: kernel_state.eligible_sibling_parent_hash,
+        eligible_sibling_count: kernel_state.eligible_sibling_count,
+        bump: kernel_state.bump,
+        committed_claims: kernel_state.committed_claims,
+    };
+    let mut k = kernel_at_head_from_entries(&parent_state, prior_entries)?;
+    if !k.has_role(&observer_id, Role::Observer) {
+        return Err(error!(ProgramV04Error::NotObserver));
+    }
+    let relevant_groups = match k.agent(&proposer) {
+        Some(profile) => profile.groups.clone(),
+        None => return Err(error!(ProgramV04Error::UnknownProposer)),
+    };
+    let observation = Observation {
+        id: observation_record.observation_id,
+        timestamp: observation_record.timestamp,
+        expiry: observation_record.expiry,
+        confidence: Amount::from_raw(observation_record.confidence_raw),
+    };
+    let eligible_at = transition_record.eligible_at;
+    // Council approvals precede registration, exactly as in
+    // the slice-28 helper: every listed seat approves this
+    // exact (id, action) pair, and the kernel refuses
+    // registration unless every sitting seat has done so.
+    for seat in approvals {
+        k.approve_governance(seat, transition_record.transition_id, action.clone(), eligible_at)
+            .map_err(|_| error!(ProgramV04Error::GovernanceSettleFailed))?;
+    }
+    k.ingest_observation(&observer_id, observation, eligible_at)
+        .map_err(|_| error!(ProgramV04Error::GovernanceSettleFailed))?;
+    let manifest = Manifest {
+        transition_type: transition_record.transition_type,
+        parent_index: transition_record.parent_index,
+        parent_hash: transition_record.parent_hash,
+        declared_next_hash: transition_record.declared_next_hash,
+        observation_id: transition_record.observation_id,
+        expires_at: transition_record.expires_at,
+        relevant_groups,
+        action: None,
+    };
+    k.register_governance_transition(
+        &proposer,
+        transition_record.transition_id,
+        manifest,
+        action.clone(),
+        eligible_at,
+    )
+    .map_err(|_| error!(ProgramV04Error::GovernanceSettleFailed))?;
+    k.evaluate_transition(&transition_record.transition_id, eligible_at)
+        .map_err(|_| error!(ProgramV04Error::GovernanceSettleFailed))?;
+    k.mark_eligible(&transition_record.transition_id, eligible_at)
+        .map_err(|_| error!(ProgramV04Error::GovernanceSettleFailed))?;
+    match k.life_of(&transition_record.transition_id) {
+        Some(Life::Eligible) => {}
+        _ => return Err(error!(ProgramV04Error::GovernanceSettleFailed)),
+    }
+    let mut priors: alloc::vec::Vec<SignalRecord> = prior_signals.to_vec();
+    priors.sort_by_key(|s| s.submitted_at);
+    for prior in &priors {
+        let support = if prior.has_support {
+            Some(Amount::from_raw(prior.support_raw))
+        } else {
+            None
+        };
+        k.submit_round_signal(
+            &prior.agent.to_bytes(),
+            &transition_record.transition_id,
+            Amount::from_raw(prior.raw),
+            support,
+            prior.submitted_at,
+        )
+        .map_err(|_| error!(ProgramV04Error::GovernanceSettleFailed))?;
+    }
+    k.select_candidate(&transition_record.transition_id, open_clock)
+        .map_err(|_| error!(ProgramV04Error::GovernanceSettleFailed))?;
+    match k.life_of(&transition_record.transition_id) {
+        Some(Life::Selected) => {}
+        _ => return Err(error!(ProgramV04Error::GovernanceSettleFailed)),
+    }
+    k.open_planning(&proposer, &transition_record.transition_id, open_clock)
+        .map_err(|_| error!(ProgramV04Error::GovernanceSettleFailed))?;
+    match k.life_of(&transition_record.transition_id) {
+        Some(Life::Planning) => {}
+        _ => return Err(error!(ProgramV04Error::GovernanceSettleFailed)),
+    }
+    let deadline = open_clock
+        .checked_add(launch_policy().planning_window)
+        .ok_or(error!(ProgramV04Error::GovernanceSettleFailed))?;
+    if deadline != transition_record.planning_deadline {
+        return Err(error!(ProgramV04Error::GovernanceSettleFailed));
+    }
+    for prior in prior_plans {
+        let mut prior_map: BTreeMap<u16, Amount> = BTreeMap::new();
+        for (resource, amount) in prior.claim_resources[..prior.claim_count as usize]
+            .iter()
+            .zip(prior.claim_amounts[..prior.claim_count as usize].iter())
+        {
+            prior_map.insert(*resource, Amount::from_raw(*amount));
+        }
+        let prior_plan = Plan {
+            agent: prior.agent.to_bytes(),
+            claims: prior_map,
+            expires_at: prior.expires_at,
+        };
+        k.submit_plan(
+            &prior.agent.to_bytes(),
+            &transition_record.transition_id,
+            prior_plan,
+            open_clock,
+        )
+        .map_err(|_| error!(ProgramV04Error::GovernanceSettleFailed))?;
+    }
+    let final_clock = transition_record.planning_deadline;
+    k.reconcile_plans(&transition_record.transition_id, final_clock)
+        .map_err(|_| error!(ProgramV04Error::GovernanceSettleFailed))?;
+    match k.life_of(&transition_record.transition_id) {
+        Some(Life::Reconciling) => {}
+        _ => return Err(error!(ProgramV04Error::GovernanceSettleFailed)),
+    }
+    // Slice 23's exact mirror, recomputed over the supplied
+    // set, exactly as in slice 54: a stored verdict the set
+    // does not reproduce refuses here, before the kernel's
+    // own validate runs. The slice-27 ledger gate is NOT
+    // re-applied (see the module note above).
+    let mut sums: BTreeMap<u16, Amount> = BTreeMap::new();
+    let mut fits = !prior_plans.is_empty();
+    for prior in prior_plans {
+        for (resource, amount) in prior.claim_resources[..prior.claim_count as usize]
+            .iter()
+            .zip(prior.claim_amounts[..prior.claim_count as usize].iter())
+        {
+            let entry = sums.entry(*resource).or_insert(Amount::ZERO);
+            match entry.checked_add(Amount::from_raw(*amount)) {
+                Ok(v) => *entry = v,
+                Err(_) => fits = false,
+            }
+        }
+    }
+    if fits {
+        for (resource, total) in &sums {
+            if !k.capacity_of(*resource).is_some_and(|cap| *total <= cap) {
+                fits = false;
+            }
+        }
+    }
+    if fits != transition_record.compatible {
+        return Err(error!(ProgramV04Error::GovernanceSettleFailed));
+    }
+    k.validate_transition(&transition_record.transition_id, final_clock)
+        .map_err(|_| error!(ProgramV04Error::GovernanceSettleFailed))?;
+    match k.life_of(&transition_record.transition_id) {
+        Some(Life::Validated) => {}
+        Some(Life::Blocked) => return Err(error!(ProgramV04Error::GovernanceSettleFailed)),
+        _ => return Err(error!(ProgramV04Error::GovernanceSettleFailed)),
+    }
+    k.declare_commit(&transition_record.transition_id, final_clock)
+        .map_err(|_| error!(ProgramV04Error::GovernanceSettleFailed))?;
+    match k.life_of(&transition_record.transition_id) {
+        Some(Life::Committable) => {}
+        _ => return Err(error!(ProgramV04Error::GovernanceSettleFailed)),
+    }
+    // The governance commit itself, in the rebuilt kernel:
+    // the kernel checks the action and applies it atomically
+    // with the commit. The rebuilt kernel is discarded —
+    // this helper persists the stage advance only, not the
+    // applied rule (see the slice-28 module note).
+    let new_state = k
+        .commit_governance(&transition_record.transition_id, final_clock)
+        .map_err(|_| error!(ProgramV04Error::GovernanceSettleFailed))?;
+    match k.life_of(&transition_record.transition_id) {
+        Some(Life::Committed) => {}
+        _ => return Err(error!(ProgramV04Error::GovernanceSettleFailed)),
+    }
+    // The stored COMMITTED label is proven only if the
+    // re-commit lands exactly one past the parent at the
+    // declared next hash. The live head is not compared
+    // here (see the module note above): a successor may
+    // already have moved it past this transition.
+    let expected_index = transition_record
+        .parent_index
+        .checked_add(1)
+        .ok_or(error!(ProgramV04Error::GovernanceSettleFailed))?;
+    if new_state.index != expected_index || new_state.hash != transition_record.declared_next_hash {
+        return Err(error!(ProgramV04Error::GovernanceSettleFailed));
+    }
+    // The settle tail at the state's clock: execution must
+    // start inside the execution window (commit clock +
+    // execution_window) and attestation needs both settlers
+    // on the same realized hash — threshold 2, so the first
+    // attestation must NOT settle and the second must.
+    k.start_execution(&EXECUTOR, &transition_record.transition_id, kernel_state.clock)
+        .map_err(|_| error!(ProgramV04Error::GovernanceSettleFailed))?;
+    match k.life_of(&transition_record.transition_id) {
+        Some(Life::Executing) => {}
+        _ => return Err(error!(ProgramV04Error::GovernanceSettleFailed)),
+    }
+    let first = k
+        .attest_settlement(&SETTLER_A, &transition_record.transition_id, realized, kernel_state.clock)
+        .map_err(|_| error!(ProgramV04Error::GovernanceSettleFailed))?;
+    if first {
+        return Err(error!(ProgramV04Error::GovernanceSettleFailed));
+    }
+    let second = k
+        .attest_settlement(&SETTLER_B, &transition_record.transition_id, realized, kernel_state.clock)
+        .map_err(|_| error!(ProgramV04Error::GovernanceSettleFailed))?;
+    if !second {
+        return Err(error!(ProgramV04Error::GovernanceSettleFailed));
+    }
+    match k.life_of(&transition_record.transition_id) {
+        Some(Life::Settled) => {}
+        _ => return Err(error!(ProgramV04Error::GovernanceSettleFailed)),
+    }
+    transition_record.stage = TransitionRecord::SETTLED;
+    Ok(Life::Settled)
+}
+
 /// Commit a declared governance transition (slice 28): `DECLARED`
 /// (9) -> `COMMITTED` (10), and the sealed head moves to the
 /// kernel's returned `SystemState` — or a refusal that leaves
@@ -12986,6 +13335,8 @@ pub enum ProgramV04Error {
     SettleFailed,
     #[msg("program-v04 settle: governance transitions settle through the governance settle path, not the ordinary settle path")]
     GovernanceSettleRequired,
+    #[msg("program-v04 settle: kernel governance settle refused, governance commit unproven at the parent head, execution window lapsed, or attestation threshold unmet")]
+    GovernanceSettleFailed,
 }
 
 // ---------------------------------------------------------------- launch genesis
@@ -18170,6 +18521,249 @@ mod tests {
         assert_eq!(state.head_index, 2);
         assert_eq!(state.head_hash, [0xE2; 32]);
         assert_eq!(state.committed_claims, [20 * SCALE, 10 * SCALE, 0]);
+    }
+
+    fn gov_committed_pair() -> (
+        KernelState,
+        TransitionRecord,
+        ObservationRecord,
+        SignalRecord,
+        PlanRecord,
+    ) {
+        // A COMMITTED governance record, driven through the
+        // slice-28 helper from a DECLARED pair: the fixture
+        // every slice-55 test settles from.
+        let (mut state, mut record, obs, first, plan) = gov_declared_pair();
+        let action = gov_action();
+        let approvals = gov_approvals();
+        let life = commit_governance_from_records(
+            &mut state, &mut record, &obs, std::slice::from_ref(&first), std::slice::from_ref(&plan),
+            &action, &approvals, &[],
+        )
+        .expect("a unanimous governance chain must commit");
+        assert_eq!(life, Life::Committed);
+        assert_eq!(record.stage, TransitionRecord::COMMITTED);
+        (state, record, obs, first, plan)
+    }
+
+    #[test]
+    fn gov_settle_advances_committed_to_settled_exact() {
+        // A committed governance record settles on its
+        // declared hash: the stage advances to 11, and — the
+        // slice's head and ledger discipline — the sealed head
+        // and the ledger stand exactly where the commit left
+        // them, because settle closes a commit, it moves
+        // neither. Governance plans claim no stock, so the
+        // ledger stands at zeros through the settle.
+        let (state, mut record, obs, first, plan) = gov_committed_pair();
+        let head_index = state.head_index;
+        let head_hash = state.head_hash;
+        let ledger = state.committed_claims;
+        let action = gov_action();
+        let approvals = gov_approvals();
+        let realized = record.declared_next_hash;
+        let life = settle_governance_transition_from_records(
+            &state, &mut record, &obs, &[first], std::slice::from_ref(&plan), &action, &approvals,
+            &[], realized,
+        )
+        .expect("a proven committed governance chain must settle on its declared hash");
+        assert_eq!(life, Life::Settled);
+        assert_eq!(record.stage, TransitionRecord::SETTLED);
+        assert_eq!(record.stage, 11);
+        assert_eq!(state.head_index, head_index);
+        assert_eq!(state.head_hash, head_hash);
+        assert_eq!(state.committed_claims, ledger);
+        assert_eq!(state.committed_claims, [0, 0, 0]);
+    }
+
+    #[test]
+    fn gov_settle_advances_committed_to_settled_inexact() {
+        // An inexact settle still settles, exactly as on the
+        // ordinary path: the halved-credit rule bites at
+        // outcome time, the next slice, not here.
+        let (state, mut record, obs, first, plan) = gov_committed_pair();
+        let action = gov_action();
+        let approvals = gov_approvals();
+        let life = settle_governance_transition_from_records(
+            &state, &mut record, &obs, &[first], std::slice::from_ref(&plan), &action, &approvals,
+            &[], [0x99; 32],
+        )
+        .expect("an inexact realized hash must still settle");
+        assert_eq!(life, Life::Settled);
+        assert_eq!(record.stage, TransitionRecord::SETTLED);
+    }
+
+    #[test]
+    fn gov_settle_is_once_only_after_settled() {
+        // A settled governance record is past settle: the
+        // stage gate refuses a second call, and the stage and
+        // the head stand exactly where the first settle left
+        // them.
+        let (state, mut record, obs, first, plan) = gov_committed_pair();
+        let action = gov_action();
+        let approvals = gov_approvals();
+        let realized = record.declared_next_hash;
+        settle_governance_transition_from_records(
+            &state, &mut record, &obs, &[first], std::slice::from_ref(&plan), &action, &approvals,
+            &[], realized,
+        )
+        .expect("first governance settle must succeed");
+        assert_eq!(record.stage, TransitionRecord::SETTLED);
+        let err = settle_governance_transition_from_records(
+            &state, &mut record, &obs, &[first], std::slice::from_ref(&plan), &action, &approvals,
+            &[], realized,
+        )
+        .expect_err("a second governance settle must refuse");
+        assert!(format!("{:?}", err).contains("WrongStage"));
+        assert_eq!(record.stage, TransitionRecord::SETTLED);
+        assert_eq!(state.head_index, 1);
+    }
+
+    #[test]
+    fn gov_settle_refuses_ordinary_type() {
+        // The reverse of slice 54's type gate: a committed
+        // ordinary record refuses the governance settle path
+        // with the distinct type error, and stands COMMITTED.
+        let (state, mut record, obs, first, plan) = committed_pair();
+        let action = gov_action();
+        let approvals = gov_approvals();
+        let realized = record.declared_next_hash;
+        let err = settle_governance_transition_from_records(
+            &state, &mut record, &obs, &[first], std::slice::from_ref(&plan), &action, &approvals,
+            &[], realized,
+        )
+        .expect_err("an ordinary record must refuse governance settle");
+        assert!(format!("{:?}", err).contains("NotGovernanceTransition"));
+        assert_eq!(record.stage, TransitionRecord::COMMITTED);
+        assert_eq!(state.head_index, 1);
+    }
+
+    #[test]
+    fn gov_settle_reproves_unanimity() {
+        // The stored COMMITTED label proves nothing the
+        // settle replay does not re-prove: with only two of
+        // three seats approving, the kernel's unanimity gate
+        // refuses registration, the record stands COMMITTED,
+        // and the head stands — a settle cannot launder a
+        // non-unanimous council.
+        let (state, mut record, obs, first, plan) = gov_committed_pair();
+        let action = gov_action();
+        let approvals = [ag(1), ag(2)];
+        let realized = record.declared_next_hash;
+        let err = settle_governance_transition_from_records(
+            &state, &mut record, &obs, &[first], std::slice::from_ref(&plan), &action, &approvals,
+            &[], realized,
+        )
+        .expect_err("a non-unanimous governance settle must refuse");
+        assert!(format!("{:?}", err).contains("GovernanceSettleFailed"));
+        assert_eq!(record.stage, TransitionRecord::COMMITTED);
+        assert_eq!(state.head_index, 1);
+    }
+
+    #[test]
+    fn gov_settle_reproves_seat_set() {
+        // A foreign seat standing in for a sitting one is
+        // the same refusal: ag(9) holds no council seat, so
+        // the third sitting seat never approved, the gate
+        // refuses, and the record stands COMMITTED with the
+        // head unmoved.
+        let (state, mut record, obs, first, plan) = gov_committed_pair();
+        let action = gov_action();
+        let approvals = [ag(1), ag(2), ag(9)];
+        let realized = record.declared_next_hash;
+        let err = settle_governance_transition_from_records(
+            &state, &mut record, &obs, &[first], std::slice::from_ref(&plan), &action, &approvals,
+            &[], realized,
+        )
+        .expect_err("a foreign-seat governance settle must refuse");
+        assert!(format!("{:?}", err).contains("GovernanceSettleFailed"));
+        assert_eq!(record.stage, TransitionRecord::COMMITTED);
+        assert_eq!(state.head_index, 1);
+    }
+
+    #[test]
+    fn gov_settle_refuses_wrong_stage() {
+        // Still DECLARED, never committed: the stage gate
+        // refuses before any replay, and nothing moves.
+        let (state, mut record, obs, first, plan) = gov_declared_pair();
+        let action = gov_action();
+        let approvals = gov_approvals();
+        let realized = record.declared_next_hash;
+        let err = settle_governance_transition_from_records(
+            &state, &mut record, &obs, &[first], std::slice::from_ref(&plan), &action, &approvals,
+            &[], realized,
+        )
+        .expect_err("a declared governance record must refuse settle");
+        assert!(format!("{:?}", err).contains("WrongStage"));
+        assert_eq!(record.stage, TransitionRecord::DECLARED);
+    }
+
+    #[test]
+    fn gov_settle_refuses_past_execution_deadline() {
+        // Commit at clock 300, execution window 1000: at
+        // clock 1301 the window has lapsed, so execution
+        // refuses and the record stands COMMITTED with the
+        // head unmoved — the ordinary path's deadline test,
+        // on the governance path.
+        let (mut state, mut record, obs, first, plan) = gov_committed_pair();
+        advance_clock_on_state(&mut state, 1301).expect("advance past the execution deadline must succeed");
+        let action = gov_action();
+        let approvals = gov_approvals();
+        let realized = record.declared_next_hash;
+        let err = settle_governance_transition_from_records(
+            &state, &mut record, &obs, &[first], std::slice::from_ref(&plan), &action, &approvals,
+            &[], realized,
+        )
+        .expect_err("a past-deadline governance settle must refuse");
+        assert!(format!("{:?}", err).contains("GovernanceSettleFailed"));
+        assert_eq!(record.stage, TransitionRecord::COMMITTED);
+        assert_eq!(state.head_index, 1);
+    }
+
+    #[test]
+    fn gov_settle_refuses_unsealed() {
+        // The sealed gate runs first: an unsealed state
+        // refuses before any replay, and nothing moves.
+        let (mut state, mut record, obs, first, plan) = gov_committed_pair();
+        state.sealed = false;
+        let action = gov_action();
+        let approvals = gov_approvals();
+        let realized = record.declared_next_hash;
+        let err = settle_governance_transition_from_records(
+            &state, &mut record, &obs, &[first], std::slice::from_ref(&plan), &action, &approvals,
+            &[], realized,
+        )
+        .expect_err("an unsealed governance settle must refuse");
+        assert!(format!("{:?}", err).contains("NotSealed"));
+        assert_eq!(record.stage, TransitionRecord::COMMITTED);
+    }
+
+    #[test]
+    fn gov_settle_refuses_overshooting_prior_chain() {
+        // The earlier chain must land at the target's parent:
+        // a prior bundle that itself commits past genesis
+        // lands at index 1, not at the target's genesis
+        // parent, so the parent check refuses before any
+        // replay of the target runs.
+        let (state, mut record, obs, first, plan) = gov_committed_pair();
+        let (_state2, record2, obs2, first2, plan2) = committed_pair();
+        let overshoot = PriorCommit {
+            transition_record: &record2,
+            observation_record: &obs2,
+            prior_signals: std::slice::from_ref(&first2),
+            prior_plans: std::slice::from_ref(&plan2),
+        };
+        let prior = PriorEntry::Ordinary(overshoot);
+        let action = gov_action();
+        let approvals = gov_approvals();
+        let realized = record.declared_next_hash;
+        let err = settle_governance_transition_from_records(
+            &state, &mut record, &obs, &[first], std::slice::from_ref(&plan), &action, &approvals,
+            std::slice::from_ref(&prior), realized,
+        )
+        .expect_err("an overshooting prior chain must refuse");
+        assert!(format!("{:?}", err).contains("ParentMismatch"));
+        assert_eq!(record.stage, TransitionRecord::COMMITTED);
     }
 
     fn gov_action() -> GovAction {
