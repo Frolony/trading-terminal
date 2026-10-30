@@ -567,6 +567,72 @@ Run evidence: `hidden_files/smallframe-cap2-run1.log`,
 `hidden_files/smallframe-frame-run2.log`,
 `hidden_files/smallframe-frame-script.log`.
 
+## Slice-69 — governance outcome tail + second-commit-at-moved-head chain (2026-10-30, same pins)
+
+Slice 69 lands both remaining queue items in one chain, with no
+program change (harness only, `.so` sha unchanged `0125cf1e…`,
+host tests 457/457): the golden grows from 37 to **63 measured
++ 2 refusals**, all 37 prior CU values reproducing exactly.
+
+Why a second governance chain, not the slice-1 one: the slice-1
+governance record was registered at the genesis parent (0, zero
+hash), and commit requires parent == current head — after the
+life chain moved the head to 1, that record can never commit.
+GOV2 registers at the moved head (1, DECLARED_HASH) instead and
+runs replay through outcome while the life record still stands
+COMMITTED: the prior-bundle driver requires the prior record at
+exactly COMMITTED, so the whole gov2 chain sits between
+`commit_transition_life` and `settle_transition_life`, carrying
+the life bundle (life record, life observation, life signal, life
+plan, in bundle order) as its one prior on every stage
+instruction. Unanimity needs all three council seats
+(ag(1)/ag(2)/ag(3)), each signing its own approval record; the
+plan is the canonical empty-claims governance shape (a rule
+change claims no stock); the outcome attributes ag(2), the plan
+agent, +10 exact. Clocks: mark_eligible at 400 (window 400/500),
+select/open at 500 (deadline 600), reconcile through outcome at
+600. `init_reputation_life` moved to just after `commit_life`
+(same label, same 23,453 CU) so the gov2 outcome can attribute
+ag(2); the life outcome then credits ag(2) a second +10
+(50,000,010 -> 50,000,020). The life settle's head assertion
+moves with the chain: settle moves neither head nor ledger, but
+the head is now index 2 at the gov2 declared hash, not index 1.
+
+New measurements (CU): init_gov_action 11,505; append chunks
+4,740 each; finalize 7,364; register_governance_transition
+30,674; approve seat1 36,189, seat2 45,400, seat3 36,419;
+ingest_observation 22,959; replay_governance 66,559;
+evaluate_governance 66,936; mark_eligible_governance 69,065;
+submit_signal_governance 78,445; select_candidate_governance
+73,636; open_planning_governance 74,264;
+submit_plan_governance 82,265; reconcile 78,960; validate
+79,233; declare 79,912; commit_governance 87,074 (head moves to
+index 2 at the gov2 declared hash); record_settlement_evidence
+13,602; settle_governance_transition 90,398;
+record_outcome_governance 111,307 (gov2 record to
+EVALUATED_OUTCOME, ag(2) 50,000,000 -> 50,000,010). Two variance
+notes, both the slice-6 PDA bump-search mechanism, not
+behavior: seat2's approval costs ~9k more than the other seats'
+(the approval PDA's bump search length differs per seat), and
+the gov2 evidence costs 1,500 less than the life evidence (one
+fewer bump attempt on its PDA). The tripwire and smallframe
+scripts re-run this whole 63-step file by construction, so both
+guards will cover the gov2 chain when they next execute.
+Guard status (2026-10-30, BUILD run scheduled 08:46 CST):
+their re-runs on the 63-step file did NOT complete this run —
+the tripwire variant SBF link failed with a sandbox write
+refusal (`Operation not permitted`; cargo also reported a
+sqlite disk I/O error on its last-use data), and the script's
+trap restore then truncated `target/deploy/program_v04.so` to
+0 bytes. The shipped bytes are preserved in two sha-verified
+backups (sha `0125cf1e…`, the golden's `so_sha256`), and the
+golden itself was proven by three full harness runs before the
+breakage (two prior runs + this run's byte-identical re-run).
+The tripwire + smallframe re-runs AND the deploy `.so`
+restore must land before any W4.4 deploy relies on the 63-step
+golden. Queue after this slice: guard re-runs + `.so` restore
+→ W4.4 devnet deploy (go stands, devnet/test assets only).
+
 ## Slice-65 PARTIAL — full lifecycle chain stops at select (F6, 2026-10-30, same pins)
 
 Slice 65 extends the slice-64 chain past replay at clock 200

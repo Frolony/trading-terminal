@@ -283,6 +283,14 @@ const ORD_TID: [u8; 32] = [0xD2; 32];
 // Slice-63 full-lifecycle chain: its own transition + observation.
 const LIFE_TID: [u8; 32] = [0xD4; 32];
 const LIFE_OBS: [u8; 32] = [0xC2; 32];
+// Slice-69 governance outcome tail: a second governance chain at the
+// moved head (parent 1 at the life chain's declared hash), driven
+// through commit, settle, and outcome while the life record still
+// stands COMMITTED — the prior-bundle driver requires exactly
+// COMMITTED, so this chain cannot run after the life outcome.
+const GOV2_TID: [u8; 32] = [0xD5; 32];
+const GOV2_OBS: [u8; 32] = [0xC3; 32];
+const GOV2_DECLARED: [u8; 32] = [0xE2; 32];
 // Launch-profile ordinary transition type (lib.rs `TT`).
 const TT_TYPE: [u8; 32] = [9; 32];
 // Kernel Amount SCALE (coordination-kernel-rs num.rs): 1.0 in raw units.
@@ -507,6 +515,36 @@ fn main() {
     let (life_plan, _) = pda(&[b"plan", LIFE_TID.as_ref(), signaler.as_ref()], &program_id);
     let (life_evidence, _) = pda(&[b"evidence", LIFE_TID.as_ref()], &program_id);
     let (rep_ag2, _) = pda(&[b"reputation", signaler.as_ref()], &program_id);
+    // Slice-69 governance outcome tail accounts: the second governance
+    // chain's own transition, observation, action account (writer
+    // seat1, the registering proposer), one approval record per
+    // council seat (ag(1)/ag(2)/ag(3) — unanimity needs all three),
+    // signal and plan by ag(2), and its settlement evidence.
+    let ag3 = Pubkey::new_from_array([3; 32]);
+    let (gov2_record, _) = pda(&[b"transition", GOV2_TID.as_ref()], &program_id);
+    let (gov2_obs, _) = pda(&[b"observation", GOV2_OBS.as_ref()], &program_id);
+    let (gov2_action_account, _) = pda(
+        &[b"gov-action", GOV2_TID.as_ref(), seat1.as_ref()],
+        &program_id,
+    );
+    let (gov2_approval1, _) = pda(
+        &[b"gov-approval", GOV2_TID.as_ref(), seat1.as_ref()],
+        &program_id,
+    );
+    let (gov2_approval2, _) = pda(
+        &[b"gov-approval", GOV2_TID.as_ref(), signaler.as_ref()],
+        &program_id,
+    );
+    let (gov2_approval3, _) = pda(
+        &[b"gov-approval", GOV2_TID.as_ref(), ag3.as_ref()],
+        &program_id,
+    );
+    let (gov2_signal, _) = pda(
+        &[b"signal", GOV2_TID.as_ref(), signaler.as_ref(), &round0_le],
+        &program_id,
+    );
+    let (gov2_plan, _) = pda(&[b"plan", GOV2_TID.as_ref(), signaler.as_ref()], &program_id);
+    let (gov2_evidence, _) = pda(&[b"evidence", GOV2_TID.as_ref()], &program_id);
 
     let empty = Account {
         lamports: 0,
@@ -539,11 +577,21 @@ fn main() {
         (life_plan, empty.clone()),
         (life_evidence, empty.clone()),
         (rep_ag2, empty.clone()),
+        (gov2_record, empty.clone()),
+        (gov2_obs, empty.clone()),
+        (gov2_action_account, empty.clone()),
+        (gov2_approval1, empty.clone()),
+        (gov2_approval2, empty.clone()),
+        (gov2_approval3, empty.clone()),
+        (gov2_signal, empty.clone()),
+        (gov2_plan, empty.clone()),
+        (gov2_evidence, empty.clone()),
         (payer, funded.clone()),
         (seat1, funded.clone()),
         (observer, funded.clone()),
         (proposer, funded.clone()),
         (signaler, funded.clone()),
+        (ag3, funded.clone()),
         (recorder, funded.clone()),
     ];
 
@@ -1318,6 +1366,528 @@ fn main() {
     assert_eq!(u64_at(&ks.data, 9), 1, "commit must move the head to index 1");
     assert_eq!(ks.data[17..49], DECLARED_HASH, "commit must move the head to the declared hash");
 
+    // SLICE-69 — init_reputation for ag(2), MOVED here from after
+    // settle_life (same label, same instruction): the gov2 outcome
+    // below attributes ag(2), its plan agent, so ag(2)'s reputation
+    // record must exist before the gov2 chain settles. The life
+    // outcome later credits the same record a second +10.
+    let mut data = disc("init_reputation");
+    data.extend_from_slice(signaler.as_ref());
+    let ix = Instruction::new_with_bytes(
+        program_id,
+        &data,
+        vec![
+            AccountMeta::new(kernel_state, false),
+            AccountMeta::new(rep_ag2, false),
+            AccountMeta::new(payer, true),
+            AccountMeta::new_readonly(system_id, false),
+        ],
+    );
+    let (next, cu) = run(&mollusk, "init_reputation_life", &ix, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({"instruction": "init_reputation_life", "cu": cu, "result": "Success", "note": life_note65}));
+    assert_eq!(u64_at(&find(&accounts, &rep_ag2).data, 40), 50_000_000, "ag(2) reputation must start at the genesis midpoint");
+
+    // SLICE-69 — governance outcome tail: a SECOND governance chain
+    // at the moved head, and the second-commit-at-moved-head chain
+    // in the same pass. The slice-1 governance record cannot serve:
+    // it was registered at the genesis parent (0, zero hash), and
+    // commit requires parent == current head, so it can never
+    // commit after the life chain moved the head to 1. This chain
+    // registers at the moved head (1, DECLARED_HASH) instead, and
+    // every stage instruction carries the life bundle as its one
+    // prior (prior_bundle_count 1: life record, life observation,
+    // life signal, life plan, in bundle order) — the prior-bundle
+    // driver requires the prior record at exactly COMMITTED, so
+    // the whole gov2 chain runs here, between commit_life and
+    // settle_life, while the life record still stands COMMITTED.
+    // Unanimity needs all three council seats (ag(1)/ag(2)/ag(3));
+    // the plan is the canonical empty-claims governance shape
+    // (a rule change claims no stock), and the outcome attributes
+    // ag(2), the plan agent, +10 exact. Clocks: mark_eligible at
+    // 400 (window 400/500), select/open at 500 (deadline 600),
+    // reconcile through outcome at 600.
+    let gov2_note = "slice-69 governance outcome tail (second governance chain at the moved head, through commit/settle/outcome)";
+    let gov2_stage_ix = |name: &str| -> Vec<u8> {
+        let mut d = disc(name);
+        d.extend_from_slice(&GOV2_TID);
+        d.extend_from_slice(&GOV2_OBS);
+        d.extend_from_slice(&1u32.to_le_bytes());
+        d
+    };
+    let life_bundle = || -> Vec<AccountMeta> {
+        vec![
+            AccountMeta::new_readonly(life_record, false),
+            AccountMeta::new_readonly(life_obs, false),
+            AccountMeta::new_readonly(life_signal, false),
+            AccountMeta::new_readonly(life_plan, false),
+        ]
+    };
+    let gov2_approvals = || -> Vec<AccountMeta> {
+        vec![
+            AccountMeta::new_readonly(gov2_approval1, false),
+            AccountMeta::new_readonly(gov2_approval2, false),
+            AccountMeta::new_readonly(gov2_approval3, false),
+        ]
+    };
+    let gov2_stage_tail = || -> Vec<AccountMeta> {
+        let mut m = gov2_approvals();
+        m.push(AccountMeta::new_readonly(gov2_action_account, false));
+        m
+    };
+    // Gov2 action account: same GrantRole action bytes as gov1
+    // (writer seat1, the registering proposer), so the same
+    // expected hash binds it; only the transition id differs.
+    let mut data = disc("init_gov_action");
+    data.extend_from_slice(&GOV2_TID);
+    data.extend_from_slice(&expected_hash);
+    let ix = Instruction::new_with_bytes(
+        program_id,
+        &data,
+        vec![
+            AccountMeta::new(gov2_action_account, false),
+            AccountMeta::new(seat1, true),
+            AccountMeta::new_readonly(system_id, false),
+        ],
+    );
+    let (next, cu) = run(&mollusk, "init_gov_action_gov2", &ix, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({"instruction": "init_gov_action_gov2", "cu": cu, "result": "Success", "note": gov2_note}));
+    for (offset, len) in [(0u16, 512u32), (512u16, 512u32), (1024u16, 500u32)] {
+        let mut data = disc("append_gov_action_chunk");
+        data.extend_from_slice(&GOV2_TID);
+        data.extend_from_slice(&offset.to_le_bytes());
+        data.extend_from_slice(&len.to_le_bytes());
+        data.extend_from_slice(&action_bytes[offset as usize..(offset as usize + len as usize)]);
+        let ix = Instruction::new_with_bytes(
+            program_id,
+            &data,
+            vec![
+                AccountMeta::new(gov2_action_account, false),
+                AccountMeta::new(seat1, true),
+            ],
+        );
+        let (next, cu) = run(
+            &mollusk,
+            &format!("append_gov_action_chunk_gov2@{offset}"),
+            &ix,
+            &accounts,
+        );
+        accounts = next;
+        measured.push(serde_json::json!({"instruction": format!("append_gov_action_chunk_gov2@{offset}"), "cu": cu, "result": "Success", "note": gov2_note}));
+    }
+    let mut data = disc("finalize_gov_action");
+    data.extend_from_slice(&GOV2_TID);
+    let ix = Instruction::new_with_bytes(
+        program_id,
+        &data,
+        vec![
+            AccountMeta::new(gov2_action_account, false),
+            AccountMeta::new(seat1, true),
+        ],
+    );
+    let (next, cu) = run(&mollusk, "finalize_gov_action_gov2", &ix, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({"instruction": "finalize_gov_action_gov2", "cu": cu, "result": "Success", "note": gov2_note}));
+    let ga = find(&accounts, &gov2_action_account);
+    assert_eq!(ga.data[104..136], expected_hash, "gov2 finalize must store the expected hash");
+    assert_eq!(u16::from_le_bytes(ga.data[136..138].try_into().unwrap()), 1524, "gov2 finalize requires the full 1524 bytes written");
+    assert_eq!(ga.data[138], 1, "gov2 finalize must seal the account");
+
+    // register_governance_transition gov2 at the moved head.
+    let gov_type = tag(b"GOV_ADJUSTABLE");
+    let mut data = disc("register_governance_transition");
+    data.extend_from_slice(&GOV2_TID);
+    data.extend_from_slice(&gov_type);
+    data.extend_from_slice(&u64le(1));
+    data.extend_from_slice(&DECLARED_HASH);
+    data.extend_from_slice(&GOV2_DECLARED);
+    data.extend_from_slice(&GOV2_OBS);
+    data.extend_from_slice(&u64le(EXPIRES_AT));
+    let ix = Instruction::new_with_bytes(
+        program_id,
+        &data,
+        vec![
+            AccountMeta::new_readonly(kernel_state, false),
+            AccountMeta::new(gov2_record, false),
+            AccountMeta::new_readonly(gov2_action_account, false),
+            AccountMeta::new(seat1, true),
+            AccountMeta::new_readonly(system_id, false),
+        ],
+    );
+    let (next, cu) = run(&mollusk, "register_governance_transition_gov2", &ix, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({"instruction": "register_governance_transition_gov2", "cu": cu, "result": "Success", "note": gov2_note}));
+    let rec = find(&accounts, &gov2_record);
+    assert_eq!(rec.data[216], 0, "gov2 record must start REGISTERED");
+    assert_eq!(u64_at(&rec.data, 257), 0, "gov2 approval count must start 0");
+
+    // approve_governance gov2, one per council seat: seat1, then
+    // ag(2), then ag(3). The writer rides explicitly (seat1) in
+    // every call; each seat signs its own approval record.
+    for (seat, approval, label) in [
+        (seat1, gov2_approval1, "approve_governance_gov2_seat1"),
+        (signaler, gov2_approval2, "approve_governance_gov2_seat2"),
+        (ag3, gov2_approval3, "approve_governance_gov2_seat3"),
+    ] {
+        let mut data = disc("approve_governance");
+        data.extend_from_slice(&GOV2_TID);
+        let ix = Instruction::new_with_bytes(
+            program_id,
+            &data,
+            vec![
+                AccountMeta::new_readonly(kernel_state, false),
+                AccountMeta::new(gov2_record, false),
+                AccountMeta::new_readonly(seat1, false),
+                AccountMeta::new_readonly(gov2_action_account, false),
+                AccountMeta::new(approval, false),
+                AccountMeta::new(seat, true),
+                AccountMeta::new_readonly(system_id, false),
+            ],
+        );
+        let (next, cu) = run(&mollusk, label, &ix, &accounts);
+        accounts = next;
+        measured.push(serde_json::json!({"instruction": label, "cu": cu, "result": "Success", "note": gov2_note}));
+        let ap = find(&accounts, &approval);
+        assert_eq!(ap.data[72..104], expected_hash, "gov2 approval must bind the finalized action hash");
+    }
+    let rec = find(&accounts, &gov2_record);
+    assert_eq!(u64_at(&rec.data, 257), 3, "gov2 approval count must reach 3 (unanimous council)");
+
+    // ingest_observation gov2: observer, timestamp 400 (== clock),
+    // expiry 10100, confidence 900,000.
+    let mut data = disc("ingest_observation");
+    data.extend_from_slice(&GOV2_OBS);
+    data.extend_from_slice(&u64le(400));
+    data.extend_from_slice(&u64le(EXPIRES_AT));
+    data.extend_from_slice(&u64le(900_000));
+    let ix = Instruction::new_with_bytes(
+        program_id,
+        &data,
+        vec![
+            AccountMeta::new_readonly(kernel_state, false),
+            AccountMeta::new(gov2_obs, false),
+            AccountMeta::new(observer, true),
+            AccountMeta::new_readonly(system_id, false),
+        ],
+    );
+    let (next, cu) = run(&mollusk, "ingest_observation_gov2", &ix, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({"instruction": "ingest_observation_gov2", "cu": cu, "result": "Success", "note": gov2_note}));
+    let ob = find(&accounts, &gov2_obs);
+    assert_eq!(u64_at(&ob.data, 40), 400, "gov2 observation timestamp must be 400");
+    assert_eq!(ob.data[64..96], observer.to_bytes(), "gov2 observation must name the launch observer");
+
+    // replay_governance gov2 @400 -> KERNEL_REGISTERED (1).
+    // Remaining: life bundle, then the stage tail (3 approvals +
+    // the finalized action account).
+    let mut metas = vec![
+        AccountMeta::new_readonly(kernel_state, false),
+        AccountMeta::new(gov2_record, false),
+        AccountMeta::new_readonly(gov2_obs, false),
+        AccountMeta::new(seat1, true),
+    ];
+    metas.extend(life_bundle());
+    metas.extend(gov2_stage_tail());
+    let ix = Instruction::new_with_bytes(program_id, &gov2_stage_ix("replay_governance"), metas);
+    let (next, cu) = run(&mollusk, "replay_governance_gov2", &ix, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({"instruction": "replay_governance_gov2", "cu": cu, "result": "Success", "note": gov2_note}));
+    assert_eq!(find(&accounts, &gov2_record).data[216], 1, "gov2 record must advance to KERNEL_REGISTERED");
+
+    // evaluate_governance gov2 @400 -> EVALUATED (2).
+    let mut metas = vec![
+        AccountMeta::new_readonly(kernel_state, false),
+        AccountMeta::new(gov2_record, false),
+        AccountMeta::new_readonly(gov2_obs, false),
+        AccountMeta::new(payer, true),
+    ];
+    metas.extend(life_bundle());
+    metas.extend(gov2_stage_tail());
+    let ix = Instruction::new_with_bytes(program_id, &gov2_stage_ix("evaluate_governance"), metas);
+    let (next, cu) = run(&mollusk, "evaluate_governance_gov2", &ix, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({"instruction": "evaluate_governance_gov2", "cu": cu, "result": "Success", "note": gov2_note}));
+    assert_eq!(find(&accounts, &gov2_record).data[216], 2, "gov2 record must advance to EVALUATED");
+
+    // mark_eligible_governance gov2 @400 -> ELIGIBLE (3), window 400/500.
+    let mut metas = vec![
+        AccountMeta::new(kernel_state, false),
+        AccountMeta::new(gov2_record, false),
+        AccountMeta::new_readonly(gov2_obs, false),
+        AccountMeta::new_readonly(payer, true),
+    ];
+    metas.extend(life_bundle());
+    metas.extend(gov2_stage_tail());
+    let ix = Instruction::new_with_bytes(program_id, &gov2_stage_ix("mark_eligible_governance"), metas);
+    let (next, cu) = run(&mollusk, "mark_eligible_governance_gov2", &ix, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({"instruction": "mark_eligible_governance_gov2", "cu": cu, "result": "Success", "note": gov2_note}));
+    let rec = find(&accounts, &gov2_record);
+    assert_eq!(rec.data[216], 3, "gov2 record must advance to ELIGIBLE");
+    assert_eq!(u64_at(&rec.data, 217), 400, "gov2 eligibility window must open at the 400 clock");
+    assert_eq!(u64_at(&rec.data, 225), 500, "gov2 consensus deadline must be 400 + the 100-tick window");
+
+    // submit_signal_governance gov2 round 0 @400 by ag(2).
+    let mut data = disc("submit_signal_governance");
+    data.extend_from_slice(&GOV2_TID);
+    data.extend_from_slice(&GOV2_OBS);
+    data.extend_from_slice(&u64le(0));
+    data.extend_from_slice(&u64le(SCALE));
+    data.extend_from_slice(&u64le(SCALE));
+    data.push(1u8);
+    data.extend_from_slice(&1u32.to_le_bytes());
+    let mut metas = vec![
+        AccountMeta::new_readonly(kernel_state, false),
+        AccountMeta::new(gov2_record, false),
+        AccountMeta::new_readonly(gov2_obs, false),
+        AccountMeta::new(gov2_signal, false),
+        AccountMeta::new(signaler, true),
+        AccountMeta::new_readonly(system_id, false),
+    ];
+    metas.extend(life_bundle());
+    metas.extend(gov2_stage_tail());
+    let ix = Instruction::new_with_bytes(program_id, &data, metas);
+    let (next, cu) = run(&mollusk, "submit_signal_governance_gov2", &ix, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({"instruction": "submit_signal_governance_gov2", "cu": cu, "result": "Success", "note": gov2_note}));
+    let rec = find(&accounts, &gov2_record);
+    assert_eq!(rec.data[216], 3, "gov2 signals must not advance the stage");
+    assert_eq!(u64_at(&rec.data, 241), 1, "gov2 signal_count must move to 1");
+    let sg = find(&accounts, &gov2_signal);
+    assert_eq!(u64_at(&sg.data, 72), 0, "gov2 signal must be round 0");
+    assert_eq!(u64_at(&sg.data, 97), 400, "gov2 signal must be submitted at clock 400");
+
+    // advance_clock to the 500 consensus deadline.
+    let mut data = disc("advance_clock");
+    data.extend_from_slice(&u64le(500));
+    let ix = Instruction::new_with_bytes(
+        program_id,
+        &data,
+        vec![
+            AccountMeta::new(kernel_state, false),
+            AccountMeta::new_readonly(payer, true),
+        ],
+    );
+    let (next, cu) = run(&mollusk, "advance_clock_500", &ix, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({"instruction": "advance_clock_500", "cu": cu, "result": "Success", "note": gov2_note}));
+    assert_eq!(u64_at(&find(&accounts, &kernel_state).data, 49), 500, "clock must advance to 500");
+
+    // select_candidate_governance gov2 @500 (closed window) -> SELECTED (4).
+    let mut metas = vec![
+        AccountMeta::new_readonly(kernel_state, false),
+        AccountMeta::new(gov2_record, false),
+        AccountMeta::new_readonly(gov2_obs, false),
+        AccountMeta::new_readonly(payer, true),
+    ];
+    metas.extend(life_bundle());
+    metas.extend(gov2_approvals());
+    metas.push(AccountMeta::new_readonly(gov2_signal, false));
+    metas.push(AccountMeta::new_readonly(gov2_action_account, false));
+    let ix = Instruction::new_with_bytes(program_id, &gov2_stage_ix("select_candidate_governance"), metas);
+    let (next, cu) = run(&mollusk, "select_candidate_governance_gov2", &ix, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({"instruction": "select_candidate_governance_gov2", "cu": cu, "result": "Success", "note": gov2_note}));
+    assert_eq!(find(&accounts, &gov2_record).data[216], 4, "gov2 record must advance to SELECTED");
+
+    // open_planning_governance gov2 @500 by proposer seat1 -> PLANNING (5),
+    // planning deadline 600.
+    let mut metas = vec![
+        AccountMeta::new_readonly(kernel_state, false),
+        AccountMeta::new(gov2_record, false),
+        AccountMeta::new_readonly(gov2_obs, false),
+        AccountMeta::new_readonly(seat1, true),
+    ];
+    metas.extend(life_bundle());
+    metas.extend(gov2_approvals());
+    metas.push(AccountMeta::new_readonly(gov2_signal, false));
+    metas.push(AccountMeta::new_readonly(gov2_action_account, false));
+    let ix = Instruction::new_with_bytes(program_id, &gov2_stage_ix("open_planning_governance"), metas);
+    let (next, cu) = run(&mollusk, "open_planning_governance_gov2", &ix, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({"instruction": "open_planning_governance_gov2", "cu": cu, "result": "Success", "note": gov2_note}));
+    let rec = find(&accounts, &gov2_record);
+    assert_eq!(rec.data[216], 5, "gov2 record must advance to PLANNING");
+    assert_eq!(u64_at(&rec.data, 233), 600, "gov2 planning deadline must be 500 + the 100-tick window");
+
+    // submit_plan_governance gov2 @500 by ag(2): the canonical
+    // empty-claims governance plan (a rule change claims no stock),
+    // expiring 700 (past the planning deadline).
+    let mut data = disc("submit_plan_governance");
+    data.extend_from_slice(&GOV2_TID);
+    data.extend_from_slice(&GOV2_OBS);
+    data.extend_from_slice(&0u32.to_le_bytes());
+    data.extend_from_slice(&u64le(700));
+    data.extend_from_slice(&1u32.to_le_bytes());
+    let mut metas = vec![
+        AccountMeta::new_readonly(kernel_state, false),
+        AccountMeta::new(gov2_record, false),
+        AccountMeta::new_readonly(gov2_obs, false),
+        AccountMeta::new(gov2_plan, false),
+        AccountMeta::new(signaler, true),
+        AccountMeta::new_readonly(system_id, false),
+    ];
+    metas.extend(life_bundle());
+    metas.extend(gov2_approvals());
+    metas.push(AccountMeta::new_readonly(gov2_signal, false));
+    metas.push(AccountMeta::new_readonly(gov2_action_account, false));
+    let ix = Instruction::new_with_bytes(program_id, &data, metas);
+    let (next, cu) = run(&mollusk, "submit_plan_governance_gov2", &ix, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({"instruction": "submit_plan_governance_gov2", "cu": cu, "result": "Success", "note": gov2_note}));
+    let rec = find(&accounts, &gov2_record);
+    assert_eq!(rec.data[216], 5, "gov2 plans must not advance the stage");
+    assert_eq!(u64_at(&rec.data, 249), 1, "gov2 plan_count must move to 1");
+
+    // advance_clock to the 600 planning deadline.
+    let mut data = disc("advance_clock");
+    data.extend_from_slice(&u64le(600));
+    let ix = Instruction::new_with_bytes(
+        program_id,
+        &data,
+        vec![
+            AccountMeta::new(kernel_state, false),
+            AccountMeta::new_readonly(payer, true),
+        ],
+    );
+    let (next, cu) = run(&mollusk, "advance_clock_600", &ix, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({"instruction": "advance_clock_600", "cu": cu, "result": "Success", "note": gov2_note}));
+    assert_eq!(u64_at(&find(&accounts, &kernel_state).data, 49), 600, "clock must advance to 600");
+
+    // reconcile / validate / declare gov2 @600. Remaining: life
+    // bundle, approvals, prior signal, prior plan, action account.
+    for (name, label, stage) in [
+        ("reconcile_plans_governance", "reconcile_plans_governance_gov2", 7u8),
+        ("validate_transition_governance", "validate_transition_governance_gov2", 8u8),
+        ("declare_transition_governance", "declare_transition_governance_gov2", 9u8),
+    ] {
+        let mut metas = vec![
+            AccountMeta::new_readonly(kernel_state, false),
+            AccountMeta::new(gov2_record, false),
+            AccountMeta::new_readonly(gov2_obs, false),
+            AccountMeta::new_readonly(payer, true),
+        ];
+        metas.extend(life_bundle());
+        metas.extend(gov2_approvals());
+        metas.push(AccountMeta::new_readonly(gov2_signal, false));
+        metas.push(AccountMeta::new_readonly(gov2_plan, false));
+        metas.push(AccountMeta::new_readonly(gov2_action_account, false));
+        let ix = Instruction::new_with_bytes(program_id, &gov2_stage_ix(name), metas);
+        let (next, cu) = run(&mollusk, label, &ix, &accounts);
+        accounts = next;
+        measured.push(serde_json::json!({"instruction": label, "cu": cu, "result": "Success", "note": gov2_note}));
+        assert_eq!(find(&accounts, &gov2_record).data[216], stage, "gov2 record must advance");
+    }
+    let rec = find(&accounts, &gov2_record);
+    assert_eq!(rec.data[269], 1, "the empty-claims gov2 plan set must reconcile compatible");
+
+    // commit_governance gov2 @600 -> COMMITTED (10); the head moves
+    // to index 2 at the gov2 declared hash. Remaining: life bundle,
+    // then signal, plan, approvals (split_gov_commit_tail order).
+    let mut metas = vec![
+        AccountMeta::new(kernel_state, false),
+        AccountMeta::new(gov2_record, false),
+        AccountMeta::new_readonly(gov2_obs, false),
+        AccountMeta::new_readonly(seat1, false),
+        AccountMeta::new_readonly(gov2_action_account, false),
+        AccountMeta::new_readonly(payer, true),
+    ];
+    metas.extend(life_bundle());
+    metas.push(AccountMeta::new_readonly(gov2_signal, false));
+    metas.push(AccountMeta::new_readonly(gov2_plan, false));
+    metas.extend(gov2_approvals());
+    let ix = Instruction::new_with_bytes(program_id, &gov2_stage_ix("commit_governance"), metas);
+    let (next, cu) = run(&mollusk, "commit_governance_gov2", &ix, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({"instruction": "commit_governance_gov2", "cu": cu, "result": "Success", "note": gov2_note}));
+    assert_eq!(find(&accounts, &gov2_record).data[216], 10, "gov2 record must advance to COMMITTED");
+    let ks = find(&accounts, &kernel_state);
+    assert_eq!(u64_at(&ks.data, 9), 2, "gov2 commit must move the head to index 2");
+    assert_eq!(ks.data[17..49], GOV2_DECLARED, "gov2 commit must move the head to the gov2 declared hash");
+
+    // record_settlement_evidence gov2 @600 by the launch observer at
+    // the gov2 declared hash (exact settle path).
+    let mut data = disc("record_settlement_evidence");
+    data.extend_from_slice(&GOV2_TID);
+    data.extend_from_slice(&GOV2_OBS);
+    data.extend_from_slice(&GOV2_DECLARED);
+    let ix = Instruction::new_with_bytes(
+        program_id,
+        &data,
+        vec![
+            AccountMeta::new_readonly(kernel_state, false),
+            AccountMeta::new_readonly(gov2_record, false),
+            AccountMeta::new_readonly(gov2_obs, false),
+            AccountMeta::new(gov2_evidence, false),
+            AccountMeta::new(observer, true),
+            AccountMeta::new_readonly(system_id, false),
+        ],
+    );
+    let (next, cu) = run(&mollusk, "record_settlement_evidence_gov2", &ix, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({"instruction": "record_settlement_evidence_gov2", "cu": cu, "result": "Success", "note": gov2_note}));
+    let ev = find(&accounts, &gov2_evidence);
+    assert_eq!(ev.data[40..72], GOV2_DECLARED, "gov2 evidence must carry the gov2 declared hash");
+    assert_eq!(ev.data[72..104], observer.to_bytes(), "gov2 evidence must name the launch observer as recorder");
+
+    // settle_governance_transition gov2 @600 -> SETTLED (11); the
+    // head stands at index 2, the gov2 declared hash.
+    let mut metas = vec![
+        AccountMeta::new(kernel_state, false),
+        AccountMeta::new(gov2_record, false),
+        AccountMeta::new_readonly(gov2_obs, false),
+        AccountMeta::new_readonly(seat1, false),
+        AccountMeta::new_readonly(gov2_action_account, false),
+        AccountMeta::new_readonly(gov2_evidence, false),
+        AccountMeta::new_readonly(payer, true),
+    ];
+    metas.extend(life_bundle());
+    metas.push(AccountMeta::new_readonly(gov2_signal, false));
+    metas.push(AccountMeta::new_readonly(gov2_plan, false));
+    metas.extend(gov2_approvals());
+    let ix = Instruction::new_with_bytes(program_id, &gov2_stage_ix("settle_governance_transition"), metas);
+    let (next, cu) = run(&mollusk, "settle_governance_transition_gov2", &ix, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({"instruction": "settle_governance_transition_gov2", "cu": cu, "result": "Success", "note": gov2_note}));
+    assert_eq!(find(&accounts, &gov2_record).data[216], 11, "gov2 record must advance to SETTLED");
+    let ks = find(&accounts, &kernel_state);
+    assert_eq!(u64_at(&ks.data, 9), 2, "gov2 settle must leave the head at index 2");
+    assert_eq!(ks.data[17..49], GOV2_DECLARED, "gov2 settle must leave the head at the gov2 declared hash");
+
+    // record_outcome_governance gov2 by RECORDER with attribution
+    // (ag(2), +10) on the exact settle -> EVALUATED_OUTCOME (12);
+    // ag(2) is the gov2 plan agent, so the helper accepts the
+    // attribution, and the reputation moves 50,000,000 -> 50,000,010.
+    let mut data = disc("record_outcome_governance");
+    data.extend_from_slice(&GOV2_TID);
+    data.extend_from_slice(&GOV2_OBS);
+    data.extend_from_slice(&1u32.to_le_bytes());
+    data.extend_from_slice(&1u32.to_le_bytes());
+    data.extend_from_slice(signaler.as_ref());
+    data.extend_from_slice(&10i64.to_le_bytes());
+    let mut metas = vec![
+        AccountMeta::new(kernel_state, false),
+        AccountMeta::new(gov2_record, false),
+        AccountMeta::new_readonly(gov2_obs, false),
+        AccountMeta::new_readonly(seat1, false),
+        AccountMeta::new_readonly(gov2_action_account, false),
+        AccountMeta::new_readonly(gov2_evidence, false),
+        AccountMeta::new_readonly(recorder, true),
+    ];
+    metas.extend(life_bundle());
+    metas.push(AccountMeta::new_readonly(gov2_signal, false));
+    metas.push(AccountMeta::new_readonly(gov2_plan, false));
+    metas.extend(gov2_approvals());
+    metas.push(AccountMeta::new(rep_ag2, false));
+    let ix = Instruction::new_with_bytes(program_id, &data, metas);
+    let (next, cu) = run(&mollusk, "record_outcome_governance_gov2", &ix, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({"instruction": "record_outcome_governance_gov2", "cu": cu, "result": "Success", "note": gov2_note}));
+    assert_eq!(find(&accounts, &gov2_record).data[216], 12, "gov2 record must advance to EVALUATED_OUTCOME");
+    assert_eq!(u64_at(&find(&accounts, &rep_ag2).data, 40), 50_000_010, "exact gov2 outcome credit must move ag(2) reputation to 50,000,010");
+
     // record_settlement_evidence @400 by the launch observer at
     // the declared hash (exact settle path).
     let mut data = disc("record_settlement_evidence");
@@ -1364,33 +1934,19 @@ fn main() {
     accounts = next;
     measured.push(serde_json::json!({"instruction": "settle_transition_life", "cu": cu, "result": "Success", "note": life_note65}));
     assert_eq!(find(&accounts, &life_record).data[216], 11, "lifecycle record must advance to SETTLED");
+    // Slice 69: settle moves neither the head nor the ledger — but
+    // the head is no longer the life commit's head: the gov2 chain
+    // committed after it, so settle leaves the head at index 2 at
+    // the gov2 declared hash, not at index 1.
     let ks = find(&accounts, &kernel_state);
-    assert_eq!(u64_at(&ks.data, 9), 1, "settle must leave the head at index 1");
-    assert_eq!(ks.data[17..49], DECLARED_HASH, "settle must leave the head at the declared hash");
-
-    // init_reputation for ag(2) (a sealed-profile agent) at the
-    // genesis midpoint, so the outcome tail has a record to move.
-    let mut data = disc("init_reputation");
-    data.extend_from_slice(signaler.as_ref());
-    let ix = Instruction::new_with_bytes(
-        program_id,
-        &data,
-        vec![
-            AccountMeta::new(kernel_state, false),
-            AccountMeta::new(rep_ag2, false),
-            AccountMeta::new(payer, true),
-            AccountMeta::new_readonly(system_id, false),
-        ],
-    );
-    let (next, cu) = run(&mollusk, "init_reputation_life", &ix, &accounts);
-    accounts = next;
-    measured.push(serde_json::json!({"instruction": "init_reputation_life", "cu": cu, "result": "Success", "note": life_note65}));
-    assert_eq!(u64_at(&find(&accounts, &rep_ag2).data, 40), 50_000_000, "ag(2) reputation must start at the genesis midpoint");
+    assert_eq!(u64_at(&ks.data, 9), 2, "settle must leave the head at index 2 (gov2 committed after life)");
+    assert_eq!(ks.data[17..49], GOV2_DECLARED, "settle must leave the head at the gov2 declared hash");
 
     // record_outcome by RECORDER with attribution (ag(2), +10)
     // on the exact settle -> EVALUATED_OUTCOME (12); exact
-    // credit is unhalved, so the reputation moves 50,000,000 ->
-    // 50,000,010 (delta units are kernel raw units).
+    // credit is unhalved, so the reputation moves 50,000,010 ->
+    // 50,000,020 — the gov2 outcome below already credited the
+    // first +10 (delta units are kernel raw units).
     let mut data = disc("record_outcome");
     data.extend_from_slice(&LIFE_TID);
     data.extend_from_slice(&LIFE_OBS);
@@ -1416,7 +1972,7 @@ fn main() {
     accounts = next;
     measured.push(serde_json::json!({"instruction": "record_outcome_life", "cu": cu, "result": "Success", "note": life_note65}));
     assert_eq!(find(&accounts, &life_record).data[216], 12, "lifecycle record must advance to EVALUATED_OUTCOME");
-    assert_eq!(u64_at(&find(&accounts, &rep_ag2).data, 40), 50_000_010, "exact outcome credit must move ag(2) reputation to 50,000,010");
+    assert_eq!(u64_at(&find(&accounts, &rep_ag2).data, 40), 50_000_020, "exact outcome credit must move ag(2) reputation to 50,000,020");
 
     let out = serde_json::json!({
         "program": "program_v04",
@@ -1424,7 +1980,7 @@ fn main() {
         "so_sha256": so_sha256,
         "mollusk_svm": MOLLUSK_SVM_VERSION,
         "toolchain": TOOLCHAIN,
-        "slice": "slice 68: slice-67 chain re-frozen CU-identical after the small-heap feature (lib.rs PROGRAM_HEAP_LENGTH cfg + Cargo.toml feature, default off — no behavior change; the .so hash moves with source line numbers only, all 37 CU and both refusals identical to slice 67); the deterministic too-small-frame failure test (run-smallframe.sh: 32,768-byte cap build + 32 KiB runtime-frame run of the shipped binary, each twice with an identical failure signature) is F6 condition (3), recorded in the slice-68 run log",
+        "slice": "slice 69: governance outcome tail + second-commit-at-moved-head chain (26 new measurements, 63 total). A second governance chain (GOV2) registered at the moved head (1, DECLARED_HASH) runs replay through outcome while the life record still stands COMMITTED — the prior-bundle driver requires exactly COMMITTED, so the chain sits between commit_life and settle_life, carrying the life bundle as its one prior; unanimity needs all three council seats. The slice-1 governance record cannot serve this chain (registered at the genesis parent, it can never commit after the head moved). init_reputation_life moved to just after commit_life (same label) so the gov2 outcome can attribute ag(2); the life outcome then credits ag(2) a second +10 (50,000,010 -> 50,000,020). The program is unchanged since slice 68, so the .so hash and all 37 prior CU values must reproduce exactly.",
         "measured": measured,
         "refusals": refusals,
         "blocked": [],

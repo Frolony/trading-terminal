@@ -3302,5 +3302,5 @@ accounts; the golden `.so` sha debt (slice-49
 export RUSTUP_HOME=~/workspace/toolchains/rustup CARGO_HOME=~/workspace/toolchains/cargo
 export PATH=~/workspace/toolchains/cargo/bin:~/workspace/toolchains/solana/bin:$PATH
 ~/workspace/toolchains/anchor/bin/anchor build   # from this directory
-cargo test                                        # host tests, 456/456
+cargo test                                        # host tests, 457/457
 ```

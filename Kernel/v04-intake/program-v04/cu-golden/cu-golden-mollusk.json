@@ -201,6 +201,168 @@
       "result": "Success"
     },
     {
+      "cu": 23453,
+      "instruction": "init_reputation_life",
+      "note": "slice-65 full lifecycle chain (evaluate through outcome with reputation tail)",
+      "result": "Success"
+    },
+    {
+      "cu": 11505,
+      "instruction": "init_gov_action_gov2",
+      "note": "slice-69 governance outcome tail (second governance chain at the moved head, through commit/settle/outcome)",
+      "result": "Success"
+    },
+    {
+      "cu": 4740,
+      "instruction": "append_gov_action_chunk_gov2@0",
+      "note": "slice-69 governance outcome tail (second governance chain at the moved head, through commit/settle/outcome)",
+      "result": "Success"
+    },
+    {
+      "cu": 4740,
+      "instruction": "append_gov_action_chunk_gov2@512",
+      "note": "slice-69 governance outcome tail (second governance chain at the moved head, through commit/settle/outcome)",
+      "result": "Success"
+    },
+    {
+      "cu": 4740,
+      "instruction": "append_gov_action_chunk_gov2@1024",
+      "note": "slice-69 governance outcome tail (second governance chain at the moved head, through commit/settle/outcome)",
+      "result": "Success"
+    },
+    {
+      "cu": 7364,
+      "instruction": "finalize_gov_action_gov2",
+      "note": "slice-69 governance outcome tail (second governance chain at the moved head, through commit/settle/outcome)",
+      "result": "Success"
+    },
+    {
+      "cu": 30674,
+      "instruction": "register_governance_transition_gov2",
+      "note": "slice-69 governance outcome tail (second governance chain at the moved head, through commit/settle/outcome)",
+      "result": "Success"
+    },
+    {
+      "cu": 36189,
+      "instruction": "approve_governance_gov2_seat1",
+      "note": "slice-69 governance outcome tail (second governance chain at the moved head, through commit/settle/outcome)",
+      "result": "Success"
+    },
+    {
+      "cu": 45400,
+      "instruction": "approve_governance_gov2_seat2",
+      "note": "slice-69 governance outcome tail (second governance chain at the moved head, through commit/settle/outcome)",
+      "result": "Success"
+    },
+    {
+      "cu": 36419,
+      "instruction": "approve_governance_gov2_seat3",
+      "note": "slice-69 governance outcome tail (second governance chain at the moved head, through commit/settle/outcome)",
+      "result": "Success"
+    },
+    {
+      "cu": 22959,
+      "instruction": "ingest_observation_gov2",
+      "note": "slice-69 governance outcome tail (second governance chain at the moved head, through commit/settle/outcome)",
+      "result": "Success"
+    },
+    {
+      "cu": 66559,
+      "instruction": "replay_governance_gov2",
+      "note": "slice-69 governance outcome tail (second governance chain at the moved head, through commit/settle/outcome)",
+      "result": "Success"
+    },
+    {
+      "cu": 66936,
+      "instruction": "evaluate_governance_gov2",
+      "note": "slice-69 governance outcome tail (second governance chain at the moved head, through commit/settle/outcome)",
+      "result": "Success"
+    },
+    {
+      "cu": 69065,
+      "instruction": "mark_eligible_governance_gov2",
+      "note": "slice-69 governance outcome tail (second governance chain at the moved head, through commit/settle/outcome)",
+      "result": "Success"
+    },
+    {
+      "cu": 78445,
+      "instruction": "submit_signal_governance_gov2",
+      "note": "slice-69 governance outcome tail (second governance chain at the moved head, through commit/settle/outcome)",
+      "result": "Success"
+    },
+    {
+      "cu": 4231,
+      "instruction": "advance_clock_500",
+      "note": "slice-69 governance outcome tail (second governance chain at the moved head, through commit/settle/outcome)",
+      "result": "Success"
+    },
+    {
+      "cu": 73636,
+      "instruction": "select_candidate_governance_gov2",
+      "note": "slice-69 governance outcome tail (second governance chain at the moved head, through commit/settle/outcome)",
+      "result": "Success"
+    },
+    {
+      "cu": 74264,
+      "instruction": "open_planning_governance_gov2",
+      "note": "slice-69 governance outcome tail (second governance chain at the moved head, through commit/settle/outcome)",
+      "result": "Success"
+    },
+    {
+      "cu": 82265,
+      "instruction": "submit_plan_governance_gov2",
+      "note": "slice-69 governance outcome tail (second governance chain at the moved head, through commit/settle/outcome)",
+      "result": "Success"
+    },
+    {
+      "cu": 4231,
+      "instruction": "advance_clock_600",
+      "note": "slice-69 governance outcome tail (second governance chain at the moved head, through commit/settle/outcome)",
+      "result": "Success"
+    },
+    {
+      "cu": 78960,
+      "instruction": "reconcile_plans_governance_gov2",
+      "note": "slice-69 governance outcome tail (second governance chain at the moved head, through commit/settle/outcome)",
+      "result": "Success"
+    },
+    {
+      "cu": 79233,
+      "instruction": "validate_transition_governance_gov2",
+      "note": "slice-69 governance outcome tail (second governance chain at the moved head, through commit/settle/outcome)",
+      "result": "Success"
+    },
+    {
+      "cu": 79912,
+      "instruction": "declare_transition_governance_gov2",
+      "note": "slice-69 governance outcome tail (second governance chain at the moved head, through commit/settle/outcome)",
+      "result": "Success"
+    },
+    {
+      "cu": 87074,
+      "instruction": "commit_governance_gov2",
+      "note": "slice-69 governance outcome tail (second governance chain at the moved head, through commit/settle/outcome)",
+      "result": "Success"
+    },
+    {
+      "cu": 13602,
+      "instruction": "record_settlement_evidence_gov2",
+      "note": "slice-69 governance outcome tail (second governance chain at the moved head, through commit/settle/outcome)",
+      "result": "Success"
+    },
+    {
+      "cu": 90398,
+      "instruction": "settle_governance_transition_gov2",
+      "note": "slice-69 governance outcome tail (second governance chain at the moved head, through commit/settle/outcome)",
+      "result": "Success"
+    },
+    {
+      "cu": 111307,
+      "instruction": "record_outcome_governance_gov2",
+      "note": "slice-69 governance outcome tail (second governance chain at the moved head, through commit/settle/outcome)",
+      "result": "Success"
+    },
+    {
       "cu": 15102,
       "instruction": "record_settlement_evidence_life",
       "note": "slice-65 full lifecycle chain (evaluate through outcome with reputation tail)",
@@ -209,12 +371,6 @@
     {
       "cu": 46565,
       "instruction": "settle_transition_life",
-      "note": "slice-65 full lifecycle chain (evaluate through outcome with reputation tail)",
-      "result": "Success"
-    },
-    {
-      "cu": 23453,
-      "instruction": "init_reputation_life",
       "note": "slice-65 full lifecycle chain (evaluate through outcome with reputation tail)",
       "result": "Success"
     },
@@ -244,7 +400,7 @@
       "result": "Refused"
     }
   ],
-  "slice": "slice 68: slice-67 chain re-frozen CU-identical after the small-heap feature (lib.rs PROGRAM_HEAP_LENGTH cfg + Cargo.toml feature, default off — no behavior change; the .so hash moves with source line numbers only, all 37 CU and both refusals identical to slice 67); the deterministic too-small-frame failure test (run-smallframe.sh: 32,768-byte cap build + 32 KiB runtime-frame run of the shipped binary, each twice with an identical failure signature) is F6 condition (3), recorded in the slice-68 run log",
+  "slice": "slice 69: governance outcome tail + second-commit-at-moved-head chain (26 new measurements, 63 total). A second governance chain (GOV2) registered at the moved head (1, DECLARED_HASH) runs replay through outcome while the life record still stands COMMITTED — the prior-bundle driver requires exactly COMMITTED, so the chain sits between commit_life and settle_life, carrying the life bundle as its one prior; unanimity needs all three council seats. The slice-1 governance record cannot serve this chain (registered at the genesis parent, it can never commit after the head moved). init_reputation_life moved to just after commit_life (same label) so the gov2 outcome can attribute ag(2); the life outcome then credits ag(2) a second +10 (50,000,010 -> 50,000,020). The program is unchanged since slice 68, so the .so hash and all 37 prior CU values must reproduce exactly.",
   "so_sha256": "0125cf1eeb856fa8b41abc95b34abc0d9b32cc943fe24c8ac5e7f38dcae7af3e",
   "toolchain": "Anchor 1.2.2 / Solana 4.3.2 / platform-tools v1.57"
 }
