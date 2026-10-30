@@ -616,22 +616,36 @@ behavior: seat2's approval costs ~9k more than the other seats'
 (the approval PDA's bump search length differs per seat), and
 the gov2 evidence costs 1,500 less than the life evidence (one
 fewer bump attempt on its PDA). The tripwire and smallframe
-scripts re-run this whole 63-step file by construction, so both
-guards will cover the gov2 chain when they next execute.
-Guard status (2026-10-30, BUILD run scheduled 08:46 CST):
-their re-runs on the 63-step file did NOT complete this run —
-the tripwire variant SBF link failed with a sandbox write
-refusal (`Operation not permitted`; cargo also reported a
-sqlite disk I/O error on its last-use data), and the script's
-trap restore then truncated `target/deploy/program_v04.so` to
-0 bytes. The shipped bytes are preserved in two sha-verified
-backups (sha `0125cf1e…`, the golden's `so_sha256`), and the
-golden itself was proven by three full harness runs before the
-breakage (two prior runs + this run's byte-identical re-run).
-The tripwire + smallframe re-runs AND the deploy `.so`
-restore must land before any W4.4 deploy relies on the 63-step
-golden. Queue after this slice: guard re-runs + `.so` restore
-→ W4.4 devnet deploy (go stands, devnet/test assets only).
+scripts re-run this whole 63-step file by construction, and
+both guards now cover the gov2 chain by execution, not just
+by construction.
+Guard status (2026-10-30, BUILD run scheduled 09:55 CST):
+the guard re-runs + deploy `.so` restore LANDED this run.
+The sandbox write refusal had cleared (small writes succeed
+again in both `/tmp` and the workspace), but the two
+`/tmp` shipped-`.so` backups from the 08:46 run were gone
+(`/tmp` is ephemeral — a backup kept only there is not a
+backup; a workspace copy now lives at
+`hidden_files/program-v04-rebuilt-2026-10-30.so`). The
+deploy `.so` was therefore REBUILT from the unchanged
+program source (`lib.rs` blob `2f9ead51…`, identical to the
+slice-69 push): `anchor build` exit 0, and the rebuilt `.so`
+hashes EXACTLY to the golden's `so_sha256`
+(`0125cf1e…`) — the SBF build is byte-deterministic here,
+so this is a true restore, not a rebuild-and-hope. The
+golden chain re-run against it is byte-identical to the
+frozen golden (65/65). Tripwire (75% heap cap, capped `.so`
+sha `05854b37…`): full chain succeeds, measured + refusals
+identical to the golden (only `so_sha256` differs, as
+designed). Smallframe cap (32 KiB allocator): deterministic
+failure at `select_candidate_life`, cu 28,033, identical on
+both runs. Smallframe frame (32 KiB requested frame on the
+shipped binary): deterministic failure at the first
+instruction `probe_kernel`, cu 1,400,000, identical on both
+runs. After every guard the shipped `.so` was restored
+sha-verified (`0125cf1e…`). Queue after this slice: W4.4
+devnet deploy (go stands, devnet/test assets only) — the
+guard precondition on the 63-step golden is now met.
 
 ## Slice-65 PARTIAL — full lifecycle chain stops at select (F6, 2026-10-30, same pins)
 
