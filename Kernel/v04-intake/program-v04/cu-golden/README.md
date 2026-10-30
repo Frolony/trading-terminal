@@ -880,3 +880,65 @@ open_planning, submit_plan, reconcile, validate, declare,
 commit, and the governance stage chain through
 commit_governance — cannot be measured until replay
 executes). Nothing here claims those measurements.
+
+## Chain-length fixture, heap leg (2026-10-30, merge-gate item 5, part 1 of 2)
+
+Host-side fixture in `programs/program-v04/src/lib.rs` (tests):
+`chain_length_outcome_heap_vs_priors` drives N claims-carrying
+ordinary bundles to COMMITTED at successive heads (the proven
+moved-head pattern: eligible at the current clock, window +100,
+planning deadline +200, plan expiry deadline +100, next bundle
+eligible at the previous planning deadline +100), then a
+claims-carrying governance tail (two-claims plan) through
+commit/settle, and measures `record_outcome_governance`'s host
+heap with the counting allocator (`alloc_meter`, cfg(test)-only)
+armed around exactly that one helper call. Run single-threaded
+(`--test-threads=1`): the meter is a process-global allocator.
+The measured chain itself is governance, as the gate requires.
+
+Measured `record_outcome_governance` host heap (cumulative /
+live peak, bytes; with_wrapper = cumulative + the gate's 16 KiB
+wrapper allowance):
+
+| priors | cumulative | allocs | live peak | with_wrapper | % of 192 KiB |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 0 | 39,797 | 112 | 31,624 | 56,181 | 28.58 |
+| 1 | 46,721 | 143 | 35,856 | 63,105 | 32.10 |
+| 2 | 54,413 | 175 | 40,472 | 70,797 | 36.01 |
+| 3 | 61,337 | 206 | 44,704 | 77,721 | 39.53 |
+| 5 | 75,761 | 269 | 53,456 | 92,145 | 46.87 |
+
+Least-squares fit on the first three points (0/1/2), cumulative:
+slope 7,308 B/prior, intercept 39,669 — predicts N=3 within
++0.42% and N=5 within +0.59% (76,209 predicted vs 75,761
+measured). Peak fit: slope 4,424 B/prior, predicts N=5 within
++0.42%. The gate's predict-5 property holds on the heap leg.
+Heap-limit leg (cumulative + 16 KiB vs 196,608): Nmax = 19
+(fit with_wrapper 194,905 at 19; 202,213 at 20). The peak leg
+alone would allow 33, so cumulative binds. NO program constant
+is set from this leg alone: the CU leg and the frame leg are
+still pending, and the constant is ~half of the SMALLEST of
+the three limits — setting it now would prejudge the CU leg.
+
+Note on the F6 figures: this fixture's 0-prior outcome
+(39,797) sits ~17.6 KB under F6's genesis outcome row
+(57,383), and the 1-prior row ~15.9 KB under F6's moved-head
+row (62,579) — a systematic version delta (v0.4.1 -> v0.4.2
+allocation-only changes: Box<Rec> transitions, Cow reason),
+not a fixture disagreement: both fixtures' slopes are linear
+and this fixture's own predict-5 check passes. The F6 rows
+are superseded by this fixture for the v0.4.2 line.
+
+`.so` hash note (same pass): adding the test-only meter +
+fixture shifts source line numbers, and this project's SBF
+binary embeds panic line numbers, so the rebuilt `.so` hashes
+`f4e543ee…` instead of the adoption build's `b47ea2fa…` at
+the identical size (1,860,248 bytes) — the slice-58 precedent
+(test-only change moves the hash, CU unchanged). The golden
+chain re-run against the new binary reproduces all 63 CU
+values, both refusals, and the empty blocked list exactly, so
+the golden file's `so_sha256` is re-frozen to `f4e543ee…`
+with no CU change. This is NOT the merge-gate final freeze:
+that waits on the CU leg, the limit derivation, the program
+constant, enforcement, and the tripwire/smallframe guard
+re-runs on the final binary.

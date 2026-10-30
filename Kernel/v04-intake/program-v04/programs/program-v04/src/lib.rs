@@ -1158,6 +1158,204 @@ static PROGRAM_ALLOCATOR: anchor_lang::solana_program::entrypoint::BumpAllocator
         )
     };
 
+// =====================================================================
+// Chain-length fixture allocation metering (merge-gate item 5).
+// Ported verbatim in logic from the F6 scratch instrument
+// (hidden_files/scratch-alloc-profile, 2026-10-30). Under cfg(test)
+// it installs a counting global allocator over the host System
+// allocator: cumulative allocated bytes + count and the live-bytes
+// high-water mark. Disabled (zero counting) unless a measurement
+// test arms it, so the rest of the suite runs through a plain System
+// forwarder. It is cfg(test)-only and never compiles into the SBF
+// binary: the shipped .so hash must be unchanged by this block.
+// =====================================================================
+#[cfg(test)]
+pub mod alloc_meter {
+    use std::alloc::{GlobalAlloc, Layout, System};
+    use std::cell::Cell;
+    use std::collections::HashMap;
+    use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
+    use std::sync::Mutex;
+
+    pub static ENABLED: AtomicBool = AtomicBool::new(false);
+    pub static PROFILE: AtomicBool = AtomicBool::new(false);
+    static TOTAL_BYTES: AtomicU64 = AtomicU64::new(0);
+    static TOTAL_COUNT: AtomicU64 = AtomicU64::new(0);
+    static LIVE: AtomicI64 = AtomicI64::new(0);
+    static PEAK: AtomicI64 = AtomicI64::new(0);
+    static SITES: Mutex<Option<HashMap<String, (u64, u64)>>> = Mutex::new(None);
+
+    thread_local! {
+        static IN_METER: Cell<bool> = Cell::new(false);
+    }
+
+    pub struct Meter;
+
+    fn bump_live(delta: i64) {
+        let live = LIVE.fetch_add(delta, Ordering::Relaxed) + delta;
+        if delta > 0 {
+            PEAK.fetch_max(live, Ordering::Relaxed);
+        }
+    }
+
+    fn on_alloc(size: usize) {
+        TOTAL_BYTES.fetch_add(size as u64, Ordering::Relaxed);
+        TOTAL_COUNT.fetch_add(1, Ordering::Relaxed);
+        bump_live(size as i64);
+        if PROFILE.load(Ordering::Relaxed) {
+            profile_alloc(size);
+        }
+    }
+
+    fn on_free(size: usize) {
+        bump_live(-(size as i64));
+    }
+
+    fn profile_alloc(size: usize) {
+        let already = IN_METER.with(|c| {
+            let v = c.get();
+            c.set(true);
+            v
+        });
+        if already {
+            return;
+        }
+        let bt = std::backtrace::Backtrace::force_capture();
+        let text = format!("{bt}");
+        let site = call_site_of(&text);
+        {
+            let mut guard = SITES.lock().unwrap();
+            let map = guard.get_or_insert_with(HashMap::new);
+            let e = map.entry(site).or_insert((0, 0));
+            e.0 += 1;
+            e.1 += size as u64;
+        }
+        IN_METER.with(|c| c.set(false));
+    }
+
+    /// First frame (walking up from the allocation) whose symbol is
+    /// a function DEFINED in the program crate or the delivered
+    /// kernel crate (symbol starts with the crate path, optionally
+    /// behind a `<Type as Trait>::` head). Generic container shims
+    /// (alloc::vec::Vec<..>::grow_one and friends), std, and anchor
+    /// frames are passed over: the first program/kernel frame above
+    /// them is the call site that caused the allocation. This
+    /// module's own frames are skipped explicitly.
+    fn call_site_of(bt: &str) -> String {
+        for line in bt.lines() {
+            let t = line.trim_start();
+            if !t.as_bytes().first().is_some_and(|b| b.is_ascii_digit()) {
+                continue;
+            }
+            let Some(colon) = t.find(':') else { continue };
+            let sym = t[colon + 1..].trim();
+            if sym.contains("alloc_meter") {
+                continue;
+            }
+            if sym.starts_with("program_v04::")
+                || sym.starts_with("<program_v04::")
+                || sym.starts_with("coordination_kernel::")
+                || sym.starts_with("<coordination_kernel::")
+            {
+                let name = match sym.rfind("::h") {
+                    Some(h) if sym.len() - h == 19 => &sym[..h],
+                    _ => sym,
+                };
+                return name.to_string();
+            }
+        }
+        "OTHER (no program/kernel frame)".to_string()
+    }
+
+    pub fn warm_backtrace() {
+        let bt = std::backtrace::Backtrace::force_capture();
+        let _ = format!("{bt}");
+        IN_METER.with(|c| c.set(false));
+    }
+
+    pub fn start() {
+        TOTAL_BYTES.store(0, Ordering::Relaxed);
+        TOTAL_COUNT.store(0, Ordering::Relaxed);
+        LIVE.store(0, Ordering::Relaxed);
+        PEAK.store(0, Ordering::Relaxed);
+        ENABLED.store(true, Ordering::Relaxed);
+    }
+
+    /// Returns (cumulative_bytes, alloc_count, live_peak_bytes).
+    pub fn stop() -> (u64, u64, i64) {
+        ENABLED.store(false, Ordering::Relaxed);
+        PROFILE.store(false, Ordering::Relaxed);
+        (
+            TOTAL_BYTES.load(Ordering::Relaxed),
+            TOTAL_COUNT.load(Ordering::Relaxed),
+            PEAK.load(Ordering::Relaxed),
+        )
+    }
+
+    pub fn profile_start() {
+        let mut guard = SITES.lock().unwrap();
+        *guard = Some(HashMap::new());
+        PROFILE.store(true, Ordering::Relaxed);
+    }
+
+    /// (site, count, bytes) sorted by bytes descending. Disarms
+    /// profiling FIRST: the dump itself allocates (key clones, the
+    /// result Vec) while holding the SITES lock, and a fresh
+    /// profile_alloc re-entering on those allocations would deadlock
+    /// on the non-reentrant Mutex (found by the minimal probe).
+    pub fn profile_dump() -> Vec<(String, u64, u64)> {
+        PROFILE.store(false, Ordering::Relaxed);
+        let guard = SITES.lock().unwrap();
+        let mut v: Vec<(String, u64, u64)> = match &*guard {
+            Some(map) => map
+                .iter()
+                .map(|(k, (c, b))| (k.clone(), *c, *b))
+                .collect(),
+            None => Vec::new(),
+        };
+        v.sort_by(|a, b| b.2.cmp(&a.2));
+        v
+    }
+
+    unsafe impl GlobalAlloc for Meter {
+        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+            let p = System.alloc(layout);
+            if !p.is_null() && ENABLED.load(Ordering::Relaxed) {
+                on_alloc(layout.size());
+            }
+            p
+        }
+
+        unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+            let p = System.alloc_zeroed(layout);
+            if !p.is_null() && ENABLED.load(Ordering::Relaxed) {
+                on_alloc(layout.size());
+            }
+            p
+        }
+
+        unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+            if ENABLED.load(Ordering::Relaxed) {
+                on_free(layout.size());
+            }
+            System.dealloc(ptr, layout);
+        }
+
+        unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+            let p = System.realloc(ptr, layout, new_size);
+            if !p.is_null() && ENABLED.load(Ordering::Relaxed) {
+                on_free(layout.size());
+                on_alloc(new_size);
+            }
+            p
+        }
+    }
+}
+
+#[cfg(test)]
+#[global_allocator]
+static ALLOC_METER: alloc_meter::Meter = alloc_meter::Meter;
+
 declare_id!("2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr");
 
 #[program]
@@ -26587,6 +26785,256 @@ mod tests {
         let err = check_gov_action_for_commit(&account, &foreign_record, &approvals)
             .expect_err("a foreign writer must refuse commit");
         assert!(format!("{:?}", err).contains("RecordMismatch"));
+    }
+
+    // ===== Chain-length fixture (merge-gate item 5, heap leg).
+    // Drives N claims-carrying ordinary bundles to COMMITTED at
+    // successive heads (the proven moved-head pattern: each
+    // bundle eligible at the current clock, window +100, planning
+    // deadline +200, plan expiry deadline +100, next bundle
+    // eligible at the previous planning deadline +100), then a
+    // claims-carrying governance tail (two-claims plan) through
+    // commit/settle, and measures record_outcome_governance's
+    // host heap with the counting allocator armed around exactly
+    // that one helper call. Priors are ordinary bundles; the
+    // measured chain itself is the governance chain, as the gate
+    // requires (>=1 governance in the fixture). Run with
+    // --test-threads=1: the meter is a process-global allocator,
+    // so a parallel test allocating inside the armed window
+    // would inflate the row. Fixture construction (everything
+    // before the armed call) is unmetered by construction.
+    struct ChainBundle {
+        record: TransitionRecord,
+        obs: ObservationRecord,
+        signal: SignalRecord,
+        plan: PlanRecord,
+    }
+
+    fn chain_drive_ordinary(
+        state: &mut KernelState,
+        priors: &[PriorEntry],
+        tid: [u8; 32],
+        obs_id: [u8; 32],
+        declared: [u8; 32],
+    ) -> ChainBundle {
+        let clock = state.clock;
+        let mut record = build_transition_record(
+            state, tid, TT, state.head_index, state.head_hash, declared, obs_id, 10_400,
+            Pubkey::new_from_array(ag(1)), 7,
+        )
+        .expect("a chain bundle record must build at the current head");
+        let obs = build_observation_record(
+            state, obs_id, clock, 9500, 900_000, observer_pubkey(), 7,
+        )
+        .expect("a chain bundle observation must build at the current clock");
+        replay_transition_from_records(state, &mut record, &obs, priors)
+            .expect("a chain bundle must replay");
+        assert_eq!(record.stage, TransitionRecord::KERNEL_REGISTERED);
+        evaluate_transition_from_records(state, &mut record, &obs, priors)
+            .expect("a chain bundle must evaluate");
+        assert_eq!(record.stage, TransitionRecord::EVALUATED);
+        mark_eligible_from_records(&mut *state, &mut record, &obs, priors)
+            .expect("a chain bundle must mark eligible");
+        assert_eq!(record.stage, TransitionRecord::ELIGIBLE);
+        assert_eq!(record.eligible_at, clock);
+        assert_eq!(record.consensus_deadline, clock + 100);
+        let (signal, _, _) = submit_signal_from_records(
+            state, &mut record, &obs, &[], Pubkey::new_from_array(ag(2)), 0, SCALE, SCALE, true,
+            7, priors,
+        )
+        .expect("a chain bundle signal must submit");
+        assert_eq!(record.signal_count, 1);
+        advance_clock_on_state(&mut *state, clock + 100).expect("advance to the consensus deadline must succeed");
+        let life = select_candidate_from_records(state, &mut record, &obs, std::slice::from_ref(&signal), priors)
+            .expect("a chain bundle must select at the closed window");
+        assert_eq!(life, Life::Selected);
+        assert_eq!(record.stage, TransitionRecord::SELECTED);
+        let life = open_planning_from_records(state, &mut record, &obs, std::slice::from_ref(&signal), [0x77; 32], priors)
+            .expect("a chain bundle must open planning");
+        assert_eq!(life, Life::Planning);
+        assert_eq!(record.stage, TransitionRecord::PLANNING);
+        assert_eq!(record.planning_deadline, clock + 200);
+        let plan = submit_plan_from_records(
+            state, &mut record, &obs, std::slice::from_ref(&signal), &[], &two_claims(), clock + 300, ag(2), 7, priors,
+        )
+        .expect("a chain bundle plan must submit");
+        assert_eq!(record.plan_count, 1);
+        advance_clock_on_state(&mut *state, clock + 200).expect("advance to the planning deadline must succeed");
+        let life = reconcile_plans_from_records(state, &mut record, &obs, std::slice::from_ref(&signal), std::slice::from_ref(&plan), priors)
+            .expect("a chain bundle must reconcile");
+        assert_eq!(life, Life::Reconciling);
+        assert!(record.compatible);
+        let life = validate_transition_from_records(state, &mut record, &obs, std::slice::from_ref(&signal), std::slice::from_ref(&plan), priors)
+            .expect("a chain bundle must validate");
+        assert_eq!(life, Life::Validated);
+        let life = declare_transition_from_records(state, &mut record, &obs, std::slice::from_ref(&signal), std::slice::from_ref(&plan), priors)
+            .expect("a chain bundle must declare");
+        assert_eq!(life, Life::Committable);
+        let life = commit_transition_from_records(&mut *state, &mut record, &obs, std::slice::from_ref(&signal), std::slice::from_ref(&plan), priors)
+            .expect("a chain bundle must commit");
+        assert_eq!(life, Life::Committed);
+        assert_eq!(record.stage, TransitionRecord::COMMITTED);
+        ChainBundle { record, obs, signal, plan }
+    }
+
+    // Drives a full N-prior chain plus the governance tail to
+    // SETTLED, then measures the outcome helper's host heap.
+    // Returns (cumulative_bytes, alloc_count, live_peak_bytes).
+    fn chain_measure_outcome_at_priors(n: usize) -> (u64, u64, i64) {
+        let mut state = sealed_state();
+        let mut bundles: Vec<OwnedPriorBundle> = Vec::new();
+        for i in 0..n {
+            let priors = prior_entries_of(&bundles);
+            let b = chain_drive_ordinary(
+                &mut state,
+                &priors,
+                [0xA0 + i as u8; 32],
+                [0xC0 + i as u8; 32],
+                [0xE0 + i as u8; 32],
+            );
+            let next_clock = state.clock + 100;
+            advance_clock_on_state(&mut state, next_clock)
+                .expect("advance past the bundle planning deadline must succeed");
+            bundles.push(OwnedPriorBundle {
+                transition_record: b.record,
+                observation_record: b.obs,
+                signals: vec![b.signal],
+                plans: vec![b.plan],
+                approvals: Vec::new(),
+                action: None,
+            });
+        }
+        let priors = prior_entries_of(&bundles);
+        let clock = state.clock;
+        let mut record = build_governance_transition_record(
+            &state, [0xD9; 32], T_GOV_ADJUSTABLE, state.head_index, state.head_hash, [0xF9; 32],
+            [0xCF; 32], 10_400, Pubkey::new_from_array(ag(1)), 7,
+        )
+        .expect("the governance tail record must build at the current head");
+        let obs = build_observation_record(
+            &state, [0xCF; 32], clock, 9500, 900_000, observer_pubkey(), 7,
+        )
+        .expect("the governance tail observation must build at the current clock");
+        let action = gov_action();
+        let approvals = [
+            build_governance_approval_record(&state, &record, Pubkey::new_from_array(ag(1)), &action, 1)
+                .expect("seat 1 approval must build"),
+            build_governance_approval_record(&state, &record, Pubkey::new_from_array(ag(2)), &action, 1)
+                .expect("seat 2 approval must build"),
+            build_governance_approval_record(&state, &record, Pubkey::new_from_array(ag(3)), &action, 1)
+                .expect("seat 3 approval must build"),
+        ];
+        record.approval_count = approvals.len() as u64;
+        replay_governance_from_records(&state, &mut record, &obs, &approvals, &action, &priors)
+            .expect("the governance tail must replay");
+        assert_eq!(record.stage, TransitionRecord::KERNEL_REGISTERED);
+        evaluate_governance_from_records(&state, &mut record, &obs, &approvals, &action, &priors)
+            .expect("the governance tail must evaluate");
+        assert_eq!(record.stage, TransitionRecord::EVALUATED);
+        mark_eligible_governance_from_records(&mut state, &mut record, &obs, &approvals, &action, &priors)
+            .expect("the governance tail must mark eligible");
+        assert_eq!(record.stage, TransitionRecord::ELIGIBLE);
+        assert_eq!(record.eligible_at, clock);
+        assert_eq!(record.consensus_deadline, clock + 100);
+        let (signal, _, _) = submit_signal_governance_from_records(
+            &state, &mut record, &obs, &approvals, &action, &[], Pubkey::new_from_array(ag(2)), 0,
+            SCALE, SCALE, true, 7, &priors,
+        )
+        .expect("the governance tail signal must submit");
+        assert_eq!(record.signal_count, 1);
+        advance_clock_on_state(&mut state, clock + 100).expect("advance to the tail consensus deadline must succeed");
+        let life = select_candidate_governance_from_records(
+            &state, &mut record, &obs, &approvals, &action, std::slice::from_ref(&signal), &priors,
+        )
+        .expect("the governance tail must select at the closed window");
+        assert_eq!(life, Life::Selected);
+        let life = open_planning_governance_from_records(
+            &state, &mut record, &obs, &approvals, &action, std::slice::from_ref(&signal), ag(1), &priors,
+        )
+        .expect("the governance tail must open planning");
+        assert_eq!(life, Life::Planning);
+        assert_eq!(record.planning_deadline, clock + 200);
+        let plan = submit_plan_governance_from_records(
+            &state, &mut record, &obs, &approvals, &action, std::slice::from_ref(&signal), &[], &two_claims(),
+            clock + 300, ag(2), 7, &priors,
+        )
+        .expect("the governance tail plan must submit");
+        assert_eq!(record.plan_count, 1);
+        advance_clock_on_state(&mut state, clock + 200).expect("advance to the tail planning deadline must succeed");
+        let life = reconcile_plans_governance_from_records(
+            &state, &mut record, &obs, &approvals, &action, std::slice::from_ref(&signal), std::slice::from_ref(&plan), &priors,
+        )
+        .expect("the governance tail must reconcile");
+        assert_eq!(life, Life::Reconciling);
+        assert!(record.compatible);
+        let life = validate_transition_governance_from_records(
+            &state, &mut record, &obs, &approvals, &action, std::slice::from_ref(&signal), std::slice::from_ref(&plan), &priors,
+        )
+        .expect("the governance tail must validate");
+        assert_eq!(life, Life::Validated);
+        let life = declare_transition_governance_from_records(
+            &state, &mut record, &obs, &approvals, &action, std::slice::from_ref(&signal), std::slice::from_ref(&plan), &priors,
+        )
+        .expect("the governance tail must declare");
+        assert_eq!(life, Life::Committable);
+        let seats = gov_approvals();
+        let life = commit_governance_from_records(
+            &mut state, &mut record, &obs, std::slice::from_ref(&signal), std::slice::from_ref(&plan), &action, &seats, &priors,
+        )
+        .expect("the governance tail must commit");
+        assert_eq!(life, Life::Committed);
+        assert_eq!(record.stage, TransitionRecord::COMMITTED);
+        let realized = record.declared_next_hash;
+        let life = settle_governance_transition_from_records(
+            &state, &mut record, &obs, std::slice::from_ref(&signal), std::slice::from_ref(&plan), &action, &seats, &priors, realized,
+        )
+        .expect("the governance tail must settle");
+        assert_eq!(life, Life::Settled);
+        assert_eq!(record.stage, TransitionRecord::SETTLED);
+        let head_index = state.head_index;
+        let head_hash = state.head_hash;
+        let ledger = state.committed_claims;
+        alloc_meter::start();
+        let (life, exact) = record_outcome_governance_from_records(
+            &state, &mut record, &obs, std::slice::from_ref(&signal), std::slice::from_ref(&plan), &approvals, &action, &priors, realized,
+            Pubkey::new_from_array(RECORDER), &[(plan.agent, 10)],
+        )
+        .expect("the governance tail must record its outcome");
+        let m = alloc_meter::stop();
+        assert_eq!(life, Life::EvaluatedOutcome);
+        assert!(exact);
+        assert_eq!(record.stage, TransitionRecord::EVALUATED_OUTCOME);
+        assert_eq!(state.head_index, head_index);
+        assert_eq!(state.head_hash, head_hash);
+        assert_eq!(state.committed_claims, ledger);
+        println!(
+            "CHAINLEN_ROW|priors={}|cumulative={}|count={}|peak={}|with_wrapper={}",
+            n,
+            m.0,
+            m.1,
+            m.2,
+            m.0 + 16_384
+        );
+        m
+    }
+
+    #[test]
+    fn chain_length_outcome_heap_vs_priors() {
+        // Merge-gate item 5, heap leg: outcome helper heap at
+        // 0/1/2/3/5 claims-carrying priors. Run single-threaded
+        // for authoritative rows (see the fixture comment).
+        for n in [0usize, 1, 2, 3, 5] {
+            let (bytes, count, peak) = chain_measure_outcome_at_priors(n);
+            println!(
+                "CHAINLEN_SUMMARY|priors={}|cumulative={}|count={}|peak={}|with_wrapper={}|pct_of_192k={:.2}",
+                n,
+                bytes,
+                count,
+                peak,
+                bytes + 16_384,
+                (bytes + 16_384) as f64 / 1966.08
+            );
+        }
     }
 
 }
