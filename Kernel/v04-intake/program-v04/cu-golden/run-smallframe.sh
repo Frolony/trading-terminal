@@ -100,6 +100,13 @@ fi
 run_once() {
     local n="$1" log="$2" out="$3"
     local rc=0
+    # Stale-output guard (fixed 2026-10-30): a previous run's out file
+    # left in a reused evidence dir must not count as "written by this
+    # run". Remove it first, so the post-run existence check below
+    # proves this run wrote it — without this, the 2026-10-30 cap
+    # re-run aborted on a slice-68-era out file even though the run
+    # itself failed cleanly with an allocation error.
+    rm -f "$out"
     if [ "$MODE" = "frame" ]; then
         CU_HEAP_SIZE=32768 SBF_OUT_DIR="$SO_DIR" cargo run --locked --offline --release \
             --manifest-path "$HERE/mollusk/Cargo.toml" -- "$out" > "$log" 2>&1 || rc=$?
