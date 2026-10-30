@@ -2132,14 +2132,19 @@ function settingsDebounceQuiet(key,el){
   settingsQuietTimers[key]=setTimeout(()=>{if(el.isConnected)commitSettingsInputsQuiet();},750);
 }
 function settingsResetDefaults(){
+  // N5.41 (A22, 2026-10-29): reset leaves slippage alone — snapshot BOTH the drawer default and the shared per-quote key across the reset, then restore both, so neither surface reverts to 50. Preserving only one would leave drawer and ticket disagreeing until the next default edit.
+  const keepDefaultSlip=(settings&&Number.isInteger(settings.defaultSlippageBps))?settings.defaultSlippageBps:SLIP_DEFAULT;
+  let keepSharedRaw=null;try{keepSharedRaw=localStorage.getItem(SLIP_KEY);}catch(_){}
+  const keepShared=slipLoad();
   settings=Object.assign({},DEFAULT_SETTINGS);
+  settings.defaultSlippageBps=keepDefaultSlip;
   saveSettings();
-  slipSave(settings.defaultSlippageBps);
-  const si=$('slippageInput');if(si)si.value=String(settings.defaultSlippageBps);
+  if(keepSharedRaw!==null&&keepSharedRaw!=='')slipSave(keepShared);
+  const si=$('slippageInput');if(si)si.value=String(slipLoad());
   paintSlipPresets();hideReview();
   applySettingsVisual();
   paintSettingsDrawer();
-  toast('Settings reset to defaults.'); // paper cash/holdings/orders untouched by design
+  toast('Settings reset to defaults (slippage unchanged).'); // paper cash/holdings/orders untouched by design
 }
 function segHtml(key,options,label){
   return '<span class="lbl" id="setLbl-'+key+'">'+esc(label)+'</span><div class="switchrow setseg" role="group" aria-labelledby="setLbl-'+key+'">'+
