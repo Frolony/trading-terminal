@@ -39,25 +39,25 @@
       "result": "Success"
     },
     {
-      "cu": 8449,
+      "cu": 8447,
       "instruction": "init_gov_action",
       "note": "slice-1 baseline (no design estimate exists for the v0.4 program)",
       "result": "Success"
     },
     {
-      "cu": 4683,
+      "cu": 4684,
       "instruction": "append_gov_action_chunk@0",
       "note": "slice-2 account-carried chain (program slices 51-53)",
       "result": "Success"
     },
     {
-      "cu": 4683,
+      "cu": 4684,
       "instruction": "append_gov_action_chunk@512",
       "note": "slice-2 account-carried chain (program slices 51-53)",
       "result": "Success"
     },
     {
-      "cu": 4683,
+      "cu": 4684,
       "instruction": "append_gov_action_chunk@1024",
       "note": "slice-2 account-carried chain (program slices 51-53)",
       "result": "Success"
@@ -75,7 +75,7 @@
       "result": "Success"
     },
     {
-      "cu": 37628,
+      "cu": 37629,
       "instruction": "approve_governance",
       "note": "slice-1 baseline (no design estimate exists for the v0.4 program)",
       "result": "Success"
@@ -87,13 +87,13 @@
       "result": "Success"
     },
     {
-      "cu": 14449,
+      "cu": 14447,
       "instruction": "init_gov_action_abandoned",
       "note": "slice-1 baseline (no design estimate exists for the v0.4 program)",
       "result": "Success"
     },
     {
-      "cu": 4683,
+      "cu": 4684,
       "instruction": "append_gov_action_chunk_abandoned",
       "note": "slice-1 baseline (no design estimate exists for the v0.4 program)",
       "result": "Success"
@@ -110,14 +110,14 @@
   "program_id": "FzxnCtig4asxnCxGhjcbCDY5zkfcpfTb5GcXNL9UaGg6",
   "refusals": [
     {
-      "cu": 5334,
+      "cu": 5335,
       "error": "GovActionAlreadyFinalized (6034)",
       "instruction": "close_gov_action_finalized",
-      "note": "slice-3 lifetime gate: a finalized account stays open until the transition settles",
+      "note": "slice-3 lifetime gate: a finalized account never closes (Rule A, Carlos 2026-10-29)",
       "result": "Refused"
     }
   ],
   "slice": "cu-golden slice 3: genesis + governance registration + account-carried approval chain (program slices 51-53) + close_gov_action rent-reclaim and finalized-refusal gate",
-  "so_sha256": "3edd6f2bf608af13c9f27756a6309637c8b90abd8c67822aeae4af688ac89918",
+  "so_sha256": "9cff80abfe892dcd68f6b3e5b90103863b4196b685d3ef028ae11c5949840238",
   "toolchain": "Anchor 1.2.2 / Solana 4.3.2 / platform-tools v1.57"
 }

@@ -772,7 +772,7 @@ fn main() {
         "cu": cu,
         "result": "Refused",
         "error": "GovActionAlreadyFinalized (6034)",
-        "note": "slice-3 lifetime gate: a finalized account stays open until the transition settles",
+        "note": "slice-3 lifetime gate: a finalized account never closes (Rule A, Carlos 2026-10-29)",
     }));
     let ga = find(&accounts, &gov_action_account);
     assert_eq!(ga.data[138], 1, "refused close must leave the finalized account sealed");

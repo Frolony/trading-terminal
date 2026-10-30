@@ -401,6 +401,42 @@ init_gov_action 8,447 -> 8,449, abandoned second init
 exactly, blocked `[]` still. This `.so` is likewise NOT
 the golden freeze.
 
+## Slice-58 re-measurement (2026-10-29, same pins)
+
+Slice 58 (the Rule-A close-refusal proof test + doc
+comments only, no behavior change) changed the program
+source, so the golden file was re-measured against the
+new `.so` sha
+`8e8d07d3d68449262c8e8d94ea8cb77c460f9c8fdd3b184d1501020d7d64cb7e`
+(host tests 423/423; IDL unchanged at 41 instr /
+8 accounts / 42 errors / 25 events). All seventeen values
+reproduce exactly (finalized-refusal still 5,334),
+blocked `[]` still — the `.so` hash moved on a
+comment / test-only source change at identical size
+(1,789,112 bytes), with zero CU drift. This `.so` is
+likewise NOT the golden freeze.
+
+## Slice-59 re-measurement (2026-10-29, same pins)
+
+Slice 59 (the `record_outcome` instruction, ordinary
+path, + `record_outcome_from_records` helper + 10 host
+tests + the Rule-A wording correction in the harness
+refusal note) changed the program source, so the golden
+file was re-measured against the new `.so` sha
+`9cff80abfe892dcd68f6b3e5b90103863b4196b685d3ef028ae11c5949840238`
+(host tests 433/433; IDL now 42 instr / 8 accounts /
+45 errors / 26 events — one new instruction, three new
+errors, one new event; no new account). Drift from the
+slice-58 values is layout noise, not behavior: append
+chunk 4683 -> 4684, approve 37628 -> 37629, init
+8449 -> 8447, abandoned second init 14449 -> 14447,
+finalized-close refusal 5334 -> 5335; the other twelve
+values reproduce exactly, blocked `[]` still. The
+refusal note now reads "never closes (Rule A)" (it said
+"stays open until the transition settles", contradicting
+the slice-58 ruling); the CU is unchanged by the wording.
+This `.so` is likewise NOT the golden freeze.
+
 ## Layout
 
 - `mollusk/` — standalone Rust crate (its own `[workspace]`

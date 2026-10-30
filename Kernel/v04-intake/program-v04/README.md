@@ -2950,11 +2950,136 @@ accounts; the golden `.so` sha debt (slice-49
   reclaim ruling; and the golden `.so` freeze, which still
   waits on that ruling.
 
+## Slice 58 — Rule-A proof test: a finalized GovActionAccount never closes (2026-10-29)
+
+- Rule A (Carlos, 2026-10-29 ~19:18 CST) lands as a test,
+  not a code change: the gate already refused finalized
+  closes; slice 58 proves it at every stage and corrects
+  the code docs that still said "open until the transition
+  settles".
+- New test `gov_action_finalized_never_closes_at_any_stage`:
+  a finalized account (via `gov_action_account_for`) paired
+  with a `TransitionRecord` at each of the twelve stages
+  REGISTERED (0) through SETTLED (11) — COMMITTED and
+  SETTLED named explicitly — refuses
+  `check_gov_action_close` with `GovActionAlreadyFinalized`
+  at every stage. Honesty note: the gate reads only
+  `finalized`, not the stage, so the loop is a regression
+  tripwire — a future stage exemption fails here and must
+  be ruled, not slipped in. The abandoned-account control
+  is unchanged (slice 51's test: unfinalized closes
+  writer-only).
+- Doc corrections in the same pass (no behavior change):
+  `finalize_gov_action`, `close_gov_action`,
+  `GovActionAccount`, `check_gov_action_close`, and the
+  slice-51 test comment now say "never closes (Rule A)"
+  instead of "open until the transition settles". No
+  close-after-settle gate was built, per the ruling.
+- Host tests 423/423 (422 + 1 slice-58 test). Clippy at
+  the pre-existing profile, zero new warnings. Delivered
+  crate 39/39. `anchor build` green under the pinned v04
+  toolchain; new `.so` 1,789,112 bytes (sha256 `8e8d07d3…`)
+  — same size as slice 57's, hash moved on a comment /
+  test-only source change; CU golden re-measured against
+  it, all 17 values exact (finalized-refusal still 5,334),
+  golden JSON carries the new sha. This `.so` is NOT the
+  golden freeze.
+- Deliberately NOT slice 58: outcome recording (`Settled`
+  -> `EvaluatedOutcome`, attribution) — the queue head
+  for the next run — and the golden `.so` freeze. The
+  post-settle reclaim ruling the slice-57 section was
+  waiting on is now Rule A; the "still waits" notes in
+  slices 51–57 resolve to it.
+
+## Slice 59 — the outcome instruction, ordinary path (2026-10-29)
+
+- `record_outcome`: `SETTLED` (11) -> `EVALUATED_OUTCOME`
+  (12) through instructions, via the new
+  `record_outcome_from_records` helper — the last step of
+  the step-5 bridge tail. Remaining accounts parse exactly
+  as in `settle_transition` (prior bundles, then exactly
+  `signal_count` signals, then plans); the realized hash
+  comes from the stored `SettlementEvidence` account — no
+  realized argument — with the evidence binding re-checked
+  before any replay, so no caller can record an outcome at
+  an unrecorded hash. The recorder is the signer and the
+  role holder: the helper proves the signer is the launch
+  `RECORDER` identity and that the sealed genesis profile
+  gives it the `OutcomeRecorder` role. Attributions travel
+  as instruction args (`Vec<AttributionArg>`, agent + i64
+  delta — the field type is a literal `i64`, not the kernel
+  `Delta` alias, because anchor-syn maps literal primitives
+  to IDL types while an alias falls through to an `IdlBuild`
+  impl `i64` does not carry, and the IDL build fails).
+  A governance-typed record refuses with the distinct
+  `GovernanceOutcomeRequired`; its outcome mirror is the
+  next slice, exactly as slices 54/55 split settle.
+- The helper's re-proof, stated plainly: the `SETTLED`
+  label is never trusted — a field copy of the record,
+  rewound to `COMMITTED`, must settle through the slice-54
+  helper, under a replay state whose clock is the commit
+  clock (`planning_deadline`), not today's clock. The
+  record carries no settle timestamp, and the live clock
+  may legitimately have moved past the execution window
+  since the real settle, so re-judging the settle tail at
+  today's clock would brick every outcome older than one
+  execution window; the commit clock is in-window by
+  construction. The late-clock test pins this: clock
+  advanced to 5000, outcome still succeeds. The kernel's
+  `NotParticipant` rule is enforced against the supplied
+  plan set; an empty attribution list advances, matching
+  the kernel. On success only the stage advances; head
+  and ledger stand untouched. A refusal writes nothing.
+- Honesty bound, stated not smoothed: the kernel call's
+  reputation writes land nowhere in program-v04 — there is
+  no reputation account yet — so the helper does not
+  re-execute `record_outcome` in a throwaway rebuilt
+  kernel; everything observable about that call (role gate,
+  participant rule against a re-proven plan set, exact
+  flag in the `OutcomeRecorded` event) is reproduced
+  instead. The cap (±`max_attribution`) and
+  halved-positive-credit application ride the future
+  reputation-persistence slice, which will run the kernel
+  call for real against an account it can write to.
+- Host tests 433/433 (423 prior + 10 slice-59: exact
+  success with head and ledger untouched, inexact success
+  with exact false, once-only, wrong-stage, governance-type,
+  non-recorder, non-participant, unsealed, empty
+  attributions, late-clock). Clippy back to the
+  pre-existing profile, zero new warnings. Delivered
+  crate 39/39. `anchor build` green under the pinned v04
+  toolchain (Anchor 1.2.2 / Agave 4.3.2 / platform-tools
+  v1.57, from-source binary by absolute path — the
+  PATH-resolved shim refuses with a not-installed error
+  and is not the invocation route); IDL counts move by
+  design (42 instructions, 8 accounts, 45 errors, 26
+  events — one new instruction, three new errors
+  `NotRecorder` / `GovernanceOutcomeRequired` /
+  `OutcomeFailed`, one new event `OutcomeRecorded`, no
+  new account). `.so` 1,811,720 bytes (sha256 `9cff80ab…`).
+  The SBF frame diagnostic is unchanged from the
+  pin-migration measurement: exactly one entry over 4096,
+  the pre-existing BTreeMap-insert frame at 4,672 bytes —
+  no new frame overflow from this slice. CU golden
+  re-measured against the new `.so` (17 measured, blocked
+  `[]`): append chunk 4683 -> 4684, approve 37628 -> 37629,
+  init 8449 -> 8447, abandoned second init 14449 -> 14447,
+  finalized-close refusal 5334 -> 5335, the other twelve
+  exact — layout noise, golden JSON + cu-golden README
+  carry the new values in the same pass. The golden
+  refusal note is corrected in the same pass (harness
+  `main.rs` + regenerated JSON): it said "stays open until
+  the transition settles" and now says "never closes (Rule
+  A)". This `.so` is NOT the golden freeze.
+- Deliberately NOT slice 59: the governance outcome
+  mirror (`record_outcome_governance`, `SETTLED` -> 12 on
+  the governance path) and the golden `.so` freeze.
+
 ## Build
 
 ```sh
 export RUSTUP_HOME=~/workspace/toolchains/rustup CARGO_HOME=~/workspace/toolchains/cargo
 export PATH=~/workspace/toolchains/cargo/bin:~/workspace/toolchains/solana/bin:$PATH
 ~/workspace/toolchains/anchor/bin/anchor build   # from this directory
-cargo test                                        # host tests, 422/422
+cargo test                                        # host tests, 433/433
 ```

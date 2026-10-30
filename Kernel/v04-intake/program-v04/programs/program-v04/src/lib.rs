@@ -1062,8 +1062,8 @@ use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec;
 use anchor_lang::prelude::*;
 use coordination_kernel::{
-    Amount, Config, ConstraintStatus, Env, GovAction, is_gov_type, Kernel, KernelError, Life,
-    Manifest, NoEnv,
+    Amount, Config, ConstraintStatus, Delta, Env, GovAction, is_gov_type, Kernel, KernelError,
+    Life, Manifest, NoEnv,
     Observation, Plan, Policy, Role, SystemState, T_GOV_ADJUSTABLE, T_GOV_CONSTITUTION,
     T_GOV_COUNCIL, T_GOV_REBOOT, MAX_GROUPS, MAX_REPLANS, MAX_SEATS, SCALE,
 };
@@ -1394,9 +1394,9 @@ pub mod program_v04 {
     /// computed hash equals the expected hash recorded at init.
     /// On success the account is write-once sealed: appends and
     /// a second finalize refuse, and the close path closes with
-    /// it — a finalized account stays open until the transition
-    /// settles (slice 52's lifetime rule; no post-settle reclaim
-    /// exists in this slice).
+    /// it — a finalized account never closes (Rule A, ruled
+    /// by Carlos 2026-10-29: the text is the evidence, and no
+    /// post-settle reclaim exists for finalized accounts).
     pub fn finalize_gov_action(
         ctx: Context<FinalizeGovAction>,
         transition_id: [u8; 32],
@@ -1410,11 +1410,10 @@ pub mod program_v04 {
     /// Close an abandoned account-carried action (slice 51): the
     /// rent-reclaim path for a half-written account. Only the
     /// writer may close, and only while the account is
-    /// unfinalized — once finalized, no approval may yet have
-    /// bound to the hash in this slice, but the lifetime rule
-    /// already applies: a finalized account stays open until
-    /// the transition settles, so close refuses after finalize
-    /// rather than freeing bytes an approval set may reference.
+    /// unfinalized — once finalized, the account never
+    /// closes (Rule A, Carlos 2026-10-29), so close refuses
+    /// after finalize rather than freeing bytes an approval
+    /// set may reference.
     pub fn close_gov_action(
         ctx: Context<CloseGovAction>,
         transition_id: [u8; 32],
@@ -2538,6 +2537,90 @@ pub mod program_v04 {
         )?;
         debug_assert!(life == Life::Settled);
         emit!(TransitionSettled { transition_id, stage: ctx.accounts.transition_record.stage });
+        Ok(())
+    }
+
+    /// Record a settled ordinary transition's outcome (slice
+    /// 59): `SETTLED` (11) -> `EVALUATED_OUTCOME` (12)
+    /// through instructions, via the slice-59 helper. The
+    /// mirror of `settle_transition` at outcome time:
+    /// remaining accounts parse exactly as in
+    /// `settle_transition` (prior bundles first, then
+    /// exactly `signal_count` prior `SignalRecord`s, then
+    /// the prior `PlanRecord`s), and the realized hash comes
+    /// from the stored `SettlementEvidence` account — there
+    /// is no realized argument — with the evidence binding
+    /// re-checked (`check_settlement_evidence`) before any
+    /// replay runs, so no caller can record an outcome at
+    /// an unrecorded hash. The recorder is the signer and
+    /// the role holder: the helper proves the signer is the
+    /// launch `RECORDER` and that the sealed genesis
+    /// profile gives that identity the `OutcomeRecorder`
+    /// role. Attributions travel as instruction args (the
+    /// transaction carries them; program-v04 stores no
+    /// reputation account yet — see the helper's honesty
+    /// bound). A governance-typed record refuses at the
+    /// helper's `GovernanceOutcomeRequired` gate; its
+    /// outcome mirror is the next slice. No new account:
+    /// the evidence account is slice 56's, the event is
+    /// `OutcomeRecorded`, and the binding refusals reuse
+    /// `RecordMismatch` and the helper's `OutcomeFailed`.
+    pub fn record_outcome(
+        ctx: Context<RecordOutcome>,
+        transition_id: [u8; 32],
+        observation_id: [u8; 32],
+        prior_bundle_count: u32,
+        attributions: Vec<AttributionArg>,
+    ) -> Result<()> {
+        if ctx.accounts.transition_record.transition_id != transition_id
+            || ctx.accounts.observation_record.observation_id != observation_id
+        {
+            return Err(error!(ProgramV04Error::RecordMismatch));
+        }
+        check_settlement_evidence(
+            &ctx.accounts.settlement_evidence,
+            &ctx.accounts.transition_record,
+            &ctx.accounts.observation_record,
+        )?;
+        let (bundles, tail) = split_prior_bundles(
+            classify_remaining_accounts(ctx.remaining_accounts)?,
+            prior_bundle_count as usize,
+        )?;
+        let prior_entries = prior_entries_of(&bundles);
+        let signal_count = ctx.accounts.transition_record.signal_count as usize;
+        if tail.len() < signal_count {
+            return Err(error!(ProgramV04Error::OutcomeFailed));
+        }
+        let mut tail_iter = tail.into_iter();
+        let mut priors: alloc::vec::Vec<SignalRecord> = alloc::vec::Vec::new();
+        for _ in 0..signal_count {
+            match tail_iter.next() {
+                Some(ParsedAccount::Signal(sig)) => priors.push(sig),
+                _ => return Err(error!(ProgramV04Error::RecordMismatch)),
+            }
+        }
+        let mut prior_plans: alloc::vec::Vec<PlanRecord> = alloc::vec::Vec::new();
+        for item in tail_iter {
+            match item {
+                ParsedAccount::Plan(plan) => prior_plans.push(plan),
+                _ => return Err(error!(ProgramV04Error::RecordMismatch)),
+            }
+        }
+        let pairs: alloc::vec::Vec<(Pubkey, Delta)> =
+            attributions.iter().map(|a| (a.agent, a.delta)).collect();
+        let (life, exact) = record_outcome_from_records(
+            &ctx.accounts.kernel_state,
+            &mut ctx.accounts.transition_record,
+            &ctx.accounts.observation_record,
+            &priors,
+            &prior_plans,
+            &prior_entries,
+            ctx.accounts.settlement_evidence.realized,
+            ctx.accounts.recorder.key(),
+            &pairs,
+        )?;
+        debug_assert!(life == Life::EvaluatedOutcome);
+        emit!(OutcomeRecorded { transition_id, stage: ctx.accounts.transition_record.stage, exact });
         Ok(())
     }
 
@@ -3747,6 +3830,39 @@ pub struct SettleGovernance<'info> {
 
 #[derive(Accounts)]
 #[instruction(transition_id: [u8; 32], observation_id: [u8; 32])]
+pub struct RecordOutcome<'info> {
+    #[account(
+        mut,
+        seeds = [b"kernel-state"],
+        bump = kernel_state.bump,
+    )]
+    pub kernel_state: Account<'info, KernelState>,
+    #[account(
+        mut,
+        seeds = [b"transition", transition_id.as_ref()],
+        bump = transition_record.bump,
+    )]
+    pub transition_record: Account<'info, TransitionRecord>,
+    #[account(
+        seeds = [b"observation", observation_id.as_ref()],
+        bump = observation_record.bump,
+    )]
+    pub observation_record: Account<'info, ObservationRecord>,
+    #[account(
+        seeds = [b"evidence", transition_id.as_ref()],
+        bump = settlement_evidence.bump,
+    )]
+    pub settlement_evidence: Account<'info, SettlementEvidence>,
+    /// Slice 59: the signer AND the role holder — the helper
+    /// proves this key is the launch `RECORDER` identity with
+    /// the `OutcomeRecorder` role in the sealed profile. No
+    /// separate fee-payer account: the recorder signs the
+    /// transaction, as the evidence recorder signs slice 56's.
+    pub recorder: Signer<'info>,
+}
+
+#[derive(Accounts)]
+#[instruction(transition_id: [u8; 32], observation_id: [u8; 32])]
 pub struct ReplayGovernance<'info> {
     #[account(
         seeds = [b"kernel-state"],
@@ -4597,6 +4713,11 @@ impl TransitionRecord {
     /// (slice 54); the kernel's `Life::Settled` is 11 as well,
     /// so program and kernel stages agree at this step too.
     pub const SETTLED: u8 = 11;
+    /// Stage value written by `record_outcome_from_records`
+    /// (slice 59); the kernel's `Life::EvaluatedOutcome` is 12
+    /// as well, so program and kernel stages agree at this
+    /// step too.
+    pub const EVALUATED_OUTCOME: u8 = 12;
     /// 8 (discriminator) + 32 + 32 + 8 + 32 + 32 + 32 + 8 + 32 + 1 + 8 + 8 + 8 + 8 + 8 + 8 + 4 + 1 + 1.
     pub const SPACE: usize = 271;
 }
@@ -5228,7 +5349,7 @@ pub const GOV_ACTION_CHUNK_LEN: usize = 512;
 /// is recorded at init, before any byte is written; `action_hash`
 /// is written by finalize alone, from the accumulated bytes, and
 /// is zero until then. A finalized account is write-once sealed
-/// and stays open until the transition settles.
+/// and never closes (Rule A, Carlos 2026-10-29).
 #[account]
 #[derive(Debug)]
 pub struct GovActionAccount {
@@ -5330,11 +5451,11 @@ pub fn finalize_gov_action_record(
 }
 
 /// Gate the rent-reclaim close (slice 51): only the writer, and
-/// only while unfinalized. A finalized account refuses even
-/// though no approval has bound to it yet in this slice — the
-/// lifetime rule (open until the transition settles) already
-/// governs it, and the close instruction's Anchor `close`
-/// constraint runs only after this gate passes.
+/// only while unfinalized. A finalized account refuses at
+/// every stage (Rule A, Carlos 2026-10-29 — slice 58's test
+/// proves the refusal at all twelve stages), and the close
+/// instruction's Anchor `close` constraint runs only after
+/// this gate passes.
 pub fn check_gov_action_close(account: &GovActionAccount, writer: Pubkey) -> Result<()> {
     if account.writer != writer {
         return Err(error!(ProgramV04Error::RecordMismatch));
@@ -6514,6 +6635,27 @@ pub fn open_planning_from_records(
 pub struct PlanClaimArg {
     pub resource: u16,
     pub amount_raw: u64,
+}
+
+/// One outcome attribution (slice 59): a plan participant's
+/// agent pubkey and their signed delta in kernel `Delta` (i64)
+/// units. Instruction args only — attributions are carried in
+/// the transaction, not stored: program-v04 has no reputation
+/// account yet, so the durable outcome record is the stage
+/// advance plus the `OutcomeRecorded` event (with the exact
+/// flag); the cap/halving application of kernel
+/// `record_outcome` rides the future reputation-persistence
+/// slice, which will run the kernel call for real against an
+/// account it can write to.
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AttributionArg {
+    pub agent: Pubkey,
+    /// Literal `i64`, not the kernel `Delta` alias: anchor-syn
+    /// maps literal primitives to IDL types, while an alias
+    /// falls through to an `IdlBuild` impl that `i64` does not
+    /// carry, and the IDL build fails. Same width, same
+    /// semantics — the helper takes `Delta` (= `i64`).
+    pub delta: i64,
 }
 
 /// The fifth §3 account (slice 21): one agent's submitted plan for a
@@ -10233,6 +10375,191 @@ pub fn settle_governance_transition_from_stored(
     )
 }
 
+/// Record a settled ordinary transition's outcome (slice 59):
+/// `SETTLED` (11) -> `EVALUATED_OUTCOME` (12), the last step of
+/// the step-5 bridge tail. The kernel's `record_outcome`
+/// (Settled -> EvaluatedOutcome, attribution) is bridged here
+/// at the level program-v04 can durably record: the stage
+/// advance plus the `OutcomeRecorded` event carrying the
+/// exact flag (realized == declared). Gates, in order: sealed
+/// state; stage exactly `SETTLED`; observation linkage; the
+/// ordinary-type gate (a governance record refuses with
+/// `GovernanceOutcomeRequired`; its outcome mirror is the
+/// next slice, exactly as slices 54/55 split settle); a
+/// non-zero planning deadline; the recorder role — the signer
+/// must be the launch `RECORDER` identity AND the sealed
+/// genesis profile must give that identity the
+/// `OutcomeRecorder` role (the genesis-replay shape
+/// `resolve_proposer` uses, not trust in the constant
+/// pairing); the supplied signal/plan set validated exactly
+/// as the settle helper validates it (count, belonging,
+/// round, duplicates); and the kernel's `NotParticipant`
+/// rule against the supplied plan set (an empty attribution
+/// list is allowed — the kernel advances on it too).
+///
+/// The `SETTLED` label itself is re-proven, never trusted: a
+/// field copy of the record, rewound to `COMMITTED`, must
+/// settle through the slice-54 helper. The re-proof runs
+/// under a replay state whose clock is the commit clock
+/// (`planning_deadline`), not today's clock — the slice-29
+/// clock rule generalized: the record carries no settle
+/// timestamp, and the live clock may legitimately have moved
+/// past the execution window since the real settle (which is
+/// how the record reached `SETTLED` in the first place), so
+/// re-judging the settle tail at today's clock would brick
+/// every outcome older than one execution window. The commit
+/// clock is in-window by construction (the replay commits at
+/// it, and the execution deadline is commit + window), and a
+/// prior bundle from the future of that clock refuses rather
+/// than re-proving. On success only the record's stage
+/// advances; the sealed head and the slice-27 ledger are
+/// untouched — outcome recording moves no declaration and no
+/// capacity. A refusal writes nothing.
+///
+/// Honesty bound, stated not smoothed: the kernel call's
+/// reputation writes land nowhere in program-v04 — there is
+/// no reputation account yet — so this helper does not
+/// re-execute `record_outcome` in a throwaway rebuilt kernel
+/// (that would be theater: the writes would be discarded
+/// with the kernel, as every helper's rebuilt kernel is).
+/// Everything about the kernel call that is observable
+/// here is reproduced instead: the role gate, the
+/// participant rule (against a plan set the clone-settle
+/// re-proof has just proven replayable), and the exact flag.
+/// The cap (±`max_attribution`) and halved-positive-credit
+/// (when inexact) application rides the future
+/// reputation-persistence slice, which will run the kernel
+/// call for real against an account it can write to.
+#[allow(clippy::too_many_arguments)]
+pub fn record_outcome_from_records(
+    kernel_state: &KernelState,
+    transition_record: &mut TransitionRecord,
+    observation_record: &ObservationRecord,
+    prior_signals: &[SignalRecord],
+    prior_plans: &[PlanRecord],
+    prior_entries: &[PriorEntry],
+    realized: [u8; 32],
+    recorder: Pubkey,
+    attributions: &[(Pubkey, Delta)],
+) -> Result<(Life, bool)> {
+    if !kernel_state.sealed {
+        return Err(error!(ProgramV04Error::NotSealed));
+    }
+    if transition_record.stage != TransitionRecord::SETTLED {
+        return Err(error!(ProgramV04Error::WrongStage));
+    }
+    if transition_record.observation_id != observation_record.observation_id {
+        return Err(error!(ProgramV04Error::RecordMismatch));
+    }
+    if is_gov_type(&transition_record.transition_type) {
+        return Err(error!(ProgramV04Error::GovernanceOutcomeRequired));
+    }
+    if transition_record.planning_deadline == 0 {
+        return Err(error!(ProgramV04Error::OutcomeFailed));
+    }
+    if recorder.to_bytes() != RECORDER {
+        return Err(error!(ProgramV04Error::NotRecorder));
+    }
+    let genesis =
+        sealed_launch_kernel_env().map_err(|_| error!(ProgramV04Error::KernelSeal))?;
+    if !genesis.has_role(&RECORDER, Role::OutcomeRecorder) {
+        return Err(error!(ProgramV04Error::NotRecorder));
+    }
+    if prior_signals.len() as u64 != transition_record.signal_count {
+        return Err(error!(ProgramV04Error::OutcomeFailed));
+    }
+    for prior in prior_signals {
+        if prior.transition_id != transition_record.transition_id {
+            return Err(error!(ProgramV04Error::RecordMismatch));
+        }
+        if signal_round(
+            transition_record.eligible_at,
+            transition_record.consensus_deadline,
+            prior.submitted_at,
+        ) != prior.round
+        {
+            return Err(error!(ProgramV04Error::RecordMismatch));
+        }
+    }
+    {
+        let mut seen: BTreeSet<([u8; 32], u64)> = BTreeSet::new();
+        for prior in prior_signals {
+            if !seen.insert((prior.agent.to_bytes(), prior.round)) {
+                return Err(error!(ProgramV04Error::OutcomeFailed));
+            }
+        }
+    }
+    if prior_plans.len() as u64 != transition_record.plan_count {
+        return Err(error!(ProgramV04Error::OutcomeFailed));
+    }
+    for prior in prior_plans {
+        if prior.transition_id != transition_record.transition_id {
+            return Err(error!(ProgramV04Error::RecordMismatch));
+        }
+        if prior.claim_count as usize > PlanRecord::MAX_PLAN_CLAIMS {
+            return Err(error!(ProgramV04Error::OutcomeFailed));
+        }
+        let mut seen: BTreeSet<u16> = BTreeSet::new();
+        for resource in &prior.claim_resources[..prior.claim_count as usize] {
+            if !seen.insert(*resource) {
+                return Err(error!(ProgramV04Error::OutcomeFailed));
+            }
+        }
+    }
+    for (agent, _) in attributions {
+        if !prior_plans.iter().any(|p| &p.agent == agent) {
+            return Err(error!(ProgramV04Error::OutcomeFailed));
+        }
+    }
+    let replay_state = KernelState {
+        sealed: kernel_state.sealed,
+        head_index: kernel_state.head_index,
+        head_hash: kernel_state.head_hash,
+        clock: transition_record.planning_deadline,
+        eligible_sibling_parent_index: kernel_state.eligible_sibling_parent_index,
+        eligible_sibling_parent_hash: kernel_state.eligible_sibling_parent_hash,
+        eligible_sibling_count: kernel_state.eligible_sibling_count,
+        bump: kernel_state.bump,
+        committed_claims: kernel_state.committed_claims,
+    };
+    let mut reproof = TransitionRecord {
+        transition_id: transition_record.transition_id,
+        transition_type: transition_record.transition_type,
+        parent_index: transition_record.parent_index,
+        parent_hash: transition_record.parent_hash,
+        declared_next_hash: transition_record.declared_next_hash,
+        observation_id: transition_record.observation_id,
+        expires_at: transition_record.expires_at,
+        proposer: transition_record.proposer,
+        stage: TransitionRecord::COMMITTED,
+        eligible_at: transition_record.eligible_at,
+        consensus_deadline: transition_record.consensus_deadline,
+        planning_deadline: transition_record.planning_deadline,
+        signal_count: transition_record.signal_count,
+        plan_count: transition_record.plan_count,
+        approval_count: transition_record.approval_count,
+        replans: transition_record.replans,
+        compatible: transition_record.compatible,
+        bump: transition_record.bump,
+    };
+    let life = settle_transition_from_records(
+        &replay_state,
+        &mut reproof,
+        observation_record,
+        prior_signals,
+        prior_plans,
+        prior_entries,
+        realized,
+    )
+    .map_err(|_| error!(ProgramV04Error::OutcomeFailed))?;
+    if life != Life::Settled || reproof.stage != TransitionRecord::SETTLED {
+        return Err(error!(ProgramV04Error::OutcomeFailed));
+    }
+    let exact = realized == transition_record.declared_next_hash;
+    transition_record.stage = TransitionRecord::EVALUATED_OUTCOME;
+    Ok((Life::EvaluatedOutcome, exact))
+}
+
 /// Split a governance stage instruction tail (slice 37): the
 /// first `approval_count` accounts must be `GovApprovalRecord`s
 /// for this transition's stage chain, and the last must be the
@@ -13672,6 +13999,13 @@ pub struct TransitionSettled {
 }
 
 #[event]
+pub struct OutcomeRecorded {
+    pub transition_id: [u8; 32],
+    pub stage: u8,
+    pub exact: bool,
+}
+
+#[event]
 pub struct SettlementEvidenceRecorded {
     pub transition_id: [u8; 32],
     pub realized: [u8; 32],
@@ -13764,6 +14098,12 @@ pub enum ProgramV04Error {
     GovernanceSettleRequired,
     #[msg("program-v04 settle: kernel governance settle refused, governance commit unproven at the parent head, execution window lapsed, or attestation threshold unmet")]
     GovernanceSettleFailed,
+    #[msg("program-v04 outcome: signer is not the launch OutcomeRecorder")]
+    NotRecorder,
+    #[msg("program-v04 outcome: governance transitions record outcome through the governance outcome path, not the ordinary outcome path")]
+    GovernanceOutcomeRequired,
+    #[msg("program-v04 outcome: kernel outcome refused, settled chain unproven, attribution not a plan participant, or supplied set incomplete")]
+    OutcomeFailed,
 }
 
 // ---------------------------------------------------------------- launch genesis
@@ -18764,6 +19104,294 @@ mod tests {
         assert!(format!("{:?}", err).contains("WrongStage"));
         assert_eq!(record.stage, TransitionRecord::SETTLED);
         assert_eq!(state.head_index, 1);
+    }
+
+    fn settled_pair() -> (
+        KernelState,
+        TransitionRecord,
+        ObservationRecord,
+        SignalRecord,
+        PlanRecord,
+    ) {
+        // A COMMITTED chain driven through the ordinary
+        // settle: clock 300, head 1 at the declared next
+        // hash, ledger tranche 10 / lending book 5 — the
+        // fixture every slice-59 test builds from.
+        let (state, mut record, obs, first, plan) = committed_pair();
+        let realized = record.declared_next_hash;
+        let life = settle_transition_from_records(
+            &state, &mut record, &obs, &[first], std::slice::from_ref(&plan), &[], realized,
+        )
+        .expect("a proven committed chain must settle");
+        assert_eq!(life, Life::Settled);
+        assert_eq!(record.stage, TransitionRecord::SETTLED);
+        (state, record, obs, first, plan)
+    }
+
+    #[test]
+    fn outcome_advances_settled_to_evaluated_exact() {
+        // A settled record records its outcome on its
+        // declared hash: the stage advances to 12, the exact
+        // flag is true, and — the slice's head and ledger
+        // discipline — the sealed head and the ledger stand
+        // exactly where the settle left them, because outcome
+        // recording moves neither.
+        let (state, mut record, obs, first, plan) = settled_pair();
+        let head_index = state.head_index;
+        let head_hash = state.head_hash;
+        let ledger = state.committed_claims;
+        let realized = record.declared_next_hash;
+        let (life, exact) = record_outcome_from_records(
+            &state,
+            &mut record,
+            &obs,
+            &[first],
+            std::slice::from_ref(&plan),
+            &[],
+            realized,
+            Pubkey::new_from_array(RECORDER),
+            &[(plan.agent, 10)],
+        )
+        .expect("a proven settled chain must record its outcome");
+        assert_eq!(life, Life::EvaluatedOutcome);
+        assert!(exact);
+        assert_eq!(record.stage, TransitionRecord::EVALUATED_OUTCOME);
+        assert_eq!(record.stage, 12);
+        assert_eq!(state.head_index, head_index);
+        assert_eq!(state.head_hash, head_hash);
+        assert_eq!(state.committed_claims, ledger);
+    }
+
+    #[test]
+    fn outcome_advances_settled_inexact_exact_false() {
+        // An inexact settle still records its outcome: the
+        // stage advances, but the exact flag is false — the
+        // halved-positive-credit rule's input, carried by
+        // the event for the future reputation slice.
+        let (state, mut record, obs, first, plan) = settled_pair();
+        let (life, exact) = record_outcome_from_records(
+            &state,
+            &mut record,
+            &obs,
+            &[first],
+            std::slice::from_ref(&plan),
+            &[],
+            [0x99; 32],
+            Pubkey::new_from_array(RECORDER),
+            &[(plan.agent, 10)],
+        )
+        .expect("an inexact settled chain must still record its outcome");
+        assert_eq!(life, Life::EvaluatedOutcome);
+        assert!(!exact);
+        assert_eq!(record.stage, TransitionRecord::EVALUATED_OUTCOME);
+    }
+
+    #[test]
+    fn outcome_is_once_only_after_evaluated() {
+        // An evaluated record is past outcome: the stage gate
+        // refuses a second call, and the stage stands at 12.
+        let (state, mut record, obs, first, plan) = settled_pair();
+        let realized = record.declared_next_hash;
+        record_outcome_from_records(
+            &state,
+            &mut record,
+            &obs,
+            &[first],
+            std::slice::from_ref(&plan),
+            &[],
+            realized,
+            Pubkey::new_from_array(RECORDER),
+            &[(plan.agent, 10)],
+        )
+        .expect("first outcome must succeed");
+        assert_eq!(record.stage, TransitionRecord::EVALUATED_OUTCOME);
+        let err = record_outcome_from_records(
+            &state,
+            &mut record,
+            &obs,
+            &[first],
+            std::slice::from_ref(&plan),
+            &[],
+            realized,
+            Pubkey::new_from_array(RECORDER),
+            &[(plan.agent, 10)],
+        )
+        .expect_err("a second outcome must refuse");
+        assert!(format!("{:?}", err).contains("WrongStage"));
+        assert_eq!(record.stage, TransitionRecord::EVALUATED_OUTCOME);
+    }
+
+    #[test]
+    fn outcome_refuses_wrong_stage() {
+        // Still COMMITTED, never settled: the stage gate
+        // refuses before any replay, and nothing moves.
+        let (state, mut record, obs, first, plan) = committed_pair();
+        let realized = record.declared_next_hash;
+        let err = record_outcome_from_records(
+            &state,
+            &mut record,
+            &obs,
+            &[first],
+            std::slice::from_ref(&plan),
+            &[],
+            realized,
+            Pubkey::new_from_array(RECORDER),
+            &[(plan.agent, 10)],
+        )
+        .expect_err("a committed record must refuse outcome");
+        assert!(format!("{:?}", err).contains("WrongStage"));
+        assert_eq!(record.stage, TransitionRecord::COMMITTED);
+    }
+
+    #[test]
+    fn outcome_refuses_governance_type() {
+        // A settled governance record refuses the ordinary
+        // outcome path with the distinct type error — its
+        // outcome mirror is the next slice, not this one.
+        let (state, mut record, obs, first, plan, approvals) = gov_committed_bundle();
+        let action = gov_action();
+        let realized = record.declared_next_hash;
+        settle_governance_transition_from_stored(
+            &state, &mut record, &obs, &[first], std::slice::from_ref(&plan), &approvals, &action,
+            &[], realized,
+        )
+        .expect("a proven committed governance bundle must settle");
+        assert_eq!(record.stage, TransitionRecord::SETTLED);
+        let err = record_outcome_from_records(
+            &state,
+            &mut record,
+            &obs,
+            &[first],
+            std::slice::from_ref(&plan),
+            &[],
+            realized,
+            Pubkey::new_from_array(RECORDER),
+            &[(plan.agent, 10)],
+        )
+        .expect_err("a governance record must refuse ordinary outcome");
+        assert!(format!("{:?}", err).contains("GovernanceOutcomeRequired"));
+        assert_eq!(record.stage, TransitionRecord::SETTLED);
+    }
+
+    #[test]
+    fn outcome_refuses_non_recorder() {
+        // The recorder role is proven, not assumed: a signer
+        // who is not the launch RECORDER refuses before any
+        // replay, and the record stands SETTLED.
+        let (state, mut record, obs, first, plan) = settled_pair();
+        let realized = record.declared_next_hash;
+        let err = record_outcome_from_records(
+            &state,
+            &mut record,
+            &obs,
+            &[first],
+            std::slice::from_ref(&plan),
+            &[],
+            realized,
+            Pubkey::new_from_array([0x77; 32]),
+            &[(plan.agent, 10)],
+        )
+        .expect_err("a non-recorder must refuse outcome");
+        assert!(format!("{:?}", err).contains("NotRecorder"));
+        assert_eq!(record.stage, TransitionRecord::SETTLED);
+    }
+
+    #[test]
+    fn outcome_refuses_non_participant_attribution() {
+        // The kernel's NotParticipant rule, program-side: an
+        // attribution to an agent with no plan for this
+        // transition refuses, and the record stands SETTLED.
+        let (state, mut record, obs, first, plan) = settled_pair();
+        let realized = record.declared_next_hash;
+        let err = record_outcome_from_records(
+            &state,
+            &mut record,
+            &obs,
+            &[first],
+            std::slice::from_ref(&plan),
+            &[],
+            realized,
+            Pubkey::new_from_array(RECORDER),
+            &[(Pubkey::new_from_array([0x77; 32]), 10)],
+        )
+        .expect_err("a non-participant attribution must refuse outcome");
+        assert!(format!("{:?}", err).contains("OutcomeFailed"));
+        assert_eq!(record.stage, TransitionRecord::SETTLED);
+    }
+
+    #[test]
+    fn outcome_refuses_unsealed() {
+        // The sealed gate runs first: an unsealed state
+        // refuses before any replay, and nothing moves.
+        let (mut state, mut record, obs, first, plan) = settled_pair();
+        state.sealed = false;
+        let realized = record.declared_next_hash;
+        let err = record_outcome_from_records(
+            &state,
+            &mut record,
+            &obs,
+            &[first],
+            std::slice::from_ref(&plan),
+            &[],
+            realized,
+            Pubkey::new_from_array(RECORDER),
+            &[(plan.agent, 10)],
+        )
+        .expect_err("an unsealed outcome must refuse");
+        assert!(format!("{:?}", err).contains("NotSealed"));
+        assert_eq!(record.stage, TransitionRecord::SETTLED);
+    }
+
+    #[test]
+    fn outcome_allows_empty_attributions() {
+        // Kernel parity: an empty attribution list still
+        // advances — the kernel advances on it too, with no
+        // reputation change — so a settled transition with
+        // nothing to attribute is not stuck at SETTLED.
+        let (state, mut record, obs, first, plan) = settled_pair();
+        let realized = record.declared_next_hash;
+        let (life, exact) = record_outcome_from_records(
+            &state,
+            &mut record,
+            &obs,
+            &[first],
+            std::slice::from_ref(&plan),
+            &[],
+            realized,
+            Pubkey::new_from_array(RECORDER),
+            &[],
+        )
+        .expect("an empty attribution list must still advance");
+        assert_eq!(life, Life::EvaluatedOutcome);
+        assert!(exact);
+        assert_eq!(record.stage, TransitionRecord::EVALUATED_OUTCOME);
+    }
+
+    #[test]
+    fn outcome_survives_late_clock() {
+        // The commit-clock re-proof, pinned: the live clock
+        // has moved to 5000, far past the execution deadline
+        // (commit clock + 1000), so a settle tail re-judged
+        // at today's clock would refuse — but the outcome
+        // re-proof runs at the commit clock, and the settled
+        // record still records its outcome.
+        let (mut state, mut record, obs, first, plan) = settled_pair();
+        advance_clock_on_state(&mut state, 5000).expect("advance past the execution deadline must succeed");
+        let realized = record.declared_next_hash;
+        let (life, _) = record_outcome_from_records(
+            &state,
+            &mut record,
+            &obs,
+            &[first],
+            std::slice::from_ref(&plan),
+            &[],
+            realized,
+            Pubkey::new_from_array(RECORDER),
+            &[(plan.agent, 10)],
+        )
+        .expect("a late-clock outcome must succeed via the commit-clock re-proof");
+        assert_eq!(life, Life::EvaluatedOutcome);
+        assert_eq!(record.stage, TransitionRecord::EVALUATED_OUTCOME);
     }
 
     #[test]
@@ -24269,8 +24897,8 @@ mod tests {
         // Slice 51: close passes on a half-written account by
         // its writer, and every post-finalize mutation refuses
         // — append, re-finalize, and close alike — so a
-        // finalized account stays open until the transition
-        // settles, as the lifetime rule requires.
+        // finalized account never closes (Rule A, Carlos
+        // 2026-10-29), at no stage of its transition.
         let bytes = sample_action_bytes();
         let expected = solana_sha256_hasher::hash(&bytes).to_bytes();
         let writer = Pubkey::new_from_array(ag(1));
@@ -24295,6 +24923,51 @@ mod tests {
         let err = check_gov_action_close(&account, writer)
             .expect_err("close after finalize must refuse");
         assert!(format!("{:?}", err).contains("GovActionAlreadyFinalized"));
+    }
+
+    #[test]
+    fn gov_action_finalized_never_closes_at_any_stage() {
+        // Slice 58 — Rule A (Carlos, 2026-10-29 ~19:18 CST):
+        // a finalized GovActionAccount is NEVER closed, at no
+        // stage of its transition — including COMMITTED (10)
+        // and SETTLED (11), the two stages the ruling names.
+        // The gate reads only `finalized`, not the stage, so
+        // this loop's value is as a regression tripwire: if
+        // any future change ever exempts a stage from the
+        // refusal, this test fails at that stage and the
+        // exemption must be ruled, not slipped in. The
+        // abandoned-account path is untouched: unfinalized
+        // accounts still close writer-only (slice 51's test
+        // above proves that control).
+        let writer = Pubkey::new_from_array(ag(1));
+        let account = gov_action_account_for([0xA5; 32], writer);
+        assert!(account.finalized);
+        let stages = [
+            TransitionRecord::REGISTERED,
+            TransitionRecord::KERNEL_REGISTERED,
+            TransitionRecord::EVALUATED,
+            TransitionRecord::ELIGIBLE,
+            TransitionRecord::SELECTED,
+            TransitionRecord::PLANNING,
+            TransitionRecord::BLOCKED,
+            TransitionRecord::RECONCILING,
+            TransitionRecord::VALIDATED,
+            TransitionRecord::DECLARED,
+            TransitionRecord::COMMITTED,
+            TransitionRecord::SETTLED,
+        ];
+        for stage in stages {
+            let mut record = slice52_record(writer);
+            record.transition_id = account.transition_id;
+            record.stage = stage;
+            assert_eq!(record.transition_id, account.transition_id);
+            let err = check_gov_action_close(&account, writer)
+                .expect_err("a finalized account must refuse close at every stage");
+            assert!(
+                format!("{:?}", err).contains("GovActionAlreadyFinalized"),
+                "stage {stage} must refuse with GovActionAlreadyFinalized, got {err:?}"
+            );
+        }
     }
 
     fn slice52_record(proposer: Pubkey) -> TransitionRecord {
