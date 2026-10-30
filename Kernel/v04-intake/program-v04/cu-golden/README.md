@@ -416,6 +416,20 @@ comment / test-only source change at identical size
 (1,789,112 bytes), with zero CU drift. This `.so` is
 likewise NOT the golden freeze.
 
+## Slice-60 re-measurement (2026-10-29, same pins)
+
+Slice 60 (the `record_outcome_governance` instruction,
+governance path, + `record_outcome_governance_from_records`
+helper + 10 host tests) changed the program source, so the
+golden file was re-measured against the new `.so` sha
+`d1d4fab7cc1afd92904e3f7c80d693fa4ff65db93529b974521d9f54df87003b`
+(host tests 443/443; IDL now 43 instr / 8 accounts /
+45 errors / 26 events — one new instruction, no new
+account, error, or event). Zero drift from the slice-59
+values: all seventeen measured CU values reproduce
+exactly, blocked `[]` still. This `.so` is NOT the golden
+freeze.
+
 ## Slice-59 re-measurement (2026-10-29, same pins)
 
 Slice 59 (the `record_outcome` instruction, ordinary

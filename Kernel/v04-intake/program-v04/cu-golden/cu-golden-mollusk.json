@@ -118,6 +118,6 @@
     }
   ],
   "slice": "cu-golden slice 3: genesis + governance registration + account-carried approval chain (program slices 51-53) + close_gov_action rent-reclaim and finalized-refusal gate",
-  "so_sha256": "9cff80abfe892dcd68f6b3e5b90103863b4196b685d3ef028ae11c5949840238",
+  "so_sha256": "d1d4fab7cc1afd92904e3f7c80d693fa4ff65db93529b974521d9f54df87003b",
   "toolchain": "Anchor 1.2.2 / Solana 4.3.2 / platform-tools v1.57"
 }

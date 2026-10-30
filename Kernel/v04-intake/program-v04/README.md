@@ -3071,9 +3071,85 @@ accounts; the golden `.so` sha debt (slice-49
   `main.rs` + regenerated JSON): it said "stays open until
   the transition settles" and now says "never closes (Rule
   A)". This `.so` is NOT the golden freeze.
-- Deliberately NOT slice 59: the governance outcome
-  mirror (`record_outcome_governance`, `SETTLED` -> 12 on
-  the governance path) and the golden `.so` freeze.
+- Deliberately NOT slice 59: the golden `.so` freeze. The
+  governance outcome mirror landed as slice 60 below.
+
+## Slice 60 — the outcome instruction, governance path (2026-10-29)
+
+- `record_outcome_governance`: `SETTLED` (11) ->
+  `EVALUATED_OUTCOME` (12) through instructions, via the
+  new `record_outcome_governance_from_records` helper —
+  the governance mirror of slice 59 and the last step of
+  the step-5 bridge tail on the governance path.
+  Remaining accounts parse exactly as in
+  `settle_governance_transition` (prior bundles, then
+  exactly `signal_count` signals, then plans, then
+  exactly `approval_count` stored `GovApprovalRecord`s
+  via `split_gov_commit_tail`); the action is decoded
+  from the finalized `GovActionAccount` and proven
+  against the approval hashes by
+  `check_gov_action_for_commit` before any replay runs;
+  the realized hash comes from the stored
+  `SettlementEvidence` account — no realized argument —
+  with the evidence binding re-checked before any replay,
+  so no caller can record an outcome at an unrecorded
+  hash or re-target a unanimous approval set at an action
+  the council never approved. The recorder is the signer
+  and the role holder, as in slice 59. An ordinary-typed
+  record refuses with `NotGovernanceTransition`, the
+  slice-55 helper's gate, in reverse of slice 59's
+  `GovernanceOutcomeRequired`.
+- The helper's re-proof, stated plainly: the `SETTLED`
+  label is never trusted — a field copy of the record,
+  rewound to `COMMITTED`, must settle through the
+  slice-55 governance settle helper, under a replay state
+  whose clock is the commit clock (`planning_deadline`),
+  not today's clock — the slice-59 commit-clock rule on
+  the governance path, for the same reason (the record
+  carries no settle timestamp, and the live clock may
+  legitimately have moved past the execution window since
+  the real settle). A re-proof failure maps to
+  `OutcomeFailed`, as in slice 59. The approval-count
+  anchor plus the seat proof (`gov_action_and_seats`)
+  run inside the helper as defense in depth — the
+  instruction already proved the action against the
+  approvals — and a binding refusal there propagates its
+  own error, as in the slice-57 entry. On success only
+  the stage advances; head and ledger stand untouched. A
+  refusal writes nothing. The slice-59 honesty bound
+  carries over unchanged: the kernel call's reputation
+  writes land nowhere in program-v04 yet, so the helper
+  does not re-execute `record_outcome` in a throwaway
+  rebuilt kernel; the cap and halved-positive-credit
+  application ride the future reputation-persistence
+  slice, which will run the kernel call for real against
+  an account it can write to.
+- Host tests 443/443 (433 prior + 10 slice-60: exact
+  success with head and ledger untouched, inexact success
+  with exact false, once-only, ordinary-type, wrong-stage,
+  non-recorder, non-participant, short approval set,
+  empty attributions, late-clock). Clippy back to the
+  pre-existing profile, zero new warnings — no warning
+  references any slice-60 symbol, and the four
+  `too_many_arguments` notes are the pre-existing gov
+  helpers. Delivered crate 39/39. `anchor build` green
+  under the pinned v04 toolchain (Anchor 1.2.2 / Agave
+  4.3.2 / platform-tools v1.57, from-source binary by
+  absolute path); IDL counts move by design (43
+  instructions, 8 accounts, 45 errors, 26 events — one
+  new instruction, no new account, error, or event).
+  `.so` 1,832,216 bytes (sha256 `d1d4fab7…`). The SBF
+  frame diagnostic is unchanged from the pin-migration
+  measurement: exactly one entry over 4096, the
+  pre-existing BTreeMap-insert frame at 4,672 bytes — no
+  new frame overflow from this slice. CU golden
+  re-measured against the new `.so`: all seventeen
+  measured values reproduce the slice-59 values exactly,
+  blocked `[]` still — zero drift, golden JSON +
+  cu-golden README carry the new `.so` sha in the same
+  pass. This `.so` is NOT the golden freeze.
+- Deliberately NOT slice 60: the reputation-persistence
+  slice and the golden `.so` freeze.
 
 ## Build
 
@@ -3081,5 +3157,5 @@ accounts; the golden `.so` sha debt (slice-49
 export RUSTUP_HOME=~/workspace/toolchains/rustup CARGO_HOME=~/workspace/toolchains/cargo
 export PATH=~/workspace/toolchains/cargo/bin:~/workspace/toolchains/solana/bin:$PATH
 ~/workspace/toolchains/anchor/bin/anchor build   # from this directory
-cargo test                                        # host tests, 433/433
+cargo test                                        # host tests, 443/443
 ```
