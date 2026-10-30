@@ -383,6 +383,24 @@ behavior: probe 7,705 -> 7,707, register_transition
 exactly, blocked `[]` still. This `.so` is likewise NOT
 the golden freeze.
 
+## Slice-57 re-measurement (2026-10-29, same pins)
+
+Slice 57 (the `settle_governance_transition` instruction
+and its `from_stored` entry, no new account, error, or
+event) changed the program source, so the golden file was
+re-measured against the new `.so` sha
+`3edd6f2bf608af13c9f27756a6309637c8b90abd8c67822aeae4af688ac89918`
+(host tests 422/422; IDL now 41 instr / 8 accounts /
+42 errors / 25 events — one new instruction; no new
+account, error, or event). Drift from the slice-56 values
+is layout noise, not behavior: probe 7,707 -> 7,705,
+initialize 17,772 -> 17,776, register_transition 11,417
+-> 11,415, ingest_observation 24,403 -> 24,401,
+init_gov_action 8,447 -> 8,449, abandoned second init
+14,447 -> 14,449; the other eleven values reproduce
+exactly, blocked `[]` still. This `.so` is likewise NOT
+the golden freeze.
+
 ## Layout
 
 - `mollusk/` — standalone Rust crate (its own `[workspace]`

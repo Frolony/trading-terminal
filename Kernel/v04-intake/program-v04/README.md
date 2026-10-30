@@ -2898,11 +2898,63 @@ accounts; the golden `.so` sha debt (slice-49
   golden `.so` freeze, which still waits on the
   post-settle reclaim ruling.
 
+## Slice 57 — the settle instruction, governance path (2026-10-29)
+
+- `settle_governance_transition`: `COMMITTED` (10) ->
+  `SETTLED` (11) through instructions, via the slice-55
+  helper. The mirror of `settle_transition` on the
+  governance path and of `commit_governance` at settle
+  time: the realized hash comes from the stored
+  `SettlementEvidence` account — no realized argument —
+  and the evidence binding is re-checked
+  (`check_settlement_evidence`) before any replay runs.
+  Remaining accounts parse exactly as in
+  `commit_governance` (prior bundles, then exactly
+  `signal_count` signals, then plans, then exactly
+  `approval_count` stored `GovApprovalRecord`s via
+  `split_gov_commit_tail`). The action is decoded from the
+  finalized `GovActionAccount` and proven against the
+  approval hashes by `check_gov_action_for_commit`, so no
+  caller can re-target a unanimous approval set or settle
+  at an unrecorded hash. An ordinary-typed record refuses
+  at the helper's `NotGovernanceTransition` gate. The payer
+  is a fee payer only. New instruction-side entry
+  `settle_governance_transition_from_stored` mirrors slice
+  36's commit entry: count anchor re-checked, seats
+  derived via `gov_action_and_seats`, then the slice-55
+  helper.
+- Host tests 422/422 (418 prior + 4 slice-57: stored-entry
+  success with head and ledger untouched, short approval
+  set refused at the anchor, mixed-action approvals refused
+  at seat derivation, wrong-stage refusal). The instruction
+  handler itself composes pieces proven separately
+  (evidence re-check, tail split, finalized-action gate),
+  so the wrapper is the new logic the tests pin. Clippy
+  back to the pre-existing profile, zero new warnings.
+  Delivered crate 39/39. `anchor build` green under the
+  pinned toolchain (Anchor 1.2.2 / Agave 4.3.2 /
+  platform-tools v1.57); IDL counts move by design (41
+  instructions, 8 accounts, 42 errors, 25 events — one new
+  instruction; no new account, error, or event). `.so`
+  1,789,112 bytes (sha256 `3edd6f2b…`). CU golden
+  re-measured against the new `.so` (17 measured,
+  blocked `[]`): probe 7,707 -> 7,705, initialize 17,772 ->
+  17,776, register_transition 11,417 -> 11,415,
+  ingest_observation 24,403 -> 24,401, init_gov_action
+  8,447 -> 8,449, abandoned second init 14,447 -> 14,449,
+  the other eleven exact — layout noise, golden JSON +
+  cu-golden README carry the new values in the same pass.
+  This `.so` is NOT the golden freeze.
+- Deliberately NOT slice 57: outcome recording (`Settled`
+  -> `EvaluatedOutcome`, attribution); the post-settle
+  reclaim ruling; and the golden `.so` freeze, which still
+  waits on that ruling.
+
 ## Build
 
 ```sh
 export RUSTUP_HOME=~/workspace/toolchains/rustup CARGO_HOME=~/workspace/toolchains/cargo
 export PATH=~/workspace/toolchains/cargo/bin:~/workspace/toolchains/solana/bin:$PATH
 ~/workspace/toolchains/anchor/bin/anchor build   # from this directory
-cargo test                                        # host tests, 392/392
+cargo test                                        # host tests, 422/422
 ```

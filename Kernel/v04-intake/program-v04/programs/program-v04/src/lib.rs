@@ -2452,6 +2452,95 @@ pub mod program_v04 {
         Ok(())
     }
 
+    /// Settle a committed governance transition (slice 57):
+    /// `COMMITTED` (10) -> `SETTLED` (11) through instructions,
+    /// via the slice-55 helper. The mirror of
+    /// `settle_transition` on the governance path, and the
+    /// mirror of `commit_governance` at settle time: the
+    /// realized hash comes from the stored
+    /// `SettlementEvidence` account — there is no realized
+    /// argument — and the instruction re-checks the evidence
+    /// binding (`check_settlement_evidence`: the evidence
+    /// names this transition and was recorded by this
+    /// transition's observation observer) before any replay
+    /// runs, so the helper's caller-supplied hash can never be
+    /// reached from an instruction. Remaining accounts parse
+    /// exactly as in `commit_governance`: prior bundles
+    /// first, then exactly `signal_count` prior
+    /// `SignalRecord`s, then the prior `PlanRecord`s, then
+    /// exactly `approval_count` stored `GovApprovalRecord`s
+    /// (the slice-35 anchor, enforced at parse time by
+    /// `split_gov_commit_tail` before any replay runs). The
+    /// action is decoded from the finalized
+    /// `GovActionAccount` (slices 51-53) and proven against
+    /// the approval hashes by `check_gov_action_for_commit`:
+    /// this instruction takes no action argument, so no
+    /// caller can re-target a unanimous approval set at an
+    /// action the council never approved, and no caller can
+    /// settle at an unrecorded hash. An ordinary-typed
+    /// record refuses at the helper's
+    /// `NotGovernanceTransition` gate, mirroring
+    /// `settle_transition`'s `GovernanceSettleRequired` gate
+    /// in reverse. The payer is a fee payer only: settlement
+    /// executes steps the stored records already authorized.
+    /// No new account, error, or event: the evidence account
+    /// is slice 56's, the event is `TransitionSettled`, and
+    /// the binding refusals reuse `RecordMismatch`,
+    /// `GovActionHashMismatch`, and the helper's
+    /// `GovernanceSettleFailed`.
+    pub fn settle_governance_transition(
+        ctx: Context<SettleGovernance>,
+        transition_id: [u8; 32],
+        observation_id: [u8; 32],
+        prior_bundle_count: u32,
+    ) -> Result<()> {
+        if ctx.accounts.transition_record.transition_id != transition_id
+            || ctx.accounts.observation_record.observation_id != observation_id
+        {
+            return Err(error!(ProgramV04Error::RecordMismatch));
+        }
+        check_settlement_evidence(
+            &ctx.accounts.settlement_evidence,
+            &ctx.accounts.transition_record,
+            &ctx.accounts.observation_record,
+        )?;
+        let (bundles, tail) = split_prior_bundles(
+            classify_remaining_accounts(ctx.remaining_accounts)?,
+            prior_bundle_count as usize,
+        )?;
+        let prior_entries = prior_entries_of(&bundles);
+        let (priors, prior_plans, approval_records) = split_gov_commit_tail(
+            tail,
+            ctx.accounts.transition_record.signal_count as usize,
+            ctx.accounts.transition_record.plan_count as usize,
+            ctx.accounts.transition_record.approval_count as usize,
+        )?;
+        // Slice 52 (lifetime rule, settle half): the finalized
+        // action account comes in with the settle, and the
+        // approved action must hash to exactly its finalized
+        // hash — a settle over a substituted action refuses
+        // before any replay runs.
+        let action = check_gov_action_for_commit(
+            &ctx.accounts.gov_action_account,
+            &ctx.accounts.transition_record,
+            &approval_records,
+        )?;
+        let life = settle_governance_transition_from_stored(
+            &ctx.accounts.kernel_state,
+            &mut ctx.accounts.transition_record,
+            &ctx.accounts.observation_record,
+            &priors,
+            &prior_plans,
+            &approval_records,
+            &action,
+            &prior_entries,
+            ctx.accounts.settlement_evidence.realized,
+        )?;
+        debug_assert!(life == Life::Settled);
+        emit!(TransitionSettled { transition_id, stage: ctx.accounts.transition_record.stage });
+        Ok(())
+    }
+
     /// Replay governance (§4.1, governance replay row, slice 37):
     /// run kernel `approve_governance` (every stored seat) +
     /// `ingest_observation` + `register_governance_transition`
@@ -3610,6 +3699,44 @@ pub struct SettleTransition<'info> {
         bump = observation_record.bump,
     )]
     pub observation_record: Account<'info, ObservationRecord>,
+    #[account(
+        seeds = [b"evidence", transition_id.as_ref()],
+        bump = settlement_evidence.bump,
+    )]
+    pub settlement_evidence: Account<'info, SettlementEvidence>,
+    pub payer: Signer<'info>,
+}
+
+#[derive(Accounts)]
+#[instruction(transition_id: [u8; 32], observation_id: [u8; 32])]
+pub struct SettleGovernance<'info> {
+    #[account(
+        mut,
+        seeds = [b"kernel-state"],
+        bump = kernel_state.bump,
+    )]
+    pub kernel_state: Account<'info, KernelState>,
+    #[account(
+        mut,
+        seeds = [b"transition", transition_id.as_ref()],
+        bump = transition_record.bump,
+    )]
+    pub transition_record: Account<'info, TransitionRecord>,
+    #[account(
+        seeds = [b"observation", observation_id.as_ref()],
+        bump = observation_record.bump,
+    )]
+    pub observation_record: Account<'info, ObservationRecord>,
+    // Slice 57, as in `CommitGovernance` — seed component and
+    // proposer binding only, never a signer or authority here.
+    /// CHECK: As in `CommitGovernance` — seed component and
+    /// proposer binding only, never a signer or authority here.
+    pub writer: UncheckedAccount<'info>,
+    #[account(
+        seeds = [b"gov-action", transition_id.as_ref(), writer.key().as_ref()],
+        bump = gov_action_account.bump,
+    )]
+    pub gov_action_account: Box<Account<'info, GovActionAccount>>,
     #[account(
         seeds = [b"evidence", transition_id.as_ref()],
         bump = settlement_evidence.bump,
@@ -10058,6 +10185,51 @@ pub fn commit_governance_from_stored(
         action,
         &seats,
         prior_entries,
+    )
+}
+
+/// Settle a committed governance transition from STORED
+/// approvals (slice 57): the instruction-side entry to the
+/// slice-55 helper, mirroring `commit_governance_from_stored`
+/// at settle time. The approval-count anchor is re-checked
+/// here against the record as defense in depth (the
+/// instruction's parse already enforced it), the action
+/// arrives as a caller argument (decoded from the finalized
+/// `GovActionAccount` by the instruction) and the seats are
+/// verified against it through `gov_action_and_seats` — no
+/// caller argument carries the action bytes — and the
+/// slice-55 helper then re-proves the whole governance chain
+/// and settles, or refuses with the record standing
+/// `COMMITTED`. Pure except for the record stage, exactly as
+/// the slice-55 helper is: a refusal writes nothing, and the
+/// sealed head and the slice-27 ledger stand untouched.
+#[allow(clippy::too_many_arguments)]
+pub fn settle_governance_transition_from_stored(
+    kernel_state: &KernelState,
+    transition_record: &mut TransitionRecord,
+    observation_record: &ObservationRecord,
+    prior_signals: &[SignalRecord],
+    prior_plans: &[PlanRecord],
+    approval_records: &[GovApprovalRecord],
+    action: &GovAction,
+    prior_entries: &[PriorEntry],
+    realized: [u8; 32],
+) -> Result<Life> {
+    if approval_records.len() as u64 != transition_record.approval_count {
+        return Err(error!(ProgramV04Error::RecordMismatch));
+    }
+    let seats =
+        gov_action_and_seats(action, approval_records, transition_record.transition_id)?;
+    settle_governance_transition_from_records(
+        kernel_state,
+        transition_record,
+        observation_record,
+        prior_signals,
+        prior_plans,
+        action,
+        &seats,
+        prior_entries,
+        realized,
     )
 }
 
@@ -19019,6 +19191,115 @@ mod tests {
         .expect_err("an overshooting prior chain must refuse");
         assert!(format!("{:?}", err).contains("ParentMismatch"));
         assert_eq!(record.stage, TransitionRecord::COMMITTED);
+    }
+
+    #[test]
+    fn gov_settle_from_stored_advances_committed_to_settled() {
+        // Slice 57's instruction-side entry, at helper level:
+        // a committed governance bundle settles through its
+        // stored approvals to SETTLED, head and ledger
+        // untouched, exactly as the slice-55 helper settles —
+        // the wrapper adds only the count anchor and the seat
+        // derivation, neither of which moves state. The
+        // instruction handler itself composes pieces already
+        // proven separately (evidence re-check, tail split,
+        // finalized-action gate), so the wrapper is the new
+        // logic this slice's tests must pin.
+        let (state, mut record, obs, first, plan, approvals) = gov_committed_bundle();
+        let head_index = state.head_index;
+        let head_hash = state.head_hash;
+        let ledger = state.committed_claims;
+        let action = gov_action();
+        let realized = record.declared_next_hash;
+        let life = settle_governance_transition_from_stored(
+            &state, &mut record, &obs, &[first], std::slice::from_ref(&plan), &approvals, &action,
+            &[], realized,
+        )
+        .expect("a proven committed governance bundle must settle through stored approvals");
+        assert_eq!(life, Life::Settled);
+        assert_eq!(record.stage, TransitionRecord::SETTLED);
+        assert_eq!(record.stage, 11);
+        assert_eq!(state.head_index, head_index);
+        assert_eq!(state.head_hash, head_hash);
+        assert_eq!(state.committed_claims, ledger);
+    }
+
+    #[test]
+    fn gov_settle_from_stored_refuses_short_approval_set() {
+        // The slice-35 anchor, re-checked in the wrapper: two
+        // stored approvals against a count of three refuse
+        // before any replay runs, and the record stands
+        // COMMITTED with the head unmoved.
+        let (state, mut record, obs, first, plan, approvals) = gov_committed_bundle();
+        let action = gov_action();
+        let realized = record.declared_next_hash;
+        let err = settle_governance_transition_from_stored(
+            &state, &mut record, &obs, &[first], std::slice::from_ref(&plan), &approvals[..2],
+            &action, &[], realized,
+        )
+        .expect_err("a short stored approval set must refuse settle");
+        assert!(format!("{:?}", err).contains("RecordMismatch"));
+        assert_eq!(record.stage, TransitionRecord::COMMITTED);
+        assert_eq!(state.head_index, 1);
+    }
+
+    #[test]
+    fn gov_settle_from_stored_refuses_mixed_action_approvals() {
+        // Seats approving different actions are not unanimous
+        // on any action: seat 2's 500-capacity approval against
+        // seats 1 and 3's 400-capacity approvals refuses at the
+        // seat derivation, before any replay runs, and the
+        // record stands COMMITTED.
+        let (state, mut record, obs, first, plan, _) = gov_committed_bundle();
+        let action = gov_action();
+        let other = GovAction::SetCapacity {
+            resource: RES_EXIT_WINDOW,
+            capacity: Amount::from_raw(500 * SCALE),
+        };
+        record.stage = TransitionRecord::REGISTERED;
+        let mixed = [
+            build_governance_approval_record(
+                &state, &record, Pubkey::new_from_array(ag(1)), &action, 1,
+            )
+            .expect("seat 1 approval must build"),
+            build_governance_approval_record(
+                &state, &record, Pubkey::new_from_array(ag(2)), &other, 1,
+            )
+            .expect("seat 2 approval must build"),
+            build_governance_approval_record(
+                &state, &record, Pubkey::new_from_array(ag(3)), &action, 1,
+            )
+            .expect("seat 3 approval must build"),
+        ];
+        record.stage = TransitionRecord::COMMITTED;
+        let realized = record.declared_next_hash;
+        let err = settle_governance_transition_from_stored(
+            &state, &mut record, &obs, &[first], std::slice::from_ref(&plan), &mixed, &action,
+            &[], realized,
+        )
+        .expect_err("a mixed-action approval set must refuse settle");
+        assert!(format!("{:?}", err).contains("GovActionHashMismatch"));
+        assert_eq!(record.stage, TransitionRecord::COMMITTED);
+        assert_eq!(state.head_index, 1);
+    }
+
+    #[test]
+    fn gov_settle_from_stored_refuses_wrong_stage() {
+        // Still DECLARED, never committed: the full approval
+        // set passes the anchor and the seat derivation, and
+        // the helper's stage gate refuses before any replay,
+        // leaving the record standing DECLARED.
+        let (state, mut record, obs, first, plan, approvals) = gov_committed_bundle();
+        record.stage = TransitionRecord::DECLARED;
+        let action = gov_action();
+        let realized = record.declared_next_hash;
+        let err = settle_governance_transition_from_stored(
+            &state, &mut record, &obs, &[first], std::slice::from_ref(&plan), &approvals, &action,
+            &[], realized,
+        )
+        .expect_err("a declared governance record must refuse settle");
+        assert!(format!("{:?}", err).contains("WrongStage"));
+        assert_eq!(record.stage, TransitionRecord::DECLARED);
     }
 
     fn gov_action() -> GovAction {
