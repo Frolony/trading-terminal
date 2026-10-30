@@ -150,6 +150,24 @@
 //! `seal_kernel` (one full genesis build) fits in the
 //! default 32 KiB heap.
 //!
+//! SLICE-64 ADDENDUM — F4 FIXED, replay executes in-process.
+//! The stage helpers no longer build two kernels: the new
+//! `resolve_proposer_on_kernel` judges the proposer on the single
+//! rebuilt head kernel every `*_from_records` helper and chain
+//! helper already builds (27 sites), instead of `resolve_proposer`
+//! building a second sealed kernel that SBF heap accounting never
+//! reclaims within the instruction. Host battery 457/457, anchor
+//! build exit 0, all slice-62 measurements reproduce exactly, and
+//! the slice-63 chain now continues past ingest: `replay_transition`
+//! succeeds (CU in the golden file) and advances the lifecycle
+//! record to KERNEL_REGISTERED at 25,435 CU. Semantic note, stated plainly:
+//! proposer resolution now judges the rebuilt head roster, not
+//! sealed genesis — a governance-registered proposer resolves
+//! where sealed-genesis resolution refused it, with the kernel's
+//! own registration gate, judging the same rebuilt kernel, as the
+//! backstop. The `blocked` list is empty again; the full lifecycle
+//! chain (evaluate through settle) is the next slice's work.
+//!
 //! SLICE-3 ADDENDUM — close_gov_action, the last unmeasured
 //! slice-51 instruction, now measured: a second, abandoned
 //! action account (init + one 512-byte chunk, never finalized)
@@ -917,7 +935,7 @@ fn main() {
     // recorded under `blocked` in the golden JSON, never as a
     // success or a refusal. The chain resumes past replay once
     // the F4 fix lands.
-    let life_note = "slice-63 partial lifecycle chain (register + ingest; replay blocked by F4)";
+    let life_note = "slice-63/64 lifecycle chain (register + ingest; replay unblocked by the slice-64 F4 fix)";
     // Register the lifecycle transition: TT, proposer ag(1)
     // (seat1), sealed head parent (0, zero hash), observation
     // LIFE_OBS, expires 10100.
@@ -969,23 +987,41 @@ fn main() {
     assert_eq!(u64_at(&ob.data, 40), 200, "lifecycle observation timestamp must be 200");
     assert_eq!(ob.data[64..96], observer.to_bytes(), "lifecycle observation must name the launch observer");
 
+    // SLICE-64 — F4 fixed: the lifecycle chain continues past ingest.
+    // Replay runs kernel ingest_observation + register_transition from
+    // the stored record pair (no prior bundles: the lifecycle parent is
+    // the sealed genesis head) and must advance the record to
+    // KERNEL_REGISTERED (stage byte 1 at offset 216).
+    accounts = next;
+    let mut data = disc("replay_transition");
+    data.extend_from_slice(&LIFE_TID);
+    data.extend_from_slice(&LIFE_OBS);
+    data.extend_from_slice(&0u32.to_le_bytes());
+    let ix = Instruction::new_with_bytes(
+        program_id,
+        &data,
+        vec![
+            AccountMeta::new_readonly(kernel_state, false),
+            AccountMeta::new(life_record, false),
+            AccountMeta::new_readonly(life_obs, false),
+            AccountMeta::new(seat1, true),
+        ],
+    );
+    let (next, cu) = run(&mollusk, "replay_transition_life", &ix, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({"instruction": "replay_transition_life", "cu": cu, "result": "Success", "note": "slice-64 F4 fix: first stage instruction to execute in-process; single-build refactor (resolve_proposer_on_kernel, 27 sites)"}));
+    assert_eq!(find(&accounts, &life_record).data[216], 1, "lifecycle record must advance to KERNEL_REGISTERED");
+
     let out = serde_json::json!({
         "program": "program_v04",
         "program_id": PROGRAM_ID,
         "so_sha256": so_sha256,
         "mollusk_svm": MOLLUSK_SVM_VERSION,
         "toolchain": TOOLCHAIN,
-        "slice": "slice 63 (PARTIAL): slice-62 golden freeze chain + lifecycle register/ingest only; replay_transition is BLOCKED by F4 (out-of-memory panic in-process, see blocked) — the full lifecycle chain (replay through settle to an outcome with a reputation tail) rides the F4 fix slice; .so unchanged from the slice-61 build, all slice-62 measurements reproduce exactly",
+        "slice": "slice 64: slice-62 golden freeze chain + lifecycle register/ingest/replay; F4 FIXED (single-build refactor, resolve_proposer_on_kernel at 27 sites) — replay_transition executes in-process for the first time and advances the lifecycle record to KERNEL_REGISTERED; all slice-62 measurements reproduce exactly; the full lifecycle chain (evaluate through settle to an outcome with a reputation tail) is the next slice's work",
         "measured": measured,
         "refusals": refusals,
-        "blocked": [
-            {
-                "instruction": "replay_transition",
-                "result": "Blocked",
-                "error": "SBF program panicked: program log 'Error: memory allocation failed, out of memory' (mollusk UnknownError(ProgramFailedToComplete), ~36,717 CU at default heap)",
-                "note": "F4 (roadmap Part B4): replay_transition cannot execute in-process — reproduced in a minimal probe (initialize -> seal -> register -> ingest -> replay) at the default 32 KiB heap AND at mollusk's maximum configurable 256 KiB heap (512 KiB rejected by the VM as 'invalid heap size'). This is a panic, not a gate refusal. The lifecycle chain stops here until the F4 fix lands; no stage instruction has executed in-process before.",
-            },
-        ],
+        "blocked": [],
         "design_finding_resolved": "Slice-49/50 findings CLOSED by the account-carried action (program slices 51-53, Carlos's 2026-10-29 ruling): approve/revise no longer carry the 1524-byte StoredGovAction by value (the 1564-byte instruction-data / tx-size finding is gone — the largest new instruction is a 512-byte chunk), and the rewired wrappers frame-measure fitting 2048 bytes (slice 53). This run proves both instructions execute in-process against the real .so: approve stores the finalized action hash and increments the approval count to 1; revise re-binds the same finalized action with count and hash unchanged.",
     });
     std::fs::write(&out_path, serde_json::to_string_pretty(&out).unwrap())

@@ -5874,6 +5874,36 @@ pub fn resolve_proposer(
     }
 }
 
+/// Resolve a transition proposer against an already-built kernel
+/// (F4 single-build fix, 2026-10-30): the same gate as
+/// `resolve_proposer` — the signer's agent id must be a registered,
+/// active agent — but judged on the caller's rebuilt kernel instead of
+/// building a second sealed kernel. Every `*_from_records` stage helper
+/// and every chain helper already builds exactly one kernel via
+/// `kernel_at_head_from_entries` (or receives one as `k`); resolving
+/// on that kernel is what keeps a stage instruction to a single
+/// kernel build, because the SBF heap does not reclaim a dropped
+/// kernel's memory within an instruction (F4 root cause: two builds
+/// plus ingest plus the register insert exceed the effective 32 KiB heap).
+/// Semantic note, stated plainly: this judges the rebuilt
+/// head/running roster, not the sealed genesis roster. The only
+/// roster-changing governance action is `RegisterAgent`, so a
+/// proposer registered by a prior governance commit now resolves
+/// where sealed-genesis resolution refused it; the kernel's own
+/// registration gate, which judges the same rebuilt kernel at
+/// replay time, remains the backstop. `resolve_proposer` itself is
+/// kept for callers that build no other kernel (host probe tests).
+pub fn resolve_proposer_on_kernel(
+    k: &LaunchKernelProgramEnv,
+    payer: Pubkey,
+) -> Result<[u8; 32]> {
+    let agent_id = resolve_agent_id(payer);
+    match k.agent(&agent_id) {
+        Some(profile) if profile.active => Ok(agent_id),
+        _ => Err(error!(ProgramV04Error::UnknownProposer)),
+    }
+}
+
 /// Build an `ObservationRecord` against a `KernelState`, enforcing the
 /// sealed-state gate, the Observer-role gate (via the sealed launch
 /// profile, as in `resolve_proposer`), and the kernel's ingest window
@@ -5940,9 +5970,9 @@ pub fn replay_transition_from_records(
     if transition_record.observation_id != observation_record.observation_id {
         return Err(error!(ProgramV04Error::RecordMismatch));
     }
-    let proposer = resolve_proposer(kernel_state, transition_record.proposer)?;
     let observer_id = resolve_agent_id(observation_record.observer);
     let mut k = kernel_at_head_from_entries(kernel_state, prior_entries)?;
+    let proposer = resolve_proposer_on_kernel(&k, transition_record.proposer)?;
     if !k.has_role(&observer_id, Role::Observer) {
         return Err(error!(ProgramV04Error::NotObserver));
     }
@@ -6022,9 +6052,9 @@ pub fn evaluate_transition_from_records(
     if transition_record.observation_id != observation_record.observation_id {
         return Err(error!(ProgramV04Error::RecordMismatch));
     }
-    let proposer = resolve_proposer(kernel_state, transition_record.proposer)?;
     let observer_id = resolve_agent_id(observation_record.observer);
     let mut k = kernel_at_head_from_entries(kernel_state, prior_entries)?;
+    let proposer = resolve_proposer_on_kernel(&k, transition_record.proposer)?;
     if !k.has_role(&observer_id, Role::Observer) {
         return Err(error!(ProgramV04Error::NotObserver));
     }
@@ -6111,9 +6141,9 @@ pub fn mark_eligible_from_records(
     if transition_record.observation_id != observation_record.observation_id {
         return Err(error!(ProgramV04Error::RecordMismatch));
     }
-    let proposer = resolve_proposer(kernel_state, transition_record.proposer)?;
     let observer_id = resolve_agent_id(observation_record.observer);
     let mut k = kernel_at_head_from_entries(kernel_state, prior_entries)?;
+    let proposer = resolve_proposer_on_kernel(&k, transition_record.proposer)?;
     if !k.has_role(&observer_id, Role::Observer) {
         return Err(error!(ProgramV04Error::NotObserver));
     }
@@ -6344,9 +6374,9 @@ pub fn submit_signal_from_records(
             return Err(error!(ProgramV04Error::RecordMismatch));
         }
     }
-    let proposer = resolve_proposer(kernel_state, transition_record.proposer)?;
     let observer_id = resolve_agent_id(observation_record.observer);
     let mut k = kernel_at_head_from_entries(kernel_state, prior_entries)?;
+    let proposer = resolve_proposer_on_kernel(&k, transition_record.proposer)?;
     if !k.has_role(&observer_id, Role::Observer) {
         return Err(error!(ProgramV04Error::NotObserver));
     }
@@ -6541,9 +6571,9 @@ pub fn select_candidate_from_records(
     {
         return Err(error!(ProgramV04Error::SelectFailed));
     }
-    let proposer = resolve_proposer(kernel_state, transition_record.proposer)?;
     let observer_id = resolve_agent_id(observation_record.observer);
     let mut k = kernel_at_head_from_entries(kernel_state, prior_entries)?;
+    let proposer = resolve_proposer_on_kernel(&k, transition_record.proposer)?;
     if !k.has_role(&observer_id, Role::Observer) {
         return Err(error!(ProgramV04Error::NotObserver));
     }
@@ -6724,10 +6754,10 @@ pub fn open_planning_from_records(
             }
         }
     }
-    let proposer = resolve_proposer(kernel_state, transition_record.proposer)
-        .map_err(|_| error!(ProgramV04Error::PlanningFailed))?;
     let observer_id = resolve_agent_id(observation_record.observer);
     let mut k = kernel_at_head_from_entries(kernel_state, prior_entries)?;
+    let proposer = resolve_proposer_on_kernel(&k, transition_record.proposer)
+        .map_err(|_| error!(ProgramV04Error::PlanningFailed))?;
     if !k.has_role(&observer_id, Role::Observer) {
         return Err(error!(ProgramV04Error::NotObserver));
     }
@@ -7308,10 +7338,10 @@ pub fn submit_plan_from_records(
             return Err(error!(ProgramV04Error::PlanFailed));
         }
     }
-    let proposer = resolve_proposer(kernel_state, transition_record.proposer)
-        .map_err(|_| error!(ProgramV04Error::PlanFailed))?;
     let observer_id = resolve_agent_id(observation_record.observer);
     let mut k = kernel_at_head_from_entries(kernel_state, prior_entries)?;
+    let proposer = resolve_proposer_on_kernel(&k, transition_record.proposer)
+        .map_err(|_| error!(ProgramV04Error::PlanFailed))?;
     if !k.has_role(&observer_id, Role::Observer) {
         return Err(error!(ProgramV04Error::NotObserver));
     }
@@ -7564,10 +7594,10 @@ pub fn reconcile_plans_governance_from_records(
     }
     let seats =
         gov_action_and_seats(action, approval_records, transition_record.transition_id)?;
-    let proposer = resolve_proposer(kernel_state, transition_record.proposer)
-        .map_err(|_| error!(ProgramV04Error::ReconcileFailed))?;
     let observer_id = resolve_agent_id(observation_record.observer);
     let mut k = kernel_at_head_from_entries(kernel_state, prior_entries)?;
+    let proposer = resolve_proposer_on_kernel(&k, transition_record.proposer)
+        .map_err(|_| error!(ProgramV04Error::ReconcileFailed))?;
     if !k.has_role(&observer_id, Role::Observer) {
         return Err(error!(ProgramV04Error::NotObserver));
     }
@@ -7838,10 +7868,10 @@ pub fn declare_transition_governance_from_records(
     }
     let seats =
         gov_action_and_seats(action, approval_records, transition_record.transition_id)?;
-    let proposer = resolve_proposer(kernel_state, transition_record.proposer)
-        .map_err(|_| error!(ProgramV04Error::DeclareFailed))?;
     let observer_id = resolve_agent_id(observation_record.observer);
     let mut k = kernel_at_head_from_entries(kernel_state, prior_entries)?;
+    let proposer = resolve_proposer_on_kernel(&k, transition_record.proposer)
+        .map_err(|_| error!(ProgramV04Error::DeclareFailed))?;
     if !k.has_role(&observer_id, Role::Observer) {
         return Err(error!(ProgramV04Error::NotObserver));
     }
@@ -8125,10 +8155,10 @@ pub fn validate_transition_governance_from_records(
     }
     let seats =
         gov_action_and_seats(action, approval_records, transition_record.transition_id)?;
-    let proposer = resolve_proposer(kernel_state, transition_record.proposer)
-        .map_err(|_| error!(ProgramV04Error::ValidateFailed))?;
     let observer_id = resolve_agent_id(observation_record.observer);
     let mut k = kernel_at_head_from_entries(kernel_state, prior_entries)?;
+    let proposer = resolve_proposer_on_kernel(&k, transition_record.proposer)
+        .map_err(|_| error!(ProgramV04Error::ValidateFailed))?;
     if !k.has_role(&observer_id, Role::Observer) {
         return Err(error!(ProgramV04Error::NotObserver));
     }
@@ -8435,10 +8465,10 @@ pub fn submit_plan_governance_from_records(
     }
     let seats =
         gov_action_and_seats(action, approval_records, transition_record.transition_id)?;
-    let proposer = resolve_proposer(kernel_state, transition_record.proposer)
-        .map_err(|_| error!(ProgramV04Error::PlanFailed))?;
     let observer_id = resolve_agent_id(observation_record.observer);
     let mut k = kernel_at_head_from_entries(kernel_state, prior_entries)?;
+    let proposer = resolve_proposer_on_kernel(&k, transition_record.proposer)
+        .map_err(|_| error!(ProgramV04Error::PlanFailed))?;
     if !k.has_role(&observer_id, Role::Observer) {
         return Err(error!(ProgramV04Error::NotObserver));
     }
@@ -8690,10 +8720,10 @@ pub fn reconcile_plans_from_records(
             }
         }
     }
-    let proposer = resolve_proposer(kernel_state, transition_record.proposer)
-        .map_err(|_| error!(ProgramV04Error::ReconcileFailed))?;
     let observer_id = resolve_agent_id(observation_record.observer);
     let mut k = kernel_at_head_from_entries(kernel_state, prior_entries)?;
+    let proposer = resolve_proposer_on_kernel(&k, transition_record.proposer)
+        .map_err(|_| error!(ProgramV04Error::ReconcileFailed))?;
     if !k.has_role(&observer_id, Role::Observer) {
         return Err(error!(ProgramV04Error::NotObserver));
     }
@@ -8953,10 +8983,10 @@ pub fn validate_transition_from_records(
             }
         }
     }
-    let proposer = resolve_proposer(kernel_state, transition_record.proposer)
-        .map_err(|_| error!(ProgramV04Error::ValidateFailed))?;
     let observer_id = resolve_agent_id(observation_record.observer);
     let mut k = kernel_at_head_from_entries(kernel_state, prior_entries)?;
+    let proposer = resolve_proposer_on_kernel(&k, transition_record.proposer)
+        .map_err(|_| error!(ProgramV04Error::ValidateFailed))?;
     if !k.has_role(&observer_id, Role::Observer) {
         return Err(error!(ProgramV04Error::NotObserver));
     }
@@ -9220,10 +9250,10 @@ pub fn declare_transition_from_records(
             }
         }
     }
-    let proposer = resolve_proposer(kernel_state, transition_record.proposer)
-        .map_err(|_| error!(ProgramV04Error::DeclareFailed))?;
     let observer_id = resolve_agent_id(observation_record.observer);
     let mut k = kernel_at_head_from_entries(kernel_state, prior_entries)?;
+    let proposer = resolve_proposer_on_kernel(&k, transition_record.proposer)
+        .map_err(|_| error!(ProgramV04Error::DeclareFailed))?;
     if !k.has_role(&observer_id, Role::Observer) {
         return Err(error!(ProgramV04Error::NotObserver));
     }
@@ -9495,10 +9525,10 @@ pub fn commit_transition_from_records(
             }
         }
     }
-    let proposer = resolve_proposer(kernel_state, transition_record.proposer)
-        .map_err(|_| error!(ProgramV04Error::CommitFailed))?;
     let observer_id = resolve_agent_id(observation_record.observer);
     let mut k = kernel_at_head_from_entries(kernel_state, prior_entries)?;
+    let proposer = resolve_proposer_on_kernel(&k, transition_record.proposer)
+        .map_err(|_| error!(ProgramV04Error::CommitFailed))?;
     if !k.has_role(&observer_id, Role::Observer) {
         return Err(error!(ProgramV04Error::NotObserver));
     }
@@ -9833,8 +9863,6 @@ pub fn settle_transition_from_records(
             }
         }
     }
-    let proposer = resolve_proposer(kernel_state, transition_record.proposer)
-        .map_err(|_| error!(ProgramV04Error::SettleFailed))?;
     let observer_id = resolve_agent_id(observation_record.observer);
     // The parent state: the program state as it stood before
     // this commit, head-wise. The earlier chain must land at
@@ -9852,6 +9880,8 @@ pub fn settle_transition_from_records(
         committed_claims: kernel_state.committed_claims,
     };
     let mut k = kernel_at_head_from_entries(&parent_state, prior_entries)?;
+    let proposer = resolve_proposer_on_kernel(&k, transition_record.proposer)
+        .map_err(|_| error!(ProgramV04Error::SettleFailed))?;
     if !k.has_role(&observer_id, Role::Observer) {
         return Err(error!(ProgramV04Error::NotObserver));
     }
@@ -10173,8 +10203,6 @@ pub fn settle_governance_transition_from_records(
             }
         }
     }
-    let proposer = resolve_proposer(kernel_state, transition_record.proposer)
-        .map_err(|_| error!(ProgramV04Error::GovernanceSettleFailed))?;
     let observer_id = resolve_agent_id(observation_record.observer);
     // The parent state: the program state as it stood before
     // this commit, head-wise — slice 54's build, unchanged.
@@ -10190,6 +10218,8 @@ pub fn settle_governance_transition_from_records(
         committed_claims: kernel_state.committed_claims,
     };
     let mut k = kernel_at_head_from_entries(&parent_state, prior_entries)?;
+    let proposer = resolve_proposer_on_kernel(&k, transition_record.proposer)
+        .map_err(|_| error!(ProgramV04Error::GovernanceSettleFailed))?;
     if !k.has_role(&observer_id, Role::Observer) {
         return Err(error!(ProgramV04Error::NotObserver));
     }
@@ -10499,10 +10529,10 @@ pub fn commit_governance_from_records(
             }
         }
     }
-    let proposer = resolve_proposer(kernel_state, transition_record.proposer)
-        .map_err(|_| error!(ProgramV04Error::GovernanceCommitFailed))?;
     let observer_id = resolve_agent_id(observation_record.observer);
     let mut k = kernel_at_head_from_entries(kernel_state, prior_entries)?;
+    let proposer = resolve_proposer_on_kernel(&k, transition_record.proposer)
+        .map_err(|_| error!(ProgramV04Error::GovernanceCommitFailed))?;
     if !k.has_role(&observer_id, Role::Observer) {
         return Err(error!(ProgramV04Error::NotObserver));
     }
@@ -11485,9 +11515,9 @@ pub fn replay_governance_from_records(
     }
     let seats =
         gov_action_and_seats(action, approval_records, transition_record.transition_id)?;
-    let proposer = resolve_proposer(kernel_state, transition_record.proposer)?;
     let observer_id = resolve_agent_id(observation_record.observer);
     let mut k = kernel_at_head_from_entries(kernel_state, prior_entries)?;
+    let proposer = resolve_proposer_on_kernel(&k, transition_record.proposer)?;
     if !k.has_role(&observer_id, Role::Observer) {
         return Err(error!(ProgramV04Error::NotObserver));
     }
@@ -11586,9 +11616,9 @@ pub fn evaluate_governance_from_records(
     }
     let seats =
         gov_action_and_seats(action, approval_records, transition_record.transition_id)?;
-    let proposer = resolve_proposer(kernel_state, transition_record.proposer)?;
     let observer_id = resolve_agent_id(observation_record.observer);
     let mut k = kernel_at_head_from_entries(kernel_state, prior_entries)?;
+    let proposer = resolve_proposer_on_kernel(&k, transition_record.proposer)?;
     if !k.has_role(&observer_id, Role::Observer) {
         return Err(error!(ProgramV04Error::NotObserver));
     }
@@ -11686,9 +11716,9 @@ pub fn mark_eligible_governance_from_records(
     }
     let seats =
         gov_action_and_seats(action, approval_records, transition_record.transition_id)?;
-    let proposer = resolve_proposer(kernel_state, transition_record.proposer)?;
     let observer_id = resolve_agent_id(observation_record.observer);
     let mut k = kernel_at_head_from_entries(kernel_state, prior_entries)?;
+    let proposer = resolve_proposer_on_kernel(&k, transition_record.proposer)?;
     if !k.has_role(&observer_id, Role::Observer) {
         return Err(error!(ProgramV04Error::NotObserver));
     }
@@ -11861,9 +11891,9 @@ pub fn submit_signal_governance_from_records(
     }
     let seats =
         gov_action_and_seats(action, approval_records, transition_record.transition_id)?;
-    let proposer = resolve_proposer(kernel_state, transition_record.proposer)?;
     let observer_id = resolve_agent_id(observation_record.observer);
     let mut k = kernel_at_head_from_entries(kernel_state, prior_entries)?;
+    let proposer = resolve_proposer_on_kernel(&k, transition_record.proposer)?;
     if !k.has_role(&observer_id, Role::Observer) {
         return Err(error!(ProgramV04Error::NotObserver));
     }
@@ -12076,9 +12106,9 @@ pub fn select_candidate_governance_from_records(
     }
     let seats =
         gov_action_and_seats(action, approval_records, transition_record.transition_id)?;
-    let proposer = resolve_proposer(kernel_state, transition_record.proposer)?;
     let observer_id = resolve_agent_id(observation_record.observer);
     let mut k = kernel_at_head_from_entries(kernel_state, prior_entries)?;
+    let proposer = resolve_proposer_on_kernel(&k, transition_record.proposer)?;
     if !k.has_role(&observer_id, Role::Observer) {
         return Err(error!(ProgramV04Error::NotObserver));
     }
@@ -12919,10 +12949,10 @@ pub fn open_planning_governance_from_records(
     }
     let seats =
         gov_action_and_seats(action, approval_records, transition_record.transition_id)?;
-    let proposer = resolve_proposer(kernel_state, transition_record.proposer)
-        .map_err(|_| error!(ProgramV04Error::PlanningFailed))?;
     let observer_id = resolve_agent_id(observation_record.observer);
     let mut k = kernel_at_head_from_entries(kernel_state, prior_entries)?;
+    let proposer = resolve_proposer_on_kernel(&k, transition_record.proposer)
+        .map_err(|_| error!(ProgramV04Error::PlanningFailed))?;
     if !k.has_role(&observer_id, Role::Observer) {
         return Err(error!(ProgramV04Error::NotObserver));
     }
@@ -13406,7 +13436,7 @@ fn drive_prior_commit_to_commit(
             }
         }
     }
-    let proposer = resolve_proposer(kernel_state, transition_record.proposer)
+    let proposer = resolve_proposer_on_kernel(k, transition_record.proposer)
         .map_err(|_| error!(ProgramV04Error::CommitFailed))?;
     let observer_id = resolve_agent_id(observation_record.observer);
     if !k.has_role(&observer_id, Role::Observer) {
@@ -14069,7 +14099,7 @@ pub struct MixedSiblingReplay<'a> {
 /// transition's gates, so the pre-replay gates of the calling
 /// helper carry the distinct errors.
 fn replay_governance_transition_chain(
-    kernel_state: &KernelState,
+    _kernel_state: &KernelState,
     k: &mut LaunchKernelProgramEnv,
     transition_record: &TransitionRecord,
     observation_record: &ObservationRecord,
@@ -14078,7 +14108,7 @@ fn replay_governance_transition_chain(
 ) -> Result<()> {
     let seats =
         gov_action_and_seats(action, approval_records, transition_record.transition_id)?;
-    let proposer = resolve_proposer(kernel_state, transition_record.proposer)
+    let proposer = resolve_proposer_on_kernel(k, transition_record.proposer)
         .map_err(|_| error!(ProgramV04Error::SelectFailed))?;
     let observer_id = resolve_agent_id(observation_record.observer);
     if !k.has_role(&observer_id, Role::Observer) {
@@ -14137,12 +14167,12 @@ fn replay_governance_transition_chain(
 /// single transition's gates, so the pre-replay gates of the calling
 /// helper carry the distinct errors.
 fn replay_transition_chain(
-    kernel_state: &KernelState,
+    _kernel_state: &KernelState,
     k: &mut LaunchKernelProgramEnv,
     transition_record: &TransitionRecord,
     observation_record: &ObservationRecord,
 ) -> Result<()> {
-    let proposer = resolve_proposer(kernel_state, transition_record.proposer)
+    let proposer = resolve_proposer_on_kernel(k, transition_record.proposer)
         .map_err(|_| error!(ProgramV04Error::SelectFailed))?;
     let observer_id = resolve_agent_id(observation_record.observer);
     if !k.has_role(&observer_id, Role::Observer) {
@@ -16150,6 +16180,26 @@ mod tests {
         let unsealed_err = resolve_proposer(&unsealed, Pubkey::new_from_array(ag(1)))
             .expect_err("unsealed proposer must refuse");
         assert!(format!("{:?}", unsealed_err).contains("NotSealed"));
+    }
+
+    #[test]
+    fn resolve_proposer_on_kernel_matches_sealed_gate() {
+        // F4 fix guard: the on-kernel form must judge exactly as the
+        // sealed-genesis form on a genesis kernel — seeded agents pass,
+        // the Observer role holder and unknown pubkeys refuse.
+        let k = sealed_launch_kernel_env().expect("a genesis kernel must build");
+        for n in [1u8, 6u8] {
+            let resolved = resolve_proposer_on_kernel(&k, Pubkey::new_from_array(ag(n)))
+                .expect("seeded agent must resolve on the kernel");
+            assert_eq!(resolved, ag(n));
+        }
+        let observer_err = resolve_proposer_on_kernel(&k, observer_pubkey())
+            .expect_err("role holder without agent registration must refuse");
+        assert!(format!("{:?}", observer_err).contains("UnknownProposer"));
+        let unknown_err =
+            resolve_proposer_on_kernel(&k, Pubkey::new_from_array([0x77; 32]))
+                .expect_err("unknown pubkey must refuse");
+        assert!(format!("{:?}", unknown_err).contains("UnknownProposer"));
     }
 
     #[test]

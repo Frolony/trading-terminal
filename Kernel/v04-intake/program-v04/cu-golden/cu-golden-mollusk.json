@@ -1,12 +1,5 @@
 {
-  "blocked": [
-    {
-      "error": "SBF program panicked: program log 'Error: memory allocation failed, out of memory' (mollusk UnknownError(ProgramFailedToComplete), ~36,717 CU at default heap)",
-      "instruction": "replay_transition",
-      "note": "F4 (roadmap Part B4): replay_transition cannot execute in-process — reproduced in a minimal probe (initialize -> seal -> register -> ingest -> replay) at the default 32 KiB heap AND at mollusk's maximum configurable 256 KiB heap (512 KiB rejected by the VM as 'invalid heap size'). This is a panic, not a gate refusal. The lifecycle chain stops here until the F4 fix lands; no stage instruction has executed in-process before.",
-      "result": "Blocked"
-    }
-  ],
+  "blocked": [],
   "design_finding_resolved": "Slice-49/50 findings CLOSED by the account-carried action (program slices 51-53, Carlos's 2026-10-29 ruling): approve/revise no longer carry the 1524-byte StoredGovAction by value (the 1564-byte instruction-data / tx-size finding is gone — the largest new instruction is a 512-byte chunk), and the rewired wrappers frame-measure fitting 2048 bytes (slice 53). This run proves both instructions execute in-process against the real .so: approve stores the finalized action hash and increments the approval count to 1; revise re-binds the same finalized action with count and hash unchanged.",
   "measured": [
     {
@@ -120,13 +113,19 @@
     {
       "cu": 9915,
       "instruction": "register_transition_life",
-      "note": "slice-63 partial lifecycle chain (register + ingest; replay blocked by F4)",
+      "note": "slice-63/64 lifecycle chain (register + ingest; replay unblocked by the slice-64 F4 fix)",
       "result": "Success"
     },
     {
       "cu": 22903,
       "instruction": "ingest_observation_life",
-      "note": "slice-63 partial lifecycle chain (register + ingest; replay blocked by F4)",
+      "note": "slice-63/64 lifecycle chain (register + ingest; replay unblocked by the slice-64 F4 fix)",
+      "result": "Success"
+    },
+    {
+      "cu": 25435,
+      "instruction": "replay_transition_life",
+      "note": "slice-64 F4 fix: first stage instruction to execute in-process; single-build refactor (resolve_proposer_on_kernel, 27 sites)",
       "result": "Success"
     }
   ],
@@ -149,7 +148,7 @@
       "result": "Refused"
     }
   ],
-  "slice": "slice 63 (PARTIAL): slice-62 golden freeze chain + lifecycle register/ingest only; replay_transition is BLOCKED by F4 (out-of-memory panic in-process, see blocked) — the full lifecycle chain (replay through settle to an outcome with a reputation tail) rides the F4 fix slice; .so unchanged from the slice-61 build, all slice-62 measurements reproduce exactly",
-  "so_sha256": "1518d41e154ac52d3b919901112c55812d800276b6d710b5f857f0661b5a802d",
+  "slice": "slice 64: slice-62 golden freeze chain + lifecycle register/ingest/replay; F4 FIXED (single-build refactor, resolve_proposer_on_kernel at 27 sites) — replay_transition executes in-process for the first time and advances the lifecycle record to KERNEL_REGISTERED; all slice-62 measurements reproduce exactly; the full lifecycle chain (evaluate through settle to an outcome with a reputation tail) is the next slice's work",
+  "so_sha256": "97190530dca4a1885cc8a3ca80d686285f1962ac3b312df8aa5aa88d0bcbc76e",
   "toolchain": "Anchor 1.2.2 / Solana 4.3.2 / platform-tools v1.57"
 }

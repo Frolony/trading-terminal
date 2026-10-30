@@ -430,6 +430,45 @@ values: all seventeen measured CU values reproduce
 exactly, blocked `[]` still. This `.so` is NOT the golden
 freeze.
 
+## Slice-64 F4 fix + first in-process replay (2026-10-30, same pins)
+
+Slice 64 is the F4 fix slice (roadmap Part B4): the stage
+helpers no longer build two kernels per instruction. The new
+`resolve_proposer_on_kernel` helper judges the proposer on
+the single rebuilt head kernel every `*_from_records` helper
+and chain helper already builds — 27 sites rewired
+(24 stage helpers + `drive_prior_commit_to_commit` +
+both `replay_*_transition_chain` helpers) — instead of
+`resolve_proposer` building a second sealed kernel whose
+memory SBF heap accounting never reclaims within the
+instruction. The old sealed-genesis helper is kept for
+callers that build no other kernel (host probe tests), and
+a new host test guards that the on-kernel form judges
+exactly as the sealed form on a genesis kernel. Host tests
+457/457 (456 prior + the new guard), `anchor build` exit 0,
+`.so` sha
+`97190530dca4a1885cc8a3ca80d686285f1962ac3b312df8aa5aa88d0bcbc76e`.
+The slice-63 chain now continues past ingest:
+`replay_transition` for the lifecycle pair — **25,435 CU**,
+Success, record advanced to KERNEL_REGISTERED — the first
+stage instruction ever to execute in-process. All prior
+measured CU reproduce EXACTLY, both refusals unchanged,
+`blocked` is `[]` again. Semantic note, stated plainly:
+proposer resolution now judges the rebuilt head roster, not
+sealed genesis — a governance-registered proposer resolves
+where sealed-genesis resolution refused it, with the kernel's
+own registration gate, judging the same rebuilt kernel, as
+the backstop. (The `open_planning` replan path still builds
+a second kernel for its `is_seated` check — a residual
+double-build in that path only, named here, not fixed in
+this slice.) The full lifecycle chain (evaluate through
+settle to an outcome with a reputation tail) is the next
+slice's work. Clippy note: program `--all-targets` clippy
+under host clippy 1.99 fails on pre-existing lints
+(Anchor-derive `anchor-debug` cfg values, arity/complex-type
+at untouched fns) — none introduced by this slice; the
+slice's own doc-list lints were fixed in-slice.
+
 ## Slice-63 partial lifecycle chain + F4 block (2026-10-29, same pins)
 
 Slice 63 adds a NEW ordinary transition's register + ingest
