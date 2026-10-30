@@ -964,6 +964,293 @@ async fn evm_keyed_handler(req: &Request) -> Result<Value, Error> {
     Ok(out)
 }
 
+// N3.39 (2026-10-30, A135, data-source roadmap D2 remainder): Etherscan
+// supply figures via a payload-verified decimals source, merged here,
+// not a new api/*.rs file, for the same Hobby 12-function reason as
+// N3.35. GET /api/balances?mode=evm-etherscan&chain=<disc id>&address=0x...
+// reads Etherscan V2 tokensupply (raw base units) with the
+// ETHERSCAN_API_KEY environment variable, read at request time, never
+// logged, never echoed in any error string, and never placed in a
+// cache key. The divisor is NEVER guessed: it comes from the D1 keyless
+// Blockscout instance's token payload for the same chain+address (its
+// `decimals` field, parsed by parse_bs_decimals, range 0..=18).
+// Investigation outcome 2026-10-30: the D1 instance map serves
+// ethereum/base/zksync, and the Etherscan chain map below intersects
+// it at ethereum only — so today only ethereum tokens can render an
+// Etherscan figure. Every other mapped chain (arbitrum/polygon/mantle/
+// unichain) answers DECIMALS_UNVERIFIED and the client renders no
+// Etherscan line, never a guessed divisor. Other decimals candidates
+// were probed and NOT adopted: polygon's Blockscout instance answered
+// 403 from server egress (same class as Base's standing 403,
+// inconclusive, not a verified source); Mantle's explorer answered
+// 502; public RPC decimals() calls timed out from this sandbox
+// (inconclusive, and a new RPC dependency is out of this item's
+// scope); the Pro API gates polygon (402 without a key) — a different
+// key's territory, not Etherscan's. tokeninfo is Pro-gated on a free
+// Etherscan key (N3.37 probe), so it cannot serve decimals either.
+// A missing/empty key answers KEY_NOT_CONFIGURED, an unmapped chain
+// KEYED_UNSUPPORTED, a rejected or Pro-gated key answer KEYED_GATED —
+// all client fallback triggers, never user error states. The client
+// prints the Etherscan line only when its supply differs from the
+// primary (Pro/instance) figure — the N3.37 disagreement rule — so
+// agreement never duplicates a line and an unavailable Etherscan
+// source never degrades the Pro/instance figures.
+fn query_evm_etherscan(req: &Request) -> bool {
+    query_param(req, "mode").as_deref() == Some("evm-etherscan")
+}
+
+/// Disc chain id -> Etherscan V2 numeric chain id. Exactly the measured
+/// D2 map (1/42161/137/5000/130); optimism is NOT mapped here — the
+/// filed map does not list it, and a guessed chain id is never added.
+fn es_chain_id(chain: &str) -> Option<u64> {
+    match chain {
+        "ethereum" => Some(1),
+        "arbitrum" => Some(42161),
+        "polygon" => Some(137),
+        "mantle" => Some(5000),
+        "unichain" => Some(130),
+        _ => None,
+    }
+}
+
+/// Blockscout token payload -> decimals only. String or numeric forms
+/// both parse; anything outside 0..=18, missing, or malformed is None.
+fn parse_bs_decimals(j: &Value) -> Option<i64> {
+    let d: i64 = match j.get("decimals") {
+        Some(v) if v.is_string() => v.as_str().and_then(|x| x.parse().ok())?,
+        Some(v) => v.as_i64()?,
+        None => return None,
+    };
+    if (0..=18).contains(&d) {
+        Some(d)
+    } else {
+        None
+    }
+}
+
+/// Etherscan V2 envelope -> raw base-unit supply. status "1" with a
+/// parseable result string is the only success shape; anything else
+/// is an Err carrying the raw result text for the caller's gating
+/// classification (key/Pro problems are detected from that text).
+fn parse_es_supply(j: &Value) -> Result<f64, String> {
+    let status = j.get("status").and_then(|v| v.as_str()).unwrap_or("");
+    if status != "1" {
+        return Err(j
+            .get("result")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string());
+    }
+    let raw: f64 = match j
+        .get("result")
+        .and_then(|v| v.as_str())
+        .and_then(|s| s.parse().ok())
+    {
+        Some(r) => r,
+        None => {
+            return Err("malformed Etherscan tokensupply result".to_string());
+        }
+    };
+    if raw.is_finite() && raw >= 0.0 {
+        Ok(raw)
+    } else {
+        Err("non-finite Etherscan tokensupply result".to_string())
+    }
+}
+
+async fn evm_etherscan_handler(req: &Request) -> Result<Value, Error> {
+    let chain = match query_param(req, "chain") {
+        Some(c) => c,
+        None => {
+            return Ok(common::api_error(
+                "INVALID_CHAIN",
+                "Query parameter chain=<disc chain id> is required.",
+            ))
+        }
+    };
+    let address = match query_param(req, "address") {
+        Some(a) => a,
+        None => {
+            return Ok(common::api_error(
+                "INVALID_ADDRESS",
+                "Query parameter address=<0x contract> is required.",
+            ))
+        }
+    };
+    if !valid_evm_address(&address) {
+        return Ok(common::api_error(
+            "INVALID_ADDRESS",
+            "address must be a 0x-prefixed 40-hex-character contract address.",
+        ));
+    }
+    let chain_id = match es_chain_id(&chain) {
+        Some(id) => id,
+        None => {
+            return Ok(common::api_error(
+                "KEYED_UNSUPPORTED",
+                "Etherscan does not serve this chain in the measured map; the client falls back to the Pro/instance figures.",
+            ))
+        }
+    };
+    // Empty counts as absent: a blank env value must never be sent as a key.
+    let api_key = match std::env::var("ETHERSCAN_API_KEY") {
+        Ok(k) if !k.trim().is_empty() => k,
+        _ => {
+            return Ok(common::api_error(
+                "KEY_NOT_CONFIGURED",
+                "No Etherscan key is configured; the client falls back to the Pro/instance figures.",
+            ))
+        }
+    };
+    // Decimals gate BEFORE any Etherscan call: no upstream quota is
+    // spent on a figure that cannot be divided by a verified divisor.
+    let base = match bs_instance(&chain) {
+        Some(b) => b,
+        None => {
+            return Ok(common::api_error(
+                "DECIMALS_UNVERIFIED",
+                "No verified decimals source is mapped for this chain; the Etherscan figure stays unavailable, never a guessed divisor.",
+            ))
+        }
+    };
+    let key = format!("evm-etherscan:{}:{}", chain, address.to_lowercase());
+    if let Ok(guard) = cache().lock() {
+        if let Some((at, val)) = guard.get(&key) {
+            if at.elapsed() < CACHE_TTL {
+                let mut hit = val.clone();
+                if let Some(obj) = hit.as_object_mut() {
+                    obj.insert("cached".to_string(), json!(true));
+                }
+                return Ok(hit);
+            }
+        }
+    }
+    let client = match reqwest::Client::builder()
+        .user_agent(BS_USER_AGENT)
+        .timeout(Duration::from_secs(10))
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => {
+            return Ok(common::api_error(
+                "UPSTREAM_FAILED",
+                "Could not build the upstream Etherscan client.",
+            ))
+        }
+    };
+    // Decimals leg: the D1 instance token payload for the same token.
+    // Any failure here (transport, non-success, non-JSON, missing or
+    // out-of-range decimals, address-echo mismatch) voids the figure:
+    // DECIMALS_UNVERIFIED, not a guessed divisor and not a user error.
+    let decimals: i64 = match client
+        .get(&format!("{}/api/v2/tokens/{}", base, address))
+        .send()
+        .await
+    {
+        Ok(r) if r.status().is_success() => match r.json::<Value>().await {
+            Ok(j) => {
+                if let Some(echo) = j.get("address_hash").and_then(|v| v.as_str()) {
+                    if echo.to_lowercase() != address.to_lowercase() {
+                        return Ok(common::api_error(
+                            "DECIMALS_UNVERIFIED",
+                            "The decimals source answered for a different address.",
+                        ));
+                    }
+                }
+                match parse_bs_decimals(&j) {
+                    Some(d) => d,
+                    None => {
+                        return Ok(common::api_error(
+                            "DECIMALS_UNVERIFIED",
+                            "The decimals source carried no usable decimals for this token.",
+                        ));
+                    }
+                }
+            }
+            Err(_) => {
+                return Ok(common::api_error(
+                    "DECIMALS_UNVERIFIED",
+                    "The decimals source response was not JSON.",
+                ));
+            }
+        },
+        _ => {
+            return Ok(common::api_error(
+                "DECIMALS_UNVERIFIED",
+                "The decimals source did not answer for this token.",
+            ));
+        }
+    };
+    let url = format!(
+        "https://api.etherscan.io/v2/api?chainid={}&module=token&action=tokensupply&contractaddress={}&apikey={}",
+        chain_id, address, api_key
+    );
+    let resp = match client.get(&url).send().await {
+        Ok(r) => r,
+        Err(_) => {
+            return Ok(common::api_error(
+                "UPSTREAM_FAILED",
+                "Etherscan transport error.",
+            ))
+        }
+    };
+    if !resp.status().is_success() {
+        return Ok(common::api_error(
+            "UPSTREAM_FAILED",
+            &format!("Etherscan error (HTTP {})", resp.status().as_u16()),
+        ));
+    }
+    let j: Value = match resp.json().await {
+        Ok(v) => v,
+        Err(_) => {
+            return Ok(common::api_error(
+                "UPSTREAM_FAILED",
+                "Etherscan response was not JSON.",
+            ))
+        }
+    };
+    let raw = match parse_es_supply(&j) {
+        Ok(r) => r,
+        Err(msg) => {
+            // Key problems arrive inside a 200 envelope ("Missing/
+            // Invalid API Key", "trying to access an API Pro
+            // endpoint"): they are fallback triggers, never user
+            // errors, and the key text itself is never echoed.
+            if msg.contains("Invalid API Key") || msg.contains("Pro endpoint") {
+                return Ok(common::api_error(
+                    "KEYED_GATED",
+                    "Etherscan rejected or gated the key; the client falls back to the Pro/instance figures.",
+                ));
+            }
+            return Ok(common::api_error(
+                "UPSTREAM_FAILED",
+                "Etherscan tokensupply carried no usable supply.",
+            ));
+        }
+    };
+    let supply = raw / 10f64.powi(decimals as i32);
+    if !supply.is_finite() {
+        return Ok(common::api_error(
+            "UPSTREAM_FAILED",
+            "Etherscan supply divided by verified decimals was not finite.",
+        ));
+    }
+    let out = json!({
+        "ok": true,
+        "chain": chain,
+        "chainId": chain_id,
+        "address": address,
+        "source": "Etherscan",
+        "totalSupply": supply,
+        "decimals": decimals,
+        "cached": false,
+    });
+    if let Ok(mut guard) = cache().lock() {
+        guard.insert(key, (Instant::now(), out.clone()));
+    }
+    Ok(out)
+}
+
 // N3.38 (2026-10-30, A134, data-source roadmap D3, keyed half): Jupiter
 // keyed Token Info, merged here, not a new api/*.rs file, for the same
 // Hobby 12-function reason as N3.35. GET
@@ -1169,6 +1456,9 @@ async fn handler(req: Request) -> Result<Value, Error> {
     }
     if query_evm_keyed(&req) {
         return evm_keyed_handler(&req).await;
+    }
+    if query_evm_etherscan(&req) {
+        return evm_etherscan_handler(&req).await;
     }
     if query_jup_keyed(&req) {
         return jup_keyed_handler(&req).await;
@@ -1544,6 +1834,50 @@ mod n337_tests {
         let (_, _, supply, holders, _) = parse_bs_token(&json!({"name": "X", "symbol": "X"}));
         assert_eq!(supply, None);
         assert_eq!(holders, None);
+    }
+}
+
+#[cfg(test)]
+mod n339_tests {
+    use super::*;
+
+    #[test]
+    fn es_chain_id_maps_measured_map_only() {
+        assert_eq!(es_chain_id("ethereum"), Some(1));
+        assert_eq!(es_chain_id("arbitrum"), Some(42161));
+        assert_eq!(es_chain_id("polygon"), Some(137));
+        assert_eq!(es_chain_id("mantle"), Some(5000));
+        assert_eq!(es_chain_id("unichain"), Some(130));
+        // Filed map does not list optimism/base/zksync: never mapped,
+        // even though Etherscan's wider coverage may include some.
+        assert_eq!(es_chain_id("optimism"), None);
+        assert_eq!(es_chain_id("base"), None);
+        assert_eq!(es_chain_id("zksync"), None);
+        assert_eq!(es_chain_id("solana"), None);
+        assert_eq!(es_chain_id(""), None);
+    }
+
+    #[test]
+    fn bs_decimals_parses_string_and_numeric_forms_only_in_range() {
+        assert_eq!(parse_bs_decimals(&json!({"decimals": "18"})), Some(18));
+        assert_eq!(parse_bs_decimals(&json!({"decimals": 6})), Some(6));
+        assert_eq!(parse_bs_decimals(&json!({"decimals": "0"})), Some(0));
+        assert_eq!(parse_bs_decimals(&json!({"decimals": "19"})), None);
+        assert_eq!(parse_bs_decimals(&json!({"decimals": -1})), None);
+        assert_eq!(parse_bs_decimals(&json!({"decimals": "eighteen"})), None);
+        assert_eq!(parse_bs_decimals(&json!({})), None);
+    }
+
+    #[test]
+    fn es_supply_envelope_and_verified_division() {
+        // Raw WETH tokensupply probed 2026-10-30 (N3.37 run, chain 1).
+        let j = json!({"status": "1", "message": "OK", "result": "2050898382508523247797550"});
+        let raw = parse_es_supply(&j).unwrap();
+        let supply = raw / 10f64.powi(18);
+        assert!((supply - 2050898.382508523).abs() < 1.0, "supply={}", supply);
+        assert!(parse_es_supply(&json!({"status": "0", "message": "NOTOK", "result": "Missing/Invalid API Key"})).is_err());
+        assert!(parse_es_supply(&json!({"status": "1", "message": "OK", "result": "not-a-number"})).is_err());
+        assert!(parse_es_supply(&json!({"status": "1", "message": "OK"})).is_err());
     }
 }
 
