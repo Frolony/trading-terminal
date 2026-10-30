@@ -781,6 +781,189 @@ async fn coinbase_price_handler(req: &Request) -> Result<Value, Error> {
     Ok(out)
 }
 
+// N3.37 (2026-10-30, A133, data-source roadmap D2, keyed half): Blockscout
+// Pro keyed token facts, merged here, not a new api/*.rs file, for the
+// same Hobby 12-function reason as N3.35. GET
+// /api/balances?mode=evm-keyed&chain=<disc id>&address=0x... reads the
+// Pro API (api.blockscout.com/{chainid}/api/v2/tokens/<address>) with the
+// BLOCKSCOUT_API_KEY environment variable as the apikey query parameter.
+// The key is read at request time, never logged, never echoed in any
+// error string, and never placed in a cache key. The Pro token payload
+// has the same shape as the keyless instance payload, so the D1 parser
+// (parse_bs_token) is reused verbatim: name/symbol, total supply (whole
+// tokens), holder count, reputation — payload-only facts, missing =
+// null, never an estimate.
+// Measured coverage (connector docs, verified 2026-10-29): Pro serves
+// chains 1/10/42161/130 (ethereum/optimism/arbitrum/unichain). Any other
+// chain answers KEYED_UNSUPPORTED and the client falls back to the D1
+// keyless route without an error state — that is how Base and zkSync
+// keep answering via fallback. A missing/empty key answers
+// KEY_NOT_CONFIGURED (also a client fallback trigger, never a user
+// error state): the keyed legs verify only after Carlos sets
+// BLOCKSCOUT_API_KEY and a Git-triggered deployment binds it. A gated
+// (402) or unknown-token (404) answer is likewise a fallback trigger.
+// ETHERSCAN LEG, DEFERRED WITH EVIDENCE (same run): the free Etherscan
+// key's tokeninfo action is Pro-gated ("trying to access an API Pro
+// endpoint", probed 2026-10-30), and tokensupply returns raw base units
+// with no decimals source for polygon/mantle in this app, so no
+// displayable whole-token figure can be built from it without guessing
+// decimals. No Etherscan branch ships in this item; its polygon/mantle
+// decimals source is an open follow-up, not a silent gap.
+fn query_evm_keyed(req: &Request) -> bool {
+    query_param(req, "mode").as_deref() == Some("evm-keyed")
+}
+
+/// Disc chain id -> Blockscout Pro numeric chain id. Only the four
+/// chains measured live on the Pro API are mapped; anything else is a
+/// fallback trigger, never a guessed Pro chain id.
+fn bs_pro_chain(chain: &str) -> Option<u64> {
+    match chain {
+        "ethereum" => Some(1),
+        "optimism" => Some(10),
+        "arbitrum" => Some(42161),
+        "unichain" => Some(130),
+        _ => None,
+    }
+}
+
+async fn evm_keyed_handler(req: &Request) -> Result<Value, Error> {
+    let chain = match query_param(req, "chain") {
+        Some(c) => c,
+        None => {
+            return Ok(common::api_error(
+                "INVALID_CHAIN",
+                "Query parameter chain=<disc chain id> is required.",
+            ))
+        }
+    };
+    let address = match query_param(req, "address") {
+        Some(a) => a,
+        None => {
+            return Ok(common::api_error(
+                "INVALID_ADDRESS",
+                "Query parameter address=<0x contract> is required.",
+            ))
+        }
+    };
+    if !valid_evm_address(&address) {
+        return Ok(common::api_error(
+            "INVALID_ADDRESS",
+            "address must be a 0x-prefixed 40-hex-character contract address.",
+        ));
+    }
+    let chain_id = match bs_pro_chain(&chain) {
+        Some(id) => id,
+        None => {
+            return Ok(common::api_error(
+                "KEYED_UNSUPPORTED",
+                "Blockscout Pro does not serve this chain; the client falls back to the keyless instance route.",
+            ))
+        }
+    };
+    // Empty counts as absent: a blank env value must never be sent as a key.
+    let api_key = match std::env::var("BLOCKSCOUT_API_KEY") {
+        Ok(k) if !k.trim().is_empty() => k,
+        _ => {
+            return Ok(common::api_error(
+                "KEY_NOT_CONFIGURED",
+                "No Blockscout Pro key is configured; the client falls back to the keyless instance route.",
+            ))
+        }
+    };
+    let key = format!("evm-keyed:{}:{}", chain, address.to_lowercase());
+    if let Ok(guard) = cache().lock() {
+        if let Some((at, val)) = guard.get(&key) {
+            if at.elapsed() < CACHE_TTL {
+                let mut hit = val.clone();
+                if let Some(obj) = hit.as_object_mut() {
+                    obj.insert("cached".to_string(), json!(true));
+                }
+                return Ok(hit);
+            }
+        }
+    }
+    let client = match reqwest::Client::builder()
+        .user_agent(BS_USER_AGENT)
+        .timeout(Duration::from_secs(10))
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => {
+            return Ok(common::api_error(
+                "UPSTREAM_FAILED",
+                "Could not build the upstream Blockscout Pro client.",
+            ))
+        }
+    };
+    let url = format!(
+        "https://api.blockscout.com/{}/api/v2/tokens/{}?apikey={}",
+        chain_id, address, api_key
+    );
+    let resp = match client.get(&url).send().await {
+        Ok(r) => r,
+        Err(_) => {
+            return Ok(common::api_error(
+                "UPSTREAM_FAILED",
+                "Blockscout Pro transport error.",
+            ))
+        }
+    };
+    let status = resp.status().as_u16();
+    if status == 404 {
+        return Ok(common::api_error(
+            "TOKEN_NOT_FOUND",
+            "Blockscout Pro does not know this token on this chain.",
+        ));
+    }
+    if status == 402 {
+        return Ok(common::api_error(
+            "KEYED_GATED",
+            "Blockscout Pro gated this chain; the client falls back to the keyless instance route.",
+        ));
+    }
+    if !resp.status().is_success() {
+        return Ok(common::api_error(
+            "UPSTREAM_FAILED",
+            &format!("Blockscout Pro error (HTTP {})", status),
+        ));
+    }
+    let j: Value = match resp.json().await {
+        Ok(v) => v,
+        Err(_) => {
+            return Ok(common::api_error(
+                "UPSTREAM_FAILED",
+                "Blockscout Pro response was not JSON.",
+            ))
+        }
+    };
+    if let Some(echo) = j.get("address_hash").and_then(|v| v.as_str()) {
+        if echo.to_lowercase() != address.to_lowercase() {
+            return Ok(common::api_error(
+                "UPSTREAM_FAILED",
+                "Blockscout Pro answered for a different address.",
+            ));
+        }
+    }
+    let (name, symbol, supply, holders, reputation) = parse_bs_token(&j);
+    let out = json!({
+        "ok": true,
+        "chain": chain,
+        "chainId": chain_id,
+        "address": address,
+        "source": "Blockscout Pro",
+        "name": name,
+        "symbol": symbol,
+        "totalSupply": supply,
+        "holdersCount": holders,
+        "reputation": reputation,
+        "cached": false,
+    });
+    if let Ok(mut guard) = cache().lock() {
+        guard.insert(key, (Instant::now(), out.clone()));
+    }
+    Ok(out)
+}
+
 async fn handler(req: Request) -> Result<Value, Error> {
     if query_supply(&req) {
         return supply_handler(&req).await;
@@ -790,6 +973,9 @@ async fn handler(req: Request) -> Result<Value, Error> {
     }
     if query_evm_token(&req) {
         return evm_token_handler(&req).await;
+    }
+    if query_evm_keyed(&req) {
+        return evm_keyed_handler(&req).await;
     }
     if query_coinbase_price(&req) {
         return coinbase_price_handler(&req).await;
@@ -1121,5 +1307,46 @@ mod n336_tests {
         assert_eq!(parse_cb_ticker(&json!({"price": "-5"})), None);
         assert_eq!(parse_cb_ticker(&json!({})), None);
         assert_eq!(parse_cb_ticker(&json!({"price": 2224.88})), None);
+    }
+}
+
+#[cfg(test)]
+mod n337_tests {
+    use super::*;
+
+    #[test]
+    fn bs_pro_chain_maps_measured_chains_only() {
+        assert_eq!(bs_pro_chain("ethereum"), Some(1));
+        assert_eq!(bs_pro_chain("optimism"), Some(10));
+        assert_eq!(bs_pro_chain("arbitrum"), Some(42161));
+        assert_eq!(bs_pro_chain("unichain"), Some(130));
+        // Gated/unsupported on Pro (or D1-fallback) chains are never mapped.
+        assert_eq!(bs_pro_chain("base"), None);
+        assert_eq!(bs_pro_chain("zksync"), None);
+        assert_eq!(bs_pro_chain("polygon"), None);
+        assert_eq!(bs_pro_chain("mantle"), None);
+        assert_eq!(bs_pro_chain("bsc"), None);
+        assert_eq!(bs_pro_chain("solana"), None);
+        assert_eq!(bs_pro_chain(""), None);
+    }
+
+    #[test]
+    fn pro_token_payload_reuses_d1_parser() {
+        // Shape probed live 2026-10-29 via the Pro token read (Optimism WETH).
+        let j = json!({"address_hash": "0x4200000000000000000000000000000000000006", "name": "L2 Standard Bridged WETH (Optimism)", "symbol": "WETH", "decimals": "18", "total_supply": "19086366826230385105495", "holders_count": "330837", "reputation": "ok"});
+        let (name, symbol, supply, holders, reputation) = parse_bs_token(&j);
+        assert_eq!(name.as_deref(), Some("L2 Standard Bridged WETH (Optimism)"));
+        assert_eq!(symbol.as_deref(), Some("WETH"));
+        assert_eq!(holders, Some(330837));
+        assert_eq!(reputation.as_deref(), Some("ok"));
+        let s = supply.unwrap();
+        assert!((s - 19086.366826230385).abs() < 1e-6, "supply={}", s);
+    }
+
+    #[test]
+    fn pro_parser_missing_fields_are_null_not_guesses() {
+        let (_, _, supply, holders, _) = parse_bs_token(&json!({"name": "X", "symbol": "X"}));
+        assert_eq!(supply, None);
+        assert_eq!(holders, None);
     }
 }
