@@ -964,6 +964,199 @@ async fn evm_keyed_handler(req: &Request) -> Result<Value, Error> {
     Ok(out)
 }
 
+// N3.38 (2026-10-30, A134, data-source roadmap D3, keyed half): Jupiter
+// keyed Token Info, merged here, not a new api/*.rs file, for the same
+// Hobby 12-function reason as N3.35. GET
+// /api/balances?mode=jup-keyed&mint=<base58> reads the keyed Tokens API
+// (api.jup.ag/tokens/v2/search?query=<mint>) with the JUPITER_API_KEY
+// environment variable in the x-api-key header. The key is read at
+// request time, never logged, never echoed in any error string, and
+// never placed in a cache key. The keyed payload has the same shape as
+// the lite payload the page already parses (discJupParse: id/address,
+// holderCount, audit.topHoldersPercentage/devBalancePercentage,
+// organicScore, stats24h.numTraders), PLUS the keyed-only audit block
+// the lite strip cannot show: isVerified, audit.mintAuthorityDisabled,
+// audit.freezeAuthorityDisabled, and the stats24h organic volume split
+// (buyOrganicVolume/sellOrganicVolume) — all probed live 2026-10-30
+// via the registered Jupiter read (Wrapped SOL: verified true, both
+// authorities disabled, organic buy $43.6M / sell $51.7M in 24h; note
+// the keyed SOL payload carries NO devBalancePercentage, so devPct
+// parses to null there, never a guessed figure). A missing/empty key
+// answers KEY_NOT_CONFIGURED, a rejected key (401/403) answers
+// KEYED_GATED, an unknown mint answers TOKEN_NOT_FOUND — all three
+// are client fallback triggers, never a user error state: the strip
+// keeps the lite-fed figures, labeled "(lite)" once the fallback is
+// proven. A missing field is null, never an estimate.
+fn query_jup_keyed(req: &Request) -> bool {
+    query_param(req, "mode").as_deref() == Some("jup-keyed")
+}
+
+fn jup_num(v: Option<&Value>) -> Option<f64> {
+    let n = v.and_then(|x| x.as_f64())?;
+    if n.is_finite() {
+        Some(n)
+    } else {
+        None
+    }
+}
+
+fn jup_bool(v: Option<&Value>) -> Option<bool> {
+    v.and_then(|x| x.as_bool())
+}
+
+/// Keyed Jupiter search payload -> the strip's parsed fields, or None
+/// when no entry matches the mint. Mirrors the page's discJupParse
+/// (id/address/mint match, same lite fields) plus the keyed audit block.
+fn parse_jup_keyed(j: &Value, mint: &str) -> Option<Value> {
+    let list: Vec<&Value> = if let Some(arr) = j.as_array() {
+        arr.iter().collect()
+    } else if let Some(arr) = j.get("tokens").and_then(|t| t.as_array()) {
+        arr.iter().collect()
+    } else if j.is_object() {
+        vec![j]
+    } else {
+        return None;
+    };
+    let e = list.iter().find(|x| {
+        x.get("id").and_then(|v| v.as_str()) == Some(mint)
+            || x.get("address").and_then(|v| v.as_str()) == Some(mint)
+            || x.get("mint").and_then(|v| v.as_str()) == Some(mint)
+    })?;
+    let audit = e.get("audit").cloned().unwrap_or(json!({}));
+    let s24 = e.get("stats24h").cloned().unwrap_or(json!({}));
+    Some(json!({
+        "name": e.get("name").and_then(|v| v.as_str()),
+        "symbol": e.get("symbol").and_then(|v| v.as_str()),
+        "holders": jup_num(e.get("holderCount")),
+        "topPct": jup_num(audit.get("topHoldersPercentage")),
+        "devPct": jup_num(audit.get("devBalancePercentage")),
+        "organic": jup_num(e.get("organicScore")),
+        "traders24": jup_num(s24.get("numTraders")),
+        "verified": jup_bool(e.get("isVerified")),
+        "mintAuthDisabled": jup_bool(audit.get("mintAuthorityDisabled")),
+        "freezeAuthDisabled": jup_bool(audit.get("freezeAuthorityDisabled")),
+        "buyOrganicVolume24": jup_num(s24.get("buyOrganicVolume")),
+        "sellOrganicVolume24": jup_num(s24.get("sellOrganicVolume")),
+    }))
+}
+
+async fn jup_keyed_handler(req: &Request) -> Result<Value, Error> {
+    let mint = match query_param(req, "mint") {
+        Some(m) => m,
+        None => {
+            return Ok(common::api_error(
+                "INVALID_MINT",
+                "Query parameter mint=<base58 token mint> is required.",
+            ))
+        }
+    };
+    if !common::valid_pubkey(&mint) {
+        return Ok(common::api_error(
+            "INVALID_MINT",
+            "mint must be a base58-encoded 32-byte Solana address.",
+        ));
+    }
+    // Empty counts as absent: a blank env value must never be sent as a key.
+    let api_key = match std::env::var("JUPITER_API_KEY") {
+        Ok(k) if !k.trim().is_empty() => k,
+        _ => {
+            return Ok(common::api_error(
+                "KEY_NOT_CONFIGURED",
+                "No Jupiter key is configured; the client falls back to the lite-fed strip.",
+            ))
+        }
+    };
+    let key = format!("jup-keyed:{}", mint);
+    if let Ok(guard) = cache().lock() {
+        if let Some((at, val)) = guard.get(&key) {
+            if at.elapsed() < CACHE_TTL {
+                let mut hit = val.clone();
+                if let Some(obj) = hit.as_object_mut() {
+                    obj.insert("cached".to_string(), json!(true));
+                }
+                return Ok(hit);
+            }
+        }
+    }
+    let client = match reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => {
+            return Ok(common::api_error(
+                "UPSTREAM_FAILED",
+                "Could not build the upstream Jupiter client.",
+            ))
+        }
+    };
+    let url = format!("https://api.jup.ag/tokens/v2/search?query={}", mint);
+    let resp = match client.get(&url).header("x-api-key", api_key).send().await {
+        Ok(r) => r,
+        Err(_) => {
+            return Ok(common::api_error(
+                "UPSTREAM_FAILED",
+                "Jupiter transport error.",
+            ))
+        }
+    };
+    let status = resp.status().as_u16();
+    if status == 401 || status == 403 {
+        return Ok(common::api_error(
+            "KEYED_GATED",
+            "Jupiter rejected the key; the client falls back to the lite-fed strip.",
+        ));
+    }
+    if status == 404 {
+        return Ok(common::api_error(
+            "TOKEN_NOT_FOUND",
+            "Jupiter does not know this token.",
+        ));
+    }
+    if !resp.status().is_success() {
+        return Ok(common::api_error(
+            "UPSTREAM_FAILED",
+            &format!("Jupiter error (HTTP {})", status),
+        ));
+    }
+    let j: Value = match resp.json().await {
+        Ok(v) => v,
+        Err(_) => {
+            return Ok(common::api_error(
+                "UPSTREAM_FAILED",
+                "Jupiter response was not JSON.",
+            ))
+        }
+    };
+    let parsed = match parse_jup_keyed(&j, &mint) {
+        Some(v) => v,
+        None => {
+            return Ok(common::api_error(
+                "TOKEN_NOT_FOUND",
+                "Jupiter returned no entry for this mint.",
+            ))
+        }
+    };
+    let mut obj = match parsed.as_object() {
+        Some(o) => o.clone(),
+        None => {
+            return Ok(common::api_error(
+                "UPSTREAM_FAILED",
+                "Jupiter parse produced no object.",
+            ))
+        }
+    };
+    obj.insert("ok".to_string(), json!(true));
+    obj.insert("mint".to_string(), json!(mint));
+    obj.insert("source".to_string(), json!("Jupiter"));
+    obj.insert("cached".to_string(), json!(false));
+    let out = Value::Object(obj);
+    if let Ok(mut guard) = cache().lock() {
+        guard.insert(key, (Instant::now(), out.clone()));
+    }
+    Ok(out)
+}
+
 async fn handler(req: Request) -> Result<Value, Error> {
     if query_supply(&req) {
         return supply_handler(&req).await;
@@ -976,6 +1169,9 @@ async fn handler(req: Request) -> Result<Value, Error> {
     }
     if query_evm_keyed(&req) {
         return evm_keyed_handler(&req).await;
+    }
+    if query_jup_keyed(&req) {
+        return jup_keyed_handler(&req).await;
     }
     if query_coinbase_price(&req) {
         return coinbase_price_handler(&req).await;
@@ -1348,5 +1544,47 @@ mod n337_tests {
         let (_, _, supply, holders, _) = parse_bs_token(&json!({"name": "X", "symbol": "X"}));
         assert_eq!(supply, None);
         assert_eq!(holders, None);
+    }
+}
+
+#[cfg(test)]
+mod n338_tests {
+    use super::*;
+
+    #[test]
+    fn keyed_sol_payload_parses_lite_fields_plus_audit_block() {
+        // Shape probed live 2026-10-30 via the registered Jupiter read
+        // (Wrapped SOL, api.jup.ag/tokens/v2/search).
+        let j = json!([{"id": "So11111111111111111111111111111111111111112", "name": "Wrapped SOL", "symbol": "SOL", "holderCount": 3820662, "organicScore": 99.0708196662617, "isVerified": true, "audit": {"mintAuthorityDisabled": true, "freezeAuthorityDisabled": true, "topHoldersPercentage": 0.5787244405990802, "devMints": 1}, "stats24h": {"numTraders": 1038615, "buyOrganicVolume": 43611086.27486965, "sellOrganicVolume": 51678383.24069363}}]);
+        let v = parse_jup_keyed(&j, "So11111111111111111111111111111111111111112").unwrap();
+        assert_eq!(v["holders"].as_f64(), Some(3820662.0));
+        assert!((v["topPct"].as_f64().unwrap() - 0.5787244405990802).abs() < 1e-12);
+        // Keyed SOL payload carries no devBalancePercentage: null, never guessed.
+        assert!(v["devPct"].is_null());
+        assert!((v["organic"].as_f64().unwrap() - 99.0708196662617).abs() < 1e-9);
+        assert_eq!(v["traders24"].as_f64(), Some(1038615.0));
+        assert_eq!(v["verified"].as_bool(), Some(true));
+        assert_eq!(v["mintAuthDisabled"].as_bool(), Some(true));
+        assert_eq!(v["freezeAuthDisabled"].as_bool(), Some(true));
+        assert!((v["buyOrganicVolume24"].as_f64().unwrap() - 43611086.27486965).abs() < 1e-6);
+        assert!((v["sellOrganicVolume24"].as_f64().unwrap() - 51678383.24069363).abs() < 1e-6);
+    }
+
+    #[test]
+    fn keyed_parse_matches_address_form_and_rejects_other_mints() {
+        let j = json!({"tokens": [{"address": "So11111111111111111111111111111111111111112", "holderCount": 5}]});
+        assert!(parse_jup_keyed(&j, "So11111111111111111111111111111111111111112").is_some());
+        assert!(parse_jup_keyed(&j, "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v").is_none());
+        assert!(parse_jup_keyed(&json!({"tokens": []}), "So11111111111111111111111111111111111111112").is_none());
+    }
+
+    #[test]
+    fn keyed_parse_missing_fields_are_null_not_guesses() {
+        let j = json!([{"id": "So11111111111111111111111111111111111111112"}]);
+        let v = parse_jup_keyed(&j, "So11111111111111111111111111111111111111112").unwrap();
+        assert!(v["holders"].is_null());
+        assert!(v["verified"].is_null());
+        assert!(v["mintAuthDisabled"].is_null());
+        assert!(v["buyOrganicVolume24"].is_null());
     }
 }
