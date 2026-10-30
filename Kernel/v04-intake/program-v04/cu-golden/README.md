@@ -504,6 +504,69 @@ line numbers, which is why CU — not the hash — is the
 slice-67 invariant. Run evidence:
 `hidden_files/tripwire-golden-2026-10-30-0605.json`.
 
+## Slice-68 — deterministic too-small-frame failure test, F6 condition (3) (2026-10-30, same pins)
+
+Slice 68 closes F6 condition (3) with `run-smallframe.sh`, in two
+complementary modes — a too-small frame must fail DETERMINISTICALLY
+(same instruction, same error, same CU, twice), never silently
+succeed and never corrupt state:
+
+- **Cap mode** (`small-heap` feature, allocator capped at 32,768 bytes
+  — the old default frame size — runtime frame still 256 KiB): the
+  chain runs exactly as on the shipped build through 25 successes
+  and the 2 expected refusals (genesis, governance registration,
+  and the life chain through `submit_signal_life`), then fails at
+  `select_candidate_life` with
+  the program log `Error: memory allocation failed, out of memory`
+  (mollusk `UnknownError(ProgramFailedToComplete)`, CU 28,033).
+  Both runs identical, and every CU value identical to an earlier
+  independent cap build — the failure point is a clean OOM at a
+  known stage, and the harness's per-step account assertions rule
+  out silent corruption behind it.
+- **Frame mode** (shipped binary, `CU_HEAP_SIZE=32768` — the harness
+  override added this slice; no rebuild): the chain fails on the
+  FIRST instruction, `probe_kernel`, with `Access violation writing
+  8 bytes at address 0x30003ffc8 (in unallocated region)` after
+  only 199 CU consumed — the top-down bump allocator's first
+  allocation landing outside the mapped 32 KiB region, exactly as
+  the slice-66 contract comment states. Both runs identical
+  (reported CU 1,400,000 is mollusk's fault-path accounting, not
+  consumption), no golden file written, shipped `.so` untouched
+  (sha `0125cf1e…` before and after).
+
+Stale-build guard (found this slice, applied to both scripts): a
+second consecutive variant build with only the feature flag changed
+reused the shipped artifact (capped `.so` sha == shipped sha, chain
+then "passed" against the shipped binary). Both `run-smallframe.sh`
+and `run-tripwire.sh` now touch `programs/program-v04/src/lib.rs`
+before the variant build and fail fast if the built `.so` still
+equals the shipped one — a test that silently runs against the
+wrong binary reports a pass it never earned. Slice 67's tripwire
+result is unaffected by this finding: its build followed a source
+change (so it recompiled) and its tripwire `.so` sha differed from
+shipped as required. Honest process note: this slice's
+guard-forced cap build was interrupted in anchor's host phase by a
+killed background session, so the cap evidence comes from that
+build's completed SBF artifact (sha `23331d17…`, tested directly
+twice) plus the earlier independent cap build (sha `6bed7008…`) —
+all CU values identical across both artifacts and duplicate runs.
+The committed script performs build → sha-differ assert → two runs
+→ trap-guarded restore as one flow; frame mode ran end-to-end
+through it this slice. The shipped golden re-freezes CU-identical
+under slice 68 (all 37 CU, both refusals unchanged; IDL shape
+unchanged 44 / 9 / 46 / 26); only the `.so` hash moves, with source
+line numbers. With conditions (3) and (4) closed here (TOOLS.md
+heap-frame contract updated in the same pass) and conditions (1)
+and (2) already closed, the slice-66 allocator choice and its
+test guards are final; the governance outcome tail and
+second-commit chains inherit both guards automatically when they
+land in the golden, because both scripts re-run the whole file.
+Run evidence: `hidden_files/smallframe-cap2-run1.log`,
+`hidden_files/smallframe-cap2-run2.log`,
+`hidden_files/smallframe-frame-run1.log`,
+`hidden_files/smallframe-frame-run2.log`,
+`hidden_files/smallframe-frame-script.log`.
+
 ## Slice-65 PARTIAL — full lifecycle chain stops at select (F6, 2026-10-30, same pins)
 
 Slice 65 extends the slice-64 chain past replay at clock 200

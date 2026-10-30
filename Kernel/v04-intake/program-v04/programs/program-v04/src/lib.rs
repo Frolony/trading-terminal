@@ -1114,9 +1114,34 @@ use coordination_kernel::{
 // check): the .so hash itself moves with source line numbers, so
 // byte-identity is NOT the invariant — identical CU per instruction
 // and an identical IDL shape are.
-#[cfg(feature = "tripwire-heap")]
+// Slice 68 — deterministic too-small-frame failure test, F6 condition (3)
+// (2026-10-30). The `small-heap` feature (never a default, never shipped)
+// builds the same program with the allocator capped at 32,768 bytes —
+// the old default frame size. Running the full cu-golden chain against
+// that build is the too-small-cap failure test: instructions whose
+// cumulative heap use fits 32 KiB succeed exactly as on the shipped
+// build, and the chain then fails with a clean allocation-error panic
+// at the first stage that outgrows the cap — a failure, never a silent
+// success and never a corrupted state (the harness asserts account
+// bytes after every preceding step, so corruption could not hide
+// behind a later success). The test's assertion is determinism: two
+// runs must fail at the same instruction with the same error. The
+// companion runtime-frame mode needs no rebuild: the harness reads
+// CU_HEAP_SIZE (default 256 KiB), so running the SHIPPED binary under
+// a 32 KiB requested frame tests the client-contract failure directly
+// — the top-down bump allocator's first allocation lands outside the
+// mapped region and faults, again deterministically, twice identical.
+// The two modes are complementary, not redundant: the cap mode proves
+// the failure point is a clean OOM at a known stage, the frame mode
+// proves the shipped binary faults rather than degrading when a
+// client forgets request_heap_frame(256 * 1024).
+#[cfg(all(feature = "tripwire-heap", feature = "small-heap"))]
+compile_error!("tripwire-heap and small-heap are mutually exclusive test caps");
+#[cfg(feature = "small-heap")]
+pub const PROGRAM_HEAP_LENGTH: usize = 32_768;
+#[cfg(all(feature = "tripwire-heap", not(feature = "small-heap")))]
 pub const PROGRAM_HEAP_LENGTH: usize = 196_608;
-#[cfg(not(feature = "tripwire-heap"))]
+#[cfg(all(not(feature = "tripwire-heap"), not(feature = "small-heap")))]
 pub const PROGRAM_HEAP_LENGTH: usize = 256 * 1024;
 
 #[cfg(all(

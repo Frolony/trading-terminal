@@ -244,7 +244,7 @@
       "result": "Refused"
     }
   ],
-  "slice": "slice 67: slice-66 chain re-frozen CU-identical after the tripwire-heap feature (lib.rs PROGRAM_HEAP_LENGTH cfg + Cargo.toml feature, default off — no behavior change; the .so hash moves with source line numbers only, all 37 CU and both refusals identical to slice 66); the 75% tripwire run (run-tripwire.sh, allocator capped at 196,608 bytes) over this same chain is the SBF-side wrapper-inclusive guard, recorded in the slice-67 run log",
-  "so_sha256": "449912dee6946c129ac8a033bfee456ce9a0387714ff59a265cc9effd2eaa680",
+  "slice": "slice 68: slice-67 chain re-frozen CU-identical after the small-heap feature (lib.rs PROGRAM_HEAP_LENGTH cfg + Cargo.toml feature, default off — no behavior change; the .so hash moves with source line numbers only, all 37 CU and both refusals identical to slice 67); the deterministic too-small-frame failure test (run-smallframe.sh: 32,768-byte cap build + 32 KiB runtime-frame run of the shipped binary, each twice with an identical failure signature) is F6 condition (3), recorded in the slice-68 run log",
+  "so_sha256": "0125cf1eeb856fa8b41abc95b34abc0d9b32cc943fe24c8ac5e7f38dcae7af3e",
   "toolchain": "Anchor 1.2.2 / Solana 4.3.2 / platform-tools v1.57"
 }

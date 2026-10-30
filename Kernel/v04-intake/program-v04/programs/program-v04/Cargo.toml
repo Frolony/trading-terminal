@@ -27,6 +27,14 @@ custom-heap = []
 # 196,608 bytes, wrapper-inclusive. Host tests are unaffected (the
 # allocator is cfg'd to target_os = "solana" only).
 tripwire-heap = []
+# Slice 68: test-only allocator cap for the deterministic too-small-frame
+# failure test (see lib.rs, PROGRAM_HEAP_LENGTH). Never default, never
+# shipped: `anchor build -- --features small-heap` builds a 32,768-byte
+# variant whose golden-chain failure point (same instruction, same
+# allocation error, twice) is the test. Mutually exclusive with
+# tripwire-heap (compile_error if both are set). Host tests are
+# unaffected (the allocator is cfg'd to target_os = "solana" only).
+small-heap = []
 default = ["custom-heap"]
 idl-build = ["anchor-lang/idl-build"]
 

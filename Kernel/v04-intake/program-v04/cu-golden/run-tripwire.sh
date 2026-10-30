@@ -52,11 +52,25 @@ restore() {
 trap restore EXIT
 
 cd "$PROG_DIR"
+# Slice-68 guard (same defect class as the smallframe script's): a
+# variant build with only the feature flag changed can reuse the
+# shipped artifact from cargo's fingerprint cache (observed 2026-10-30
+# on the small-heap build). Touch the program source so the tripwire
+# build always recompiles, and fail fast if the built .so still equals
+# the shipped one — a tripwire run against the shipped binary would
+# report a pass it never earned. (Slice 67's own run is unaffected:
+# its build followed a source change, so it recompiled, and its
+# tripwire .so sha differed from shipped as required.)
+touch "$PROG_DIR/programs/program-v04/src/lib.rs"
 "$ANCHOR" build -- --features tripwire-heap > "$HERE/tripwire-build.log" 2>&1
 TRIPWIRE_DIR="$(mktemp -d)"
 cp "$DEPLOY_SO" "$TRIPWIRE_DIR/program_v04.so"
 TRIPWIRE_SHA="$(sha256sum "$TRIPWIRE_DIR/program_v04.so" | cut -d' ' -f1)"
 echo "tripwire: capped .so built (sha $TRIPWIRE_SHA)"
+if [ "$TRIPWIRE_SHA" = "$SHIPPED_SHA" ]; then
+    echo "tripwire: FAIL — variant build reproduced the shipped .so; the tripwire-heap feature did not take effect, refusing to run the chain against the shipped binary" >&2
+    exit 1
+fi
 
 SBF_OUT_DIR="$TRIPWIRE_DIR" cargo run --locked --offline --release \
     --manifest-path "$HERE/mollusk/Cargo.toml" -- "$OUT" 2>&1 | tee "$HERE/tripwire-run.log"

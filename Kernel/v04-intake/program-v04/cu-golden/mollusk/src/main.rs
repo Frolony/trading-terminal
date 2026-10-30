@@ -444,7 +444,16 @@ fn main() {
     // request_heap_frame(256 * 1024) instruction. Heap cost at 256 KiB
     // is 56 CU over the 32 KiB default, so golden values re-freeze with
     // that uniform shift on top of any allocator-code delta.
-    mollusk.compute_budget.heap_size = 256 * 1024;
+    // Slice 68: CU_HEAP_SIZE overrides the requested frame for the
+    // small-frame failure test only (run-smallframe.sh mode "frame"):
+    // running the SHIPPED binary under a 32 KiB frame must fault
+    // deterministically on the first allocating instruction. The
+    // default is the shipped contract (256 KiB); no golden run ever
+    // sets this variable, so golden values are unaffected.
+    mollusk.compute_budget.heap_size = std::env::var("CU_HEAP_SIZE")
+        .ok()
+        .and_then(|v| v.parse::<u32>().ok())
+        .unwrap_or(256 * 1024);
 
     // Throwaway local-test payers. Seat 1 and the observer are pinned
     // profile identities; the others are arbitrary signers.
@@ -1415,7 +1424,7 @@ fn main() {
         "so_sha256": so_sha256,
         "mollusk_svm": MOLLUSK_SVM_VERSION,
         "toolchain": TOOLCHAIN,
-        "slice": "slice 67: slice-66 chain re-frozen CU-identical after the tripwire-heap feature (lib.rs PROGRAM_HEAP_LENGTH cfg + Cargo.toml feature, default off — no behavior change; the .so hash moves with source line numbers only, all 37 CU and both refusals identical to slice 66); the 75% tripwire run (run-tripwire.sh, allocator capped at 196,608 bytes) over this same chain is the SBF-side wrapper-inclusive guard, recorded in the slice-67 run log",
+        "slice": "slice 68: slice-67 chain re-frozen CU-identical after the small-heap feature (lib.rs PROGRAM_HEAP_LENGTH cfg + Cargo.toml feature, default off — no behavior change; the .so hash moves with source line numbers only, all 37 CU and both refusals identical to slice 67); the deterministic too-small-frame failure test (run-smallframe.sh: 32,768-byte cap build + 32 KiB runtime-frame run of the shipped binary, each twice with an identical failure signature) is F6 condition (3), recorded in the slice-68 run log",
         "measured": measured,
         "refusals": refusals,
         "blocked": [],
