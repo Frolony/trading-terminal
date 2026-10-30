@@ -1010,3 +1010,71 @@ these legs alone: the limit derivation (smallest of
 heap-19 / CU-53-or-58 / frame-unbounded, constant at ~half)
 is the next queue item, followed by enforcement + the final
 golden freeze.
+
+## Chain-length limit derivation + enforcement (merge-gate item 5, parts 4–5; 2026-10-30)
+
+Derivation — smallest of the three legs binds:
+
+| leg | Nmax | basis |
+| --- | ---: | --- |
+| Heap | 19 | fit cumulative + 16 KiB wrapper vs 196,608: 194,905 (99.13%) at 19, 202,213 (102.85%) at 20 |
+| CU | 37–58 | linear fit 58, last-increment extrapolation 53, quadratic through all five points ~37 — all at a 1.4M CU limit |
+| Frame | unbounded | frames are compile-time constants, N-independent; forced build shows zero frame-overflow lines |
+
+Heap binds under EVERY CU extrapolation, so the derivation does
+not depend on which CU model is right. Program constant:
+`MAX_PRIOR_BUNDLES = 9` — ~half of 19, rounded down. At 9
+priors the heap fit sits at 121,825 bytes (62% of the 192 KiB
+frame cap) and every CU extrapolation at ~290–311K (~22% of
+1.4M): both legs keep wide margin at the enforced limit.
+
+Enforcement: one gate in `split_prior_bundles`
+(`programs/program-v04/src/lib.rs`), checked before any
+parsing — a count above 9 refuses as the new error
+`ChainTooLong` (appended last in `ProgramV04Error`, so all
+existing error codes are unchanged; golden refusal
+`GovActionAlreadyFinalized` still 6034). All 30 prior-taking
+instruction bodies parse through this function before any
+kernel replay runs, so a new bundle's first prior-replaying
+instruction is the refusal point. `register_transition`
+itself stores a manifest and takes no priors, so it is not
+(and cannot be) the gate — the refusal surfaces when the
+bundle is first driven, before anything advances. Host test
+`split_prior_bundles_enforces_chain_length_limit`: 9 bundles
+parse with empty tail; 10 refuses as `ChainTooLong` with
+bundles present and with an empty list (the count alone is
+the violation); 9 with an empty list refuses as
+`RecordMismatch`, proving the parse checks survive the gate.
+
+SBF proof this pass (v04 pins): `anchor build` exit 0, forced
+rebuild exit 0 with ZERO frame-overflow lines, `.so` hash
+`359c603e…` (was `f4e543ee…`, +600 bytes: gate + error
+string). Golden re-run against the enforcement binary: all 63
+rows the same result, both refusals the same errors (only the
+finalized-close refusal CU moved, 5391 → 5392), blocked list
+identical; 37 CU values moved, max |delta| 53 — prior-taking
+instructions +34…+53 (the gate compare), non-prior
+instructions −2…−1 (codegen shift); `record_outcome_governance_gov2`
+110,451 → 110,485 (+34). The golden file is re-frozen to
+`359c603e…` as an INTERIM re-freeze, not the merge-gate final
+freeze. Program host tests 459/459 (was 458/458).
+Clippy note: `cargo clippy -p program-v04 --all-targets -- -D warnings`
+fails with 58 errors, all pre-existing Anchor-macro cfg lints
+and unrelated lints — none at the new lines; the program-v04
+clippy gate was already failing before this change and is
+unchanged by it (no lint weakened, no allow added).
+
+Remaining before the final freeze: SBF-level at-limit /
+limit+1 proof (chainlen fixture extended to 9 priors passing
+and 10 refusing on-chain), tripwire + smallframe guard
+re-runs on the enforcement-carrying binary, then the single
+final golden freeze.
+
+Re-measurement note (same pass): the CU leg was re-run against
+the enforcement binary (`359c603e…`): 88,313 / 110,485 /
+133,033 / 156,363 / 205,354 for 0/1/2/3/5 priors (deltas
++34/+34/+42/+50/+66 — the gate compare on each prior-taking
+instruction in the tail chain). The 1-prior row still
+reproduces the golden chain's `record_outcome_governance_gov2`
+EXACTLY (110,485). The derivation above is unchanged: shifts
+of tens of CU against a 1.4M limit move no Nmax.

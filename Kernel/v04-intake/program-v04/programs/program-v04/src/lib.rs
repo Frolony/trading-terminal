@@ -13472,6 +13472,26 @@ pub struct OwnedPriorBundle {
     pub action: Option<GovAction>,
 }
 
+/// Chain-length limit (merge-gate item 5, derivation 2026-10-30):
+/// the SMALLEST of the three measured legs binds — heap Nmax 19
+/// (fit cumulative + 16 KiB wrapper vs 196,608: 194,905 at 19,
+/// 202,213 at 20), CU Nmax 37–58 depending on extrapolation
+/// (linear fit 58, last-increment 53, quadratic through all five
+/// points ~37 at a 1.4M CU limit), frame unbounded (frames are
+/// compile-time constants, N-independent). The program constant is
+/// ~half of the smallest limit, rounded down: 9. At 9 priors the
+/// heap fit sits at 121,825 bytes (62% of the 192 KiB frame cap)
+/// and every CU extrapolation at ~290–311K ( ~22% of 1.4M), so
+/// both legs keep wide margin at the enforced limit. Every
+/// prior-taking instruction parses through `split_prior_bundles`
+/// before any kernel replay runs, so this single gate is the
+/// enforcement point: a new bundle whose first replay instruction
+/// carries more than 9 priors refuses before anything advances.
+/// `register_transition` itself stores a manifest and takes no
+/// priors, so it is not (and cannot be) the gate — the refusal
+/// surfaces at the bundle's first prior-replaying instruction.
+pub const MAX_PRIOR_BUNDLES: usize = 9;
+
 /// Split the first `count` prior bundles off the head of a classified
 /// remaining-account list, returning the bundles and the tail — the
 /// target's own evidence, which the caller parses exactly as before.
@@ -13494,6 +13514,13 @@ pub fn split_prior_bundles(
     parsed: alloc::vec::Vec<ParsedAccount>,
     count: usize,
 ) -> Result<(alloc::vec::Vec<OwnedPriorBundle>, alloc::vec::Vec<ParsedAccount>)> {
+    // Chain-length gate: checked before any parsing, so an
+    // over-limit count refuses as ChainTooLong even when the
+    // account list would (or would not) parse to that many
+    // bundles — the count itself is the violation, not the list.
+    if count > MAX_PRIOR_BUNDLES {
+        return Err(error!(ProgramV04Error::ChainTooLong));
+    }
     let mut iter = parsed.into_iter();
     let mut bundles = alloc::vec::Vec::new();
     for _ in 0..count {
@@ -15105,6 +15132,8 @@ pub enum ProgramV04Error {
     OutcomeFailed,
     #[msg("program-v04 reputation: agent is not a registered, active agent of the sealed profile")]
     UnknownAgent,
+    #[msg("program-v04 replay: prior bundle count exceeds the chain-length limit (MAX_PRIOR_BUNDLES)")]
+    ChainTooLong,
 }
 
 // ---------------------------------------------------------------- launch genesis
@@ -27035,6 +27064,72 @@ mod tests {
                 (bytes + 16_384) as f64 / 1966.08
             );
         }
+    }
+
+    #[test]
+    fn split_prior_bundles_enforces_chain_length_limit() {
+        // Merge-gate item 5, enforcement: the gate is the count
+        // itself, checked before parsing. Zero-signal/plan ordinary
+        // bundles (transition + observation only) are enough to
+        // prove the parse path at the limit.
+        fn parsed_bundles(n: usize) -> alloc::vec::Vec<ParsedAccount> {
+            let mut parsed = alloc::vec::Vec::new();
+            for i in 0..n {
+                parsed.push(ParsedAccount::Transition(TransitionRecord {
+                    transition_id: [0xA0 + i as u8; 32],
+                    transition_type: TT,
+                    parent_index: 0,
+                    parent_hash: [0; 32],
+                    declared_next_hash: [0; 32],
+                    observation_id: [0xC0 + i as u8; 32],
+                    expires_at: 0,
+                    proposer: Pubkey::new_from_array([0x99; 32]),
+                    stage: TransitionRecord::COMMITTED,
+                    eligible_at: 0,
+                    consensus_deadline: 0,
+                    planning_deadline: 0,
+                    signal_count: 0,
+                    plan_count: 0,
+                    approval_count: 0,
+                    replans: 0,
+                    compatible: false,
+                    bump: 0,
+                }));
+                parsed.push(ParsedAccount::Observation(ObservationRecord {
+                    observation_id: [0xC0 + i as u8; 32],
+                    timestamp: 0,
+                    expiry: 0,
+                    confidence_raw: 0,
+                    observer: Pubkey::new_from_array([0x98; 32]),
+                    bump: 0,
+                }));
+            }
+            parsed
+        }
+        assert_eq!(MAX_PRIOR_BUNDLES, 9);
+        // At-limit passes: 9 bundles parse, tail empty.
+        let (bundles, tail) =
+            split_prior_bundles(parsed_bundles(9), 9).expect("9 priors must parse");
+        assert_eq!(bundles.len(), 9);
+        assert!(tail.is_empty());
+        // Limit+1 refuses as ChainTooLong with bundles present.
+        let err = split_prior_bundles(parsed_bundles(10), 10)
+            .expect_err("10 priors must refuse");
+        assert!(
+            format!("{:?}", err).contains("ChainTooLong"),
+            "expected ChainTooLong, got {:?}",
+            err
+        );
+        // Limit+1 refuses even with an empty list: the gate
+        // precedes parsing, so the count alone is the violation.
+        let err = split_prior_bundles(alloc::vec::Vec::new(), 10)
+            .expect_err("10 priors with no accounts must still refuse as ChainTooLong");
+        assert!(format!("{:?}", err).contains("ChainTooLong"));
+        // At-limit count with a short list still refuses — as
+        // RecordMismatch, proving the parse checks survive the gate.
+        let err = split_prior_bundles(alloc::vec::Vec::new(), 9)
+            .expect_err("9 priors with no accounts must refuse as RecordMismatch");
+        assert!(format!("{:?}", err).contains("RecordMismatch"));
     }
 
 }
