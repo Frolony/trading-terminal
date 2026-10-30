@@ -366,6 +366,23 @@ four append entries), approve 37,629 -> 37,628; the other
 twelve values reproduce exactly, blocked `[]` still.
 This `.so` is likewise NOT the golden freeze.
 
+## Slice-56 re-measurement (2026-10-29, same pins)
+
+Slice 56 (the `SettlementEvidence` account, the
+`record_settlement_evidence` instruction, and the
+`settle_transition` instruction) changed the program source,
+so the golden file was re-measured against the new `.so` sha
+`9bc4f6c25f01d5456cb1f0d0f3422ded0e67310e559296a6df57934a055e04af`
+(host tests 418/418; IDL now 40 instr / 8 accounts /
+42 errors / 25 events — two new instructions, the new
+evidence account, and the `SettlementEvidenceRecorded`
+event; no new error, the binding reuses `RecordMismatch`).
+Drift from the slice-55 values is layout noise, not
+behavior: probe 7,705 -> 7,707, register_transition
+11,415 -> 11,417; the other fifteen values reproduce
+exactly, blocked `[]` still. This `.so` is likewise NOT
+the golden freeze.
+
 ## Layout
 
 - `mollusk/` — standalone Rust crate (its own `[workspace]`

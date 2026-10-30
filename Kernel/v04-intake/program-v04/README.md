@@ -2842,6 +2842,62 @@ accounts; the golden `.so` sha debt (slice-49
   outcome recording; and the golden `.so` freeze, which
   still waits on the post-settle reclaim ruling.
 
+## Slice 56 — the settle instruction, ordinary path (2026-10-29)
+
+- `SettlementEvidence` account (PDA `["evidence",
+  transition_id]`, SPACE 105): one record per transition
+  holding the realized hash and its recorder. Written once
+  at record time, never revised — a second record cannot
+  init over it, and settle reads it but never writes it.
+- `record_settlement_evidence`: the on-chain half of the
+  step-2 `SettlerGate` binding. Gates, in order: sealed
+  state; the transition already `COMMITTED` (evidence is
+  post-outcome, and an outcome exists only after a commit);
+  observation linkage; recorder exactly the transition's
+  observation observer — a hash recorded by anyone else, or
+  for a transition that never committed, cannot exist
+  on-chain. The payer is the recorder, not merely a fee
+  payer.
+- `settle_transition`: `COMMITTED` (10) -> `SETTLED` (11)
+  through instructions, via the slice-54 helper. Remaining
+  accounts parse exactly as in `commit_transition` (prior
+  bundles, then exactly `signal_count` signals, then plans).
+  The realized hash comes from the stored evidence account
+  — the instruction takes NO realized argument — and the
+  evidence binding is re-checked (`check_settlement_evidence`:
+  evidence names this transition, recorder is this
+  transition's observation observer) before any replay runs,
+  so the helper's caller-supplied hash can never be reached
+  from an instruction. A governance-typed record refuses at
+  the helper's `GovernanceSettleRequired` gate. The payer is
+  a fee payer only.
+- Host tests 418/418 (412 prior + 6 slice-56: SPACE +
+  borsh round-trip, build for a committed record with the
+  observer recorder, foreign-recorder refusal at build and
+  at settle-time check, non-committed-stage refusal,
+  linkage-mismatch refusal at build and at check, unsealed
+  refusal). Clippy back to the pre-existing profile, zero
+  new warnings (the four `too_many_arguments` notes are the
+  pre-existing gov helpers). Delivered crate 39/39.
+  `anchor build` green under the pinned toolchain
+  (Anchor 1.2.2 / Agave 4.3.2 / platform-tools v1.57);
+  IDL counts move by design (40 instructions, 8 accounts,
+  42 errors, 25 events — two new instructions, the evidence
+  account, the `SettlementEvidenceRecorded` event; no new
+  error). `.so` 1,741,672 bytes (sha256 `9bc4f6c2…`). CU
+  golden re-measured against the new `.so` (17 measured,
+  blocked `[]`): probe 7,705 -> 7,707,
+  register_transition 11,415 -> 11,417, the other fifteen
+  exact — layout noise, golden JSON + cu-golden README
+  carry the new values in the same pass. This `.so` is NOT
+  the golden freeze.
+- Deliberately NOT slice 56: the governance settle mirror
+  (`settle_governance_transition` instruction with the
+  stored-approval binding, decoding the action from the
+  finalized `GovActionAccount`); outcome recording; and the
+  golden `.so` freeze, which still waits on the
+  post-settle reclaim ruling.
+
 ## Build
 
 ```sh

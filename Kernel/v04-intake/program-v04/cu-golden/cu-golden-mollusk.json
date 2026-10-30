@@ -3,7 +3,7 @@
   "design_finding_resolved": "Slice-49/50 findings CLOSED by the account-carried action (program slices 51-53, Carlos's 2026-10-29 ruling): approve/revise no longer carry the 1524-byte StoredGovAction by value (the 1564-byte instruction-data / tx-size finding is gone — the largest new instruction is a 512-byte chunk), and the rewired wrappers frame-measure fitting 2048 bytes (slice 53). This run proves both instructions execute in-process against the real .so: approve stores the finalized action hash and increments the approval count to 1; revise re-binds the same finalized action with count and hash unchanged.",
   "measured": [
     {
-      "cu": 7705,
+      "cu": 7707,
       "instruction": "probe_kernel",
       "note": "slice-1 baseline (no design estimate exists for the v0.4 program)",
       "result": "Success"
@@ -27,7 +27,7 @@
       "result": "Success"
     },
     {
-      "cu": 11415,
+      "cu": 11417,
       "instruction": "register_transition",
       "note": "slice-1 baseline (no design estimate exists for the v0.4 program)",
       "result": "Success"
@@ -118,6 +118,6 @@
     }
   ],
   "slice": "cu-golden slice 3: genesis + governance registration + account-carried approval chain (program slices 51-53) + close_gov_action rent-reclaim and finalized-refusal gate",
-  "so_sha256": "a263117a671f1ff7923d13b35052364502b4840d2c9a6230993559150fb8d150",
+  "so_sha256": "9bc4f6c25f01d5456cb1f0d0f3422ded0e67310e559296a6df57934a055e04af",
   "toolchain": "Anchor 1.2.2 / Solana 4.3.2 / platform-tools v1.57"
 }

@@ -2342,6 +2342,116 @@ pub mod program_v04 {
         Ok(())
     }
 
+    /// Record a transition's realized-outcome evidence (slice 56):
+    /// the on-chain half of the step-2 `SettlerGate` binding.
+    /// The observing process — the observation's observer, and
+    /// only that observer — records the realized hash AFTER
+    /// the outcome exists, against a `COMMITTED` transition.
+    /// The PDA seeds bind the evidence to the transition, the
+    /// stage gate binds it to a commit that already happened,
+    /// and the recorder gate binds it to the transition's own
+    /// observer: a hash recorded by anyone else, or for a
+    /// transition that never committed, cannot exist on-chain.
+    /// `settle_transition` then sources its realized hash from
+    /// this account and takes no realized argument at all, so
+    /// no caller can steer settlement at an unrecorded hash.
+    /// The payer is the recorder: the signer must be the
+    /// observation's observer, not merely a fee payer.
+    pub fn record_settlement_evidence(
+        ctx: Context<RecordSettlementEvidence>,
+        transition_id: [u8; 32],
+        observation_id: [u8; 32],
+        realized: [u8; 32],
+    ) -> Result<()> {
+        if ctx.accounts.transition_record.transition_id != transition_id
+            || ctx.accounts.observation_record.observation_id != observation_id
+        {
+            return Err(error!(ProgramV04Error::RecordMismatch));
+        }
+        let record = build_settlement_evidence(
+            &ctx.accounts.kernel_state,
+            &ctx.accounts.transition_record,
+            &ctx.accounts.observation_record,
+            realized,
+            ctx.accounts.payer.key(),
+            ctx.bumps.settlement_evidence,
+        )?;
+        *ctx.accounts.settlement_evidence = record;
+        emit!(SettlementEvidenceRecorded { transition_id, realized, recorder: ctx.accounts.payer.key() });
+        Ok(())
+    }
+
+    /// Settle a committed ordinary transition (slice 56):
+    /// `COMMITTED` (10) -> `SETTLED` (11) through instructions,
+    /// via the slice-54 helper. Remaining accounts parse exactly
+    /// as in `commit_transition`: prior bundles first, then
+    /// exactly `signal_count` prior `SignalRecord`s, then the
+    /// prior `PlanRecord`s. The realized hash comes from the
+    /// stored `SettlementEvidence` account — there is no
+    /// realized argument — and the instruction re-checks the
+    /// evidence binding (`check_settlement_evidence`: the
+    /// evidence names this transition and was recorded by this
+    /// transition's observation observer) before any replay
+    /// runs, so the helper's caller-supplied hash can never be
+    /// reached from an instruction. A governance-typed record
+    /// refuses at the helper's `GovernanceSettleRequired` gate;
+    /// its settle mirror is the next slice. The payer is a fee
+    /// payer only: settlement executes steps the stored records
+    /// already authorized.
+    pub fn settle_transition(
+        ctx: Context<SettleTransition>,
+        transition_id: [u8; 32],
+        observation_id: [u8; 32],
+        prior_bundle_count: u32,
+    ) -> Result<()> {
+        if ctx.accounts.transition_record.transition_id != transition_id
+            || ctx.accounts.observation_record.observation_id != observation_id
+        {
+            return Err(error!(ProgramV04Error::RecordMismatch));
+        }
+        check_settlement_evidence(
+            &ctx.accounts.settlement_evidence,
+            &ctx.accounts.transition_record,
+            &ctx.accounts.observation_record,
+        )?;
+        let (bundles, tail) = split_prior_bundles(
+            classify_remaining_accounts(ctx.remaining_accounts)?,
+            prior_bundle_count as usize,
+        )?;
+        let prior_entries = prior_entries_of(&bundles);
+        let signal_count = ctx.accounts.transition_record.signal_count as usize;
+        if tail.len() < signal_count {
+            return Err(error!(ProgramV04Error::SettleFailed));
+        }
+        let mut tail_iter = tail.into_iter();
+        let mut priors: alloc::vec::Vec<SignalRecord> = alloc::vec::Vec::new();
+        for _ in 0..signal_count {
+            match tail_iter.next() {
+                Some(ParsedAccount::Signal(sig)) => priors.push(sig),
+                _ => return Err(error!(ProgramV04Error::RecordMismatch)),
+            }
+        }
+        let mut prior_plans: alloc::vec::Vec<PlanRecord> = alloc::vec::Vec::new();
+        for item in tail_iter {
+            match item {
+                ParsedAccount::Plan(plan) => prior_plans.push(plan),
+                _ => return Err(error!(ProgramV04Error::RecordMismatch)),
+            }
+        }
+        let life = settle_transition_from_records(
+            &ctx.accounts.kernel_state,
+            &mut ctx.accounts.transition_record,
+            &ctx.accounts.observation_record,
+            &priors,
+            &prior_plans,
+            &prior_entries,
+            ctx.accounts.settlement_evidence.realized,
+        )?;
+        debug_assert!(life == Life::Settled);
+        emit!(TransitionSettled { transition_id, stage: ctx.accounts.transition_record.stage });
+        Ok(())
+    }
+
     /// Replay governance (§4.1, governance replay row, slice 37):
     /// run kernel `approve_governance` (every stored seat) +
     /// `ingest_observation` + `register_governance_transition`
@@ -3446,6 +3556,65 @@ pub struct CommitGovernance<'info> {
         bump = gov_action_account.bump,
     )]
     pub gov_action_account: Box<Account<'info, GovActionAccount>>,
+    pub payer: Signer<'info>,
+}
+
+#[derive(Accounts)]
+#[instruction(transition_id: [u8; 32], observation_id: [u8; 32])]
+pub struct RecordSettlementEvidence<'info> {
+    #[account(
+        seeds = [b"kernel-state"],
+        bump = kernel_state.bump,
+    )]
+    pub kernel_state: Account<'info, KernelState>,
+    #[account(
+        seeds = [b"transition", transition_id.as_ref()],
+        bump = transition_record.bump,
+    )]
+    pub transition_record: Account<'info, TransitionRecord>,
+    #[account(
+        seeds = [b"observation", observation_id.as_ref()],
+        bump = observation_record.bump,
+    )]
+    pub observation_record: Account<'info, ObservationRecord>,
+    #[account(
+        init,
+        payer = payer,
+        space = SettlementEvidence::SPACE,
+        seeds = [b"evidence", transition_id.as_ref()],
+        bump,
+    )]
+    pub settlement_evidence: Account<'info, SettlementEvidence>,
+    #[account(mut)]
+    pub payer: Signer<'info>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+#[instruction(transition_id: [u8; 32], observation_id: [u8; 32])]
+pub struct SettleTransition<'info> {
+    #[account(
+        mut,
+        seeds = [b"kernel-state"],
+        bump = kernel_state.bump,
+    )]
+    pub kernel_state: Account<'info, KernelState>,
+    #[account(
+        mut,
+        seeds = [b"transition", transition_id.as_ref()],
+        bump = transition_record.bump,
+    )]
+    pub transition_record: Account<'info, TransitionRecord>,
+    #[account(
+        seeds = [b"observation", observation_id.as_ref()],
+        bump = observation_record.bump,
+    )]
+    pub observation_record: Account<'info, ObservationRecord>,
+    #[account(
+        seeds = [b"evidence", transition_id.as_ref()],
+        bump = settlement_evidence.bump,
+    )]
+    pub settlement_evidence: Account<'info, SettlementEvidence>,
     pub payer: Signer<'info>,
 }
 
@@ -5160,6 +5329,85 @@ pub struct ObservationRecord {
 impl ObservationRecord {
     /// 8 (discriminator) + 32 + 8 + 8 + 8 + 32 + 1.
     pub const SPACE: usize = 97;
+}
+
+/// A transition's recorded realized-outcome hash (slice 56): the
+/// on-chain evidence the step-2 `SettlerGate` binding needs. One
+/// evidence account per transition, PDA-bound to its transition
+/// id; the recorder is the transition's observation observer.
+/// The hash is written once, at record time, and never revised:
+/// a second record for the same transition cannot init over it,
+/// and `settle_transition` reads it but never writes it, so the
+/// settled hash is exactly the recorded hash or nothing settles.
+#[account]
+#[derive(Debug, PartialEq, Eq)]
+pub struct SettlementEvidence {
+    /// Transition id (the PDA seed after `"evidence"`).
+    pub transition_id: [u8; 32],
+    /// Realized outcome hash, recorded after the outcome exists.
+    pub realized: [u8; 32],
+    /// Signing recorder — must equal the transition's observation
+    /// observer (see `build_settlement_evidence`).
+    pub recorder: Pubkey,
+    /// PDA bump for the `["evidence", transition_id]` seeds.
+    pub bump: u8,
+}
+
+impl SettlementEvidence {
+    /// 8 (discriminator) + 32 + 32 + 32 + 1.
+    pub const SPACE: usize = 105;
+}
+
+/// Build a `SettlementEvidence` against a sealed state (slice 56).
+/// Pure: a refused record leaves nothing written, and the caller
+/// (instruction or test) owns persistence. Gates, in order:
+/// sealed state; the transition already `COMMITTED` (evidence is
+/// post-outcome, and an outcome exists only after a commit);
+/// observation linkage (the evidence is recorded against this
+/// transition's own observation); recorder exactly the
+/// observation's observer (the observing process, no one else).
+/// No clock gate: the realized outcome's time is the execution's
+/// business, and the settle helper judges the execution window.
+pub fn build_settlement_evidence(
+    kernel_state: &KernelState,
+    transition_record: &TransitionRecord,
+    observation_record: &ObservationRecord,
+    realized: [u8; 32],
+    recorder: Pubkey,
+    bump: u8,
+) -> Result<SettlementEvidence> {
+    if !kernel_state.sealed {
+        return Err(error!(ProgramV04Error::NotSealed));
+    }
+    if transition_record.stage != TransitionRecord::COMMITTED {
+        return Err(error!(ProgramV04Error::WrongStage));
+    }
+    if transition_record.observation_id != observation_record.observation_id {
+        return Err(error!(ProgramV04Error::RecordMismatch));
+    }
+    if recorder != observation_record.observer {
+        return Err(error!(ProgramV04Error::RecordMismatch));
+    }
+    Ok(SettlementEvidence { transition_id: transition_record.transition_id, realized, recorder, bump })
+}
+
+/// Re-check a stored evidence account at settle time (slice 56):
+/// it names this transition, and its recorder is this
+/// transition's observation observer. The record instruction
+/// enforced both at creation, but settle does not trust the
+/// creation path alone — a stored account that fails either
+/// check refuses here, before any replay runs.
+pub fn check_settlement_evidence(
+    evidence: &SettlementEvidence,
+    transition_record: &TransitionRecord,
+    observation_record: &ObservationRecord,
+) -> Result<()> {
+    if evidence.transition_id != transition_record.transition_id
+        || evidence.recorder != observation_record.observer
+    {
+        return Err(error!(ProgramV04Error::RecordMismatch));
+    }
+    Ok(())
 }
 
 /// The pubkey-to-agent mapping, slice 9's rule: identity. Kernel agent
@@ -13251,6 +13499,13 @@ pub struct TransitionSettled {
     pub stage: u8,
 }
 
+#[event]
+pub struct SettlementEvidenceRecorded {
+    pub transition_id: [u8; 32],
+    pub realized: [u8; 32],
+    pub recorder: Pubkey,
+}
+
 #[error_code]
 pub enum ProgramV04Error {
     #[msg("program-v04 probe: kernel construction failed")]
@@ -19036,6 +19291,114 @@ mod tests {
         .expect_err("a record off the sealed head must refuse governance commit");
         assert!(format!("{:?}", err).contains("ParentMismatch"));
         assert_eq!(record.stage, TransitionRecord::DECLARED);
+    }
+
+    #[test]
+    fn settlement_evidence_space_and_round_trip() {
+        // Discriminator 8 + transition 32 + realized 32 +
+        // recorder 32 + bump 1.
+        assert_eq!(SettlementEvidence::SPACE, 8 + 32 + 32 + 32 + 1);
+        let evidence = SettlementEvidence {
+            transition_id: [0xA1; 32],
+            realized: [0xB2; 32],
+            recorder: Pubkey::new_from_array([0xC3; 32]),
+            bump: 254,
+        };
+        let mut bytes = Vec::new();
+        evidence.try_serialize(&mut bytes).expect("serialize must succeed");
+        assert_eq!(bytes.len(), SettlementEvidence::SPACE);
+        let back = <SettlementEvidence as anchor_lang::AccountDeserialize>::try_deserialize(&mut &bytes[..])
+            .expect("deserialize must succeed");
+        assert_eq!(back, evidence);
+    }
+
+    #[test]
+    fn settlement_evidence_builds_for_committed_with_observer_recorder() {
+        // Slice 56's core proof: a COMMITTED record's evidence
+        // builds exactly when the recorder is the transition's
+        // own observation observer, carrying the supplied hash.
+        let (state, record, obs, _, _) = committed_pair();
+        let realized = record.declared_next_hash;
+        let evidence = build_settlement_evidence(&state, &record, &obs, realized, obs.observer, 7)
+            .expect("observer-recorded evidence for a committed transition must build");
+        assert_eq!(evidence.transition_id, record.transition_id);
+        assert_eq!(evidence.realized, realized);
+        assert_eq!(evidence.recorder, obs.observer);
+        assert_eq!(evidence.bump, 7);
+        check_settlement_evidence(&evidence, &record, &obs)
+            .expect("the built evidence must pass the settle-time re-check");
+    }
+
+    #[test]
+    fn settlement_evidence_refuses_foreign_recorder() {
+        // A hash recorded by anyone but the transition's
+        // observer is not evidence: the build refuses, and the
+        // settle-time check refuses a hand-built copy too, so
+        // neither path lets a foreign hash reach settlement.
+        let (state, record, obs, _, _) = committed_pair();
+        let err = build_settlement_evidence(
+            &state, &record, &obs, record.declared_next_hash, Pubkey::new_from_array([0xEE; 32]), 7,
+        )
+        .expect_err("a foreign recorder must refuse");
+        assert!(format!("{:?}", err).contains("RecordMismatch"));
+        let mut evidence =
+            build_settlement_evidence(&state, &record, &obs, record.declared_next_hash, obs.observer, 7)
+                .expect("observer evidence must build");
+        evidence.recorder = Pubkey::new_from_array([0xEE; 32]);
+        let err = check_settlement_evidence(&evidence, &record, &obs)
+            .expect_err("a foreign recorder must refuse at settle time");
+        assert!(format!("{:?}", err).contains("RecordMismatch"));
+    }
+
+    #[test]
+    fn settlement_evidence_refuses_non_committed_stage() {
+        // Evidence is post-outcome: a merely DECLARED record
+        // has no outcome to record, so the build refuses with
+        // WrongStage and nothing is written.
+        let (state, record, obs, _, _) = declared_pair();
+        assert_eq!(record.stage, TransitionRecord::DECLARED);
+        let err = build_settlement_evidence(
+            &state, &record, &obs, record.declared_next_hash, obs.observer, 7,
+        )
+        .expect_err("evidence for an uncommitted transition must refuse");
+        assert!(format!("{:?}", err).contains("WrongStage"));
+    }
+
+    #[test]
+    fn settlement_evidence_refuses_linkage_mismatch() {
+        // Evidence recorded against another transition's
+        // observation, or checked against another transition,
+        // refuses: the binding is per-transition, not per-hash.
+        let (state, record, obs, _, _) = committed_pair();
+        let observer = obs.observer;
+        let mut other_obs = obs.clone();
+        other_obs.observation_id = [0xDD; 32];
+        let err = build_settlement_evidence(
+            &state, &record, &other_obs, record.declared_next_hash, observer, 7,
+        )
+        .expect_err("a mismatched observation must refuse");
+        assert!(format!("{:?}", err).contains("RecordMismatch"));
+        let evidence =
+            build_settlement_evidence(&state, &record, &obs, record.declared_next_hash, obs.observer, 7)
+                .expect("observer evidence must build");
+        let mut other_record = record;
+        other_record.transition_id = [0xDD; 32];
+        let err = check_settlement_evidence(&evidence, &other_record, &obs)
+            .expect_err("evidence for another transition must refuse at settle time");
+        assert!(format!("{:?}", err).contains("RecordMismatch"));
+    }
+
+    #[test]
+    fn settlement_evidence_refuses_unsealed() {
+        // No evidence on an unsealed state, exactly as no
+        // observation ingests there: the sealed gate comes first.
+        let (mut state, record, obs, _, _) = committed_pair();
+        state.sealed = false;
+        let err = build_settlement_evidence(
+            &state, &record, &obs, record.declared_next_hash, obs.observer, 7,
+        )
+        .expect_err("an unsealed state must refuse");
+        assert!(format!("{:?}", err).contains("NotSealed"));
     }
 
     fn gov_committed_bundle() -> (
