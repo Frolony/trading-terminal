@@ -1158,7 +1158,7 @@ static PROGRAM_ALLOCATOR: anchor_lang::solana_program::entrypoint::BumpAllocator
         )
     };
 
-declare_id!("FzxnCtig4asxnCxGhjcbCDY5zkfcpfTb5GcXNL9UaGg6");
+declare_id!("2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr");
 
 #[program]
 pub mod program_v04 {

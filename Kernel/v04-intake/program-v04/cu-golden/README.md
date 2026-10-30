@@ -647,6 +647,41 @@ sha-verified (`0125cf1e…`). Queue after this slice: W4.4
 devnet deploy (go stands, devnet/test assets only) — the
 guard precondition on the 63-step golden is now met.
 
+Adoption re-freeze (2026-10-30, BUILD run scheduled 11:27
+CST): the v0.4.2 adoption + devnet identity, staged since
+the 09:55 run's blocker note, are now verified and frozen.
+Kernel 0.4.1 -> 0.4.2 is allocation-only (Box<Rec>
+transitions, Cow reason; staging crate byte-identical to
+the pristine v042 intake, 40/40 tests incl. the new
+alloc_profile test) and `declare_id!` moves from the
+retired staging-only Fzxn… id (keypair deleted) to the
+fresh devnet-only program id 2CQ58… (keypair at staging
+`deploy-keys/program-v04-devnet-keypair.json`, never
+pushed; payer keypair alongside it, pubkey FGWF…;
+Anchor.toml documents both, staging-local only). The
+deploy `.so` for this binary (sha `b47ea2fa…`) postdates
+every source edit (lib.rs 16:51, kernel 17:10, build
+finished 17:30 UTC) with no program source newer than it,
+and the full chain passes on it with identical outcomes
+(63 Success + 2 refusals, all asserts incl. the
+50,000,020 outcome credit green; program host tests
+457/457). 49 of 65 CU values move vs the slice-69 golden
+— expected under the slice-6 PDA bump-search mechanism:
+on-chain PDA derivation cost depends on the program id,
+so CU is not comparable across program ids. This is an
+INTERIM re-freeze (new baseline for the devnet-id
+binary), not the merge-gate final freeze. The
+tripwire/smallframe guards proven above were run on the
+prior binary and are PENDING re-run on this binary —
+queue item before the final freeze, after the
+0/1/2/3/5-prior fixture and chain-length enforcement.
+The prior golden is preserved at
+`hidden_files/cu-golden-slice69-fzxn.json`. Queue after
+this re-freeze: 0/1/2/3/5-prior chain-length fixture,
+then chain-length enforcement, then the single final
+freeze (merge-gate item 4); W4.4 devnet deploy rides the
+final binary, not this interim one.
+
 ## Slice-65 PARTIAL — full lifecycle chain stops at select (F6, 2026-10-30, same pins)
 
 Slice 65 extends the slice-64 chain past replay at clock 200

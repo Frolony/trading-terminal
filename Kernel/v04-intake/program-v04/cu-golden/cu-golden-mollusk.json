@@ -3,25 +3,25 @@
   "design_finding_resolved": "Slice-49/50 findings CLOSED by the account-carried action (program slices 51-53, Carlos's 2026-10-29 ruling): approve/revise no longer carry the 1524-byte StoredGovAction by value (the 1564-byte instruction-data / tx-size finding is gone — the largest new instruction is a 512-byte chunk), and the rewired wrappers frame-measure fitting 2048 bytes (slice 53). This run proves both instructions execute in-process against the real .so: approve stores the finalized action hash and increments the approval count to 1; revise re-binds the same finalized action with count and hash unchanged.",
   "measured": [
     {
-      "cu": 7761,
+      "cu": 7024,
       "instruction": "probe_kernel",
       "note": "slice-1 baseline (no design estimate exists for the v0.4 program)",
       "result": "Success"
     },
     {
-      "cu": 17828,
+      "cu": 14091,
       "instruction": "initialize_kernel",
       "note": "slice-1 baseline (no design estimate exists for the v0.4 program)",
       "result": "Success"
     },
     {
-      "cu": 18103,
+      "cu": 17366,
       "instruction": "seal_kernel",
       "note": "slice-1 baseline (no design estimate exists for the v0.4 program)",
       "result": "Success"
     },
     {
-      "cu": 23443,
+      "cu": 25706,
       "instruction": "init_reputation",
       "note": "golden freeze slice 62: reputation init chain (program slice 61)",
       "result": "Success"
@@ -33,19 +33,19 @@
       "result": "Success"
     },
     {
-      "cu": 11471,
+      "cu": 9971,
       "instruction": "register_transition",
       "note": "slice-1 baseline (no design estimate exists for the v0.4 program)",
       "result": "Success"
     },
     {
-      "cu": 24459,
+      "cu": 23722,
       "instruction": "ingest_observation",
       "note": "slice-1 baseline (no design estimate exists for the v0.4 program)",
       "result": "Success"
     },
     {
-      "cu": 8505,
+      "cu": 13005,
       "instruction": "init_gov_action",
       "note": "slice-1 baseline (no design estimate exists for the v0.4 program)",
       "result": "Success"
@@ -75,25 +75,25 @@
       "result": "Success"
     },
     {
-      "cu": 26174,
+      "cu": 25437,
       "instruction": "register_governance_transition",
       "note": "slice-1 baseline (no design estimate exists for the v0.4 program)",
       "result": "Success"
     },
     {
-      "cu": 37689,
+      "cu": 35452,
       "instruction": "approve_governance",
       "note": "slice-1 baseline (no design estimate exists for the v0.4 program)",
       "result": "Success"
     },
     {
-      "cu": 33029,
+      "cu": 32292,
       "instruction": "revise_governance_approval",
       "note": "slice-1 baseline (no design estimate exists for the v0.4 program)",
       "result": "Success"
     },
     {
-      "cu": 14505,
+      "cu": 8505,
       "instruction": "init_gov_action_abandoned",
       "note": "slice-1 baseline (no design estimate exists for the v0.4 program)",
       "result": "Success"
@@ -111,37 +111,37 @@
       "result": "Success"
     },
     {
-      "cu": 9971,
+      "cu": 11471,
       "instruction": "register_transition_life",
       "note": "slice-63/64 lifecycle chain (register + ingest; replay unblocked by the slice-64 F4 fix)",
       "result": "Success"
     },
     {
-      "cu": 22959,
+      "cu": 22222,
       "instruction": "ingest_observation_life",
       "note": "slice-63/64 lifecycle chain (register + ingest; replay unblocked by the slice-64 F4 fix)",
       "result": "Success"
     },
     {
-      "cu": 25491,
+      "cu": 24692,
       "instruction": "replay_transition_life",
       "note": "slice-64 F4 fix: first stage instruction to execute in-process; single-build refactor (resolve_proposer_on_kernel, 27 sites)",
       "result": "Success"
     },
     {
-      "cu": 25928,
+      "cu": 25164,
       "instruction": "evaluate_transition_life",
       "note": "slice-65 full lifecycle chain (evaluate through outcome with reputation tail)",
       "result": "Success"
     },
     {
-      "cu": 28235,
+      "cu": 27501,
       "instruction": "mark_eligible_life",
       "note": "slice-65 full lifecycle chain (evaluate through outcome with reputation tail)",
       "result": "Success"
     },
     {
-      "cu": 35367,
+      "cu": 37674,
       "instruction": "submit_signal_life",
       "note": "slice-65 full lifecycle chain (evaluate through outcome with reputation tail)",
       "result": "Success"
@@ -153,19 +153,19 @@
       "result": "Success"
     },
     {
-      "cu": 31761,
+      "cu": 31104,
       "instruction": "select_candidate_life",
       "note": "slice-65 full lifecycle chain (evaluate through outcome with reputation tail)",
       "result": "Success"
     },
     {
-      "cu": 32344,
+      "cu": 31724,
       "instruction": "open_planning_life",
       "note": "slice-65 full lifecycle chain (evaluate through outcome with reputation tail)",
       "result": "Success"
     },
     {
-      "cu": 40676,
+      "cu": 44591,
       "instruction": "submit_plan_life",
       "note": "slice-65 full lifecycle chain (evaluate through outcome with reputation tail)",
       "result": "Success"
@@ -177,37 +177,37 @@
       "result": "Success"
     },
     {
-      "cu": 38181,
+      "cu": 37632,
       "instruction": "reconcile_plans_life",
       "note": "slice-65 full lifecycle chain (evaluate through outcome with reputation tail)",
       "result": "Success"
     },
     {
-      "cu": 38409,
+      "cu": 37894,
       "instruction": "validate_transition_life",
       "note": "slice-65 full lifecycle chain (evaluate through outcome with reputation tail)",
       "result": "Success"
     },
     {
-      "cu": 39486,
+      "cu": 38987,
       "instruction": "declare_transition_life",
       "note": "slice-65 full lifecycle chain (evaluate through outcome with reputation tail)",
       "result": "Success"
     },
     {
-      "cu": 44854,
+      "cu": 44381,
       "instruction": "commit_transition_life",
       "note": "slice-65 full lifecycle chain (evaluate through outcome with reputation tail)",
       "result": "Success"
     },
     {
-      "cu": 23453,
+      "cu": 24216,
       "instruction": "init_reputation_life",
       "note": "slice-65 full lifecycle chain (evaluate through outcome with reputation tail)",
       "result": "Success"
     },
     {
-      "cu": 11505,
+      "cu": 10005,
       "instruction": "init_gov_action_gov2",
       "note": "slice-69 governance outcome tail (second governance chain at the moved head, through commit/settle/outcome)",
       "result": "Success"
@@ -237,55 +237,55 @@
       "result": "Success"
     },
     {
-      "cu": 30674,
+      "cu": 26937,
       "instruction": "register_governance_transition_gov2",
       "note": "slice-69 governance outcome tail (second governance chain at the moved head, through commit/settle/outcome)",
       "result": "Success"
     },
     {
-      "cu": 36189,
+      "cu": 35452,
       "instruction": "approve_governance_gov2_seat1",
       "note": "slice-69 governance outcome tail (second governance chain at the moved head, through commit/settle/outcome)",
       "result": "Success"
     },
     {
-      "cu": 45400,
+      "cu": 37163,
       "instruction": "approve_governance_gov2_seat2",
       "note": "slice-69 governance outcome tail (second governance chain at the moved head, through commit/settle/outcome)",
       "result": "Success"
     },
     {
-      "cu": 36419,
+      "cu": 35682,
       "instruction": "approve_governance_gov2_seat3",
       "note": "slice-69 governance outcome tail (second governance chain at the moved head, through commit/settle/outcome)",
       "result": "Success"
     },
     {
-      "cu": 22959,
+      "cu": 23722,
       "instruction": "ingest_observation_gov2",
       "note": "slice-69 governance outcome tail (second governance chain at the moved head, through commit/settle/outcome)",
       "result": "Success"
     },
     {
-      "cu": 66559,
+      "cu": 66095,
       "instruction": "replay_governance_gov2",
       "note": "slice-69 governance outcome tail (second governance chain at the moved head, through commit/settle/outcome)",
       "result": "Success"
     },
     {
-      "cu": 66936,
+      "cu": 66512,
       "instruction": "evaluate_governance_gov2",
       "note": "slice-69 governance outcome tail (second governance chain at the moved head, through commit/settle/outcome)",
       "result": "Success"
     },
     {
-      "cu": 69065,
+      "cu": 68670,
       "instruction": "mark_eligible_governance_gov2",
       "note": "slice-69 governance outcome tail (second governance chain at the moved head, through commit/settle/outcome)",
       "result": "Success"
     },
     {
-      "cu": 78445,
+      "cu": 79590,
       "instruction": "submit_signal_governance_gov2",
       "note": "slice-69 governance outcome tail (second governance chain at the moved head, through commit/settle/outcome)",
       "result": "Success"
@@ -297,19 +297,19 @@
       "result": "Success"
     },
     {
-      "cu": 73636,
+      "cu": 73320,
       "instruction": "select_candidate_governance_gov2",
       "note": "slice-69 governance outcome tail (second governance chain at the moved head, through commit/settle/outcome)",
       "result": "Success"
     },
     {
-      "cu": 74264,
+      "cu": 73985,
       "instruction": "open_planning_governance_gov2",
       "note": "slice-69 governance outcome tail (second governance chain at the moved head, through commit/settle/outcome)",
       "result": "Success"
     },
     {
-      "cu": 82265,
+      "cu": 86521,
       "instruction": "submit_plan_governance_gov2",
       "note": "slice-69 governance outcome tail (second governance chain at the moved head, through commit/settle/outcome)",
       "result": "Success"
@@ -321,61 +321,61 @@
       "result": "Success"
     },
     {
-      "cu": 78960,
+      "cu": 78752,
       "instruction": "reconcile_plans_governance_gov2",
       "note": "slice-69 governance outcome tail (second governance chain at the moved head, through commit/settle/outcome)",
       "result": "Success"
     },
     {
-      "cu": 79233,
+      "cu": 79058,
       "instruction": "validate_transition_governance_gov2",
       "note": "slice-69 governance outcome tail (second governance chain at the moved head, through commit/settle/outcome)",
       "result": "Success"
     },
     {
-      "cu": 79912,
+      "cu": 79752,
       "instruction": "declare_transition_governance_gov2",
       "note": "slice-69 governance outcome tail (second governance chain at the moved head, through commit/settle/outcome)",
       "result": "Success"
     },
     {
-      "cu": 87074,
+      "cu": 86939,
       "instruction": "commit_governance_gov2",
       "note": "slice-69 governance outcome tail (second governance chain at the moved head, through commit/settle/outcome)",
       "result": "Success"
     },
     {
-      "cu": 13602,
+      "cu": 15102,
       "instruction": "record_settlement_evidence_gov2",
       "note": "slice-69 governance outcome tail (second governance chain at the moved head, through commit/settle/outcome)",
       "result": "Success"
     },
     {
-      "cu": 90398,
+      "cu": 90355,
       "instruction": "settle_governance_transition_gov2",
       "note": "slice-69 governance outcome tail (second governance chain at the moved head, through commit/settle/outcome)",
       "result": "Success"
     },
     {
-      "cu": 111307,
+      "cu": 110451,
       "instruction": "record_outcome_governance_gov2",
       "note": "slice-69 governance outcome tail (second governance chain at the moved head, through commit/settle/outcome)",
       "result": "Success"
     },
     {
-      "cu": 15102,
+      "cu": 13602,
       "instruction": "record_settlement_evidence_life",
       "note": "slice-65 full lifecycle chain (evaluate through outcome with reputation tail)",
       "result": "Success"
     },
     {
-      "cu": 46565,
+      "cu": 46186,
       "instruction": "settle_transition_life",
       "note": "slice-65 full lifecycle chain (evaluate through outcome with reputation tail)",
       "result": "Success"
     },
     {
-      "cu": 67674,
+      "cu": 66482,
       "instruction": "record_outcome_life",
       "note": "slice-65 full lifecycle chain (evaluate through outcome with reputation tail)",
       "result": "Success"
@@ -383,10 +383,10 @@
   ],
   "mollusk_svm": "0.16.4",
   "program": "program_v04",
-  "program_id": "FzxnCtig4asxnCxGhjcbCDY5zkfcpfTb5GcXNL9UaGg6",
+  "program_id": "2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr",
   "refusals": [
     {
-      "cu": 5636,
+      "cu": 8636,
       "error": "Failure(Custom(0))",
       "instruction": "init_reputation_again",
       "note": "golden freeze slice 62: the `init` constraint makes a reputation record one-time — no caller can reset a reputation to genesis after outcomes move it",
@@ -400,7 +400,7 @@
       "result": "Refused"
     }
   ],
-  "slice": "slice 69: governance outcome tail + second-commit-at-moved-head chain (26 new measurements, 63 total). A second governance chain (GOV2) registered at the moved head (1, DECLARED_HASH) runs replay through outcome while the life record still stands COMMITTED — the prior-bundle driver requires exactly COMMITTED, so the chain sits between commit_life and settle_life, carrying the life bundle as its one prior; unanimity needs all three council seats. The slice-1 governance record cannot serve this chain (registered at the genesis parent, it can never commit after the head moved). init_reputation_life moved to just after commit_life (same label) so the gov2 outcome can attribute ag(2); the life outcome then credits ag(2) a second +10 (50,000,010 -> 50,000,020). The program is unchanged since slice 68, so the .so hash and all 37 prior CU values must reproduce exactly.",
-  "so_sha256": "0125cf1eeb856fa8b41abc95b34abc0d9b32cc943fe24c8ac5e7f38dcae7af3e",
+  "slice": "slice 69: governance outcome tail + second-commit-at-moved-head chain (26 new measurements, 63 total). A second governance chain (GOV2) registered at the moved head (1, DECLARED_HASH) runs replay through outcome while the life record still stands COMMITTED — the prior-bundle driver requires exactly COMMITTED, so the chain sits between commit_life and settle_life, carrying the life bundle as its one prior; unanimity needs all three council seats. The slice-1 governance record cannot serve this chain (registered at the genesis parent, it can never commit after the head moved). init_reputation_life moved to just after commit_life (same label) so the gov2 outcome can attribute ag(2); the life outcome then credits ag(2) a second +10 (50,000,010 -> 50,000,020). RE-FREEZE 2026-10-30 (v0.4.2 adoption + devnet program id): kernel 0.4.1 -> 0.4.2 (allocation-only: Box<Rec> transitions, Cow reason; delivered crate byte-identical to the pristine v042 intake, 40/40 tests incl. the new alloc_profile test; program host tests 457/457) and declare_id FzxnCtig4asxnCxGhjcbCDY5zkfcpfTb5GcXNL9UaGg6 -> 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr (fresh devnet-only program keypair; staging Anchor.toml documents it). All 65 steps pass with identical outcomes (63 Success + 2 refusals, no label added or removed, all chain asserts incl. the 50,000,020 outcome credit green), but 49 of 65 CU values move — EXPECTED, not a regression: on-chain PDA bump search depends on the program id, so CU is not comparable across program ids, and this file is the new baseline for the devnet-id binary (so_sha256 b47ea2fa...). The tripwire/smallframe guards were proven on the prior binary and are PENDING re-run on this binary (queue item, before the final freeze). This is an INTERIM re-freeze, not the merge-gate final freeze (which waits on the chain-length fixture + enforcement).",
+  "so_sha256": "b47ea2fadc4bed22d682c46c3b7a3d7fd9f5b6a7198fe405c4e2c413d6c4dc43",
   "toolchain": "Anchor 1.2.2 / Solana 4.3.2 / platform-tools v1.57"
 }

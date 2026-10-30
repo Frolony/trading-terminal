@@ -239,7 +239,7 @@ use solana_instruction::{AccountMeta, Instruction};
 use solana_pubkey::Pubkey;
 use std::str::FromStr;
 
-const PROGRAM_ID: &str = "FzxnCtig4asxnCxGhjcbCDY5zkfcpfTb5GcXNL9UaGg6";
+const PROGRAM_ID: &str = "2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr";
 const SYSTEM_ID: &str = "11111111111111111111111111111111";
 const MOLLUSK_SVM_VERSION: &str = "0.16.4";
 const TOOLCHAIN: &str = "Anchor 1.2.2 / Solana 4.3.2 / platform-tools v1.57";
@@ -1980,7 +1980,7 @@ fn main() {
         "so_sha256": so_sha256,
         "mollusk_svm": MOLLUSK_SVM_VERSION,
         "toolchain": TOOLCHAIN,
-        "slice": "slice 69: governance outcome tail + second-commit-at-moved-head chain (26 new measurements, 63 total). A second governance chain (GOV2) registered at the moved head (1, DECLARED_HASH) runs replay through outcome while the life record still stands COMMITTED — the prior-bundle driver requires exactly COMMITTED, so the chain sits between commit_life and settle_life, carrying the life bundle as its one prior; unanimity needs all three council seats. The slice-1 governance record cannot serve this chain (registered at the genesis parent, it can never commit after the head moved). init_reputation_life moved to just after commit_life (same label) so the gov2 outcome can attribute ag(2); the life outcome then credits ag(2) a second +10 (50,000,010 -> 50,000,020). The program is unchanged since slice 68, so the .so hash and all 37 prior CU values must reproduce exactly.",
+        "slice": "slice 69: governance outcome tail + second-commit-at-moved-head chain (26 new measurements, 63 total). A second governance chain (GOV2) registered at the moved head (1, DECLARED_HASH) runs replay through outcome while the life record still stands COMMITTED — the prior-bundle driver requires exactly COMMITTED, so the chain sits between commit_life and settle_life, carrying the life bundle as its one prior; unanimity needs all three council seats. The slice-1 governance record cannot serve this chain (registered at the genesis parent, it can never commit after the head moved). init_reputation_life moved to just after commit_life (same label) so the gov2 outcome can attribute ag(2); the life outcome then credits ag(2) a second +10 (50,000,010 -> 50,000,020). RE-FREEZE 2026-10-30 (v0.4.2 adoption + devnet program id): kernel 0.4.1 -> 0.4.2 (allocation-only: Box<Rec> transitions, Cow reason; delivered crate byte-identical to the pristine v042 intake, 40/40 tests incl. the new alloc_profile test; program host tests 457/457) and declare_id FzxnCtig4asxnCxGhjcbCDY5zkfcpfTb5GcXNL9UaGg6 -> 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr (fresh devnet-only program keypair; staging Anchor.toml documents it). All 65 steps pass with identical outcomes (63 Success + 2 refusals, no label added or removed, all chain asserts incl. the 50,000,020 outcome credit green), but 49 of 65 CU values move — EXPECTED, not a regression: on-chain PDA bump search depends on the program id, so CU is not comparable across program ids, and this file is the new baseline for the devnet-id binary (so_sha256 b47ea2fa...). The tripwire/smallframe guards were proven on the prior binary and are PENDING re-run on this binary (queue item, before the final freeze). This is an INTERIM re-freeze, not the merge-gate final freeze (which waits on the chain-length fixture + enforcement).",
         "measured": measured,
         "refusals": refusals,
         "blocked": [],
