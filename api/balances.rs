@@ -32,6 +32,26 @@
 // RPC helper, the cache discipline (fully-successful only, 30 s), and
 // the client-safe error strings.
 //
+// N3.35 (2026-10-29, A131, data-source roadmap D1): this route also
+// serves EVM token facts (GET /api/balances?mode=evm-token&chain=<disc
+// id>&address=0x...): a server-side read of the per-chain keyless
+// Blockscout instance (/api/v2/tokens/<address>), merged here, not a
+// new api/*.rs file, because Vercel Hobby allows 12 serverless
+// functions and this project already uses all 12. The instance host
+// is chosen server-side from the disc chain id; only chains whose
+// instance was verified live are mapped (ethereum, base, zksync —
+// the zksync instance at zksync.blockscout.com was confirmed live
+// 2026-10-30 by a read of its Blockscout homepage, titled for
+// zkSync Era; any other chain answers UNSUPPORTED_CHAIN, and the
+// strip keeps today's honest dashes, never a guessed figure). Explicit User-Agent: the
+// instances' CDN refuses default client signatures (the 1010 class
+// in the Blockscout connector doc), so this branch builds its own
+// client with TurnpoolBlockscoutClient/1.0 instead of reusing
+// common::client(). DISPLAY FACTS ONLY: name/symbol, total supply
+// (whole tokens), holder count, reputation flag — exactly what the
+// payload carries; a missing field is null, never an estimate. A
+// token the instance does not know answers TOKEN_NOT_FOUND, never a
+// guessed row.
 // N5.40 (2026-10-29, A126): this route also serves the mint/freeze
 // authority display (GET /api/balances?mode=mint-authority&mint=<base58>):
 // getAccountInfo for the mint, parsed server-side from the SPL Mint
@@ -458,12 +478,187 @@ fn parse_supply(result: &Value) -> Result<f64, String> {
     }
 }
 
+// N3.35 EVM token-facts branch (data-source roadmap D1).
+const BS_USER_AGENT: &str = "TurnpoolBlockscoutClient/1.0";
+
+fn query_evm_token(req: &Request) -> bool {
+    query_param(req, "mode").as_deref() == Some("evm-token")
+}
+
+/// Disc chain id -> keyless Blockscout instance base URL. Only
+/// instances verified live this run are mapped; anything else is
+/// UNSUPPORTED_CHAIN (honest dashes on the strip, no guessed host).
+fn bs_instance(chain: &str) -> Option<&'static str> {
+    match chain {
+        "ethereum" => Some("https://eth.blockscout.com"),
+        "base" => Some("https://base.blockscout.com"),
+        "zksync" => Some("https://zksync.blockscout.com"),
+        _ => None,
+    }
+}
+
+fn valid_evm_address(a: &str) -> bool {
+    a.len() == 42
+        && a.starts_with("0x")
+        && a[2..].chars().all(|c| c.is_ascii_hexdigit())
+}
+
+/// Blockscout /tokens/<address> payload -> display facts. Every field
+/// is optional: a missing or malformed field is None, never a guess.
+/// Supply is total_supply (base units, string) / 10^decimals; a
+/// decimals value outside 0..=18 voids only the supply, not the row.
+fn parse_bs_token(j: &Value) -> (Option<String>, Option<String>, Option<f64>, Option<u64>, Option<String>) {
+    let str_field = |k: &str| j.get(k).and_then(|v| v.as_str()).map(|x| x.to_string());
+    let name = str_field("name");
+    let symbol = str_field("symbol");
+    let reputation = str_field("reputation");
+    let holders: Option<u64> = match j.get("holders_count") {
+        Some(v) if v.is_string() => v.as_str().and_then(|x| x.parse().ok()),
+        Some(v) => v.as_u64(),
+        None => None,
+    };
+    let decimals: Option<i64> = match j.get("decimals") {
+        Some(v) if v.is_string() => v.as_str().and_then(|x| x.parse().ok()),
+        Some(v) => v.as_i64(),
+        None => None,
+    };
+    let supply: Option<f64> = match (j.get("total_supply").and_then(|v| v.as_str()).and_then(|x| x.parse::<f64>().ok()), decimals) {
+        (Some(raw), Some(d)) if (0..=18).contains(&d) => {
+            let out = raw / 10f64.powi(d as i32);
+            if out.is_finite() { Some(out) } else { None }
+        }
+        _ => None,
+    };
+    (name, symbol, supply, holders, reputation)
+}
+
+async fn evm_token_handler(req: &Request) -> Result<Value, Error> {
+    let chain = match query_param(req, "chain") {
+        Some(c) => c,
+        None => {
+            return Ok(common::api_error(
+                "INVALID_CHAIN",
+                "Query parameter chain=<disc chain id> is required.",
+            ))
+        }
+    };
+    let address = match query_param(req, "address") {
+        Some(a) => a,
+        None => {
+            return Ok(common::api_error(
+                "INVALID_ADDRESS",
+                "Query parameter address=<0x contract> is required.",
+            ))
+        }
+    };
+    if !valid_evm_address(&address) {
+        return Ok(common::api_error(
+            "INVALID_ADDRESS",
+            "address must be a 0x-prefixed 40-hex-character contract address.",
+        ));
+    }
+    let base = match bs_instance(&chain) {
+        Some(b) => b,
+        None => {
+            return Ok(common::api_error(
+                "UNSUPPORTED_CHAIN",
+                "No verified keyless Blockscout instance is mapped for this chain; the strip keeps its honest dashes.",
+            ))
+        }
+    };
+    let key = format!("evm-token:{}:{}", chain, address.to_lowercase());
+    if let Ok(guard) = cache().lock() {
+        if let Some((at, val)) = guard.get(&key) {
+            if at.elapsed() < CACHE_TTL {
+                let mut hit = val.clone();
+                if let Some(obj) = hit.as_object_mut() {
+                    obj.insert("cached".to_string(), json!(true));
+                }
+                return Ok(hit);
+            }
+        }
+    }
+    let client = match reqwest::Client::builder()
+        .user_agent(BS_USER_AGENT)
+        .timeout(Duration::from_secs(10))
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => {
+            return Ok(common::api_error(
+                "UPSTREAM_FAILED",
+                "Could not build the upstream Blockscout client.",
+            ))
+        }
+    };
+    let url = format!("{}/api/v2/tokens/{}", base, address);
+    let resp = match client.get(&url).send().await {
+        Ok(r) => r,
+        Err(_) => {
+            return Ok(common::api_error(
+                "UPSTREAM_FAILED",
+                "Blockscout instance transport error.",
+            ))
+        }
+    };
+    let status = resp.status().as_u16();
+    if status == 404 {
+        return Ok(common::api_error(
+            "TOKEN_NOT_FOUND",
+            "Blockscout does not know this token on this chain.",
+        ));
+    }
+    if !resp.status().is_success() {
+        return Ok(common::api_error(
+            "UPSTREAM_FAILED",
+            &format!("Blockscout instance error (HTTP {})", status),
+        ));
+    }
+    let j: Value = match resp.json().await {
+        Ok(v) => v,
+        Err(_) => {
+            return Ok(common::api_error(
+                "UPSTREAM_FAILED",
+                "Blockscout instance response was not JSON.",
+            ))
+        }
+    };
+    if let Some(echo) = j.get("address_hash").and_then(|v| v.as_str()) {
+        if echo.to_lowercase() != address.to_lowercase() {
+            return Ok(common::api_error(
+                "UPSTREAM_FAILED",
+                "Blockscout instance answered for a different address.",
+            ));
+        }
+    }
+    let (name, symbol, supply, holders, reputation) = parse_bs_token(&j);
+    let out = json!({
+        "ok": true,
+        "chain": chain,
+        "address": address,
+        "source": base,
+        "name": name,
+        "symbol": symbol,
+        "totalSupply": supply,
+        "holdersCount": holders,
+        "reputation": reputation,
+        "cached": false,
+    });
+    if let Ok(mut guard) = cache().lock() {
+        guard.insert(key, (Instant::now(), out.clone()));
+    }
+    Ok(out)
+}
+
 async fn handler(req: Request) -> Result<Value, Error> {
     if query_supply(&req) {
         return supply_handler(&req).await;
     }
     if query_mint_authority(&req) {
         return mint_auth_handler(&req).await;
+    }
+    if query_evm_token(&req) {
+        return evm_token_handler(&req).await;
     }
     let owner = match query_owner(&req) {
         Some(o) => o,
@@ -698,5 +893,68 @@ mod n540_tests {
         let mut data2 = mint_bytes(0, &[0u8; 32], 1, &[9u8; 32]);
         data2[46..50].copy_from_slice(&9u32.to_le_bytes());
         assert!(parse_mint_authorities(&data2).is_none());
+    }
+}
+
+#[cfg(test)]
+mod n335_tests {
+    use super::*;
+
+    #[test]
+    fn chain_map_only_verified_instances() {
+        assert_eq!(bs_instance("ethereum"), Some("https://eth.blockscout.com"));
+        assert_eq!(bs_instance("base"), Some("https://base.blockscout.com"));
+        assert_eq!(bs_instance("solana"), None);
+        assert_eq!(bs_instance("bsc"), None);
+        assert_eq!(bs_instance("zksync"), Some("https://zksync.blockscout.com"));
+        assert_eq!(bs_instance(""), None);
+    }
+
+    #[test]
+    fn evm_address_validation() {
+        assert!(valid_evm_address("0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"));
+        assert!(valid_evm_address("0x4200000000000000000000000000000000000006"));
+        assert!(!valid_evm_address("C02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"));
+        assert!(!valid_evm_address("0xZZZ"));
+        assert!(!valid_evm_address("So11111111111111111111111111111111111111112"));
+        assert!(!valid_evm_address(""));
+    }
+
+    #[test]
+    fn parse_eth_weth_payload() {
+        // Shape probed live 2026-10-30 from eth.blockscout.com.
+        let j = json!({"address_hash":"0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2","decimals":"18","holders_count":"3359750","name":"WETH","reputation":"ok","symbol":"WETH","total_supply":"2068149417326146965621779","type":"ERC-20"});
+        let (name, symbol, supply, holders, rep) = parse_bs_token(&j);
+        assert_eq!(name.as_deref(), Some("WETH"));
+        assert_eq!(symbol.as_deref(), Some("WETH"));
+        assert_eq!(holders, Some(3359750));
+        assert_eq!(rep.as_deref(), Some("ok"));
+        let s = supply.unwrap();
+        assert!((s - 2068149.4173261456).abs() < 1.0, "supply={}", s);
+    }
+
+    #[test]
+    fn parse_base_weth_payload() {
+        // Shape probed live 2026-10-30 from base.blockscout.com.
+        let j = json!({"address_hash":"0x4200000000000000000000000000000000000006","decimals":"18","holders_count":"5269729","name":"L2 Standard Bridged WETH (Base)","reputation":"ok","symbol":"WETH","total_supply":"284673381463291273179290","type":"ERC-20"});
+        let (_, _, supply, holders, _) = parse_bs_token(&j);
+        assert_eq!(holders, Some(5269729));
+        let s = supply.unwrap();
+        assert!((s - 284673.38146329127).abs() < 1.0, "supply={}", s);
+    }
+
+    #[test]
+    fn parse_missing_fields_are_null_not_guessed() {
+        let j = json!({"address_hash":"0x4200000000000000000000000000000000000006"});
+        let (name, symbol, supply, holders, rep) = parse_bs_token(&j);
+        assert!(name.is_none() && symbol.is_none() && supply.is_none() && holders.is_none() && rep.is_none());
+        let j2 = json!({"decimals":"99","total_supply":"1000","holders_count":"not-a-number"});
+        let (_, _, supply2, holders2, _) = parse_bs_token(&j2);
+        assert!(supply2.is_none(), "out-of-range decimals must void supply only");
+        assert!(holders2.is_none());
+        let j3 = json!({"decimals":"6","total_supply":"2500000","holders_count":42});
+        let (_, _, supply3, holders3, _) = parse_bs_token(&j3);
+        assert_eq!(supply3, Some(2.5));
+        assert_eq!(holders3, Some(42));
     }
 }
