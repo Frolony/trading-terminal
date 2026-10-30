@@ -150,6 +150,43 @@
 //! `seal_kernel` (one full genesis build) fits in the
 //! default 32 KiB heap.
 //!
+//! SLICE-65 ADDENDUM — full lifecycle chain, replay through outcome.
+//! The slice-64 chain continues past replay at clock 200: evaluate,
+//! mark_eligible (window 200/300), a round-0 signal by ag(2) (raw
+//! SCALE, support SCALE — weight 2.0, confidence 1.0, clearing the
+//! 1.0 quorum and the 0.5 threshold alone, as in the host tests),
+//! advance to the 300 deadline, select, open_planning by the
+//! proposer seat1 (planning deadline 400), a two-claim plan by ag(2)
+//! (tranche 10 * SCALE, lending book 5 * SCALE, expiring 500),
+//! advance to 400, reconcile (compatible), validate, declare,
+//! commit (head moves to 1 at the declared hash), settlement
+//! evidence recorded by the launch observer at the declared hash,
+//! settle (exact), init_reputation for ag(2), and record_outcome
+//! by RECORDER with attribution (ag(2), +10) — the reputation tail
+//! slice 62 explicitly left unmeasured. All prior measurements
+//! must reproduce exactly; the program is unchanged since slice 64.
+//!
+//! SLICE-66 ADDENDUM (2026-10-30) — F6 direction (c) lands in the
+//! program: a custom 256 KiB SBF heap allocator (PROGRAM_ALLOCATOR,
+//! `custom-heap` default feature) replaces the entrypoint default, and
+//! this harness requests the matching 256 KiB heap frame for every
+//! instruction (see the heap_size assignment in main). If the full
+//! slice-65 chain now completes, the golden re-freezes as slice 66:
+//! prior values shift by the 56 CU heap-cost delta of the 256 KiB frame
+//! (plus any allocator-code delta, expected zero — same BumpAllocator
+//! code, only the length constant changes), and the slice-65 stage
+//! values land for the first time.
+//!
+//! SLICE-65 STATUS (2026-10-30): PARTIAL — evaluate (25,872 CU),
+//! mark_eligible (28,179 CU), and submit_signal (35,311 CU) execute
+//! in-process, but select_candidate panics out-of-memory at
+//! 27,977 CU (finding F6: select's longer replay exceeds the
+//! effective 32 KiB SBF heap under cumulative accounting — host
+//! peak live 27,837 bytes, total 31,237 bytes). The steps past
+//! select below are scripted and asserted but UNPROVEN in-process
+//! until F6 is resolved; the golden file is not rewritten from
+//! this partial chain.
+//!
 //! SLICE-64 ADDENDUM — F4 FIXED, replay executes in-process.
 //! The stage helpers no longer build two kernels: the new
 //! `resolve_proposer_on_kernel` judges the proposer on the single
@@ -248,6 +285,10 @@ const LIFE_TID: [u8; 32] = [0xD4; 32];
 const LIFE_OBS: [u8; 32] = [0xC2; 32];
 // Launch-profile ordinary transition type (lib.rs `TT`).
 const TT_TYPE: [u8; 32] = [9; 32];
+// Kernel Amount SCALE (coordination-kernel-rs num.rs): 1.0 in raw units.
+const SCALE: u64 = 1_000_000;
+// Launch RECORDER identity (lib.rs): the outcome recorder role holder.
+const RECORDER: [u8; 32] = [0xB4; 32];
 const DECLARED_HASH: [u8; 32] = [0xE1; 32];
 const GOV_OBS: [u8; 32] = [0xC0; 32];
 const INGEST_OBS: [u8; 32] = [0xC1; 32];
@@ -392,7 +433,18 @@ fn main() {
 
     let program_id = Pubkey::from_str(PROGRAM_ID).unwrap();
     let system_id = Pubkey::from_str(SYSTEM_ID).unwrap();
-    let mollusk = Mollusk::new(&program_id, "program_v04");
+    let mut mollusk = Mollusk::new(&program_id, "program_v04");
+    // Slice 66 (F6 direction (c)): the program now carries a custom 256 KiB
+    // SBF heap allocator (PROGRAM_ALLOCATOR), and its bump allocator
+    // allocates top-down from the end of that range — so the harness must
+    // request the matching 256 KiB heap frame for every instruction, or
+    // the first allocation faults outside the mapped region. This is the
+    // client contract the program's slice-66 comment states, not a
+    // harness-only tweak: any real client must include a
+    // request_heap_frame(256 * 1024) instruction. Heap cost at 256 KiB
+    // is 56 CU over the 32 KiB default, so golden values re-freeze with
+    // that uniform shift on top of any allocator-code delta.
+    mollusk.compute_budget.heap_size = 256 * 1024;
 
     // Throwaway local-test payers. Seat 1 and the observer are pinned
     // profile identities; the others are arbitrary signers.
@@ -433,6 +485,19 @@ fn main() {
     // accounts are needed yet).
     let (life_record, _) = pda(&[b"transition", LIFE_TID.as_ref()], &program_id);
     let (life_obs, _) = pda(&[b"observation", LIFE_OBS.as_ref()], &program_id);
+    // Slice-65 lifecycle chain accounts: the round-0 signal by
+    // ag(2), its plan, the settlement evidence, and ag(2)'s
+    // reputation record (init'd just before record_outcome).
+    let signaler = Pubkey::new_from_array([2; 32]);
+    let recorder = Pubkey::new_from_array(RECORDER);
+    let round0_le = 0u64.to_le_bytes();
+    let (life_signal, _) = pda(
+        &[b"signal", LIFE_TID.as_ref(), signaler.as_ref(), &round0_le],
+        &program_id,
+    );
+    let (life_plan, _) = pda(&[b"plan", LIFE_TID.as_ref(), signaler.as_ref()], &program_id);
+    let (life_evidence, _) = pda(&[b"evidence", LIFE_TID.as_ref()], &program_id);
+    let (rep_ag2, _) = pda(&[b"reputation", signaler.as_ref()], &program_id);
 
     let empty = Account {
         lamports: 0,
@@ -461,10 +526,16 @@ fn main() {
         (rep_record, empty.clone()),
         (life_record, empty.clone()),
         (life_obs, empty.clone()),
+        (life_signal, empty.clone()),
+        (life_plan, empty.clone()),
+        (life_evidence, empty.clone()),
+        (rep_ag2, empty.clone()),
         (payer, funded.clone()),
         (seat1, funded.clone()),
         (observer, funded.clone()),
         (proposer, funded.clone()),
+        (signaler, funded.clone()),
+        (recorder, funded.clone()),
     ];
 
     let mut measured: Vec<serde_json::Value> = Vec::new();
@@ -1012,13 +1083,339 @@ fn main() {
     measured.push(serde_json::json!({"instruction": "replay_transition_life", "cu": cu, "result": "Success", "note": "slice-64 F4 fix: first stage instruction to execute in-process; single-build refactor (resolve_proposer_on_kernel, 27 sites)"}));
     assert_eq!(find(&accounts, &life_record).data[216], 1, "lifecycle record must advance to KERNEL_REGISTERED");
 
+    // SLICE-65 — full lifecycle chain (see the header addendum).
+    // Clock is 200; the record is KERNEL_REGISTERED at the sealed
+    // genesis head (0, zero hash). Stage offsets in
+    // TransitionRecord (SPACE 271): stage 216, eligible_at 217,
+    // consensus_deadline 225, planning_deadline 233, signal_count
+    // 241, plan_count 249, approval_count 257, replans 265 (u32),
+    // compatible 269. KernelState: sealed 8, head_index 9,
+    // head_hash 17..49, clock 49.
+    let life_note65 = "slice-65 full lifecycle chain (evaluate through outcome with reputation tail)";
+    // Small helper data prefix: disc + LIFE_TID + LIFE_OBS + u32 0
+    // (prior_bundle_count: the lifecycle parent is the sealed
+    // genesis head, so there are no prior bundles).
+    let stage_ix = |name: &str| -> Vec<u8> {
+        let mut d = disc(name);
+        d.extend_from_slice(&LIFE_TID);
+        d.extend_from_slice(&LIFE_OBS);
+        d.extend_from_slice(&0u32.to_le_bytes());
+        d
+    };
+    let stage_accounts = |ks_mut: bool| -> Vec<AccountMeta> {
+        vec![
+            if ks_mut { AccountMeta::new(kernel_state, false) } else { AccountMeta::new_readonly(kernel_state, false) },
+            AccountMeta::new(life_record, false),
+            AccountMeta::new_readonly(life_obs, false),
+            AccountMeta::new_readonly(payer, true),
+        ]
+    };
+
+    // evaluate_transition @200 -> EVALUATED (2).
+    let ix = Instruction::new_with_bytes(program_id, &stage_ix("evaluate_transition"), stage_accounts(false));
+    let (next, cu) = run(&mollusk, "evaluate_transition_life", &ix, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({"instruction": "evaluate_transition_life", "cu": cu, "result": "Success", "note": life_note65}));
+    assert_eq!(find(&accounts, &life_record).data[216], 2, "lifecycle record must advance to EVALUATED");
+
+    // mark_eligible @200 -> ELIGIBLE (3), window 200/300, and the
+    // sibling census reset to 1 at the genesis parent (select
+    // proves the census; no direct KernelState census assert — its
+    // layout past the clock is not pinned by this harness).
+    let ix = Instruction::new_with_bytes(program_id, &stage_ix("mark_eligible"), stage_accounts(true));
+    let (next, cu) = run(&mollusk, "mark_eligible_life", &ix, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({"instruction": "mark_eligible_life", "cu": cu, "result": "Success", "note": life_note65}));
+    let rec = find(&accounts, &life_record);
+    assert_eq!(rec.data[216], 3, "lifecycle record must advance to ELIGIBLE");
+    assert_eq!(u64_at(&rec.data, 217), 200, "eligibility window must open at the 200 clock");
+    assert_eq!(u64_at(&rec.data, 225), 300, "consensus deadline must be 200 + the 100-tick window");
+
+    // submit_signal round 0 @200 by ag(2): raw SCALE, support
+    // SCALE, has_support true. No priors (first signal).
+    let mut data = disc("submit_signal");
+    data.extend_from_slice(&LIFE_TID);
+    data.extend_from_slice(&LIFE_OBS);
+    data.extend_from_slice(&u64le(0));
+    data.extend_from_slice(&u64le(SCALE));
+    data.extend_from_slice(&u64le(SCALE));
+    data.push(1u8);
+    data.extend_from_slice(&0u32.to_le_bytes());
+    let ix = Instruction::new_with_bytes(
+        program_id,
+        &data,
+        vec![
+            AccountMeta::new_readonly(kernel_state, false),
+            AccountMeta::new(life_record, false),
+            AccountMeta::new_readonly(life_obs, false),
+            AccountMeta::new(life_signal, false),
+            AccountMeta::new(signaler, true),
+            AccountMeta::new_readonly(system_id, false),
+        ],
+    );
+    let (next, cu) = run(&mollusk, "submit_signal_life", &ix, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({"instruction": "submit_signal_life", "cu": cu, "result": "Success", "note": life_note65}));
+    let rec = find(&accounts, &life_record);
+    assert_eq!(rec.data[216], 3, "signals must not advance the stage");
+    assert_eq!(u64_at(&rec.data, 241), 1, "signal_count must move to 1");
+    // SignalRecord layout: 8 + 32 + 32 + 8 (round) + 8 (raw) +
+    // 8 (support) + 1 (has_support) + 8 (submitted_at) + 1 (bump).
+    let sg = find(&accounts, &life_signal);
+    assert_eq!(u64_at(&sg.data, 72), 0, "signal must be round 0");
+    assert_eq!(u64_at(&sg.data, 80), SCALE, "signal raw must be SCALE");
+    assert_eq!(u64_at(&sg.data, 97), 200, "signal must be submitted at clock 200");
+
+    // advance_clock to the 300 consensus deadline.
+    let mut data = disc("advance_clock");
+    data.extend_from_slice(&u64le(300));
+    let ix = Instruction::new_with_bytes(
+        program_id,
+        &data,
+        vec![
+            AccountMeta::new(kernel_state, false),
+            AccountMeta::new_readonly(payer, true),
+        ],
+    );
+    let (next, cu) = run(&mollusk, "advance_clock_300", &ix, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({"instruction": "advance_clock_300", "cu": cu, "result": "Success", "note": life_note65}));
+    assert_eq!(u64_at(&find(&accounts, &kernel_state).data, 49), 300, "clock must advance to 300");
+
+    // select_candidate @300 (closed window) with the one prior
+    // signal -> SELECTED (4).
+    let mut metas = stage_accounts(false);
+    metas.push(AccountMeta::new_readonly(life_signal, false));
+    let ix = Instruction::new_with_bytes(program_id, &stage_ix("select_candidate"), metas);
+    let (next, cu) = run(&mollusk, "select_candidate_life", &ix, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({"instruction": "select_candidate_life", "cu": cu, "result": "Success", "note": life_note65}));
+    assert_eq!(find(&accounts, &life_record).data[216], 4, "lifecycle record must advance to SELECTED");
+
+    // open_planning @300 by the proposer seat1 -> PLANNING (5),
+    // planning deadline 400.
+    let ix = Instruction::new_with_bytes(
+        program_id,
+        &stage_ix("open_planning"),
+        vec![
+            AccountMeta::new_readonly(kernel_state, false),
+            AccountMeta::new(life_record, false),
+            AccountMeta::new_readonly(life_obs, false),
+            AccountMeta::new_readonly(seat1, true),
+            AccountMeta::new_readonly(life_signal, false),
+        ],
+    );
+    let (next, cu) = run(&mollusk, "open_planning_life", &ix, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({"instruction": "open_planning_life", "cu": cu, "result": "Success", "note": life_note65}));
+    let rec = find(&accounts, &life_record);
+    assert_eq!(rec.data[216], 5, "lifecycle record must advance to PLANNING");
+    assert_eq!(u64_at(&rec.data, 233), 400, "planning deadline must be 300 + the 100-tick window");
+
+    // submit_plan @300 by ag(2): tranche 10 * SCALE + lending
+    // book 5 * SCALE (both far inside the 1000 / 500 * SCALE
+    // stocks), expiring 500 (past the planning deadline).
+    let mut data = disc("submit_plan");
+    data.extend_from_slice(&LIFE_TID);
+    data.extend_from_slice(&LIFE_OBS);
+    data.extend_from_slice(&2u32.to_le_bytes());
+    data.extend_from_slice(&0u16.to_le_bytes());
+    data.extend_from_slice(&u64le(10 * SCALE));
+    data.extend_from_slice(&1u16.to_le_bytes());
+    data.extend_from_slice(&u64le(5 * SCALE));
+    data.extend_from_slice(&u64le(500));
+    data.extend_from_slice(&0u32.to_le_bytes());
+    let ix = Instruction::new_with_bytes(
+        program_id,
+        &data,
+        vec![
+            AccountMeta::new_readonly(kernel_state, false),
+            AccountMeta::new(life_record, false),
+            AccountMeta::new_readonly(life_obs, false),
+            AccountMeta::new(life_plan, false),
+            AccountMeta::new(signaler, true),
+            AccountMeta::new_readonly(system_id, false),
+            AccountMeta::new_readonly(life_signal, false),
+        ],
+    );
+    let (next, cu) = run(&mollusk, "submit_plan_life", &ix, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({"instruction": "submit_plan_life", "cu": cu, "result": "Success", "note": life_note65}));
+    let rec = find(&accounts, &life_record);
+    assert_eq!(rec.data[216], 5, "plans must not advance the stage");
+    assert_eq!(u64_at(&rec.data, 249), 1, "plan_count must move to 1");
+
+    // advance_clock to the 400 planning deadline.
+    let mut data = disc("advance_clock");
+    data.extend_from_slice(&u64le(400));
+    let ix = Instruction::new_with_bytes(
+        program_id,
+        &data,
+        vec![
+            AccountMeta::new(kernel_state, false),
+            AccountMeta::new_readonly(payer, true),
+        ],
+    );
+    let (next, cu) = run(&mollusk, "advance_clock_400", &ix, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({"instruction": "advance_clock_400", "cu": cu, "result": "Success", "note": life_note65}));
+    assert_eq!(u64_at(&find(&accounts, &kernel_state).data, 49), 400, "clock must advance to 400");
+
+    // reconcile_plans @400 (closed window) -> RECONCILING (7),
+    // compatible true (the fitting plan set).
+    let mut metas = stage_accounts(false);
+    metas.push(AccountMeta::new_readonly(life_signal, false));
+    metas.push(AccountMeta::new_readonly(life_plan, false));
+    let ix = Instruction::new_with_bytes(program_id, &stage_ix("reconcile_plans"), metas);
+    let (next, cu) = run(&mollusk, "reconcile_plans_life", &ix, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({"instruction": "reconcile_plans_life", "cu": cu, "result": "Success", "note": life_note65}));
+    let rec = find(&accounts, &life_record);
+    assert_eq!(rec.data[216], 7, "lifecycle record must advance to RECONCILING");
+    assert_eq!(rec.data[269], 1, "the fitting plan set must reconcile compatible");
+
+    // validate_transition @400 -> VALIDATED (8).
+    let mut metas = stage_accounts(false);
+    metas.push(AccountMeta::new_readonly(life_signal, false));
+    metas.push(AccountMeta::new_readonly(life_plan, false));
+    let ix = Instruction::new_with_bytes(program_id, &stage_ix("validate_transition"), metas);
+    let (next, cu) = run(&mollusk, "validate_transition_life", &ix, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({"instruction": "validate_transition_life", "cu": cu, "result": "Success", "note": life_note65}));
+    assert_eq!(find(&accounts, &life_record).data[216], 8, "lifecycle record must advance to VALIDATED");
+
+    // declare_transition @400 -> DECLARED (9).
+    let mut metas = stage_accounts(false);
+    metas.push(AccountMeta::new_readonly(life_signal, false));
+    metas.push(AccountMeta::new_readonly(life_plan, false));
+    let ix = Instruction::new_with_bytes(program_id, &stage_ix("declare_transition"), metas);
+    let (next, cu) = run(&mollusk, "declare_transition_life", &ix, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({"instruction": "declare_transition_life", "cu": cu, "result": "Success", "note": life_note65}));
+    assert_eq!(find(&accounts, &life_record).data[216], 9, "lifecycle record must advance to DECLARED");
+
+    // commit_transition @400 -> COMMITTED (10); the head moves
+    // to index 1 at the declared next hash, and the ledger holds
+    // the committed claims (proven by the settle replay below).
+    let mut metas = stage_accounts(true);
+    metas.push(AccountMeta::new_readonly(life_signal, false));
+    metas.push(AccountMeta::new_readonly(life_plan, false));
+    let ix = Instruction::new_with_bytes(program_id, &stage_ix("commit_transition"), metas);
+    let (next, cu) = run(&mollusk, "commit_transition_life", &ix, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({"instruction": "commit_transition_life", "cu": cu, "result": "Success", "note": life_note65}));
+    assert_eq!(find(&accounts, &life_record).data[216], 10, "lifecycle record must advance to COMMITTED");
+    let ks = find(&accounts, &kernel_state);
+    assert_eq!(u64_at(&ks.data, 9), 1, "commit must move the head to index 1");
+    assert_eq!(ks.data[17..49], DECLARED_HASH, "commit must move the head to the declared hash");
+
+    // record_settlement_evidence @400 by the launch observer at
+    // the declared hash (exact settle path).
+    let mut data = disc("record_settlement_evidence");
+    data.extend_from_slice(&LIFE_TID);
+    data.extend_from_slice(&LIFE_OBS);
+    data.extend_from_slice(&DECLARED_HASH);
+    let ix = Instruction::new_with_bytes(
+        program_id,
+        &data,
+        vec![
+            AccountMeta::new_readonly(kernel_state, false),
+            AccountMeta::new_readonly(life_record, false),
+            AccountMeta::new_readonly(life_obs, false),
+            AccountMeta::new(life_evidence, false),
+            AccountMeta::new(observer, true),
+            AccountMeta::new_readonly(system_id, false),
+        ],
+    );
+    let (next, cu) = run(&mollusk, "record_settlement_evidence_life", &ix, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({"instruction": "record_settlement_evidence_life", "cu": cu, "result": "Success", "note": life_note65}));
+    // SettlementEvidence layout: 8 + 32 (transition) + 32
+    // (realized) + 32 (recorder) + 1 (bump).
+    let ev = find(&accounts, &life_evidence);
+    assert_eq!(ev.data[40..72], DECLARED_HASH, "evidence must carry the declared hash");
+    assert_eq!(ev.data[72..104], observer.to_bytes(), "evidence must name the launch observer as recorder");
+
+    // settle_transition @400 -> SETTLED (11); settle moves
+    // neither the head nor the ledger. Named accounts in the
+    // struct's order: kernel_state, transition_record,
+    // observation_record, settlement_evidence, payer; then the
+    // signal and plan priors as remaining accounts.
+    let metas = vec![
+        AccountMeta::new(kernel_state, false),
+        AccountMeta::new(life_record, false),
+        AccountMeta::new_readonly(life_obs, false),
+        AccountMeta::new_readonly(life_evidence, false),
+        AccountMeta::new_readonly(payer, true),
+        AccountMeta::new_readonly(life_signal, false),
+        AccountMeta::new_readonly(life_plan, false),
+    ];
+    let ix = Instruction::new_with_bytes(program_id, &stage_ix("settle_transition"), metas);
+    let (next, cu) = run(&mollusk, "settle_transition_life", &ix, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({"instruction": "settle_transition_life", "cu": cu, "result": "Success", "note": life_note65}));
+    assert_eq!(find(&accounts, &life_record).data[216], 11, "lifecycle record must advance to SETTLED");
+    let ks = find(&accounts, &kernel_state);
+    assert_eq!(u64_at(&ks.data, 9), 1, "settle must leave the head at index 1");
+    assert_eq!(ks.data[17..49], DECLARED_HASH, "settle must leave the head at the declared hash");
+
+    // init_reputation for ag(2) (a sealed-profile agent) at the
+    // genesis midpoint, so the outcome tail has a record to move.
+    let mut data = disc("init_reputation");
+    data.extend_from_slice(signaler.as_ref());
+    let ix = Instruction::new_with_bytes(
+        program_id,
+        &data,
+        vec![
+            AccountMeta::new(kernel_state, false),
+            AccountMeta::new(rep_ag2, false),
+            AccountMeta::new(payer, true),
+            AccountMeta::new_readonly(system_id, false),
+        ],
+    );
+    let (next, cu) = run(&mollusk, "init_reputation_life", &ix, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({"instruction": "init_reputation_life", "cu": cu, "result": "Success", "note": life_note65}));
+    assert_eq!(u64_at(&find(&accounts, &rep_ag2).data, 40), 50_000_000, "ag(2) reputation must start at the genesis midpoint");
+
+    // record_outcome by RECORDER with attribution (ag(2), +10)
+    // on the exact settle -> EVALUATED_OUTCOME (12); exact
+    // credit is unhalved, so the reputation moves 50,000,000 ->
+    // 50,000,010 (delta units are kernel raw units).
+    let mut data = disc("record_outcome");
+    data.extend_from_slice(&LIFE_TID);
+    data.extend_from_slice(&LIFE_OBS);
+    data.extend_from_slice(&0u32.to_le_bytes());
+    data.extend_from_slice(&1u32.to_le_bytes());
+    data.extend_from_slice(signaler.as_ref());
+    data.extend_from_slice(&10i64.to_le_bytes());
+    let ix = Instruction::new_with_bytes(
+        program_id,
+        &data,
+        vec![
+            AccountMeta::new(kernel_state, false),
+            AccountMeta::new(life_record, false),
+            AccountMeta::new_readonly(life_obs, false),
+            AccountMeta::new_readonly(life_evidence, false),
+            AccountMeta::new_readonly(recorder, true),
+            AccountMeta::new_readonly(life_signal, false),
+            AccountMeta::new_readonly(life_plan, false),
+            AccountMeta::new(rep_ag2, false),
+        ],
+    );
+    let (next, cu) = run(&mollusk, "record_outcome_life", &ix, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({"instruction": "record_outcome_life", "cu": cu, "result": "Success", "note": life_note65}));
+    assert_eq!(find(&accounts, &life_record).data[216], 12, "lifecycle record must advance to EVALUATED_OUTCOME");
+    assert_eq!(u64_at(&find(&accounts, &rep_ag2).data, 40), 50_000_010, "exact outcome credit must move ag(2) reputation to 50,000,010");
+
     let out = serde_json::json!({
         "program": "program_v04",
         "program_id": PROGRAM_ID,
         "so_sha256": so_sha256,
         "mollusk_svm": MOLLUSK_SVM_VERSION,
         "toolchain": TOOLCHAIN,
-        "slice": "slice 64: slice-62 golden freeze chain + lifecycle register/ingest/replay; F4 FIXED (single-build refactor, resolve_proposer_on_kernel at 27 sites) — replay_transition executes in-process for the first time and advances the lifecycle record to KERNEL_REGISTERED; all slice-62 measurements reproduce exactly; the full lifecycle chain (evaluate through settle to an outcome with a reputation tail) is the next slice's work",
+        "slice": "slice 66: slice-64 chain + full lifecycle chain (evaluate, mark_eligible, submit_signal, select, open_planning, submit_plan, reconcile, validate, declare, commit, record_settlement_evidence, settle, init_reputation, record_outcome) to EVALUATED_OUTCOME with an exact reputation tail (ag(2) 50,000,000 -> 50,000,010); program slice 66 is the custom 256 KiB heap allocator (F6 direction (c)); prior values re-freeze with the 56 CU heap-cost delta of the 256 KiB frame",
         "measured": measured,
         "refusals": refusals,
         "blocked": [],

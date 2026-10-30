@@ -430,6 +430,74 @@ values: all seventeen measured CU values reproduce
 exactly, blocked `[]` still. This `.so` is NOT the golden
 freeze.
 
+## Slice-66 — F6 CLOSED, full lifecycle chain measured (2026-10-30, same pins)
+
+Slice 66 is the F6 direction-(c) fix, and it completes the
+slice-65 chain. The program now carries a custom 256 KiB SBF
+heap allocator (`PROGRAM_ALLOCATOR`, `custom-heap` default
+feature — see the slice-66 comment at the allocator site in
+`programs/program-v04/src/lib.rs`); direction (a), a larger
+transaction heap frame against the default allocator, was
+closed negatively the previous run because entrypoint 3.1.1
+hardcodes its default allocator to 32 KiB. This harness
+requests the matching 256 KiB heap frame for every
+instruction (`mollusk.compute_budget.heap_size`), which is
+the client contract, not a harness-only tweak: the bump
+allocator allocates top-down from the end of its range, so
+a smaller frame faults on the first allocation. Golden
+re-freezes as slice 66 (`.so` sha `791a8be6…`, host tests
+457/457, IDL shape unchanged 44 / 9 / 46): all 21 prior
+values shift by exactly +56 CU, the heap-cost delta of the
+256 KiB frame, and both refusals shift the same +56
+(5636 / 5391) — no other drift, so the allocator change
+costs nothing beyond the frame itself. The 16 new
+measurements complete the lifecycle: `select_candidate`
+**31,761 CU**, `open_planning` **32,344 CU**,
+`submit_plan` **40,676 CU**, `reconcile_plans`
+**38,181 CU**, `validate_transition` **38,409 CU**,
+`declare_transition` **39,486 CU**, `commit_transition`
+**44,854 CU** (head moves to 1 at the declared hash),
+`record_settlement_evidence` **15,102 CU**,
+`settle_transition` **46,565 CU**, `init_reputation`
+for ag(2) **23,453 CU**, `record_outcome` **67,674 CU**
+— the record reaches EVALUATED_OUTCOME (stage 12) with
+the exact reputation tail ag(2) 50,000,000 -> 50,000,010
+asserted. `blocked` is `[]` again. The governance outcome
+tail (`record_outcome_governance`) is still unmeasured —
+it needs a settled governance record, a later slice's
+chain, not this one.
+
+## Slice-65 PARTIAL — full lifecycle chain stops at select (F6, 2026-10-30, same pins)
+
+Slice 65 extends the slice-64 chain past replay at clock 200
+and measures three more stage instructions in-process:
+`evaluate_transition` **25,872 CU** (stage 2),
+`mark_eligible` **28,179 CU** (stage 3, window 200/300), and
+`submit_signal` **35,311 CU** (round-0 signal by ag(2), raw and
+support SCALE, signal_count 1) — all Success, all prior
+measurements reproducing exactly. The chain then STOPS:
+`select_candidate` panics in-process at 27,977 CU with
+"Error: memory allocation failed, out of memory" — finding
+F6 (roadmap Part B4): the F4 mechanism generalizes, because
+select's replay (ingest + register + evaluate + mark_eligible
++ signal replay + select) is longer than replay's, and the SBF
+heap does not reclaim dropped memory within an instruction.
+Host counting-allocator measurement proves the shape: select
+replay peaks at 27,837 bytes live (fits 32 KiB) but allocates
+31,237 bytes total, max single allocation 10,048 bytes — the
+cumulative total plus Anchor/SBF wrapper overhead is what
+overflows. Host select succeeds (life Selected, stage 4), so
+this is a heap-budget finding, not a gate or kernel failure.
+Per this harness's invariant (a golden file is never written
+from a failed chain), the golden file stays slice 64 and the
+slice-65 figures live in the run log
+`hidden_files/kernel-build-run-2026-10-30-0152.md` until the
+F6 fix lets the chain run to completion. The slice-65 harness
+code (evaluate through record_outcome, scripted and asserted)
+stays in `mollusk/src/main.rs` in staging for the next run
+to resume from; the program `.so` is unchanged since slice 64
+(sha `97190530…`, host tests 457/457).
+
 ## Slice-64 F4 fix + first in-process replay (2026-10-30, same pins)
 
 Slice 64 is the F4 fix slice (roadmap Part B4): the stage

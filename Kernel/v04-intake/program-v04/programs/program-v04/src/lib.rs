@@ -1068,6 +1068,51 @@ use coordination_kernel::{
     T_GOV_COUNCIL, T_GOV_REBOOT, MAX_GROUPS, MAX_REPLANS, MAX_SEATS, SCALE,
 };
 
+// Slice 66 — custom SBF heap allocator, F6 direction (c) (2026-10-30).
+// Finding F6: the lifecycle stage instructions replay the whole kernel
+// chain inside one instruction, and the SBF bump allocator never reclaims
+// dropped memory within an instruction, so cumulative allocation is the
+// binding number — select's replay totals 31,237 bytes host-measured,
+// inside the live peak but over the default 32 KiB allocator once Anchor
+// wrapper allocations land, and the chain only lengthens toward commit.
+// Direction (a) (a larger transaction heap frame) was closed negatively:
+// solana-program-entrypoint 3.1.1 hardcodes its default BumpAllocator to
+// HEAP_LENGTH = 32 KiB, so a larger runtime heap region cannot move the
+// program-side cap. Direction (b) (allocation reduction) cannot close
+// this alone: the replay chain lengthens per stage and the kernel-side
+// allocations live in the delivered crate, not port code.
+// This allocator replaces the default: Anchor's generated entrypoint
+// suppresses its own allocator when the program crate defines the
+// `custom-heap` feature (now a default feature, see Cargo.toml), and
+// this static supplies the replacement. Length is the VM maximum frame,
+// 256 KiB — the only size that cannot be outgrown by a longer replay
+// chain (commit at a moved head replays prior committed bundles too),
+// and its heap-cost delta over 32 KiB is 56 CU, measured in the F6
+// experiment. COUPLED CONTRACT, READ BEFORE CALLING: the bump allocator
+// allocates top-down from HEAP_START_ADDRESS + PROGRAM_HEAP_LENGTH, so
+// the transaction's requested heap frame MUST be >= 256 KiB — a smaller
+// frame leaves the allocator's first allocation outside the mapped heap
+// region and faults, for every allocating instruction, not just the
+// stage chain. Clients request the frame with a ComputeBudget
+// `request_heap_frame(256 * 1024)` instruction; the cu-golden harness
+// sets mollusk's heap_size to the same value. A client that forgets the
+// frame does not get a graceful OOM error, it faults on first allocation.
+pub const PROGRAM_HEAP_LENGTH: usize = 256 * 1024;
+
+#[cfg(all(
+    target_os = "solana",
+    feature = "custom-heap",
+    not(feature = "no-entrypoint")
+))]
+#[global_allocator]
+static PROGRAM_ALLOCATOR: anchor_lang::solana_program::entrypoint::BumpAllocator =
+    unsafe {
+        anchor_lang::solana_program::entrypoint::BumpAllocator::with_fixed_address_range(
+            anchor_lang::solana_program::entrypoint::HEAP_START_ADDRESS as usize,
+            PROGRAM_HEAP_LENGTH,
+        )
+    };
+
 declare_id!("FzxnCtig4asxnCxGhjcbCDY5zkfcpfTb5GcXNL9UaGg6");
 
 #[program]

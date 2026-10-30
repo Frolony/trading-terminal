@@ -3,129 +3,225 @@
   "design_finding_resolved": "Slice-49/50 findings CLOSED by the account-carried action (program slices 51-53, Carlos's 2026-10-29 ruling): approve/revise no longer carry the 1524-byte StoredGovAction by value (the 1564-byte instruction-data / tx-size finding is gone — the largest new instruction is a 512-byte chunk), and the rewired wrappers frame-measure fitting 2048 bytes (slice 53). This run proves both instructions execute in-process against the real .so: approve stores the finalized action hash and increments the approval count to 1; revise re-binds the same finalized action with count and hash unchanged.",
   "measured": [
     {
-      "cu": 7705,
+      "cu": 7761,
       "instruction": "probe_kernel",
       "note": "slice-1 baseline (no design estimate exists for the v0.4 program)",
       "result": "Success"
     },
     {
-      "cu": 17772,
+      "cu": 17828,
       "instruction": "initialize_kernel",
       "note": "slice-1 baseline (no design estimate exists for the v0.4 program)",
       "result": "Success"
     },
     {
-      "cu": 18047,
+      "cu": 18103,
       "instruction": "seal_kernel",
       "note": "slice-1 baseline (no design estimate exists for the v0.4 program)",
       "result": "Success"
     },
     {
-      "cu": 23387,
+      "cu": 23443,
       "instruction": "init_reputation",
       "note": "golden freeze slice 62: reputation init chain (program slice 61)",
       "result": "Success"
     },
     {
-      "cu": 4175,
+      "cu": 4231,
       "instruction": "advance_clock",
       "note": "slice-1 baseline (no design estimate exists for the v0.4 program)",
       "result": "Success"
     },
     {
-      "cu": 11415,
+      "cu": 11471,
       "instruction": "register_transition",
       "note": "slice-1 baseline (no design estimate exists for the v0.4 program)",
       "result": "Success"
     },
     {
-      "cu": 24403,
+      "cu": 24459,
       "instruction": "ingest_observation",
       "note": "slice-1 baseline (no design estimate exists for the v0.4 program)",
       "result": "Success"
     },
     {
-      "cu": 8449,
+      "cu": 8505,
       "instruction": "init_gov_action",
       "note": "slice-1 baseline (no design estimate exists for the v0.4 program)",
       "result": "Success"
     },
     {
-      "cu": 4684,
+      "cu": 4740,
       "instruction": "append_gov_action_chunk@0",
       "note": "slice-2 account-carried chain (program slices 51-53)",
       "result": "Success"
     },
     {
-      "cu": 4684,
+      "cu": 4740,
       "instruction": "append_gov_action_chunk@512",
       "note": "slice-2 account-carried chain (program slices 51-53)",
       "result": "Success"
     },
     {
-      "cu": 4684,
+      "cu": 4740,
       "instruction": "append_gov_action_chunk@1024",
       "note": "slice-2 account-carried chain (program slices 51-53)",
       "result": "Success"
     },
     {
-      "cu": 7308,
+      "cu": 7364,
       "instruction": "finalize_gov_action",
       "note": "slice-1 baseline (no design estimate exists for the v0.4 program)",
       "result": "Success"
     },
     {
-      "cu": 26118,
+      "cu": 26174,
       "instruction": "register_governance_transition",
       "note": "slice-1 baseline (no design estimate exists for the v0.4 program)",
       "result": "Success"
     },
     {
-      "cu": 37633,
+      "cu": 37689,
       "instruction": "approve_governance",
       "note": "slice-1 baseline (no design estimate exists for the v0.4 program)",
       "result": "Success"
     },
     {
-      "cu": 32973,
+      "cu": 33029,
       "instruction": "revise_governance_approval",
       "note": "slice-1 baseline (no design estimate exists for the v0.4 program)",
       "result": "Success"
     },
     {
-      "cu": 14449,
+      "cu": 14505,
       "instruction": "init_gov_action_abandoned",
       "note": "slice-1 baseline (no design estimate exists for the v0.4 program)",
       "result": "Success"
     },
     {
-      "cu": 4684,
+      "cu": 4740,
       "instruction": "append_gov_action_chunk_abandoned",
       "note": "slice-1 baseline (no design estimate exists for the v0.4 program)",
       "result": "Success"
     },
     {
-      "cu": 3915,
+      "cu": 3971,
       "instruction": "close_gov_action",
       "note": "slice-1 baseline (no design estimate exists for the v0.4 program)",
       "result": "Success"
     },
     {
-      "cu": 9915,
+      "cu": 9971,
       "instruction": "register_transition_life",
       "note": "slice-63/64 lifecycle chain (register + ingest; replay unblocked by the slice-64 F4 fix)",
       "result": "Success"
     },
     {
-      "cu": 22903,
+      "cu": 22959,
       "instruction": "ingest_observation_life",
       "note": "slice-63/64 lifecycle chain (register + ingest; replay unblocked by the slice-64 F4 fix)",
       "result": "Success"
     },
     {
-      "cu": 25435,
+      "cu": 25491,
       "instruction": "replay_transition_life",
       "note": "slice-64 F4 fix: first stage instruction to execute in-process; single-build refactor (resolve_proposer_on_kernel, 27 sites)",
+      "result": "Success"
+    },
+    {
+      "cu": 25928,
+      "instruction": "evaluate_transition_life",
+      "note": "slice-65 full lifecycle chain (evaluate through outcome with reputation tail)",
+      "result": "Success"
+    },
+    {
+      "cu": 28235,
+      "instruction": "mark_eligible_life",
+      "note": "slice-65 full lifecycle chain (evaluate through outcome with reputation tail)",
+      "result": "Success"
+    },
+    {
+      "cu": 35367,
+      "instruction": "submit_signal_life",
+      "note": "slice-65 full lifecycle chain (evaluate through outcome with reputation tail)",
+      "result": "Success"
+    },
+    {
+      "cu": 4231,
+      "instruction": "advance_clock_300",
+      "note": "slice-65 full lifecycle chain (evaluate through outcome with reputation tail)",
+      "result": "Success"
+    },
+    {
+      "cu": 31761,
+      "instruction": "select_candidate_life",
+      "note": "slice-65 full lifecycle chain (evaluate through outcome with reputation tail)",
+      "result": "Success"
+    },
+    {
+      "cu": 32344,
+      "instruction": "open_planning_life",
+      "note": "slice-65 full lifecycle chain (evaluate through outcome with reputation tail)",
+      "result": "Success"
+    },
+    {
+      "cu": 40676,
+      "instruction": "submit_plan_life",
+      "note": "slice-65 full lifecycle chain (evaluate through outcome with reputation tail)",
+      "result": "Success"
+    },
+    {
+      "cu": 4231,
+      "instruction": "advance_clock_400",
+      "note": "slice-65 full lifecycle chain (evaluate through outcome with reputation tail)",
+      "result": "Success"
+    },
+    {
+      "cu": 38181,
+      "instruction": "reconcile_plans_life",
+      "note": "slice-65 full lifecycle chain (evaluate through outcome with reputation tail)",
+      "result": "Success"
+    },
+    {
+      "cu": 38409,
+      "instruction": "validate_transition_life",
+      "note": "slice-65 full lifecycle chain (evaluate through outcome with reputation tail)",
+      "result": "Success"
+    },
+    {
+      "cu": 39486,
+      "instruction": "declare_transition_life",
+      "note": "slice-65 full lifecycle chain (evaluate through outcome with reputation tail)",
+      "result": "Success"
+    },
+    {
+      "cu": 44854,
+      "instruction": "commit_transition_life",
+      "note": "slice-65 full lifecycle chain (evaluate through outcome with reputation tail)",
+      "result": "Success"
+    },
+    {
+      "cu": 15102,
+      "instruction": "record_settlement_evidence_life",
+      "note": "slice-65 full lifecycle chain (evaluate through outcome with reputation tail)",
+      "result": "Success"
+    },
+    {
+      "cu": 46565,
+      "instruction": "settle_transition_life",
+      "note": "slice-65 full lifecycle chain (evaluate through outcome with reputation tail)",
+      "result": "Success"
+    },
+    {
+      "cu": 23453,
+      "instruction": "init_reputation_life",
+      "note": "slice-65 full lifecycle chain (evaluate through outcome with reputation tail)",
+      "result": "Success"
+    },
+    {
+      "cu": 67674,
+      "instruction": "record_outcome_life",
+      "note": "slice-65 full lifecycle chain (evaluate through outcome with reputation tail)",
       "result": "Success"
     }
   ],
@@ -134,21 +230,21 @@
   "program_id": "FzxnCtig4asxnCxGhjcbCDY5zkfcpfTb5GcXNL9UaGg6",
   "refusals": [
     {
-      "cu": 5580,
+      "cu": 5636,
       "error": "Failure(Custom(0))",
       "instruction": "init_reputation_again",
       "note": "golden freeze slice 62: the `init` constraint makes a reputation record one-time — no caller can reset a reputation to genesis after outcomes move it",
       "result": "Refused"
     },
     {
-      "cu": 5335,
+      "cu": 5391,
       "error": "GovActionAlreadyFinalized (6034)",
       "instruction": "close_gov_action_finalized",
       "note": "slice-3 lifetime gate: a finalized account never closes (Rule A, Carlos 2026-10-29)",
       "result": "Refused"
     }
   ],
-  "slice": "slice 64: slice-62 golden freeze chain + lifecycle register/ingest/replay; F4 FIXED (single-build refactor, resolve_proposer_on_kernel at 27 sites) — replay_transition executes in-process for the first time and advances the lifecycle record to KERNEL_REGISTERED; all slice-62 measurements reproduce exactly; the full lifecycle chain (evaluate through settle to an outcome with a reputation tail) is the next slice's work",
-  "so_sha256": "97190530dca4a1885cc8a3ca80d686285f1962ac3b312df8aa5aa88d0bcbc76e",
+  "slice": "slice 66: slice-64 chain + full lifecycle chain (evaluate, mark_eligible, submit_signal, select, open_planning, submit_plan, reconcile, validate, declare, commit, record_settlement_evidence, settle, init_reputation, record_outcome) to EVALUATED_OUTCOME with an exact reputation tail (ag(2) 50,000,000 -> 50,000,010); program slice 66 is the custom 256 KiB heap allocator (F6 direction (c)); prior values re-freeze with the 56 CU heap-cost delta of the 256 KiB frame",
+  "so_sha256": "791a8be69fd0eaf086249775af4c34ce9029df93f022d421e010eed1a06fb73e",
   "toolchain": "Anchor 1.2.2 / Solana 4.3.2 / platform-tools v1.57"
 }

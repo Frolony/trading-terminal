@@ -3251,6 +3251,51 @@ accounts; the golden `.so` sha debt (slice-49
   mollusk, and that chain is the next slice's work.
   Deliberately NOT slice 62: the outcome-tail chains.
 
+## Slice 66 — custom 256 KiB SBF heap allocator, F6 closed (2026-10-30)
+
+- F6 (roadmap Part B4) was the lifecycle chain stopping at
+  `select_candidate`: its replay totals 31,237 bytes
+  host-measured, over the default 32 KiB allocator once
+  Anchor wrapper allocations land, and the chain only
+  lengthens toward commit. Direction (a) — a larger
+  transaction heap frame — was closed negatively: the
+  entrypoint default allocator is hardcoded to 32 KiB, so
+  a larger runtime heap region cannot move the
+  program-side cap.
+- This slice replaces it: `PROGRAM_ALLOCATOR` in
+  `programs/program-v04/src/lib.rs` (a `BumpAllocator`
+  over `HEAP_START_ADDRESS` + 256 KiB, the VM maximum
+  frame) with the `custom-heap` feature made default in
+  the program's Cargo.toml, so Anchor's generated
+  entrypoint suppresses its own allocator. The harness
+  requests the matching 256 KiB heap frame for every
+  instruction. COUPLED CONTRACT: every transaction to
+  this program must request a heap frame >= 256 KiB
+  (`request_heap_frame(256 * 1024)`) — the bump
+  allocator allocates top-down, so a smaller frame
+  faults on the first allocation, for every allocating
+  instruction, not just the stage chain.
+- Proof: `anchor build` exit 0, IDL shape unchanged (44
+  instructions / 9 accounts / 46 errors), host tests
+  457/457, `.so` sha `791a8be6…`, and the cu-golden
+  harness now runs the full slice-65 chain to
+  EVALUATED_OUTCOME: select 31,761 CU, commit 44,854 CU,
+  settle 46,565 CU, record_outcome 67,674 CU with the
+  exact reputation tail asserted; all 21 prior golden
+  values re-freeze at exactly +56 CU (the 256 KiB
+  heap-cost delta), both refusals +56, `blocked` `[]`.
+  The SBF frame diagnostic is unchanged (one entry over
+  4096, the pre-existing BTreeMap-insert frame at 4,672
+  bytes — F5, tracked separately).
+- Deliberately NOT slice 66: allocation reduction in the
+  replay path (unneeded now that the allocator covers
+  the longest chain), the governance outcome tail (needs
+  a settled governance record), and any client-side
+  heap-frame wiring beyond the harness (real clients
+  must add the `request_heap_frame` instruction
+  themselves — the contract is documented here and at
+  the allocator site).
+
 ## Build
 
 ```sh
