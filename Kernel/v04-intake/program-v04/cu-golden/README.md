@@ -467,6 +467,43 @@ tail (`record_outcome_governance`) is still unmeasured —
 it needs a settled governance record, a later slice's
 chain, not this one.
 
+## Slice-67 — 75% heap tripwire test, SBF-side and wrapper-inclusive (2026-10-30, same pins)
+
+Slice 67 adds the tripwire guard for F6 condition (1) without
+changing program behavior. `programs/program-v04/src/lib.rs`
+gains a cfg'd `PROGRAM_HEAP_LENGTH` and `Cargo.toml` a
+`tripwire-heap` feature (never default, never shipped): with
+it, `anchor build -- --features tripwire-heap` builds the same
+program with the bump allocator capped at 196,608 bytes —
+exactly 75% of the shipped 256 KiB cap. `run-tripwire.sh`
+builds that variant, runs the FULL golden chain against it,
+then restores the shipped `.so` (trap-guarded, sha-verified).
+A chain that succeeds under the capped allocator has proven
+every instruction's total SBF heap use under the tripwire,
+because Anchor wrapper deserialize, handler replay, and
+account serialize all allocate through the same bump
+allocator — this closes the host-measurement wrapper gap
+from the 03:01 stage-total run (which had to assume a
+wrapper allowance) for the chains the golden currently
+carries. Result this run: **tripwire NOT tripped** — all 37
+instructions Success under the 196,608-byte cap (tripwire
+`.so` sha `698a2ed7…`), all CU byte-identical to the shipped
+golden, both refusals identical, shipped `.so` restored
+(sha `449912de…`). Honest scope bound: the golden currently
+carries the governance registration chain and the ordinary
+life chain at the genesis head — it does NOT yet carry a
+governance stage chain or a moved-head chain, so this test
+guards those chains only once they land in the golden (the
+governance outcome tail and second-commit chains are the
+next queue items, and they will inherit the tripwire run
+automatically because it re-runs the whole golden file).
+The shipped golden re-freezes CU-identical under slice 67
+(all 37 CU, both refusals unchanged; IDL shape unchanged
+44 / 9 / 46 / 26); only the `.so` hash moves, with source
+line numbers, which is why CU — not the hash — is the
+slice-67 invariant. Run evidence:
+`hidden_files/tripwire-golden-2026-10-30-0605.json`.
+
 ## Slice-65 PARTIAL — full lifecycle chain stops at select (F6, 2026-10-30, same pins)
 
 Slice 65 extends the slice-64 chain past replay at clock 200

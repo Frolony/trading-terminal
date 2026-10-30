@@ -1097,6 +1097,26 @@ use coordination_kernel::{
 // `request_heap_frame(256 * 1024)` instruction; the cu-golden harness
 // sets mollusk's heap_size to the same value. A client that forgets the
 // frame does not get a graceful OOM error, it faults on first allocation.
+// Slice 67 — 75% tripwire test build (2026-10-30). The shipped length is
+// 256 KiB; the `tripwire-heap` feature (never a default, never shipped)
+// builds the same program with the allocator capped at 196,608 bytes —
+// exactly 75% of the shipped cap. Running the full cu-golden chain
+// against that build is the SBF-side, wrapper-inclusive tripwire test:
+// every allocation the real instruction makes (Anchor wrapper
+// deserialize, handler replay, account serialize) goes through this
+// same bump allocator, so a chain that succeeds under the 196,608-byte
+// cap has proven its total heap use under the tripwire on every
+// instruction — no host-side estimate, no wrapper allowance. A chain
+// that OOMs under the tripwire build trips the guard, and the failing
+// instruction names the stage that outgrew it. The shipped binary is
+// unaffected: this feature is off by default and the default build
+// must reproduce the shipped golden CU and IDL exactly (slice-67
+// check): the .so hash itself moves with source line numbers, so
+// byte-identity is NOT the invariant — identical CU per instruction
+// and an identical IDL shape are.
+#[cfg(feature = "tripwire-heap")]
+pub const PROGRAM_HEAP_LENGTH: usize = 196_608;
+#[cfg(not(feature = "tripwire-heap"))]
 pub const PROGRAM_HEAP_LENGTH: usize = 256 * 1024;
 
 #[cfg(all(

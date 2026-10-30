@@ -20,6 +20,13 @@ cpi = ["no-entrypoint"]
 # default features, and the allocator is cfg'd to target_os = "solana"
 # only, so host tests are unaffected.
 custom-heap = []
+# Slice 67: test-only allocator cap for the 75% tripwire check (see
+# lib.rs, PROGRAM_HEAP_LENGTH). Never default, never shipped: `anchor
+# build -- --features tripwire-heap` builds a tripwire variant whose
+# golden-chain success proves every instruction's SBF heap use under
+# 196,608 bytes, wrapper-inclusive. Host tests are unaffected (the
+# allocator is cfg'd to target_os = "solana" only).
+tripwire-heap = []
 default = ["custom-heap"]
 idl-build = ["anchor-lang/idl-build"]
 

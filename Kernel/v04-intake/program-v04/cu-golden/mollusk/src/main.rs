@@ -1415,7 +1415,7 @@ fn main() {
         "so_sha256": so_sha256,
         "mollusk_svm": MOLLUSK_SVM_VERSION,
         "toolchain": TOOLCHAIN,
-        "slice": "slice 66: slice-64 chain + full lifecycle chain (evaluate, mark_eligible, submit_signal, select, open_planning, submit_plan, reconcile, validate, declare, commit, record_settlement_evidence, settle, init_reputation, record_outcome) to EVALUATED_OUTCOME with an exact reputation tail (ag(2) 50,000,000 -> 50,000,010); program slice 66 is the custom 256 KiB heap allocator (F6 direction (c)); prior values re-freeze with the 56 CU heap-cost delta of the 256 KiB frame",
+        "slice": "slice 67: slice-66 chain re-frozen CU-identical after the tripwire-heap feature (lib.rs PROGRAM_HEAP_LENGTH cfg + Cargo.toml feature, default off — no behavior change; the .so hash moves with source line numbers only, all 37 CU and both refusals identical to slice 66); the 75% tripwire run (run-tripwire.sh, allocator capped at 196,608 bytes) over this same chain is the SBF-side wrapper-inclusive guard, recorded in the slice-67 run log",
         "measured": measured,
         "refusals": refusals,
         "blocked": [],
