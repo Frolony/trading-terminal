@@ -52,6 +52,17 @@
 // payload carries; a missing field is null, never an estimate. A
 // token the instance does not know answers TOKEN_NOT_FOUND, never a
 // guessed row.
+// N3.36 (2026-10-30, A132, data-source roadmap D4): this route also
+// serves the keyless Coinbase Exchange cross-check (GET
+// /api/balances?mode=coinbase-price&symbol=ETH|BTC|SOL): a server-side
+// read of the public /products/<SYM>-USD/ticker endpoint, merged here,
+// not a new api/*.rs file, for the same Hobby 12-function reason as
+// N3.35. No key, no account, no signing. Only the three majors are
+// mapped; anything else answers INVALID_SYMBOL and the client fetches
+// nothing for it. The ticker `price` field is the last-trade price in
+// USD; a missing, non-numeric, non-finite or non-positive price is
+// UPSTREAM_FAILED, never a zero or a stale figure. Successful reads
+// share the 30 s cache discipline; failures are never cached.
 // N5.40 (2026-10-29, A126): this route also serves the mint/freeze
 // authority display (GET /api/balances?mode=mint-authority&mint=<base58>):
 // getAccountInfo for the mint, parsed server-side from the SPL Mint
@@ -650,6 +661,126 @@ async fn evm_token_handler(req: &Request) -> Result<Value, Error> {
     Ok(out)
 }
 
+// N3.36 Coinbase cross-check branch (data-source roadmap D4).
+fn query_coinbase_price(req: &Request) -> bool {
+    query_param(req, "mode").as_deref() == Some("coinbase-price")
+}
+
+/// Row symbol -> Coinbase product symbol. Only the three majors map;
+/// wrapped forms collapse to their underlying major. Anything else is
+/// None, so the client never fetches a cross-check for it.
+fn cb_product(sym: &str) -> Option<&'static str> {
+    match sym {
+        "ETH" | "WETH" => Some("ETH"),
+        "BTC" | "WBTC" => Some("BTC"),
+        "SOL" | "WSOL" => Some("SOL"),
+        _ => None,
+    }
+}
+
+/// Coinbase Exchange ticker payload -> USD price. The `price` field is
+/// a string; anything unparseable, non-finite or non-positive is a
+/// failed read, never 0.
+fn parse_cb_ticker(j: &Value) -> Option<f64> {
+    let p: f64 = j.get("price").and_then(|v| v.as_str()).and_then(|s| s.parse().ok())?;
+    if p.is_finite() && p > 0.0 {
+        Some(p)
+    } else {
+        None
+    }
+}
+
+async fn coinbase_price_handler(req: &Request) -> Result<Value, Error> {
+    let symbol = match query_param(req, "symbol") {
+        Some(s) => s,
+        None => {
+            return Ok(common::api_error(
+                "INVALID_SYMBOL",
+                "Query parameter symbol=ETH|BTC|SOL is required.",
+            ))
+        }
+    };
+    let product = match cb_product(&symbol) {
+        Some(p) => p,
+        None => {
+            return Ok(common::api_error(
+                "INVALID_SYMBOL",
+                "Only ETH, BTC and SOL have a Coinbase cross-check; no figure is fetched for other symbols.",
+            ))
+        }
+    };
+    let key = format!("coinbase-price:{}", product);
+    if let Ok(guard) = cache().lock() {
+        if let Some((at, val)) = guard.get(&key) {
+            if at.elapsed() < CACHE_TTL {
+                let mut hit = val.clone();
+                if let Some(obj) = hit.as_object_mut() {
+                    obj.insert("cached".to_string(), json!(true));
+                }
+                return Ok(hit);
+            }
+        }
+    }
+    let client = match common::client() {
+        Ok(c) => c,
+        Err(_) => {
+            return Ok(common::api_error(
+                "UPSTREAM_FAILED",
+                "Could not build the upstream Coinbase client.",
+            ))
+        }
+    };
+    let url = format!(
+        "https://api.exchange.coinbase.com/products/{}-USD/ticker",
+        product
+    );
+    let resp = match client.get(&url).send().await {
+        Ok(r) => r,
+        Err(_) => {
+            return Ok(common::api_error(
+                "UPSTREAM_FAILED",
+                "Coinbase Exchange transport error.",
+            ))
+        }
+    };
+    if !resp.status().is_success() {
+        return Ok(common::api_error(
+            "UPSTREAM_FAILED",
+            &format!("Coinbase Exchange error (HTTP {})", resp.status().as_u16()),
+        ));
+    }
+    let j: Value = match resp.json().await {
+        Ok(v) => v,
+        Err(_) => {
+            return Ok(common::api_error(
+                "UPSTREAM_FAILED",
+                "Coinbase Exchange response was not JSON.",
+            ))
+        }
+    };
+    let price = match parse_cb_ticker(&j) {
+        Some(p) => p,
+        None => {
+            return Ok(common::api_error(
+                "UPSTREAM_FAILED",
+                "Coinbase Exchange ticker carried no usable price.",
+            ))
+        }
+    };
+    let out = json!({
+        "ok": true,
+        "symbol": product,
+        "product": format!("{}-USD", product),
+        "price": price,
+        "source": "Coinbase Exchange",
+        "cached": false,
+    });
+    if let Ok(mut guard) = cache().lock() {
+        guard.insert(key, (Instant::now(), out.clone()));
+    }
+    Ok(out)
+}
+
 async fn handler(req: Request) -> Result<Value, Error> {
     if query_supply(&req) {
         return supply_handler(&req).await;
@@ -659,6 +790,9 @@ async fn handler(req: Request) -> Result<Value, Error> {
     }
     if query_evm_token(&req) {
         return evm_token_handler(&req).await;
+    }
+    if query_coinbase_price(&req) {
+        return coinbase_price_handler(&req).await;
     }
     let owner = match query_owner(&req) {
         Some(o) => o,
@@ -956,5 +1090,36 @@ mod n335_tests {
         let (_, _, supply3, holders3, _) = parse_bs_token(&j3);
         assert_eq!(supply3, Some(2.5));
         assert_eq!(holders3, Some(42));
+    }
+}
+
+#[cfg(test)]
+mod n336_tests {
+    use super::*;
+
+    #[test]
+    fn cb_product_maps_majors_and_wrapped_forms_only() {
+        assert_eq!(cb_product("ETH"), Some("ETH"));
+        assert_eq!(cb_product("WETH"), Some("ETH"));
+        assert_eq!(cb_product("BTC"), Some("BTC"));
+        assert_eq!(cb_product("WBTC"), Some("BTC"));
+        assert_eq!(cb_product("SOL"), Some("SOL"));
+        assert_eq!(cb_product("WSOL"), Some("SOL"));
+        assert_eq!(cb_product("USDC"), None);
+        assert_eq!(cb_product("BONK"), None);
+        assert_eq!(cb_product("eth"), None);
+        assert_eq!(cb_product(""), None);
+    }
+
+    #[test]
+    fn parse_cb_ticker_shape_probed_live() {
+        // Shape probed live 2026-10-30 from api.exchange.coinbase.com.
+        let j = json!({"ask":"2224.87","bid":"2224.71","price":"2224.88","size":"0.00979917","time":"2026-10-30T08:33:48.354635565Z"});
+        assert_eq!(parse_cb_ticker(&j), Some(2224.88));
+        assert_eq!(parse_cb_ticker(&json!({"price": "not-a-number"})), None);
+        assert_eq!(parse_cb_ticker(&json!({"price": "0"})), None);
+        assert_eq!(parse_cb_ticker(&json!({"price": "-5"})), None);
+        assert_eq!(parse_cb_ticker(&json!({})), None);
+        assert_eq!(parse_cb_ticker(&json!({"price": 2224.88})), None);
     }
 }
