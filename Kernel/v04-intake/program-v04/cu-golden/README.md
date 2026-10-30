@@ -430,6 +430,34 @@ values: all seventeen measured CU values reproduce
 exactly, blocked `[]` still. This `.so` is NOT the golden
 freeze.
 
+## Slice-63 partial lifecycle chain + F4 block (2026-10-29, same pins)
+
+Slice 63 adds a NEW ordinary transition's register + ingest
+to the harness — the slice-1 ordinary record cannot replay
+(it names observation `[0xC0;32]`, never ingested):
+`register_transition` for TT `[9;32]` with proposer ag(1)
+— **9,915 CU** — and `ingest_observation` for
+`[0xC2;32]` (timestamp 200, expiry 9100, confidence
+900,000) by the launch observer — **22,903 CU**. All 18
+prior measured values reproduce EXACTLY, both refusals
+unchanged (5580 / 5335), `.so` sha unchanged
+`1518d41e154ac52d3b919901112c55812d800276b6d710b5f857f0661b5a802d`
+(host tests 456/456; IDL 44 / 9 / 46 / 26, unchanged).
+The chain stops there: `replay_transition` is BLOCKED
+(roadmap F4) — it panics in-process with the program log
+"Error: memory allocation failed, out of memory" at
+~36,717 CU, reproduced in a minimal probe at the default
+32 KiB heap AND at mollusk's maximum configurable 256 KiB
+heap (512 KiB is rejected by the VM as "invalid heap
+size"). A panic is not a refusal, so it lives under
+`blocked`, never under `refusals` or `measured`. No stage
+instruction has executed in-process before: every prior
+slice measured only genesis / registration / approval /
+close chains, none of which rebuild the sealed kernel the
+way the stage helpers do. The full lifecycle chain (replay
+through settle to an outcome with a reputation tail) rides
+the F4 fix slice.
+
 ## Slice-62 golden freeze (2026-10-29, same pins)
 
 Slice 62 adds the reputation-init chain to the harness and
@@ -522,8 +550,11 @@ This `.so` is likewise NOT the golden freeze.
 
 ## Later slices (not this slice)
 
-The stage instructions join once their setup chains are
-scripted: replay, evaluate, mark_eligible, submit_signal, select
-(+ siblings), open_planning, submit_plan, reconcile, validate,
-declare, commit, and the governance stage chain through
-commit_governance. Nothing here claims those measurements.
+The stage instructions join once the F4 fix lands (slice 63
+proved `replay_transition` panics out-of-memory
+in-process; the rest of the chain — evaluate,
+mark_eligible, submit_signal, select (+ siblings),
+open_planning, submit_plan, reconcile, validate, declare,
+commit, and the governance stage chain through
+commit_governance — cannot be measured until replay
+executes). Nothing here claims those measurements.

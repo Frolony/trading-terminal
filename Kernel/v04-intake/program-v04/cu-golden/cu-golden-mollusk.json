@@ -1,5 +1,12 @@
 {
-  "blocked": [],
+  "blocked": [
+    {
+      "error": "SBF program panicked: program log 'Error: memory allocation failed, out of memory' (mollusk UnknownError(ProgramFailedToComplete), ~36,717 CU at default heap)",
+      "instruction": "replay_transition",
+      "note": "F4 (roadmap Part B4): replay_transition cannot execute in-process — reproduced in a minimal probe (initialize -> seal -> register -> ingest -> replay) at the default 32 KiB heap AND at mollusk's maximum configurable 256 KiB heap (512 KiB rejected by the VM as 'invalid heap size'). This is a panic, not a gate refusal. The lifecycle chain stops here until the F4 fix lands; no stage instruction has executed in-process before.",
+      "result": "Blocked"
+    }
+  ],
   "design_finding_resolved": "Slice-49/50 findings CLOSED by the account-carried action (program slices 51-53, Carlos's 2026-10-29 ruling): approve/revise no longer carry the 1524-byte StoredGovAction by value (the 1564-byte instruction-data / tx-size finding is gone — the largest new instruction is a 512-byte chunk), and the rewired wrappers frame-measure fitting 2048 bytes (slice 53). This run proves both instructions execute in-process against the real .so: approve stores the finalized action hash and increments the approval count to 1; revise re-binds the same finalized action with count and hash unchanged.",
   "measured": [
     {
@@ -109,6 +116,18 @@
       "instruction": "close_gov_action",
       "note": "slice-1 baseline (no design estimate exists for the v0.4 program)",
       "result": "Success"
+    },
+    {
+      "cu": 9915,
+      "instruction": "register_transition_life",
+      "note": "slice-63 partial lifecycle chain (register + ingest; replay blocked by F4)",
+      "result": "Success"
+    },
+    {
+      "cu": 22903,
+      "instruction": "ingest_observation_life",
+      "note": "slice-63 partial lifecycle chain (register + ingest; replay blocked by F4)",
+      "result": "Success"
     }
   ],
   "mollusk_svm": "0.16.4",
@@ -130,7 +149,7 @@
       "result": "Refused"
     }
   ],
-  "slice": "golden freeze slice 62: slice-3 chain + init_reputation genesis-midpoint chain and re-init refusal (program slice 61); .so frozen at the slice-61 build — outcome-tail chains (record_outcome / record_outcome_governance with reputation tails) are NOT in this freeze: they ride the full lifecycle mollusk chain, the next slice",
+  "slice": "slice 63 (PARTIAL): slice-62 golden freeze chain + lifecycle register/ingest only; replay_transition is BLOCKED by F4 (out-of-memory panic in-process, see blocked) — the full lifecycle chain (replay through settle to an outcome with a reputation tail) rides the F4 fix slice; .so unchanged from the slice-61 build, all slice-62 measurements reproduce exactly",
   "so_sha256": "1518d41e154ac52d3b919901112c55812d800276b6d710b5f857f0661b5a802d",
   "toolchain": "Anchor 1.2.2 / Solana 4.3.2 / platform-tools v1.57"
 }

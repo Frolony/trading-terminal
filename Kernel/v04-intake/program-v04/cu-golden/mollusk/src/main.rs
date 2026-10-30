@@ -112,6 +112,44 @@
 //! something this freeze claims. No outcome-tail CU appears in
 //! this golden file.
 //!
+//! SLICE-63 ADDENDUM — partial lifecycle chain, and a BLOCKING
+//! FINDING (roadmap F4). The chain is a NEW ordinary transition
+//! (the slice-1 ordinary record cannot replay: it names
+//! observation `[0xC0;32]`, which was never ingested — its
+//! observation account is the `[0xC1;32]` record, a
+//! registration-only fixture, not a lifecycle input):
+//! register TT `[9;32]` with proposer ag(1), then ingest
+//! observation `[0xC2;32]` (timestamp 200, expiry 9100,
+//! confidence 900,000) by the launch observer — both measured
+//! and green. The next step, `replay_transition`, DOES NOT
+//! EXECUTE in-process: it panics with the program log
+//! "Error: memory allocation failed, out of memory" at
+//! ~36.7k CU (mollusk `UnknownError(ProgramFailedToComplete)`),
+//! reproduced in a minimal probe (initialize -> seal ->
+//! register -> ingest -> replay) at the default heap AND at
+//! mollusk's maximum configurable heap (256 KiB; 512 KiB is
+//! rejected by the VM as "invalid heap size"). This is a
+//! panic, not a gate refusal, so it is recorded under
+//! `blocked`, never under `refusals` or `measured`. The
+//! program is unchanged since slice 61, so every prior
+//! measurement still reproduces exactly. The full lifecycle
+//! chain (replay through settle to an outcome with a
+//! reputation tail) and the governance outcome tail ride the
+//! F4 fix slice, not this one: no stage instruction has ever
+//! executed in-process before — every prior slice measured
+//! only genesis / registration / approval / close chains,
+//! none of which rebuild the sealed kernel the way the stage
+//! helpers do (`resolve_proposer` builds one sealed kernel,
+//! `kernel_at_head_from_entries` builds a second, then
+//! ingest + register run on it). Host-test helper suites
+//! pass; the SBF execution path does not. The F4 fix is
+//! port-side work (both builders live in program-v04's own
+//! helpers, not in the delivered crate), and its first job is
+//! to find the allocation that exceeds the maximum heap —
+//! the two-build shape alone does not explain it, since
+//! `seal_kernel` (one full genesis build) fits in the
+//! default 32 KiB heap.
+//!
 //! SLICE-3 ADDENDUM — close_gov_action, the last unmeasured
 //! slice-51 instruction, now measured: a second, abandoned
 //! action account (init + one 512-byte chunk, never finalized)
@@ -187,6 +225,11 @@ fn assert_mollusk_stamp_matches_lock() {
 const GOV_TID: [u8; 32] = [0xD1; 32];
 const ABANDON_TID: [u8; 32] = [0xD3; 32];
 const ORD_TID: [u8; 32] = [0xD2; 32];
+// Slice-63 full-lifecycle chain: its own transition + observation.
+const LIFE_TID: [u8; 32] = [0xD4; 32];
+const LIFE_OBS: [u8; 32] = [0xC2; 32];
+// Launch-profile ordinary transition type (lib.rs `TT`).
+const TT_TYPE: [u8; 32] = [9; 32];
 const DECLARED_HASH: [u8; 32] = [0xE1; 32];
 const GOV_OBS: [u8; 32] = [0xC0; 32];
 const INGEST_OBS: [u8; 32] = [0xC1; 32];
@@ -366,6 +409,12 @@ fn main() {
     // seat1 (ag(1) = [1;32]), a sealed-profile agent, so
     // `init_reputation` builds at the genesis midpoint.
     let (rep_record, rep_bump) = pda(&[b"reputation", seat1.as_ref()], &program_id);
+    // Slice-63 lifecycle chain accounts: a fresh ordinary
+    // transition + observation (the chain stops at the F4
+    // replay block, so no signal/plan/evidence/reputation
+    // accounts are needed yet).
+    let (life_record, _) = pda(&[b"transition", LIFE_TID.as_ref()], &program_id);
+    let (life_obs, _) = pda(&[b"observation", LIFE_OBS.as_ref()], &program_id);
 
     let empty = Account {
         lamports: 0,
@@ -392,6 +441,8 @@ fn main() {
         (approval_record, empty.clone()),
         (abandon_account, empty.clone()),
         (rep_record, empty.clone()),
+        (life_record, empty.clone()),
+        (life_obs, empty.clone()),
         (payer, funded.clone()),
         (seat1, funded.clone()),
         (observer, funded.clone()),
@@ -859,16 +910,82 @@ fn main() {
     assert_eq!(ga.data[138], 1, "refused close must leave the finalized account sealed");
     assert_eq!(ga.data[104..136], expected_hash, "refused close must leave the finalized hash untouched");
 
+    // SLICE-63 ADDENDUM — partial lifecycle chain (see the header
+    // addendum and roadmap F4): register + ingest only. The next
+    // step, `replay_transition`, panics with an out-of-memory
+    // alloc failure in-process, so it is NOT run here — it is
+    // recorded under `blocked` in the golden JSON, never as a
+    // success or a refusal. The chain resumes past replay once
+    // the F4 fix lands.
+    let life_note = "slice-63 partial lifecycle chain (register + ingest; replay blocked by F4)";
+    // Register the lifecycle transition: TT, proposer ag(1)
+    // (seat1), sealed head parent (0, zero hash), observation
+    // LIFE_OBS, expires 10100.
+    let mut data = disc("register_transition");
+    data.extend_from_slice(&LIFE_TID);
+    data.extend_from_slice(&TT_TYPE);
+    data.extend_from_slice(&u64le(0));
+    data.extend_from_slice(&ZERO_HASH);
+    data.extend_from_slice(&DECLARED_HASH);
+    data.extend_from_slice(&LIFE_OBS);
+    data.extend_from_slice(&u64le(10_100));
+    let ix = Instruction::new_with_bytes(
+        program_id,
+        &data,
+        vec![
+            AccountMeta::new_readonly(kernel_state, false),
+            AccountMeta::new(life_record, false),
+            AccountMeta::new(seat1, true),
+            AccountMeta::new_readonly(system_id, false),
+        ],
+    );
+    let (next, cu) = run(&mollusk, "register_transition_life", &ix, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({"instruction": "register_transition_life", "cu": cu, "result": "Success", "note": life_note}));
+    assert_eq!(find(&accounts, &life_record).data[216], 0, "lifecycle record must start REGISTERED");
+
+    // Ingest the lifecycle observation: observer [0xA1;32],
+    // timestamp 200 (== clock), expiry 9100, confidence 900,000.
+    let mut data = disc("ingest_observation");
+    data.extend_from_slice(&LIFE_OBS);
+    data.extend_from_slice(&u64le(200));
+    data.extend_from_slice(&u64le(9100));
+    data.extend_from_slice(&u64le(900_000));
+    let ix = Instruction::new_with_bytes(
+        program_id,
+        &data,
+        vec![
+            AccountMeta::new_readonly(kernel_state, false),
+            AccountMeta::new(life_obs, false),
+            AccountMeta::new(observer, true),
+            AccountMeta::new_readonly(system_id, false),
+        ],
+    );
+    let (next, cu) = run(&mollusk, "ingest_observation_life", &ix, &accounts);
+    measured.push(serde_json::json!({"instruction": "ingest_observation_life", "cu": cu, "result": "Success", "note": life_note}));
+    // ObservationRecord layout: 8 + 32 (id) + 8 (timestamp) +
+    // 8 (expiry) + 8 (confidence) + 32 (observer) + 1 (bump).
+    let ob = find(&next, &life_obs);
+    assert_eq!(u64_at(&ob.data, 40), 200, "lifecycle observation timestamp must be 200");
+    assert_eq!(ob.data[64..96], observer.to_bytes(), "lifecycle observation must name the launch observer");
+
     let out = serde_json::json!({
         "program": "program_v04",
         "program_id": PROGRAM_ID,
         "so_sha256": so_sha256,
         "mollusk_svm": MOLLUSK_SVM_VERSION,
         "toolchain": TOOLCHAIN,
-        "slice": "golden freeze slice 62: slice-3 chain + init_reputation genesis-midpoint chain and re-init refusal (program slice 61); .so frozen at the slice-61 build — outcome-tail chains (record_outcome / record_outcome_governance with reputation tails) are NOT in this freeze: they ride the full lifecycle mollusk chain, the next slice",
+        "slice": "slice 63 (PARTIAL): slice-62 golden freeze chain + lifecycle register/ingest only; replay_transition is BLOCKED by F4 (out-of-memory panic in-process, see blocked) — the full lifecycle chain (replay through settle to an outcome with a reputation tail) rides the F4 fix slice; .so unchanged from the slice-61 build, all slice-62 measurements reproduce exactly",
         "measured": measured,
         "refusals": refusals,
-        "blocked": [],
+        "blocked": [
+            {
+                "instruction": "replay_transition",
+                "result": "Blocked",
+                "error": "SBF program panicked: program log 'Error: memory allocation failed, out of memory' (mollusk UnknownError(ProgramFailedToComplete), ~36,717 CU at default heap)",
+                "note": "F4 (roadmap Part B4): replay_transition cannot execute in-process — reproduced in a minimal probe (initialize -> seal -> register -> ingest -> replay) at the default 32 KiB heap AND at mollusk's maximum configurable 256 KiB heap (512 KiB rejected by the VM as 'invalid heap size'). This is a panic, not a gate refusal. The lifecycle chain stops here until the F4 fix lands; no stage instruction has executed in-process before.",
+            },
+        ],
         "design_finding_resolved": "Slice-49/50 findings CLOSED by the account-carried action (program slices 51-53, Carlos's 2026-10-29 ruling): approve/revise no longer carry the 1524-byte StoredGovAction by value (the 1564-byte instruction-data / tx-size finding is gone — the largest new instruction is a 512-byte chunk), and the rewired wrappers frame-measure fitting 2048 bytes (slice 53). This run proves both instructions execute in-process against the real .so: approve stores the finalized action hash and increments the approval count to 1; revise re-binds the same finalized action with count and hash unchanged.",
     });
     std::fs::write(&out_path, serde_json::to_string_pretty(&out).unwrap())
