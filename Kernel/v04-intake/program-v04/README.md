@@ -3229,6 +3229,27 @@ accounts; the golden `.so` sha debt (slice-49
   the chains. This `.so` is NOT the golden freeze.
 - Deliberately NOT slice 61: the golden `.so` freeze (with
   its new-instruction CU chains).
+- Slice 62 — golden freeze (cu-golden harness only; the
+  program source is unchanged, host tests still 456/456,
+  IDL still 44 instructions / 9 accounts / 46 errors /
+  26 events, `.so` sha unchanged
+  `1518d41e154ac52d3b919901112c55812d800276b6d710b5f857f0661b5a802d`):
+  the harness chain now runs `init_reputation` for seat1
+  (a sealed-profile agent) right after seal — measured
+  23,387 CU, record built at the genesis midpoint
+  (50,000,000 raw) with its PDA bump — and a second init
+  on the same account refuses (5,580 CU, surfaced under
+  mollusk as Custom(0)) leaving the genesis value
+  untouched, proving the record one-time. All 17 prior
+  measurements reproduce EXACTLY against the frozen
+  `.so`; the finalized-close refusal is unchanged (5335 /
+  6034), blocked `[]` still. Scope stated plainly: this
+  freeze does NOT cover `record_outcome` /
+  `record_outcome_governance` with reputation tails —
+  those need a SETTLED transition, which needs the full
+  lifecycle chain (replay through settle) driven in
+  mollusk, and that chain is the next slice's work.
+  Deliberately NOT slice 62: the outcome-tail chains.
 
 ## Build
 

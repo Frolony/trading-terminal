@@ -98,6 +98,20 @@
 //! loads and the handler runs, with the approval count and the
 //! stored hash unchanged, exactly as slice 48 specifies).
 //!
+//! SLICE-62 ADDENDUM — golden freeze. This slice adds the
+//! reputation-init chain (`init_reputation` for a sealed-profile
+//! agent at the genesis midpoint, plus the re-init refusal that
+//! proves the record one-time) and freezes the resulting golden
+//! for the current `.so` (sha in the golden file): all prior
+//! measurements must reproduce exactly, since the program is
+//! unchanged since slice 61. What the freeze does NOT cover,
+//! stated plainly: `record_outcome` / `record_outcome_governance`
+//! with reputation tails — those need a SETTLED transition, which
+//! needs the full lifecycle chain (replay through settle) driven
+//! in mollusk, and that chain is the next slice's work, not
+//! something this freeze claims. No outcome-tail CU appears in
+//! this golden file.
+//!
 //! SLICE-3 ADDENDUM — close_gov_action, the last unmeasured
 //! slice-51 instruction, now measured: a second, abandoned
 //! action account (init + one 512-byte chunk, never finalized)
@@ -348,6 +362,10 @@ fn main() {
         &[b"gov-action", ABANDON_TID.as_ref(), seat1.as_ref()],
         &program_id,
     );
+    // Slice-62 golden-freeze chain: the reputation record for
+    // seat1 (ag(1) = [1;32]), a sealed-profile agent, so
+    // `init_reputation` builds at the genesis midpoint.
+    let (rep_record, rep_bump) = pda(&[b"reputation", seat1.as_ref()], &program_id);
 
     let empty = Account {
         lamports: 0,
@@ -373,6 +391,7 @@ fn main() {
         (gov_action_account, empty.clone()),
         (approval_record, empty.clone()),
         (abandon_account, empty.clone()),
+        (rep_record, empty.clone()),
         (payer, funded.clone()),
         (seat1, funded.clone()),
         (observer, funded.clone()),
@@ -380,6 +399,9 @@ fn main() {
     ];
 
     let mut measured: Vec<serde_json::Value> = Vec::new();
+    // Slice 62: refusals are collected from the start (the
+    // re-init refusal below) and the close chain appends later.
+    let mut refusals: Vec<serde_json::Value> = Vec::new();
     macro_rules! push {
         ($label:expr, $cu:expr) => {
             measured.push(serde_json::json!({
@@ -435,6 +457,65 @@ fn main() {
     let ks = find(&accounts, &kernel_state);
     assert_eq!(ks.data[8], 1, "seal must set sealed");
     assert_eq!(u64_at(&ks.data, 49), 100, "sealed clock must be 100");
+
+    // SLICE-62 ADDENDUM — golden freeze, reputation init chain.
+    // `init_reputation` for seat1, a sealed-profile agent: the
+    // record builds at the genesis midpoint (50 * SCALE =
+    // 50,000,000 raw) with the PDA bump, funded by the payer.
+    // A second init on the same account must refuse (the `init`
+    // constraint makes the record one-time), and its CU is
+    // recorded under `refusals`, never as a success.
+    let mut data = disc("init_reputation");
+    data.extend_from_slice(seat1.as_ref());
+    let ix = Instruction::new_with_bytes(
+        program_id,
+        &data,
+        vec![
+            AccountMeta::new(kernel_state, false),
+            AccountMeta::new(rep_record, false),
+            AccountMeta::new(payer, true),
+            AccountMeta::new_readonly(system_id, false),
+        ],
+    );
+    let (next, cu) = run(&mollusk, "init_reputation", &ix, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({
+        "instruction": "init_reputation",
+        "cu": cu,
+        "result": "Success",
+        "note": "golden freeze slice 62: reputation init chain (program slice 61)",
+    }));
+    // ReputationRecord layout: 8 (discriminator) + 32 (agent) +
+    // 8 (reputation_raw) + 1 (bump).
+    let rp = find(&accounts, &rep_record);
+    assert_eq!(rp.data[8..40], seat1.to_bytes(), "reputation record must name seat1");
+    assert_eq!(u64_at(&rp.data, 40), 50_000_000, "reputation must start at the genesis midpoint");
+    assert_eq!(rp.data[48], rep_bump, "reputation record must carry its PDA bump");
+
+    // Re-init must refuse and leave the genesis value untouched.
+    let mut data = disc("init_reputation");
+    data.extend_from_slice(seat1.as_ref());
+    let ix = Instruction::new_with_bytes(
+        program_id,
+        &data,
+        vec![
+            AccountMeta::new(kernel_state, false),
+            AccountMeta::new(rep_record, false),
+            AccountMeta::new(payer, true),
+            AccountMeta::new_readonly(system_id, false),
+        ],
+    );
+    let (next, cu, err) = run_refused(&mollusk, "init_reputation_again", &ix, &accounts);
+    accounts = next;
+    refusals.push(serde_json::json!({
+        "instruction": "init_reputation_again",
+        "cu": cu,
+        "result": "Refused",
+        "error": err,
+        "note": "golden freeze slice 62: the `init` constraint makes a reputation record one-time — no caller can reset a reputation to genesis after outcomes move it",
+    }));
+    let rp = find(&accounts, &rep_record);
+    assert_eq!(u64_at(&rp.data, 40), 50_000_000, "refused re-init must leave the genesis value untouched");
 
     // advance_clock to 200 (forward-only; sealed clock 100 -> 200).
     let mut data = disc("advance_clock");
@@ -673,7 +754,8 @@ fn main() {
     // and untouched (the post-settle reclaim decision is still
     // open, but the finalized-stays-open rule is now runtime
     // proven, not just host-tested).
-    let mut refusals: Vec<serde_json::Value> = Vec::new();
+    // (`refusals` was declared at the top for the slice-62
+    // re-init refusal; this chain appends to it.)
 
     // (a1) init the abandoned account (writer seat1, same action
     // bytes' hash as the expected hash — finalization never runs,
@@ -738,12 +820,11 @@ fn main() {
         pre_writer_lamports + pre_abandon_lamports,
         "close must return the abandoned account's rent to the writer"
     );
-    match accounts.iter().find(|(k, _)| k == &abandon_account) {
-        Some((_, closed)) => {
-            assert_eq!(closed.lamports, 0, "closed account must hold no lamports");
-            assert!(closed.data.is_empty(), "closed account must be emptied");
-        }
-        None => {} // mollusk dropping the closed account is the same outcome
+    // Mollusk dropping the closed account is the same outcome as
+    // an emptied account, so only the present case is asserted.
+    if let Some((_, closed)) = accounts.iter().find(|(k, _)| k == &abandon_account) {
+        assert_eq!(closed.lamports, 0, "closed account must hold no lamports");
+        assert!(closed.data.is_empty(), "closed account must be emptied");
     }
 
     // (b) close on the finalized GOV account must refuse, and
@@ -784,7 +865,7 @@ fn main() {
         "so_sha256": so_sha256,
         "mollusk_svm": MOLLUSK_SVM_VERSION,
         "toolchain": TOOLCHAIN,
-        "slice": "cu-golden slice 3: genesis + governance registration + account-carried approval chain (program slices 51-53) + close_gov_action rent-reclaim and finalized-refusal gate",
+        "slice": "golden freeze slice 62: slice-3 chain + init_reputation genesis-midpoint chain and re-init refusal (program slice 61); .so frozen at the slice-61 build — outcome-tail chains (record_outcome / record_outcome_governance with reputation tails) are NOT in this freeze: they ride the full lifecycle mollusk chain, the next slice",
         "measured": measured,
         "refusals": refusals,
         "blocked": [],

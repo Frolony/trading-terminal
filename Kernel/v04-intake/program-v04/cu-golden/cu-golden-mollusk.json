@@ -21,6 +21,12 @@
       "result": "Success"
     },
     {
+      "cu": 23387,
+      "instruction": "init_reputation",
+      "note": "golden freeze slice 62: reputation init chain (program slice 61)",
+      "result": "Success"
+    },
+    {
       "cu": 4175,
       "instruction": "advance_clock",
       "note": "slice-1 baseline (no design estimate exists for the v0.4 program)",
@@ -110,6 +116,13 @@
   "program_id": "FzxnCtig4asxnCxGhjcbCDY5zkfcpfTb5GcXNL9UaGg6",
   "refusals": [
     {
+      "cu": 5580,
+      "error": "Failure(Custom(0))",
+      "instruction": "init_reputation_again",
+      "note": "golden freeze slice 62: the `init` constraint makes a reputation record one-time — no caller can reset a reputation to genesis after outcomes move it",
+      "result": "Refused"
+    },
+    {
       "cu": 5335,
       "error": "GovActionAlreadyFinalized (6034)",
       "instruction": "close_gov_action_finalized",
@@ -117,7 +130,7 @@
       "result": "Refused"
     }
   ],
-  "slice": "cu-golden slice 3: genesis + governance registration + account-carried approval chain (program slices 51-53) + close_gov_action rent-reclaim and finalized-refusal gate",
+  "slice": "golden freeze slice 62: slice-3 chain + init_reputation genesis-midpoint chain and re-init refusal (program slice 61); .so frozen at the slice-61 build — outcome-tail chains (record_outcome / record_outcome_governance with reputation tails) are NOT in this freeze: they ride the full lifecycle mollusk chain, the next slice",
   "so_sha256": "1518d41e154ac52d3b919901112c55812d800276b6d710b5f857f0661b5a802d",
   "toolchain": "Anchor 1.2.2 / Solana 4.3.2 / platform-tools v1.57"
 }

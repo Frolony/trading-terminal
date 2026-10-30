@@ -430,6 +430,31 @@ values: all seventeen measured CU values reproduce
 exactly, blocked `[]` still. This `.so` is NOT the golden
 freeze.
 
+## Slice-62 golden freeze (2026-10-29, same pins)
+
+Slice 62 adds the reputation-init chain to the harness and
+freezes the golden for the current `.so` — the program
+source is unchanged since slice 61, so the freeze is a
+reproduction proof, not a re-measurement after a change.
+Chain addition, run right after `seal_kernel`:
+`init_reputation` for seat1 (ag(1) = `[1;32]`, a
+sealed-profile agent) — **23,387 CU**, record built at the
+genesis midpoint (50,000,000 raw) with its PDA bump — and a
+second init on the same account, which refuses (5,580 CU,
+surfaced under mollusk as Custom(0)) and leaves the genesis
+value untouched, proving the record one-time. All 17 prior
+measured values reproduce EXACTLY, the finalized-close
+refusal is unchanged (5335 / 6034), blocked `[]` still,
+`.so` sha unchanged
+`1518d41e154ac52d3b919901112c55812d800276b6d710b5f857f0661b5a802d`
+(host tests 456/456; IDL 44 / 9 / 46 / 26, unchanged).
+Scope stated plainly: this freeze does NOT cover
+`record_outcome` / `record_outcome_governance` with
+reputation tails — those need a SETTLED transition, which
+needs the full lifecycle chain (replay through settle)
+driven in mollusk, and that chain is the next slice's
+work, not something this freeze claims.
+
 ## Slice-61 re-measurement (2026-10-29, same pins)
 
 Slice 61 (the reputation-persistence slice: `ReputationRecord`
