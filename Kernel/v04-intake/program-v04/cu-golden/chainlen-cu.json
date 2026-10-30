@@ -1,0 +1,35 @@
+{
+  "fixture": "chain-length CU leg: record_outcome_governance CU at 0/1/2/3/5 claims-carrying priors (two-claims ordinary bundles to COMMITTED + unanimous governance tail through settle/outcome)",
+  "mollusk_svm": "0.16.4",
+  "program": "program_v04",
+  "program_id": "2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr",
+  "rows": [
+    {
+      "cu": 88279,
+      "priors": 0,
+      "result": "Success"
+    },
+    {
+      "cu": 110451,
+      "priors": 1,
+      "result": "Success"
+    },
+    {
+      "cu": 132991,
+      "priors": 2,
+      "result": "Success"
+    },
+    {
+      "cu": 156313,
+      "priors": 3,
+      "result": "Success"
+    },
+    {
+      "cu": 205288,
+      "priors": 5,
+      "result": "Success"
+    }
+  ],
+  "so_sha256": "f4e543ee8939cac374f3aa98dbbb9659c18f82f919bbb1500b32601dd40bd1b2",
+  "toolchain": "Anchor 1.2.2 / Solana 4.3.2 / platform-tools v1.57"
+}

@@ -942,3 +942,71 @@ with no CU change. This is NOT the merge-gate final freeze:
 that waits on the CU leg, the limit derivation, the program
 constant, enforcement, and the tripwire/smallframe guard
 re-runs on the final binary.
+
+## Chain-length CU leg + frame leg (merge-gate item 5, parts 2–3)
+
+In-process fixture in `chainlen/` (own crate, own lockfile — the
+lock is the golden harness's lock with only the root package
+renamed: a fresh offline resolution pulls conflicting
+`solana-instruction-error` 2.x/3.x into mollusk-svm 0.16.4's
+graph and fails to compile, so the proven lock is copied, not
+re-resolved). Run: `cu-golden/run-chainlen.sh`, output
+`cu-golden/chainlen-cu.json`. For each N in 0/1/2/3/5, in a
+FRESH mollusk instance: genesis + seal, then N ordinary
+bundles driven to COMMITTED at successive heads (each bundle's
+own 200-tick window, two-claims plan 10 + 5 SCALE, same shape
+as the golden harness's life chain), then a governance tail
+(GrantRole action, unanimous council, empty-claims plan)
+registered at the moved head with prior_bundle_count = N,
+driven through commit, settlement evidence, settle, and
+`record_outcome_governance`. The measured value is the
+outcome instruction's CU at that prior count, against the
+shipped binary (`so_sha256 f4e543ee…`, the heap-leg binary).
+
+Measured `record_outcome_governance` CU (reproduced IDENTICALLY
+on a second run):
+
+| priors | CU |
+| --- | ---: |
+| 0 | 88,279 |
+| 1 | 110,451 |
+| 2 | 132,991 |
+| 3 | 156,313 |
+| 5 | 205,288 |
+
+Cross-validation: the 1-prior row reproduces the golden
+chain's `record_outcome_governance_gov2` EXACTLY (110,451) —
+same binary, same chain shape, independent driver. Per-prior
+increments grow: 22,172 → 22,540 → 23,322 → 24,488/step
+(3→5 averaged) — the CU curve is mildly CONVEX, not linear.
+Least-squares fit on the first three points (0/1/2): slope
+22,356 CU/prior, intercept 88,218 — predicts N=3 within
++0.66% but N=5 within +2.65% (UNDER-predicts). The gate's
+predict-5 property holds tightly on the heap leg (+0.59%)
+and only loosely here: a linear CU extrapolation understates
+large-N cost, so the limit derivation must NOT use the naive
+linear fit — it must bound with the growing marginal cost
+(last-increment extrapolation: Nmax 53 at a 1.4M CU limit,
+vs 58 on the linear fit). Either way CU does NOT bind: both
+figures sit far above the heap leg's Nmax 19, so the smallest
+limit remains the heap leg until the frame leg is weighed.
+
+Frame leg: SBF stack frames are compile-time constants — they
+cannot vary with prior count, so the frame limit is
+N-independent by construction and cannot bind the
+chain-length limit at any N. Verified on the shipped binary
+this pass: a forced `anchor build` (v04 pins, source touched
+for mtime only, `.so` hash unchanged at `f4e543ee…`) exits 0
+with ZERO linker frame-overflow lines — no function frame
+exceeds 4,096 bytes. (The 4,672-byte BTreeMap-insert overflow
+in `tripwire-build.log` belongs to the `tripwire-heap`
+feature build, whose allocator change alters codegen; it is
+not present in the shipped build's link.) The gate adoption's
+3,648-byte max figure is not re-derived by this build's
+output — the linker reports only overflows, never fitting
+sizes — but the pass/fail question (any frame > 4,096?) is
+answered directly: none. NO program constant is set from
+these legs alone: the limit derivation (smallest of
+heap-19 / CU-53-or-58 / frame-unbounded, constant at ~half)
+is the next queue item, followed by enforcement + the final
+golden freeze.
