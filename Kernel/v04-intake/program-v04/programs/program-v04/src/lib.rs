@@ -1778,6 +1778,11 @@ pub mod program_v04 {
                 ParsedAccount::GovAction(_) | ParsedAccount::GovApproval(_) => {
                     return Err(error!(ProgramV04Error::RecordMismatch))
                 }
+                // Slice 61: a reputation record is not a sibling
+                // member — it belongs only in an outcome tail.
+                ParsedAccount::Reputation(_) => {
+                    return Err(error!(ProgramV04Error::RecordMismatch))
+                }
                 ParsedAccount::Plan(_) => {
                     return Err(error!(ProgramV04Error::RecordMismatch))
                 }
@@ -2588,24 +2593,9 @@ pub mod program_v04 {
         )?;
         let prior_entries = prior_entries_of(&bundles);
         let signal_count = ctx.accounts.transition_record.signal_count as usize;
-        if tail.len() < signal_count {
-            return Err(error!(ProgramV04Error::OutcomeFailed));
-        }
-        let mut tail_iter = tail.into_iter();
-        let mut priors: alloc::vec::Vec<SignalRecord> = alloc::vec::Vec::new();
-        for _ in 0..signal_count {
-            match tail_iter.next() {
-                Some(ParsedAccount::Signal(sig)) => priors.push(sig),
-                _ => return Err(error!(ProgramV04Error::RecordMismatch)),
-            }
-        }
-        let mut prior_plans: alloc::vec::Vec<PlanRecord> = alloc::vec::Vec::new();
-        for item in tail_iter {
-            match item {
-                ParsedAccount::Plan(plan) => prior_plans.push(plan),
-                _ => return Err(error!(ProgramV04Error::RecordMismatch)),
-            }
-        }
+        let plan_count = ctx.accounts.transition_record.plan_count as usize;
+        let (priors, prior_plans, reputations) =
+            split_outcome_tail(tail, signal_count, plan_count)?;
         let pairs: alloc::vec::Vec<(Pubkey, Delta)> =
             attributions.iter().map(|a| (a.agent, a.delta)).collect();
         let (life, exact) = record_outcome_from_records(
@@ -2620,7 +2610,35 @@ pub mod program_v04 {
             &pairs,
         )?;
         debug_assert!(life == Life::EvaluatedOutcome);
+        // Slice 61: only after the helper proves the outcome, the
+        // attributions land in the trailing reputation accounts —
+        // one per distinct attributed agent, in first-appearance
+        // order, PDA-verified, with only `reputation_raw` changed.
+        // A set mismatch refuses here and the instruction writes
+        // nothing (on-chain, the stage advance rolls back with it).
+        let before: alloc::vec::Vec<(Pubkey, u64)> =
+            reputations.iter().map(|r| (r.agent, r.reputation_raw)).collect();
+        let updates = apply_reputation_updates(&pairs, &before, exact)?;
+        write_reputation_updates(ctx.remaining_accounts, &reputations, &updates)?;
         emit!(OutcomeRecorded { transition_id, stage: ctx.accounts.transition_record.stage, exact });
+        Ok(())
+    }
+
+    /// Initialize a reputation account (slice 61): create the
+    /// `["reputation", agent]` PDA at the genesis midpoint
+    /// (`build_reputation_record`), funded by the signing payer.
+    /// One-time by the `init` constraint — a second creation for
+    /// the same agent refuses, so no caller can reset a reputation
+    /// to genesis after outcomes have moved it. The agent must be
+    /// a registered, active agent of the sealed profile
+    /// (`UnknownAgent` otherwise); the value is never caller-chosen.
+    pub fn init_reputation(ctx: Context<InitReputation>, agent: Pubkey) -> Result<()> {
+        let record = build_reputation_record(
+            &ctx.accounts.kernel_state,
+            agent,
+            ctx.bumps.reputation_record,
+        )?;
+        *ctx.accounts.reputation_record = record;
         Ok(())
     }
 
@@ -2675,7 +2693,10 @@ pub mod program_v04 {
             prior_bundle_count as usize,
         )?;
         let prior_entries = prior_entries_of(&bundles);
-        let (priors, prior_plans, approval_records) = split_gov_commit_tail(
+        // Slice 61: the outcome tail variant, so trailing reputation
+        // records survive the parse instead of being consumed as
+        // approvals by `split_gov_commit_tail`.
+        let (priors, prior_plans, approval_records, reputations) = split_gov_outcome_tail(
             tail,
             ctx.accounts.transition_record.signal_count as usize,
             ctx.accounts.transition_record.plan_count as usize,
@@ -2702,6 +2723,13 @@ pub mod program_v04 {
             &pairs,
         )?;
         debug_assert!(life == Life::EvaluatedOutcome);
+        // Slice 61, as in `record_outcome`: attributions land in the
+        // trailing reputation accounts only after the helper proves
+        // the outcome; a set mismatch refuses and writes nothing.
+        let before: alloc::vec::Vec<(Pubkey, u64)> =
+            reputations.iter().map(|r| (r.agent, r.reputation_raw)).collect();
+        let updates = apply_reputation_updates(&pairs, &before, exact)?;
+        write_reputation_updates(ctx.remaining_accounts, &reputations, &updates)?;
         emit!(OutcomeRecorded { transition_id, stage: ctx.accounts.transition_record.stage, exact });
         Ok(())
     }
@@ -3037,6 +3065,11 @@ pub mod program_v04 {
                 ParsedAccount::Plan(_) => {
                     return Err(error!(ProgramV04Error::RecordMismatch))
                 }
+                // Slice 61: a reputation record is not a sibling
+                // member — it belongs only in an outcome tail.
+                ParsedAccount::Reputation(_) => {
+                    return Err(error!(ProgramV04Error::RecordMismatch))
+                }
             }
         }
         for (i, tr) in sibling_transitions.iter().enumerate() {
@@ -3212,6 +3245,11 @@ pub mod program_v04 {
                 ParsedAccount::Signal(sig) => all_signals.push(sig),
                 ParsedAccount::GovAction(account) => gov_action_accounts.push(account),
                 ParsedAccount::Plan(_) => {
+                    return Err(error!(ProgramV04Error::RecordMismatch))
+                }
+                // Slice 61: a reputation record is not a sibling
+                // member — it belongs only in an outcome tail.
+                ParsedAccount::Reputation(_) => {
                     return Err(error!(ProgramV04Error::RecordMismatch))
                 }
             }
@@ -3983,6 +4021,28 @@ pub struct RecordOutcomeGovernance<'info> {
     /// `RECORDER` identity with the `OutcomeRecorder` role
     /// in the sealed profile.
     pub recorder: Signer<'info>,
+}
+
+#[derive(Accounts)]
+#[instruction(agent: Pubkey)]
+pub struct InitReputation<'info> {
+    #[account(
+        mut,
+        seeds = [b"kernel-state"],
+        bump = kernel_state.bump,
+    )]
+    pub kernel_state: Account<'info, KernelState>,
+    #[account(
+        init,
+        payer = payer,
+        space = ReputationRecord::SPACE,
+        seeds = [b"reputation", agent.as_ref()],
+        bump,
+    )]
+    pub reputation_record: Account<'info, ReputationRecord>,
+    #[account(mut)]
+    pub payer: Signer<'info>,
+    pub system_program: Program<'info, System>,
 }
 
 #[derive(Accounts)]
@@ -6765,12 +6825,13 @@ pub struct PlanClaimArg {
 /// agent pubkey and their signed delta in kernel `Delta` (i64)
 /// units. Instruction args only — attributions are carried in
 /// the transaction, not stored: program-v04 has no reputation
-/// account yet, so the durable outcome record is the stage
-/// advance plus the `OutcomeRecorded` event (with the exact
-/// flag); the cap/halving application of kernel
-/// `record_outcome` rides the future reputation-persistence
-/// slice, which will run the kernel call for real against an
-/// account it can write to.
+/// account yet — slice 61 adds it: `ReputationRecord`, written
+/// by the outcome instructions through
+/// `apply_reputation_updates`, which applies kernel
+/// `record_outcome`'s exact cap/halving arithmetic to the stored
+/// values (the delivered crate exposes no reputation setter, so
+/// a real kernel call against stored values is impossible through
+/// its public API — see that function's docs).
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AttributionArg {
     pub agent: Pubkey,
@@ -6824,6 +6885,298 @@ impl PlanRecord {
     pub const MAX_PLAN_CLAIMS: usize = 8;
     /// 8 (discriminator) + 32 + 32 + 1 + 16 + 64 + 8 + 1.
     pub const SPACE: usize = 162;
+}
+
+/// The slice-61 reputation account: one per agent, PDA seeds
+/// `["reputation", agent]`. It holds the agent's reputation in kernel
+/// `Amount` raw units (SCALE = 1.0), as last written by an outcome
+/// instruction. It is created once, at the genesis midpoint, by
+/// `init_reputation` (which the `init` constraint makes unrepeatable),
+/// and mutated only by `record_outcome` / `record_outcome_governance`
+/// through `apply_reputation_updates` — no other instruction writes it,
+/// so a stored value is always the result of a proven outcome chain.
+#[account]
+#[derive(Debug)]
+pub struct ReputationRecord {
+    /// Agent whose reputation this is (the PDA seed after `"reputation"`).
+    pub agent: Pubkey,
+    /// Reputation in kernel `Amount` raw units, in `[rep_min, rep_max]`.
+    pub reputation_raw: u64,
+    /// PDA bump for the `["reputation", agent]` seeds.
+    pub bump: u8,
+}
+
+impl ReputationRecord {
+    /// 8 (discriminator) + 32 + 8 + 1.
+    pub const SPACE: usize = 49;
+}
+
+/// Genesis reputation (slice 61): the kernel's `RegisterAgent` rule
+/// (delivered crate `kernel.rs`, `do_action`): a new agent starts at
+/// the midpoint of `[rep_min, rep_max]` — `50 * SCALE` under the
+/// launch config (0..100). `init_reputation` writes exactly this, so
+/// a fresh reputation account agrees with the kernel's genesis state.
+pub fn genesis_reputation_raw() -> u64 {
+    let cfg = launch_config();
+    cfg.rep_min.raw() + (cfg.rep_max.raw() - cfg.rep_min.raw()) / 2
+}
+
+/// Net attribution for one agent (slice 61): the kernel's
+/// `record_outcome` sums an agent's deltas order-independently into an
+/// `i128` net (`kernel.rs` `record_outcome`) before any cap or halving.
+/// Summation here is in `i128` for the same reason — no truncation.
+pub fn net_attribution_for(attributions: &[(Pubkey, Delta)], agent: Pubkey) -> i128 {
+    let mut net: i128 = 0;
+    for (a, d) in attributions {
+        if *a == agent {
+            net += *d as i128;
+        }
+    }
+    net
+}
+
+/// One agent's reputation after an outcome (slice 61): the kernel's
+/// `record_outcome` arithmetic, reproduced exactly (`kernel.rs`
+/// `record_outcome`): clamp the net to `±max_attribution`, halve only
+/// positive credit when the outcome is inexact, then apply the delta
+/// clamped into `[rep_min, rep_max]` (`Amount::apply_delta`).
+pub fn reputation_after_outcome(current_raw: u64, net: i128, exact: bool) -> u64 {
+    let cfg = launch_config();
+    let cap = cfg.max_attribution.raw() as i128;
+    let mut n = net.clamp(-cap, cap);
+    if !exact && n > 0 {
+        n /= 2;
+    }
+    Amount::from_raw(current_raw).apply_delta(n, cfg.rep_min, cfg.rep_max).raw()
+}
+
+/// Apply an outcome's attributions to stored reputations (slice 61).
+/// `before` must name exactly the distinct attributed agents, once
+/// each, in first-appearance order — a missing, extra, or duplicated
+/// entry refuses with `OutcomeFailed`, so no outcome can silently
+/// drop an agent or invent a balance. Returns the new values in the
+/// same order. Empty attributions require an empty `before` and
+/// return empty, matching the kernel advancing on empty lists.
+/// Pure: a refusal leaves every caller-owned value untouched.
+///
+/// Why a reproduction, stated plainly: the delivered crate exposes no
+/// reputation setter — its agent map is private (`kernel.rs`, the
+/// `Kernel` struct fields) and no public method writes a reputation
+/// except `record_outcome` itself — so a rebuilt kernel cannot be
+/// seeded with stored reputations, and running the kernel call "for
+/// real" against stored values is impossible through the public API
+/// without editing the author's crate (forbidden). The kernel call's
+/// gates are instead proven by the existing outcome helpers (sealed
+/// state, `SETTLED` stage, recorder role, participant rule, settled
+/// re-proof, exact flag), and this function applies the call's exact
+/// arithmetic to the stored values. If the author ever adds a
+/// reputation-seeding API, this function is the seam to replace with
+/// a real call — its tests pin the arithmetic either way.
+pub fn apply_reputation_updates(
+    attributions: &[(Pubkey, Delta)],
+    before: &[(Pubkey, u64)],
+    exact: bool,
+) -> Result<alloc::vec::Vec<(Pubkey, u64)>> {
+    let mut distinct: alloc::vec::Vec<Pubkey> = alloc::vec::Vec::new();
+    for (a, _) in attributions {
+        if !distinct.contains(a) {
+            distinct.push(*a);
+        }
+    }
+    if before.len() != distinct.len() {
+        return Err(error!(ProgramV04Error::OutcomeFailed));
+    }
+    for (a, _) in before {
+        if before.iter().filter(|(b, _)| b == a).count() != 1 || !distinct.contains(a) {
+            return Err(error!(ProgramV04Error::OutcomeFailed));
+        }
+    }
+    let mut out: alloc::vec::Vec<(Pubkey, u64)> = alloc::vec::Vec::new();
+    for agent in &distinct {
+        let current = before.iter().find(|(b, _)| b == agent).map(|(_, v)| *v).ok_or(
+            error!(ProgramV04Error::OutcomeFailed),
+        )?;
+        let net = net_attribution_for(attributions, *agent);
+        out.push((*agent, reputation_after_outcome(current, net, exact)));
+    }
+    Ok(out)
+}
+
+/// Build a fresh reputation record (slice 61): sealed-state gate, then
+/// the agent gate against the sealed launch profile (registered and
+/// active there, as `resolve_proposer` judges proposers) — a
+/// non-agent pubkey refuses with `UnknownAgent`. The value is the
+/// genesis midpoint, never a caller-supplied number. Pure: a refused
+/// build leaves the caller-owned state untouched.
+pub fn build_reputation_record(
+    kernel_state: &KernelState,
+    agent: Pubkey,
+    bump: u8,
+) -> Result<ReputationRecord> {
+    if !kernel_state.sealed {
+        return Err(error!(ProgramV04Error::NotSealed));
+    }
+    let agent_id = agent.to_bytes();
+    let k = sealed_launch_kernel().map_err(|_| error!(ProgramV04Error::KernelSeal))?;
+    match k.agent(&agent_id) {
+        Some(profile) if profile.active => Ok(ReputationRecord {
+            agent,
+            reputation_raw: genesis_reputation_raw(),
+            bump,
+        }),
+        _ => Err(error!(ProgramV04Error::UnknownAgent)),
+    }
+}
+
+/// Prove a reputation account is the PDA its record claims (slice 61):
+/// `["reputation", agent]` under the stored bump at this program id.
+/// A wrong bump, a wrong agent, or a non-PDA key refuses with
+/// `RecordMismatch` before any write.
+pub fn check_reputation_pda(
+    agent: Pubkey,
+    bump: u8,
+    account_key: Pubkey,
+    program_id: &Pubkey,
+) -> Result<()> {
+    let derived = Pubkey::create_program_address(
+        &[b"reputation", agent.as_ref(), &[bump]],
+        program_id,
+    )
+    .map_err(|_| error!(ProgramV04Error::RecordMismatch))?;
+    if derived != account_key {
+        return Err(error!(ProgramV04Error::RecordMismatch));
+    }
+    Ok(())
+}
+
+/// Write outcome-computed reputations back into their remaining
+/// accounts (slice 61). `remaining` is the instruction's full
+/// remaining-account list and `reputations` its trailing parsed
+/// records, so the accounts written are the list's last
+/// `reputations.len()` entries, in order. Every account is PDA-checked
+/// and re-serialized from its parsed record with only
+/// `reputation_raw` changed; a length mismatch or PDA failure refuses
+/// before any write. Callers run this only after the outcome helper
+/// and `apply_reputation_updates` have both succeeded, so a refusal
+/// here (or earlier) writes nothing.
+pub fn write_reputation_updates(
+    remaining: &[AccountInfo],
+    reputations: &[ReputationRecord],
+    updates: &[(Pubkey, u64)],
+) -> Result<()> {
+    if reputations.len() != updates.len() {
+        return Err(error!(ProgramV04Error::RecordMismatch));
+    }
+    let n = reputations.len();
+    let start = remaining.len().checked_sub(n).ok_or(error!(ProgramV04Error::RecordMismatch))?;
+    for ((rep, (_, new_raw)), info) in
+        reputations.iter().zip(updates.iter()).zip(remaining[start..].iter())
+    {
+        check_reputation_pda(rep.agent, rep.bump, *info.key, &crate::ID)?;
+        let mut data = info
+            .try_borrow_mut_data()
+            .map_err(|_| error!(ProgramV04Error::RecordMismatch))?;
+        let updated = ReputationRecord {
+            agent: rep.agent,
+            reputation_raw: *new_raw,
+            bump: rep.bump,
+        };
+        anchor_lang::AccountSerialize::try_serialize(&updated, &mut &mut data[..])
+            .map_err(|_| error!(ProgramV04Error::RecordMismatch))?;
+    }
+    Ok(())
+}
+
+/// Split an ordinary outcome tail (slice 61): exactly `signal_count`
+/// signals, then exactly `plan_count` plans, then the trailing
+/// reputation records (any count — the caller validates the set
+/// against the attributions). A mistyped, short, or over-long run
+/// refuses with `RecordMismatch` before any replay runs. This replaces
+/// the slice-59 instruction's consume-all-as-plans parse, which could
+/// not delimit a reputation tail.
+pub fn split_outcome_tail(
+    tail: alloc::vec::Vec<ParsedAccount>,
+    signal_count: usize,
+    plan_count: usize,
+) -> Result<(
+    alloc::vec::Vec<SignalRecord>,
+    alloc::vec::Vec<PlanRecord>,
+    alloc::vec::Vec<ReputationRecord>,
+)> {
+    let mut iter = tail.into_iter();
+    let mut signals: alloc::vec::Vec<SignalRecord> = alloc::vec::Vec::new();
+    for _ in 0..signal_count {
+        match iter.next() {
+            Some(ParsedAccount::Signal(sig)) => signals.push(sig),
+            _ => return Err(error!(ProgramV04Error::RecordMismatch)),
+        }
+    }
+    let mut plans: alloc::vec::Vec<PlanRecord> = alloc::vec::Vec::new();
+    for _ in 0..plan_count {
+        match iter.next() {
+            Some(ParsedAccount::Plan(plan)) => plans.push(plan),
+            _ => return Err(error!(ProgramV04Error::RecordMismatch)),
+        }
+    }
+    let mut reputations: alloc::vec::Vec<ReputationRecord> = alloc::vec::Vec::new();
+    for item in iter {
+        match item {
+            ParsedAccount::Reputation(rep) => reputations.push(rep),
+            _ => return Err(error!(ProgramV04Error::RecordMismatch)),
+        }
+    }
+    Ok((signals, plans, reputations))
+}
+
+/// Split a governance outcome tail (slice 61): exactly `signal_count`
+/// signals, then exactly `plan_count` plans, then exactly
+/// `approval_count` approvals, then the trailing reputation records
+/// (any count — the caller validates the set against the
+/// attributions). The governance mirror of `split_outcome_tail`;
+/// `split_gov_commit_tail` (which consumes everything as approvals)
+/// stays untouched for the commit/settle instructions that use it.
+#[allow(clippy::type_complexity)]
+pub fn split_gov_outcome_tail(
+    tail: alloc::vec::Vec<ParsedAccount>,
+    signal_count: usize,
+    plan_count: usize,
+    approval_count: usize,
+) -> Result<(
+    alloc::vec::Vec<SignalRecord>,
+    alloc::vec::Vec<PlanRecord>,
+    alloc::vec::Vec<GovApprovalRecord>,
+    alloc::vec::Vec<ReputationRecord>,
+)> {
+    let mut iter = tail.into_iter();
+    let mut signals: alloc::vec::Vec<SignalRecord> = alloc::vec::Vec::new();
+    for _ in 0..signal_count {
+        match iter.next() {
+            Some(ParsedAccount::Signal(sig)) => signals.push(sig),
+            _ => return Err(error!(ProgramV04Error::RecordMismatch)),
+        }
+    }
+    let mut plans: alloc::vec::Vec<PlanRecord> = alloc::vec::Vec::new();
+    for _ in 0..plan_count {
+        match iter.next() {
+            Some(ParsedAccount::Plan(plan)) => plans.push(plan),
+            _ => return Err(error!(ProgramV04Error::RecordMismatch)),
+        }
+    }
+    let mut approvals: alloc::vec::Vec<GovApprovalRecord> = alloc::vec::Vec::new();
+    for _ in 0..approval_count {
+        match iter.next() {
+            Some(ParsedAccount::GovApproval(approval)) => approvals.push(*approval),
+            _ => return Err(error!(ProgramV04Error::RecordMismatch)),
+        }
+    }
+    let mut reputations: alloc::vec::Vec<ReputationRecord> = alloc::vec::Vec::new();
+    for item in iter {
+        match item {
+            ParsedAccount::Reputation(rep) => reputations.push(rep),
+            _ => return Err(error!(ProgramV04Error::RecordMismatch)),
+        }
+    }
+    Ok((signals, plans, approvals, reputations))
 }
 
 /// Submit a plan through the real kernel (slice 21). Pure except for
@@ -10551,9 +10904,12 @@ pub fn settle_governance_transition_from_stored(
 /// participant rule (against a plan set the clone-settle
 /// re-proof has just proven replayable), and the exact flag.
 /// The cap (±`max_attribution`) and halved-positive-credit
-/// (when inexact) application rides the future
-/// reputation-persistence slice, which will run the kernel
-/// call for real against an account it can write to.
+/// (when inexact) application rides slice 61, at the instruction
+/// level through `apply_reputation_updates` — this helper proves
+/// the outcome; the instruction persists the reputations (a real
+/// kernel call against stored values is impossible through the
+/// delivered crate's public API, which exposes no reputation
+/// setter — see that function's docs).
 #[allow(clippy::too_many_arguments)]
 pub fn record_outcome_from_records(
     kernel_state: &KernelState,
@@ -10732,9 +11088,11 @@ pub fn record_outcome_from_records(
 /// participant rule against a plan set the clone-settle
 /// re-proof has just proven replayable, and the exact
 /// flag). The cap (±`max_attribution`) and
-/// halved-positive-credit application ride the future
-/// reputation-persistence slice, which will run the kernel
-/// call for real against an account it can write to.
+/// halved-positive-credit application ride slice 61, at the
+/// instruction level through `apply_reputation_updates` (a real
+/// kernel call against stored values is impossible through the
+/// delivered crate's public API, which exposes no reputation
+/// setter — see that function's docs).
 #[allow(clippy::too_many_arguments)]
 pub fn record_outcome_governance_from_records(
     kernel_state: &KernelState,
@@ -12731,6 +13089,11 @@ pub enum ParsedAccount {
     /// accounts wherever a governance replay needs the action
     /// the approval hashes bind to.
     GovAction(Box<GovActionAccount>),
+    /// Slice 61: a reputation record. It parses only in an outcome
+    /// tail — inside a prior bundle it refuses, because bundle
+    /// parsing expects exactly the bundle's transition, observation,
+    /// signals, plans, (approvals, action) in order.
+    Reputation(ReputationRecord),
 }
 
 /// Classify every remaining account, in order, into its record type.
@@ -12760,6 +13123,10 @@ pub fn classify_remaining_accounts<'a>(
         }
         if let Ok(p) = Account::<GovActionAccount>::try_from(acc) {
             parsed.push(ParsedAccount::GovAction(Box::new(p.into_inner())));
+            continue;
+        }
+        if let Ok(p) = Account::<ReputationRecord>::try_from(acc) {
+            parsed.push(ParsedAccount::Reputation(p.into_inner()));
             continue;
         }
         let p = Account::<PlanRecord>::try_from(acc)
@@ -14418,6 +14785,8 @@ pub enum ProgramV04Error {
     GovernanceOutcomeRequired,
     #[msg("program-v04 outcome: kernel outcome refused, settled chain unproven, attribution not a plan participant, or supplied set incomplete")]
     OutcomeFailed,
+    #[msg("program-v04 reputation: agent is not a registered, active agent of the sealed profile")]
+    UnknownAgent,
 }
 
 // ---------------------------------------------------------------- launch genesis
@@ -20048,6 +20417,286 @@ mod tests {
         .expect("a late-clock governance outcome must succeed via the commit-clock re-proof");
         assert_eq!(life, Life::EvaluatedOutcome);
         assert_eq!(record.stage, TransitionRecord::EVALUATED_OUTCOME);
+    }
+
+    #[test]
+    fn reputation_genesis_is_midpoint_and_space_is_exact() {
+        // The kernel's `RegisterAgent` rule under the launch
+        // config (0..100): a new agent starts at 50.0, and the
+        // account holds exactly discriminator + agent + raw + bump.
+        assert_eq!(genesis_reputation_raw(), 50 * SCALE);
+        assert_eq!(ReputationRecord::SPACE, 8 + 32 + 8 + 1);
+    }
+
+    #[test]
+    fn reputation_after_outcome_exact_clamps_to_cap() {
+        // Net +30 against a ±20 cap lands at +20: 50 -> 70.
+        assert_eq!(
+            reputation_after_outcome(50 * SCALE, 30 * SCALE as i128, true),
+            70 * SCALE
+        );
+    }
+
+    #[test]
+    fn reputation_after_outcome_inexact_halves_positive_only() {
+        // Inexact: +30 clamps to +20, then halves to +10: 50 -> 60.
+        assert_eq!(
+            reputation_after_outcome(50 * SCALE, 30 * SCALE as i128, false),
+            60 * SCALE
+        );
+        // Inexact negative credit is NOT halved: -30 clamps to
+        // -20 and applies in full: 50 -> 30.
+        assert_eq!(
+            reputation_after_outcome(50 * SCALE, -30 * SCALE as i128, false),
+            30 * SCALE
+        );
+    }
+
+    #[test]
+    fn reputation_after_outcome_clamps_to_range() {
+        // Above the ceiling and below the floor both clamp into
+        // [rep_min, rep_max] = [0, 100], never past it.
+        assert_eq!(
+            reputation_after_outcome(95 * SCALE, 20 * SCALE as i128, true),
+            100 * SCALE
+        );
+        assert_eq!(
+            reputation_after_outcome(5 * SCALE, -20 * SCALE as i128, true),
+            0
+        );
+    }
+
+    #[test]
+    fn reputation_updates_sum_duplicates_and_ignore_order() {
+        // Duplicate attributions sum before the cap: +15 +15
+        // = +30, clamped to +20, so 50 -> 70; and the same set
+        // in the opposite order computes identically, because
+        // the kernel sums order-independently.
+        let a = Pubkey::new_from_array(ag(1));
+        let b = Pubkey::new_from_array(ag(2));
+        let before = [(a, 50 * SCALE), (b, 50 * SCALE)];
+        let forward = apply_reputation_updates(
+            &[(a, 15 * SCALE as i64), (a, 15 * SCALE as i64), (b, -5 * SCALE as i64)],
+            &before,
+            true,
+        )
+        .expect("a matching set must apply");
+        assert_eq!(forward, vec![(a, 70 * SCALE), (b, 45 * SCALE)]);
+        let reversed = apply_reputation_updates(
+            &[(b, -5 * SCALE as i64), (a, 15 * SCALE as i64), (a, 15 * SCALE as i64)],
+            &[(b, 50 * SCALE), (a, 50 * SCALE)],
+            true,
+        )
+        .expect("the same set in another order must apply");
+        assert_eq!(reversed, vec![(b, 45 * SCALE), (a, 70 * SCALE)]);
+    }
+
+    #[test]
+    fn reputation_updates_refuse_set_mismatch() {
+        // Missing, extra, and duplicated `before` entries all
+        // refuse — no outcome drops an agent or invents one.
+        let a = Pubkey::new_from_array(ag(1));
+        let b = Pubkey::new_from_array(ag(2));
+        let c = Pubkey::new_from_array(ag(3));
+        let err = apply_reputation_updates(&[(a, 10), (b, 10)], &[(a, 50 * SCALE)], true)
+            .expect_err("a missing agent must refuse");
+        assert!(format!("{:?}", err).contains("OutcomeFailed"));
+        let err = apply_reputation_updates(
+            &[(a, 10)],
+            &[(a, 50 * SCALE), (c, 50 * SCALE)],
+            true,
+        )
+        .expect_err("an extra agent must refuse");
+        assert!(format!("{:?}", err).contains("OutcomeFailed"));
+        let err = apply_reputation_updates(
+            &[(a, 10)],
+            &[(a, 50 * SCALE), (a, 50 * SCALE)],
+            true,
+        )
+        .expect_err("a duplicated agent must refuse");
+        assert!(format!("{:?}", err).contains("OutcomeFailed"));
+    }
+
+    #[test]
+    fn reputation_updates_empty_is_empty() {
+        // Empty attributions advance with no reputation accounts,
+        // matching the kernel advancing on empty lists.
+        let out = apply_reputation_updates(&[], &[], true)
+            .expect("empty attributions with empty before must apply");
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn build_reputation_record_genesis_for_sealed_agent() {
+        // A sealed-profile agent builds at the genesis midpoint
+        // with the supplied bump; the value is never caller-chosen.
+        let state = sealed_state();
+        let agent = Pubkey::new_from_array(ag(1));
+        let record = build_reputation_record(&state, agent, 7)
+            .expect("a sealed-profile agent must build");
+        assert_eq!(record.agent, agent);
+        assert_eq!(record.reputation_raw, 50 * SCALE);
+        assert_eq!(record.bump, 7);
+    }
+
+    #[test]
+    fn build_reputation_record_refuses_unknown_and_unsealed() {
+        let state = sealed_state();
+        let err = build_reputation_record(&state, Pubkey::new_from_array([0xEE; 32]), 7)
+            .expect_err("a non-agent pubkey must refuse");
+        assert!(format!("{:?}", err).contains("UnknownAgent"));
+        let unsealed = genesis_kernel_state().expect("genesis must construct");
+        let err = build_reputation_record(&unsealed, Pubkey::new_from_array(ag(1)), 7)
+            .expect_err("an unsealed state must refuse");
+        assert!(format!("{:?}", err).contains("NotSealed"));
+    }
+
+    #[test]
+    fn split_outcome_tail_happy_and_refusals() {
+        // Happy: 1 signal, 1 plan, 1 reputation parses in order.
+        let (_, _, _, first, plan) = settled_pair();
+        let rep = ReputationRecord {
+            agent: plan.agent,
+            reputation_raw: 50 * SCALE,
+            bump: 0,
+        };
+        let (signals, plans, reps) = split_outcome_tail(
+            vec![
+                ParsedAccount::Signal(first),
+                ParsedAccount::Plan(plan),
+                ParsedAccount::Reputation(rep),
+            ],
+            1,
+            1,
+        )
+        .expect("a well-formed outcome tail must parse");
+        assert_eq!(signals.len(), 1);
+        assert_eq!(plans.len(), 1);
+        assert_eq!(reps.len(), 1);
+        assert_eq!(reps[0].reputation_raw, 50 * SCALE);
+        // A trailing plan where a reputation belongs refuses,
+        // and a short plan run refuses — neither silently parses.
+        let (_, _, _, first, plan) = settled_pair();
+        let rep = ReputationRecord {
+            agent: plan.agent,
+            reputation_raw: 50 * SCALE,
+            bump: 0,
+        };
+        let err = split_outcome_tail(
+            vec![
+                ParsedAccount::Signal(first),
+                ParsedAccount::Plan(plan),
+                ParsedAccount::Reputation(rep),
+                ParsedAccount::Signal(first),
+            ],
+            1,
+            1,
+        )
+        .expect_err("a non-reputation trailing account must refuse");
+        assert!(format!("{:?}", err).contains("RecordMismatch"));
+        let (_, _, _, first, plan) = settled_pair();
+        let err = split_outcome_tail(
+            vec![ParsedAccount::Signal(first), ParsedAccount::Plan(plan)],
+            1,
+            2,
+        )
+        .expect_err("a short plan run must refuse");
+        assert!(format!("{:?}", err).contains("RecordMismatch"));
+    }
+
+    #[test]
+    fn split_gov_outcome_tail_happy_and_refusals() {
+        // Happy: 1 signal, 1 plan, 3 approvals, 1 reputation.
+        let (_, _, _, first, plan, approvals) = gov_committed_bundle();
+        let rep = ReputationRecord {
+            agent: plan.agent,
+            reputation_raw: 50 * SCALE,
+            bump: 0,
+        };
+        let mut tail = vec![ParsedAccount::Signal(first), ParsedAccount::Plan(plan)];
+        for approval in approvals {
+            tail.push(ParsedAccount::GovApproval(Box::new(approval)));
+        }
+        tail.push(ParsedAccount::Reputation(rep));
+        let (signals, plans, parsed_approvals, reps) =
+            split_gov_outcome_tail(tail, 1, 1, 3).expect("a well-formed gov tail must parse");
+        assert_eq!(signals.len(), 1);
+        assert_eq!(plans.len(), 1);
+        assert_eq!(parsed_approvals.len(), 3);
+        assert_eq!(reps.len(), 1);
+        // A short approval run refuses rather than parsing short.
+        let (_, _, _, first, plan, approvals) = gov_committed_bundle();
+        let mut tail = vec![ParsedAccount::Signal(first), ParsedAccount::Plan(plan)];
+        for approval in approvals.into_iter().take(2) {
+            tail.push(ParsedAccount::GovApproval(Box::new(approval)));
+        }
+        let err = split_gov_outcome_tail(tail, 1, 1, 3)
+            .expect_err("a short approval run must refuse");
+        assert!(format!("{:?}", err).contains("RecordMismatch"));
+    }
+
+    #[test]
+    fn check_reputation_pda_accepts_derived_and_refuses_wrong_bump() {
+        let agent = Pubkey::new_from_array(ag(1));
+        let (pda, bump) =
+            Pubkey::find_program_address(&[b"reputation", agent.as_ref()], &crate::ID);
+        check_reputation_pda(agent, bump, pda, &crate::ID)
+            .expect("the derived PDA must pass");
+        let err = check_reputation_pda(agent, bump.wrapping_add(1), pda, &crate::ID)
+            .expect_err("a wrong bump must refuse");
+        assert!(format!("{:?}", err).contains("RecordMismatch"));
+    }
+
+    #[test]
+    fn outcome_plus_reputation_integration_exact_and_inexact() {
+        // Exact outcome: the plan agent's +10 applies in full on
+        // top of genesis: 50*SCALE + 10. Inexact outcome: the
+        // same +10 halves to +5, the kernel's inexact rule.
+        let (state, mut record, obs, first, plan) = settled_pair();
+        let realized = record.declared_next_hash;
+        let (life, exact) = record_outcome_from_records(
+            &state,
+            &mut record,
+            &obs,
+            &[first],
+            std::slice::from_ref(&plan),
+            &[],
+            realized,
+            Pubkey::new_from_array(RECORDER),
+            &[(plan.agent, 10)],
+        )
+        .expect("a proven settled chain must record its outcome");
+        assert_eq!(life, Life::EvaluatedOutcome);
+        assert!(exact);
+        let updates = apply_reputation_updates(
+            &[(plan.agent, 10)],
+            &[(plan.agent, 50 * SCALE)],
+            exact,
+        )
+        .expect("the exact outcome's reputations must apply");
+        assert_eq!(updates, vec![(plan.agent, 50 * SCALE + 10)]);
+        let (state, mut record, obs, first, plan) = settled_pair();
+        let (life, exact) = record_outcome_from_records(
+            &state,
+            &mut record,
+            &obs,
+            &[first],
+            std::slice::from_ref(&plan),
+            &[],
+            [0x99; 32],
+            Pubkey::new_from_array(RECORDER),
+            &[(plan.agent, 10)],
+        )
+        .expect("an inexact settled chain must still record its outcome");
+        assert_eq!(life, Life::EvaluatedOutcome);
+        assert!(!exact);
+        let updates = apply_reputation_updates(
+            &[(plan.agent, 10)],
+            &[(plan.agent, 50 * SCALE)],
+            exact,
+        )
+        .expect("the inexact outcome's reputations must apply");
+        assert_eq!(updates, vec![(plan.agent, 50 * SCALE + 5)]);
     }
 
     #[test]

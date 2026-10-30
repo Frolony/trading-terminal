@@ -3148,8 +3148,87 @@ accounts; the golden `.so` sha debt (slice-49
   blocked `[]` still — zero drift, golden JSON +
   cu-golden README carry the new `.so` sha in the same
   pass. This `.so` is NOT the golden freeze.
-- Deliberately NOT slice 60: the reputation-persistence
-  slice and the golden `.so` freeze.
+- Slice 61 (this slice): the reputation-persistence slice —
+  kernel `record_outcome`'s reputation writes now land in an
+  account for real. New account `ReputationRecord` (PDA seeds
+  `["reputation", agent]`, SPACE 49: agent + reputation_raw +
+  bump), created once at the genesis midpoint (50 * SCALE, the
+  kernel's `RegisterAgent` rule) by the new `init_reputation`
+  instruction (sealed-profile agent gate, `UnknownAgent`
+  otherwise; the `init` constraint makes a reset to genesis
+  impossible after outcomes move the value). Both outcome
+  instructions now take trailing reputation accounts — one per
+  distinct attributed agent, in first-appearance order — after
+  their signal/plan (/approval) runs: the ordinary parse is
+  now `split_outcome_tail` (exactly `signal_count` signals,
+  exactly `plan_count` plans, then reputations; the slice-59
+  consume-all-as-plans parse could not delimit the tail) and
+  the governance parse is `split_gov_outcome_tail` (the same
+  plus exactly `approval_count` approvals;
+  `split_gov_commit_tail` stays untouched for commit/settle).
+  After the outcome helper proves the outcome, the
+  attributions land through `apply_reputation_updates` and
+  are written back PDA-verified with only `reputation_raw`
+  changed (`write_reputation_updates`); a set mismatch
+  (missing, extra, duplicated agent) refuses and writes
+  nothing, and a reputation record inside a prior bundle or
+  a sibling set refuses at parse time — reputations belong
+  only in an outcome tail. DESIGN FINDING, stated plainly
+  (it supersedes slices 59/60's "will run the kernel call
+  for real" phrasing): the delivered crate exposes no
+  reputation setter — its agent map is private and no public
+  method writes a reputation except `record_outcome` itself
+  — so a rebuilt kernel cannot be seeded with stored
+  reputations, and a real kernel call against stored values
+  is impossible through the public API without editing the
+  author's crate (forbidden). The kernel call's gates are
+  proven by the existing outcome helpers (sealed state,
+  `SETTLED` stage, recorder role, participant rule, settled
+  re-proof, exact flag), and `apply_reputation_updates`
+  applies the call's exact arithmetic (sum order-independent,
+  clamp to ±`max_attribution` = ±20, halve only positive
+  credit when inexact, clamp into [0, 100]) to the stored
+  values; if the author ever adds a reputation-seeding API,
+  that function is the seam to replace with a real call.
+- Host tests 456/456 (443 prior + 13 slice-61: genesis
+  midpoint + space, exact clamp, inexact halve-positive-only,
+  range clamps, duplicate-sum + order-independence, set
+  mismatch refusals, empty-is-empty, init build for a sealed
+  agent + unknown/unsealed refusals, both tail splits happy
+  and refusal cases, PDA accept/wrong-bump, exact + inexact
+  outcome-plus-reputation integration). Clippy back to the
+  pre-existing profile, zero new warnings — no warning
+  references any slice-61 symbol (the remaining
+  `type_complexity` sites are the pre-existing
+  `split_gov_plan_tail` and test `record_args`; the gov
+  split carries an `allow` for the same reason). Delivered
+  crate 39/39. `anchor build` green under the pinned v04
+  toolchain (Anchor 1.2.2 / Agave 4.3.2 / platform-tools
+  v1.57, from-source binary by absolute path); IDL 44
+  instructions / 9 accounts / 46 errors / 26 events (one new
+  instruction, one new account, one new error, events
+  unchanged). `.so` 1,870,792 bytes (sha256
+  `1518d41e…`). The SBF frame diagnostic is unchanged from
+  the pin-migration measurement: exactly one entry over
+  4096, the pre-existing BTreeMap-insert frame at 4,672
+  bytes — no new frame overflow from this slice. CU golden
+  re-measured against the new `.so`: 17 measured, blocked
+  `[]` still, refusal identical (finalized close 5335 /
+  6034); nine values drift by ±2–4 CU (initialize 17776 ->
+  17772, seal 18045 -> 18047, ingest 24401 -> 24403, init
+  gov action 8447 -> 8449, finalize 7306 -> 7308, register
+  governance 26120 -> 26118, approve 37629 -> 37633,
+  abandoned init 14447 -> 14449, close 3913 -> 3915) —
+  layout noise from the new instruction/account/error, the
+  same class as slice 59's ±1–2 drift, not a behavior
+  change; golden JSON + cu-golden README carry the new
+  values and the new `.so` sha in the same pass. CU for the
+  new `init_reputation` instruction and for outcome
+  instructions with reputation tails is NOT yet in the
+  golden set — it rides the golden-freeze slice, which adds
+  the chains. This `.so` is NOT the golden freeze.
+- Deliberately NOT slice 61: the golden `.so` freeze (with
+  its new-instruction CU chains).
 
 ## Build
 
@@ -3157,5 +3236,5 @@ accounts; the golden `.so` sha debt (slice-49
 export RUSTUP_HOME=~/workspace/toolchains/rustup CARGO_HOME=~/workspace/toolchains/cargo
 export PATH=~/workspace/toolchains/cargo/bin:~/workspace/toolchains/solana/bin:$PATH
 ~/workspace/toolchains/anchor/bin/anchor build   # from this directory
-cargo test                                        # host tests, 443/443
+cargo test                                        # host tests, 456/456
 ```

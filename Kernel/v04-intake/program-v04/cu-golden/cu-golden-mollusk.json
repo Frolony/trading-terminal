@@ -9,13 +9,13 @@
       "result": "Success"
     },
     {
-      "cu": 17776,
+      "cu": 17772,
       "instruction": "initialize_kernel",
       "note": "slice-1 baseline (no design estimate exists for the v0.4 program)",
       "result": "Success"
     },
     {
-      "cu": 18045,
+      "cu": 18047,
       "instruction": "seal_kernel",
       "note": "slice-1 baseline (no design estimate exists for the v0.4 program)",
       "result": "Success"
@@ -33,13 +33,13 @@
       "result": "Success"
     },
     {
-      "cu": 24401,
+      "cu": 24403,
       "instruction": "ingest_observation",
       "note": "slice-1 baseline (no design estimate exists for the v0.4 program)",
       "result": "Success"
     },
     {
-      "cu": 8447,
+      "cu": 8449,
       "instruction": "init_gov_action",
       "note": "slice-1 baseline (no design estimate exists for the v0.4 program)",
       "result": "Success"
@@ -63,19 +63,19 @@
       "result": "Success"
     },
     {
-      "cu": 7306,
+      "cu": 7308,
       "instruction": "finalize_gov_action",
       "note": "slice-1 baseline (no design estimate exists for the v0.4 program)",
       "result": "Success"
     },
     {
-      "cu": 26120,
+      "cu": 26118,
       "instruction": "register_governance_transition",
       "note": "slice-1 baseline (no design estimate exists for the v0.4 program)",
       "result": "Success"
     },
     {
-      "cu": 37629,
+      "cu": 37633,
       "instruction": "approve_governance",
       "note": "slice-1 baseline (no design estimate exists for the v0.4 program)",
       "result": "Success"
@@ -87,7 +87,7 @@
       "result": "Success"
     },
     {
-      "cu": 14447,
+      "cu": 14449,
       "instruction": "init_gov_action_abandoned",
       "note": "slice-1 baseline (no design estimate exists for the v0.4 program)",
       "result": "Success"
@@ -99,7 +99,7 @@
       "result": "Success"
     },
     {
-      "cu": 3913,
+      "cu": 3915,
       "instruction": "close_gov_action",
       "note": "slice-1 baseline (no design estimate exists for the v0.4 program)",
       "result": "Success"
@@ -118,6 +118,6 @@
     }
   ],
   "slice": "cu-golden slice 3: genesis + governance registration + account-carried approval chain (program slices 51-53) + close_gov_action rent-reclaim and finalized-refusal gate",
-  "so_sha256": "d1d4fab7cc1afd92904e3f7c80d693fa4ff65db93529b974521d9f54df87003b",
+  "so_sha256": "1518d41e154ac52d3b919901112c55812d800276b6d710b5f857f0661b5a802d",
   "toolchain": "Anchor 1.2.2 / Solana 4.3.2 / platform-tools v1.57"
 }

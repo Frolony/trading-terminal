@@ -430,6 +430,29 @@ values: all seventeen measured CU values reproduce
 exactly, blocked `[]` still. This `.so` is NOT the golden
 freeze.
 
+## Slice-61 re-measurement (2026-10-29, same pins)
+
+Slice 61 (the reputation-persistence slice: `ReputationRecord`
+account + `init_reputation` instruction + reputation tails on
+both outcome instructions + 13 host tests) changed the program
+source, so the golden file was re-measured against the new `.so`
+sha
+`1518d41e154ac52d3b919901112c55812d800276b6d710b5f857f0661b5a802d`
+(host tests 456/456; IDL now 44 instr / 9 accounts /
+46 errors / 26 events — one new instruction, one new account,
+one new error, events unchanged). Drift from the slice-60
+values is layout noise, not behavior: initialize 17776 ->
+17772, seal 18045 -> 18047, ingest 24401 -> 24403, init gov
+action 8447 -> 8449, finalize 7306 -> 7308, register
+governance 26120 -> 26118, approve 37629 -> 37633,
+abandoned second init 14447 -> 14449, close 3913 -> 3915;
+the other eight values reproduce exactly, the finalized-close
+refusal is unchanged (5335 / 6034), blocked `[]` still. CU
+for the new `init_reputation` instruction and for outcome
+instructions with reputation tails is not yet in the golden
+set — it rides the golden-freeze slice. This `.so` is
+likewise NOT the golden freeze.
+
 ## Slice-59 re-measurement (2026-10-29, same pins)
 
 Slice 59 (the `record_outcome` instruction, ordinary
