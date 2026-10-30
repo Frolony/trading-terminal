@@ -1064,11 +1064,29 @@ and unrelated lints — none at the new lines; the program-v04
 clippy gate was already failing before this change and is
 unchanged by it (no lint weakened, no allow added).
 
-Remaining before the final freeze: SBF-level at-limit /
-limit+1 proof (chainlen fixture extended to 9 priors passing
-and 10 refusing on-chain), tripwire + smallframe guard
+Remaining before the final freeze: tripwire + smallframe guard
 re-runs on the enforcement-carrying binary, then the single
 final golden freeze.
+
+SBF-level at-limit / limit+1 proof (2026-10-30, this pass):
+the chainlen fixture now also measures N = 9 and proves the
+limit in a fresh mollusk instance against the enforcement
+`.so` (`359c603e…`, unchanged — no program rebuild). At-limit:
+the 9-prior full tail through `record_outcome_governance`
+succeeds at 312,723 CU (the 0/1/2/3/5 rows reproduce EXACTLY:
+88,313 / 110,485 / 133,033 / 156,363 / 205,354, so the fixture
+change itself moved nothing). Limit+1: 10 ordinary bundles
+driven to COMMITTED (each replaying at most 9 priors), then
+an 11th bundle whose register + ingest succeed (neither takes
+priors) and whose `replay_transition` carrying all 10 priors
+refuses as `Failure(Custom(6046))` — program log names it
+`ChainTooLong` at lib.rs:13522 — consuming 70,454 CU, with
+the 11th record still REGISTERED (stage 0): nothing advances
+past the limit. The 9-prior CU (312,723, ~22.3% of 1.4M) sits
+just above the earlier ~290–311K extrapolation band — the
+curve's convexity again, not a derivation change: heap still
+binds at 19, and both legs keep wide margin at the enforced
+limit of 9. Recorded in `chainlen-cu.json` as `limit_proof`.
 
 Re-measurement note (same pass): the CU leg was re-run against
 the enforcement binary (`359c603e…`): 88,313 / 110,485 /

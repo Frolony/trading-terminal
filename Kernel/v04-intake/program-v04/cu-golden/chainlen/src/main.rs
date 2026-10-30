@@ -1,6 +1,6 @@
 //! Chain-length CU fixture for `program-v04` (merge-gate item 5, CU leg).
 //!
-//! For each N in [0, 1, 2, 3, 5], in a FRESH mollusk instance:
+//! For each N in [0, 1, 2, 3, 5, 9], in a FRESH mollusk instance:
 //! genesis + seal, then N ordinary bundles driven to COMMITTED at
 //! successive heads (each bundle's own 200-tick window, same shape as
 //! the golden harness's life chain: two-claims plan, 10 + 5 SCALE),
@@ -138,6 +138,29 @@ fn run(
         result.program_result
     );
     (result.resulting_accounts, result.compute_units_consumed)
+}
+
+/// Like `run`, but the instruction is EXPECTED to refuse: returns the
+/// threaded accounts, the CU consumed by the refusal, and the error
+/// debug string. A refusal's CU is still real compute, so it is
+/// recorded, never dropped.
+fn run_refused(
+    mollusk: &Mollusk,
+    label: &str,
+    ix: &Instruction,
+    accounts: &[(Pubkey, Account)],
+) -> (Vec<(Pubkey, Account)>, u64, String) {
+    let result = mollusk.process_instruction(ix, accounts);
+    println!(
+        "{label}: program_result={:?} cu={}",
+        result.program_result, result.compute_units_consumed
+    );
+    assert!(
+        result.program_result.is_err(),
+        "{label} was expected to refuse but succeeded",
+    );
+    let err = format!("{:?}", result.program_result);
+    (result.resulting_accounts, result.compute_units_consumed, err)
 }
 
 fn find<'a>(accounts: &'a [(Pubkey, Account)], key: &Pubkey) -> &'a Account {
@@ -1119,6 +1142,209 @@ fn measure_at_priors(n: usize, so_path: &str, so_sha256: &str) -> u64 {
     cu
 }
 
+/// SBF-level chain-length limit proof (merge-gate item 5, enforcement
+/// leg): in a FRESH mollusk instance against the real `.so`, drive 10
+/// ordinary bundles to COMMITTED — each replaying at most 9 priors,
+/// so every one passes — then start an 11th bundle (register +
+/// ingest, neither of which takes priors, both succeed) and attempt
+/// its `replay_transition` carrying all 10 prior bundles. The gate in
+/// `split_prior_bundles` must refuse with `ChainTooLong` (6046)
+/// before any parsing or replay, and the 11th bundle's record must
+/// stay REGISTERED (stage 0): nothing advances past the limit.
+/// This mirrors `drive_bundle`'s register/ingest/replay steps
+/// verbatim for bundle index 10 (tid 0xBA, obs 0xCA, declared 0xEA,
+/// ingest clock 2200 = the clock after bundle 9's commit advance).
+fn prove_chain_limit() -> serde_json::Value {
+    let program_id = Pubkey::from_str(PROGRAM_ID).unwrap();
+    let system_id = Pubkey::from_str(SYSTEM_ID).unwrap();
+    let mut mollusk = Mollusk::new(&program_id, "program_v04");
+    mollusk.compute_budget.heap_size = 256 * 1024;
+
+    let payer = Pubkey::new_from_array([0x50; 32]);
+    let seat1 = Pubkey::new_from_array([1; 32]);
+    let observer = Pubkey::new_from_array([0xA1; 32]);
+    let signaler = Pubkey::new_from_array([2; 32]);
+
+    let (kernel_state, _) = pda(&[b"kernel-state"], &program_id);
+    let empty = Account {
+        lamports: 0,
+        data: vec![],
+        owner: system_id,
+        executable: false,
+        rent_epoch: 0,
+    };
+    let funded = Account {
+        lamports: 10_000_000_000,
+        data: vec![],
+        owner: system_id,
+        executable: false,
+        rent_epoch: 0,
+    };
+    let mut accounts: Vec<(Pubkey, Account)> = vec![
+        keyed_account_for_system_program(),
+        mollusk.sysvars.keyed_account_for_clock_sysvar(),
+        (kernel_state, empty.clone()),
+        (payer, funded.clone()),
+        (seat1, funded.clone()),
+        (observer, funded.clone()),
+        (signaler, funded.clone()),
+    ];
+
+    // Genesis: initialize + seal (clock 100), advance to 200.
+    let ix = Instruction::new_with_bytes(
+        program_id,
+        &disc("initialize_kernel"),
+        vec![
+            AccountMeta::new(kernel_state, false),
+            AccountMeta::new(payer, true),
+            AccountMeta::new_readonly(system_id, false),
+        ],
+    );
+    let (next, _) = run(&mollusk, "initialize_kernel_limit", &ix, &accounts);
+    accounts = next;
+    let ix = Instruction::new_with_bytes(
+        program_id,
+        &disc("seal_kernel"),
+        vec![
+            AccountMeta::new(kernel_state, false),
+            AccountMeta::new_readonly(payer, true),
+        ],
+    );
+    let (next, _) = run(&mollusk, "seal_kernel_limit", &ix, &accounts);
+    accounts = next;
+    let mut data = disc("advance_clock");
+    data.extend_from_slice(&u64le(200));
+    let ix = Instruction::new_with_bytes(
+        program_id,
+        &data,
+        vec![
+            AccountMeta::new(kernel_state, false),
+            AccountMeta::new_readonly(payer, true),
+        ],
+    );
+    let (next, _) = run(&mollusk, "advance_clock_200_limit", &ix, &accounts);
+    accounts = next;
+
+    // 10 ordinary bundles to COMMITTED (indices 0..9).
+    let mut priors: Vec<Bundle> = Vec::new();
+    let mut parent_hash = ZERO_HASH;
+    for i in 0..10 {
+        let (next, bundle, declared) = drive_bundle(
+            &mollusk,
+            accounts,
+            &program_id,
+            &system_id,
+            &kernel_state,
+            &payer,
+            &seat1,
+            &observer,
+            &signaler,
+            i,
+            &priors,
+        );
+        accounts = next;
+        parent_hash = declared;
+        priors.push(bundle);
+    }
+
+    // Bundle 10: register + ingest succeed (neither takes priors).
+    let i = 10usize;
+    let tid = [0xB0 + i as u8; 32];
+    let obs_id = [0xC0 + i as u8; 32];
+    let declared = [0xE0 + i as u8; 32];
+    let (record, _) = pda(&[b"transition", tid.as_ref()], &program_id);
+    let (obs, _) = pda(&[b"observation", obs_id.as_ref()], &program_id);
+    for k in [record, obs] {
+        if !accounts.iter().any(|(a, _)| a == &k) {
+            accounts.push((k, empty.clone()));
+        }
+    }
+    let prior_metas: Vec<AccountMeta> =
+        priors.iter().flat_map(|b| b.metas()).collect();
+    let clock = 200 * (i as u64 + 1);
+    let mut data = disc("register_transition");
+    data.extend_from_slice(&tid);
+    data.extend_from_slice(&TT_TYPE);
+    data.extend_from_slice(&u64le(i as u64));
+    data.extend_from_slice(&parent_hash);
+    data.extend_from_slice(&declared);
+    data.extend_from_slice(&obs_id);
+    data.extend_from_slice(&u64le(10_100));
+    let ix = Instruction::new_with_bytes(
+        program_id,
+        &data,
+        vec![
+            AccountMeta::new_readonly(kernel_state, false),
+            AccountMeta::new(record, false),
+            AccountMeta::new(seat1, true),
+            AccountMeta::new_readonly(system_id, false),
+        ],
+    );
+    let (next, _) = run(&mollusk, "register_bundle10", &ix, &accounts);
+    accounts = next;
+    assert_eq!(find(&accounts, &record).data[216], 0, "bundle 10 must start REGISTERED");
+    let mut data = disc("ingest_observation");
+    data.extend_from_slice(&obs_id);
+    data.extend_from_slice(&u64le(clock));
+    data.extend_from_slice(&u64le(9100));
+    data.extend_from_slice(&u64le(900_000));
+    let ix = Instruction::new_with_bytes(
+        program_id,
+        &data,
+        vec![
+            AccountMeta::new_readonly(kernel_state, false),
+            AccountMeta::new(obs, false),
+            AccountMeta::new(observer, true),
+            AccountMeta::new_readonly(system_id, false),
+        ],
+    );
+    let (next, _) = run(&mollusk, "ingest_bundle10", &ix, &accounts);
+    accounts = next;
+
+    // Replay carrying 10 priors must refuse as ChainTooLong (6046)
+    // and leave the record REGISTERED.
+    let mut data = disc("replay_transition");
+    data.extend_from_slice(&tid);
+    data.extend_from_slice(&obs_id);
+    data.extend_from_slice(&(i as u32).to_le_bytes());
+    let ix = Instruction::new_with_bytes(
+        program_id,
+        &data,
+        vec![
+            AccountMeta::new_readonly(kernel_state, false),
+            AccountMeta::new(record, false),
+            AccountMeta::new_readonly(obs, false),
+            AccountMeta::new_readonly(seat1, true),
+        ]
+        .into_iter()
+        .chain(prior_metas)
+        .collect(),
+    );
+    let (next, refusal_cu, err) =
+        run_refused(&mollusk, "replay_bundle10_over_limit", &ix, &accounts);
+    accounts = next;
+    assert!(
+        err.contains("6046"),
+        "10-prior replay must refuse with error 6046 (ChainTooLong), got {err}"
+    );
+    assert_eq!(
+        find(&accounts, &record).data[216], 0,
+        "refused over-limit replay must leave bundle 10 REGISTERED"
+    );
+    println!("CHAINLEN_LIMIT|priors=10|refused=ChainTooLong(6046)|cu={refusal_cu}|stage_still=0");
+    serde_json::json!({
+        "at_limit_priors": 9,
+        "at_limit_result": "Success",
+        "at_limit_note": "10 ordinary bundles driven to COMMITTED, each replaying at most 9 priors; the 9-prior CU row above is the full tail through record_outcome_governance at the limit",
+        "limit_plus_one_priors": 10,
+        "limit_plus_one_result": "Refused",
+        "limit_plus_one_error": "ChainTooLong (6046)",
+        "limit_plus_one_refusal_cu": refusal_cu,
+        "limit_plus_one_stage_still_registered": true,
+        "note": "SBF-level proof against the enforcement .so: register + ingest (no priors) succeed, the first prior-replaying instruction refuses before anything advances",
+    })
+}
+
 fn main() {
     assert_mollusk_stamp_matches_lock();
     let out_path = std::env::args()
@@ -1131,18 +1357,20 @@ fn main() {
     let so_sha256 = hex_encode(&Sha256::digest(&so_bytes));
 
     let mut rows = Vec::new();
-    for n in [0usize, 1, 2, 3, 5] {
+    for n in [0usize, 1, 2, 3, 5, 9] {
         let cu = measure_at_priors(n, &so_path, &so_sha256);
         rows.push(serde_json::json!({"priors": n, "cu": cu, "result": "Success"}));
     }
+    let limit_proof = prove_chain_limit();
     let out = serde_json::json!({
         "program": "program_v04",
         "program_id": PROGRAM_ID,
         "so_sha256": so_sha256,
         "mollusk_svm": MOLLUSK_SVM_VERSION,
         "toolchain": TOOLCHAIN,
-        "fixture": "chain-length CU leg: record_outcome_governance CU at 0/1/2/3/5 claims-carrying priors (two-claims ordinary bundles to COMMITTED + unanimous governance tail through settle/outcome)",
+        "fixture": "chain-length CU leg: record_outcome_governance CU at 0/1/2/3/5/9 claims-carrying priors (two-claims ordinary bundles to COMMITTED + unanimous governance tail through settle/outcome); limit_proof is the SBF-level at-limit/limit+1 enforcement proof (MAX_PRIOR_BUNDLES = 9)",
         "rows": rows,
+        "limit_proof": limit_proof,
     });
     std::fs::write(&out_path, serde_json::to_string_pretty(&out).unwrap())
         .unwrap_or_else(|e| panic!("cannot write {out_path}: {e}"));

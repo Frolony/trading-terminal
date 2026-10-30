@@ -1,5 +1,16 @@
 {
-  "fixture": "chain-length CU leg: record_outcome_governance CU at 0/1/2/3/5 claims-carrying priors (two-claims ordinary bundles to COMMITTED + unanimous governance tail through settle/outcome)",
+  "fixture": "chain-length CU leg: record_outcome_governance CU at 0/1/2/3/5/9 claims-carrying priors (two-claims ordinary bundles to COMMITTED + unanimous governance tail through settle/outcome); limit_proof is the SBF-level at-limit/limit+1 enforcement proof (MAX_PRIOR_BUNDLES = 9)",
+  "limit_proof": {
+    "at_limit_note": "10 ordinary bundles driven to COMMITTED, each replaying at most 9 priors; the 9-prior CU row above is the full tail through record_outcome_governance at the limit",
+    "at_limit_priors": 9,
+    "at_limit_result": "Success",
+    "limit_plus_one_error": "ChainTooLong (6046)",
+    "limit_plus_one_priors": 10,
+    "limit_plus_one_refusal_cu": 70454,
+    "limit_plus_one_result": "Refused",
+    "limit_plus_one_stage_still_registered": true,
+    "note": "SBF-level proof against the enforcement .so: register + ingest (no priors) succeed, the first prior-replaying instruction refuses before anything advances"
+  },
   "mollusk_svm": "0.16.4",
   "program": "program_v04",
   "program_id": "2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr",
@@ -27,6 +38,11 @@
     {
       "cu": 205354,
       "priors": 5,
+      "result": "Success"
+    },
+    {
+      "cu": 312723,
+      "priors": 9,
       "result": "Success"
     }
   ],
