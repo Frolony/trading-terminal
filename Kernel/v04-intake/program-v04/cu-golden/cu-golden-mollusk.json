@@ -45,19 +45,19 @@
       "result": "Success"
     },
     {
-      "cu": 4681,
+      "cu": 4682,
       "instruction": "append_gov_action_chunk@0",
       "note": "slice-2 account-carried chain (program slices 51-53)",
       "result": "Success"
     },
     {
-      "cu": 4681,
+      "cu": 4682,
       "instruction": "append_gov_action_chunk@512",
       "note": "slice-2 account-carried chain (program slices 51-53)",
       "result": "Success"
     },
     {
-      "cu": 4681,
+      "cu": 4682,
       "instruction": "append_gov_action_chunk@1024",
       "note": "slice-2 account-carried chain (program slices 51-53)",
       "result": "Success"
@@ -75,7 +75,7 @@
       "result": "Success"
     },
     {
-      "cu": 37632,
+      "cu": 37629,
       "instruction": "approve_governance",
       "note": "slice-1 baseline (no design estimate exists for the v0.4 program)",
       "result": "Success"
@@ -93,7 +93,7 @@
       "result": "Success"
     },
     {
-      "cu": 4681,
+      "cu": 4682,
       "instruction": "append_gov_action_chunk_abandoned",
       "note": "slice-1 baseline (no design estimate exists for the v0.4 program)",
       "result": "Success"
@@ -110,7 +110,7 @@
   "program_id": "FzxnCtig4asxnCxGhjcbCDY5zkfcpfTb5GcXNL9UaGg6",
   "refusals": [
     {
-      "cu": 5332,
+      "cu": 5334,
       "error": "GovActionAlreadyFinalized (6034)",
       "instruction": "close_gov_action_finalized",
       "note": "slice-3 lifetime gate: a finalized account stays open until the transition settles",
@@ -118,6 +118,6 @@
     }
   ],
   "slice": "cu-golden slice 3: genesis + governance registration + account-carried approval chain (program slices 51-53) + close_gov_action rent-reclaim and finalized-refusal gate",
-  "so_sha256": "3afca38f4adea2f6af776d302233fe30471ffcb437a8f2c7badb58780998699c",
+  "so_sha256": "cb5bec94c3ae3c142a4df858939704721f3ea46b581d2c7f052bc633bd8f1fc1",
   "toolchain": "Anchor 1.2.2 / Solana 4.3.2 / platform-tools v1.57"
 }

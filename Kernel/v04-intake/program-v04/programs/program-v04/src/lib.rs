@@ -4297,6 +4297,10 @@ impl TransitionRecord {
     pub const DECLARED: u8 = 9;
     /// Stage value written by `commit_transition` (slice 26).
     pub const COMMITTED: u8 = 10;
+    /// Stage value written by `settle_transition_from_records`
+    /// (slice 54); the kernel's `Life::Settled` is 11 as well,
+    /// so program and kernel stages agree at this step too.
+    pub const SETTLED: u8 = 11;
     /// 8 (discriminator) + 32 + 32 + 8 + 32 + 32 + 32 + 8 + 32 + 1 + 8 + 8 + 8 + 8 + 8 + 8 + 4 + 1 + 1.
     pub const SPACE: usize = 271;
 }
@@ -8706,6 +8710,353 @@ pub fn commit_transition_from_records(
     Ok(Life::Committed)
 }
 
+/// Settle a committed ordinary transition (slice 54):
+/// `COMMITTED` (10) -> `SETTLED` (11), the first half of the
+/// bridge slice-4 tail on-chain. The helper re-proves the
+/// commit in a rebuilt kernel — ingest, register, evaluate,
+/// and mark_eligible at the stored `eligible_at`, signals at
+/// their `submitted_at`, select + open_planning + plans at
+/// the derived open clock, reconcile + validate + declare +
+/// commit at the stored planning deadline (the slice-29 clock
+/// rule for historical reproduction: re-judging an old commit
+/// at today's clock would brick every chain older than one
+/// plan expiry) — and only then runs the settle tail at the
+/// state's clock: `start_execution` by the launch Executor,
+/// two `attest_settlement` calls by the launch Settlers on
+/// the supplied realized hash (threshold 2, so the first must
+/// return false and the second true), and the life assertion
+/// `Settled`. On success only the record's stage advances;
+/// the sealed head and the slice-27 ledger are untouched —
+/// settle moves no declaration and no capacity, it closes a
+/// commit that already moved both. A refusal writes nothing:
+/// the record stands `COMMITTED` and the head stands.
+///
+/// The parent-head build, stated not smoothed: the earlier
+/// chain is replayed against a parent state — the program
+/// state with its head fields set to this transition's
+/// parent — so `kernel_at_head_from_entries`' own landing
+/// check becomes the parent check (a chain overshooting the
+/// parent, or stopping short of it, refuses with
+/// `ParentMismatch` before any kernel call on the target).
+/// The re-commit must land exactly one past the parent at
+/// the declared next hash, or the stored `COMMITTED` label
+/// is unproven and settle refuses; the live head is NOT
+/// required to equal the declared hash, because a successor
+/// may already have committed past this transition, and
+/// requiring head equality would brick settlement of every
+/// non-head commit.
+///
+/// The slice-27 ledger gate is deliberately NOT re-applied:
+/// the ledger already contains this transition's claims
+/// (written by the commit instruction), so re-applying the
+/// gate would double-count them and refuse every legitimate
+/// settle. The kernel's own commit still judges the claims
+/// against the sealed stocks in the rebuilt kernel.
+///
+/// Honesty bounds, stated not smoothed: the realized hash is
+/// a helper argument, and the two attestations both name it
+/// — the kernel's per-hash vote counting plus the threshold
+/// is what is proven here. The step-2 `SettlerGate` ledger
+/// binding (settlers attest ONLY a hash an observing process
+/// recorded) is NOT enforced at helper level: no on-chain
+/// evidence record exists yet, so that binding rides the
+/// instruction slice, which will source the hash from stored
+/// evidence instead of a caller argument. Outcome recording
+/// (`Settled` -> `EvaluatedOutcome`, attribution) is the
+/// next slice, not this one: exactness (realized == declared)
+/// therefore does not change this slice's outcome — an
+/// inexact settle still settles, and the halved-credit rule
+/// bites at outcome time. Governance records refuse here
+/// with `GovernanceSettleRequired`; their settle mirror is
+/// the next slice.
+#[allow(clippy::too_many_arguments)]
+pub fn settle_transition_from_records(
+    kernel_state: &KernelState,
+    transition_record: &mut TransitionRecord,
+    observation_record: &ObservationRecord,
+    prior_signals: &[SignalRecord],
+    prior_plans: &[PlanRecord],
+    prior_entries: &[PriorEntry],
+    realized: [u8; 32],
+) -> Result<Life> {
+    if !kernel_state.sealed {
+        return Err(error!(ProgramV04Error::NotSealed));
+    }
+    if transition_record.stage != TransitionRecord::COMMITTED {
+        return Err(error!(ProgramV04Error::WrongStage));
+    }
+    if transition_record.observation_id != observation_record.observation_id {
+        return Err(error!(ProgramV04Error::RecordMismatch));
+    }
+    if is_gov_type(&transition_record.transition_type) {
+        return Err(error!(ProgramV04Error::GovernanceSettleRequired));
+    }
+    if transition_record.planning_deadline == 0 {
+        return Err(error!(ProgramV04Error::SettleFailed));
+    }
+    let open_clock = transition_record
+        .planning_deadline
+        .checked_sub(launch_policy().planning_window)
+        .ok_or(error!(ProgramV04Error::SettleFailed))?;
+    if prior_signals.len() as u64 != transition_record.signal_count {
+        return Err(error!(ProgramV04Error::SettleFailed));
+    }
+    for prior in prior_signals {
+        if prior.transition_id != transition_record.transition_id {
+            return Err(error!(ProgramV04Error::RecordMismatch));
+        }
+        if signal_round(
+            transition_record.eligible_at,
+            transition_record.consensus_deadline,
+            prior.submitted_at,
+        ) != prior.round
+        {
+            return Err(error!(ProgramV04Error::RecordMismatch));
+        }
+    }
+    {
+        let mut seen: BTreeSet<([u8; 32], u64)> = BTreeSet::new();
+        for prior in prior_signals {
+            if !seen.insert((prior.agent.to_bytes(), prior.round)) {
+                return Err(error!(ProgramV04Error::SettleFailed));
+            }
+        }
+    }
+    if prior_plans.len() as u64 != transition_record.plan_count {
+        return Err(error!(ProgramV04Error::SettleFailed));
+    }
+    for prior in prior_plans {
+        if prior.transition_id != transition_record.transition_id {
+            return Err(error!(ProgramV04Error::RecordMismatch));
+        }
+        if prior.claim_count as usize > PlanRecord::MAX_PLAN_CLAIMS {
+            return Err(error!(ProgramV04Error::SettleFailed));
+        }
+        let mut seen: BTreeSet<u16> = BTreeSet::new();
+        for resource in &prior.claim_resources[..prior.claim_count as usize] {
+            if !seen.insert(*resource) {
+                return Err(error!(ProgramV04Error::SettleFailed));
+            }
+        }
+    }
+    let proposer = resolve_proposer(kernel_state, transition_record.proposer)
+        .map_err(|_| error!(ProgramV04Error::SettleFailed))?;
+    let observer_id = resolve_agent_id(observation_record.observer);
+    // The parent state: the program state as it stood before
+    // this commit, head-wise. The earlier chain must land at
+    // the target's parent under the slice-29 discipline; the
+    // wrapper's own landing check is the parent check.
+    let parent_state = KernelState {
+        sealed: kernel_state.sealed,
+        head_index: transition_record.parent_index,
+        head_hash: transition_record.parent_hash,
+        clock: kernel_state.clock,
+        eligible_sibling_parent_index: kernel_state.eligible_sibling_parent_index,
+        eligible_sibling_parent_hash: kernel_state.eligible_sibling_parent_hash,
+        eligible_sibling_count: kernel_state.eligible_sibling_count,
+        bump: kernel_state.bump,
+        committed_claims: kernel_state.committed_claims,
+    };
+    let mut k = kernel_at_head_from_entries(&parent_state, prior_entries)?;
+    if !k.has_role(&observer_id, Role::Observer) {
+        return Err(error!(ProgramV04Error::NotObserver));
+    }
+    let relevant_groups = match k.agent(&proposer) {
+        Some(profile) => profile.groups.clone(),
+        None => return Err(error!(ProgramV04Error::UnknownProposer)),
+    };
+    let observation = Observation {
+        id: observation_record.observation_id,
+        timestamp: observation_record.timestamp,
+        expiry: observation_record.expiry,
+        confidence: Amount::from_raw(observation_record.confidence_raw),
+    };
+    let eligible_at = transition_record.eligible_at;
+    k.ingest_observation(&observer_id, observation, eligible_at)
+        .map_err(|_| error!(ProgramV04Error::SettleFailed))?;
+    let manifest = Manifest {
+        transition_type: transition_record.transition_type,
+        parent_index: transition_record.parent_index,
+        parent_hash: transition_record.parent_hash,
+        declared_next_hash: transition_record.declared_next_hash,
+        observation_id: transition_record.observation_id,
+        expires_at: transition_record.expires_at,
+        relevant_groups,
+        action: None,
+    };
+    k.register_transition(
+        &proposer,
+        transition_record.transition_id,
+        manifest,
+        BTreeSet::new(),
+        eligible_at,
+    )
+    .map_err(|_| error!(ProgramV04Error::SettleFailed))?;
+    k.evaluate_transition(&transition_record.transition_id, eligible_at)
+        .map_err(|_| error!(ProgramV04Error::SettleFailed))?;
+    k.mark_eligible(&transition_record.transition_id, eligible_at)
+        .map_err(|_| error!(ProgramV04Error::SettleFailed))?;
+    match k.life_of(&transition_record.transition_id) {
+        Some(Life::Eligible) => {}
+        _ => return Err(error!(ProgramV04Error::SettleFailed)),
+    }
+    let mut priors: alloc::vec::Vec<SignalRecord> = prior_signals.to_vec();
+    priors.sort_by_key(|s| s.submitted_at);
+    for prior in &priors {
+        let support = if prior.has_support {
+            Some(Amount::from_raw(prior.support_raw))
+        } else {
+            None
+        };
+        k.submit_round_signal(
+            &prior.agent.to_bytes(),
+            &transition_record.transition_id,
+            Amount::from_raw(prior.raw),
+            support,
+            prior.submitted_at,
+        )
+        .map_err(|_| error!(ProgramV04Error::SettleFailed))?;
+    }
+    k.select_candidate(&transition_record.transition_id, open_clock)
+        .map_err(|_| error!(ProgramV04Error::SettleFailed))?;
+    match k.life_of(&transition_record.transition_id) {
+        Some(Life::Selected) => {}
+        _ => return Err(error!(ProgramV04Error::SettleFailed)),
+    }
+    k.open_planning(&proposer, &transition_record.transition_id, open_clock)
+        .map_err(|_| error!(ProgramV04Error::SettleFailed))?;
+    match k.life_of(&transition_record.transition_id) {
+        Some(Life::Planning) => {}
+        _ => return Err(error!(ProgramV04Error::SettleFailed)),
+    }
+    let deadline = open_clock
+        .checked_add(launch_policy().planning_window)
+        .ok_or(error!(ProgramV04Error::SettleFailed))?;
+    if deadline != transition_record.planning_deadline {
+        return Err(error!(ProgramV04Error::SettleFailed));
+    }
+    for prior in prior_plans {
+        let mut prior_map: BTreeMap<u16, Amount> = BTreeMap::new();
+        for (resource, amount) in prior.claim_resources[..prior.claim_count as usize]
+            .iter()
+            .zip(prior.claim_amounts[..prior.claim_count as usize].iter())
+        {
+            prior_map.insert(*resource, Amount::from_raw(*amount));
+        }
+        let prior_plan = Plan {
+            agent: prior.agent.to_bytes(),
+            claims: prior_map,
+            expires_at: prior.expires_at,
+        };
+        k.submit_plan(
+            &prior.agent.to_bytes(),
+            &transition_record.transition_id,
+            prior_plan,
+            open_clock,
+        )
+        .map_err(|_| error!(ProgramV04Error::SettleFailed))?;
+    }
+    let final_clock = transition_record.planning_deadline;
+    k.reconcile_plans(&transition_record.transition_id, final_clock)
+        .map_err(|_| error!(ProgramV04Error::SettleFailed))?;
+    match k.life_of(&transition_record.transition_id) {
+        Some(Life::Reconciling) => {}
+        _ => return Err(error!(ProgramV04Error::SettleFailed)),
+    }
+    // Slice 23's exact mirror, recomputed over the supplied set:
+    // a stored verdict the set does not reproduce refuses here,
+    // before the kernel's own validate runs, exactly as in the
+    // commit path — neither the stored verdict nor the replay
+    // is trusted alone. The slice-27 ledger gate is NOT
+    // re-applied (see the module note above): the ledger
+    // already contains this transition's claims.
+    let mut sums: BTreeMap<u16, Amount> = BTreeMap::new();
+    let mut fits = !prior_plans.is_empty();
+    for prior in prior_plans {
+        for (resource, amount) in prior.claim_resources[..prior.claim_count as usize]
+            .iter()
+            .zip(prior.claim_amounts[..prior.claim_count as usize].iter())
+        {
+            let entry = sums.entry(*resource).or_insert(Amount::ZERO);
+            match entry.checked_add(Amount::from_raw(*amount)) {
+                Ok(v) => *entry = v,
+                Err(_) => fits = false,
+            }
+        }
+    }
+    if fits {
+        for (resource, total) in &sums {
+            if !k.capacity_of(*resource).is_some_and(|cap| *total <= cap) {
+                fits = false;
+            }
+        }
+    }
+    if fits != transition_record.compatible {
+        return Err(error!(ProgramV04Error::SettleFailed));
+    }
+    k.validate_transition(&transition_record.transition_id, final_clock)
+        .map_err(|_| error!(ProgramV04Error::SettleFailed))?;
+    match k.life_of(&transition_record.transition_id) {
+        Some(Life::Validated) => {}
+        Some(Life::Blocked) => return Err(error!(ProgramV04Error::SettleFailed)),
+        _ => return Err(error!(ProgramV04Error::SettleFailed)),
+    }
+    k.declare_commit(&transition_record.transition_id, final_clock)
+        .map_err(|_| error!(ProgramV04Error::SettleFailed))?;
+    match k.life_of(&transition_record.transition_id) {
+        Some(Life::Committable) => {}
+        _ => return Err(error!(ProgramV04Error::SettleFailed)),
+    }
+    let new_state = k
+        .commit(&transition_record.transition_id, final_clock)
+        .map_err(|_| error!(ProgramV04Error::SettleFailed))?;
+    match k.life_of(&transition_record.transition_id) {
+        Some(Life::Committed) => {}
+        _ => return Err(error!(ProgramV04Error::SettleFailed)),
+    }
+    // The stored COMMITTED label is proven only if the
+    // re-commit lands exactly one past the parent at the
+    // declared next hash. The live head is not compared here
+    // (see the module note above): a successor may already
+    // have moved it past this transition.
+    let expected_index = transition_record
+        .parent_index
+        .checked_add(1)
+        .ok_or(error!(ProgramV04Error::SettleFailed))?;
+    if new_state.index != expected_index || new_state.hash != transition_record.declared_next_hash {
+        return Err(error!(ProgramV04Error::SettleFailed));
+    }
+    // The settle tail at the state's clock: execution must
+    // start inside the execution window (commit clock +
+    // execution_window) and attestation needs both settlers
+    // on the same realized hash — threshold 2, so the first
+    // attestation must NOT settle and the second must.
+    k.start_execution(&EXECUTOR, &transition_record.transition_id, kernel_state.clock)
+        .map_err(|_| error!(ProgramV04Error::SettleFailed))?;
+    match k.life_of(&transition_record.transition_id) {
+        Some(Life::Executing) => {}
+        _ => return Err(error!(ProgramV04Error::SettleFailed)),
+    }
+    let first = k
+        .attest_settlement(&SETTLER_A, &transition_record.transition_id, realized, kernel_state.clock)
+        .map_err(|_| error!(ProgramV04Error::SettleFailed))?;
+    if first {
+        return Err(error!(ProgramV04Error::SettleFailed));
+    }
+    let second = k
+        .attest_settlement(&SETTLER_B, &transition_record.transition_id, realized, kernel_state.clock)
+        .map_err(|_| error!(ProgramV04Error::SettleFailed))?;
+    if !second {
+        return Err(error!(ProgramV04Error::SettleFailed));
+    }
+    match k.life_of(&transition_record.transition_id) {
+        Some(Life::Settled) => {}
+        _ => return Err(error!(ProgramV04Error::SettleFailed)),
+    }
+    transition_record.stage = TransitionRecord::SETTLED;
+    Ok(Life::Settled)
+}
+
 /// Commit a declared governance transition (slice 28): `DECLARED`
 /// (9) -> `COMMITTED` (10), and the sealed head moves to the
 /// kernel's returned `SystemState` — or a refusal that leaves
@@ -12545,6 +12896,12 @@ pub struct TransitionCommitted {
     pub head_hash: [u8; 32],
 }
 
+#[event]
+pub struct TransitionSettled {
+    pub transition_id: [u8; 32],
+    pub stage: u8,
+}
+
 #[error_code]
 pub enum ProgramV04Error {
     #[msg("program-v04 probe: kernel construction failed")]
@@ -12625,6 +12982,10 @@ pub enum ProgramV04Error {
     GovActionHashMismatch,
     #[msg("program-v04 gov action account: the action account is not finalized; approvals, registration, and commit require a finalized action")]
     GovActionNotFinalized,
+    #[msg("program-v04 settle: kernel settle refused, commit unproven at the parent head, execution window lapsed, or attestation threshold unmet")]
+    SettleFailed,
+    #[msg("program-v04 settle: governance transitions settle through the governance settle path, not the ordinary settle path")]
+    GovernanceSettleRequired,
 }
 
 // ---------------------------------------------------------------- launch genesis
@@ -17564,6 +17925,251 @@ mod tests {
         assert!(format!("{:?}", err).contains("CommitFailed"));
         assert_eq!(record.stage, TransitionRecord::DECLARED);
         assert_eq!(state.committed_claims, [100 * SCALE, 50 * SCALE, 25 * SCALE]);
+    }
+
+    #[test]
+    fn settle_advances_committed_to_settled_exact() {
+        // A committed record settles on its declared hash: the
+        // stage advances to 11, and — the slice's head and
+        // ledger discipline — the sealed head and the ledger
+        // stand exactly where the commit left them, because
+        // settle closes a commit, it moves neither.
+        let (state, mut record, obs, first, plan) = committed_pair();
+        let head_index = state.head_index;
+        let head_hash = state.head_hash;
+        let ledger = state.committed_claims;
+        let realized = record.declared_next_hash;
+        let life = settle_transition_from_records(
+            &state, &mut record, &obs, &[first], std::slice::from_ref(&plan), &[], realized,
+        )
+        .expect("a proven committed chain must settle on its declared hash");
+        assert_eq!(life, Life::Settled);
+        assert_eq!(record.stage, TransitionRecord::SETTLED);
+        assert_eq!(record.stage, 11);
+        assert_eq!(state.head_index, head_index);
+        assert_eq!(state.head_hash, head_hash);
+        assert_eq!(state.committed_claims, ledger);
+    }
+
+    #[test]
+    fn settle_advances_committed_to_settled_inexact() {
+        // An inexact settle still settles: realized differs
+        // from declared, so the kernel's exact flag is false,
+        // but this slice's outcome is the life, not the flag —
+        // the halved-credit rule bites at outcome time, the
+        // next slice, not here.
+        let (state, mut record, obs, first, plan) = committed_pair();
+        let life = settle_transition_from_records(
+            &state, &mut record, &obs, &[first], std::slice::from_ref(&plan), &[], [0x99; 32],
+        )
+        .expect("an inexact realized hash must still settle");
+        assert_eq!(life, Life::Settled);
+        assert_eq!(record.stage, TransitionRecord::SETTLED);
+    }
+
+    #[test]
+    fn settle_is_once_only_after_settled() {
+        // A settled record is past settle: the stage gate
+        // refuses a second call, and the stage and the head
+        // stand exactly where the first settle left them.
+        let (state, mut record, obs, first, plan) = committed_pair();
+        let realized = record.declared_next_hash;
+        settle_transition_from_records(
+            &state, &mut record, &obs, &[first], std::slice::from_ref(&plan), &[], realized,
+        )
+        .expect("first settle must succeed");
+        assert_eq!(record.stage, TransitionRecord::SETTLED);
+        let err = settle_transition_from_records(
+            &state, &mut record, &obs, &[first], std::slice::from_ref(&plan), &[], realized,
+        )
+        .expect_err("a second settle must refuse");
+        assert!(format!("{:?}", err).contains("WrongStage"));
+        assert_eq!(record.stage, TransitionRecord::SETTLED);
+        assert_eq!(state.head_index, 1);
+    }
+
+    #[test]
+    fn settle_refuses_wrong_stage() {
+        // Still DECLARED, never committed: the stage gate
+        // refuses before any replay, and nothing moves.
+        let (state, mut record, obs, first, plan) = declared_pair();
+        let realized = record.declared_next_hash;
+        let err = settle_transition_from_records(
+            &state, &mut record, &obs, &[first], std::slice::from_ref(&plan), &[], realized,
+        )
+        .expect_err("a declared record must refuse settle");
+        assert!(format!("{:?}", err).contains("WrongStage"));
+        assert_eq!(record.stage, TransitionRecord::DECLARED);
+    }
+
+    #[test]
+    fn settle_refuses_governance_type() {
+        // A committed governance record refuses the ordinary
+        // settle path with the distinct type error — its
+        // settle mirror is the next slice, not this one.
+        let (mut state, mut record, obs, first, plan) = gov_declared_pair();
+        let action = gov_action();
+        let approvals = gov_approvals();
+        commit_governance_from_records(
+            &mut state, &mut record, &obs, std::slice::from_ref(&first), std::slice::from_ref(&plan),
+            &action, &approvals, &[],
+        )
+        .expect("a unanimous governance chain must commit");
+        assert_eq!(record.stage, TransitionRecord::COMMITTED);
+        let realized = record.declared_next_hash;
+        let err = settle_transition_from_records(
+            &state, &mut record, &obs, std::slice::from_ref(&first), std::slice::from_ref(&plan),
+            &[], realized,
+        )
+        .expect_err("a governance record must refuse ordinary settle");
+        assert!(format!("{:?}", err).contains("GovernanceSettleRequired"));
+        assert_eq!(record.stage, TransitionRecord::COMMITTED);
+    }
+
+    #[test]
+    fn settle_refuses_past_execution_deadline() {
+        // Commit at clock 300, execution window 1000: at
+        // clock 1301 the window has lapsed, so execution
+        // refuses with BadWindow inside the helper and the
+        // record stands COMMITTED with the head unmoved.
+        let (mut state, mut record, obs, first, plan) = committed_pair();
+        advance_clock_on_state(&mut state, 1301).expect("advance past the execution deadline must succeed");
+        let realized = record.declared_next_hash;
+        let err = settle_transition_from_records(
+            &state, &mut record, &obs, &[first], std::slice::from_ref(&plan), &[], realized,
+        )
+        .expect_err("a past-deadline settle must refuse");
+        assert!(format!("{:?}", err).contains("SettleFailed"));
+        assert_eq!(record.stage, TransitionRecord::COMMITTED);
+        assert_eq!(state.head_index, 1);
+    }
+
+    #[test]
+    fn settle_refuses_clock_moved_back() {
+        // The state's clock moved back before the commit's
+        // planning deadline: the rebuilt kernel's clock
+        // cannot regress to the settle clock, so the tail
+        // refuses and the record stands COMMITTED.
+        let (mut state, mut record, obs, first, plan) = committed_pair();
+        state.clock = 250;
+        let realized = record.declared_next_hash;
+        let err = settle_transition_from_records(
+            &state, &mut record, &obs, &[first], std::slice::from_ref(&plan), &[], realized,
+        )
+        .expect_err("a regressed-clock settle must refuse");
+        assert!(format!("{:?}", err).contains("SettleFailed"));
+        assert_eq!(record.stage, TransitionRecord::COMMITTED);
+    }
+
+    #[test]
+    fn settle_refuses_unsealed() {
+        // The sealed gate runs first: an unsealed state
+        // refuses before any replay, and nothing moves.
+        let (mut state, mut record, obs, first, plan) = committed_pair();
+        state.sealed = false;
+        let realized = record.declared_next_hash;
+        let err = settle_transition_from_records(
+            &state, &mut record, &obs, &[first], std::slice::from_ref(&plan), &[], realized,
+        )
+        .expect_err("an unsealed settle must refuse");
+        assert!(format!("{:?}", err).contains("NotSealed"));
+        assert_eq!(record.stage, TransitionRecord::COMMITTED);
+    }
+
+    #[test]
+    fn settle_refuses_overshooting_prior_chain() {
+        // The earlier chain must land at the target's parent:
+        // a prior bundle that itself commits past genesis
+        // lands at index 1, not at the target's genesis
+        // parent, so the parent check refuses before any
+        // replay of the target runs.
+        let (state, mut record, obs, first, plan) = committed_pair();
+        let (_state2, record2, obs2, first2, plan2) = committed_pair();
+        let overshoot = PriorCommit {
+            transition_record: &record2,
+            observation_record: &obs2,
+            prior_signals: std::slice::from_ref(&first2),
+            prior_plans: std::slice::from_ref(&plan2),
+        };
+        let prior = PriorEntry::Ordinary(overshoot);
+        let realized = record.declared_next_hash;
+        let err = settle_transition_from_records(
+            &state, &mut record, &obs, &[first], std::slice::from_ref(&plan),
+            std::slice::from_ref(&prior), realized,
+        )
+        .expect_err("an overshooting prior chain must refuse");
+        assert!(format!("{:?}", err).contains("ParentMismatch"));
+        assert_eq!(record.stage, TransitionRecord::COMMITTED);
+    }
+
+    #[test]
+    fn settle_at_moved_head_with_prior_succeeds() {
+        // The slice-30 two-commit drive, then settle of the
+        // second commit with the first as its prior: the
+        // parent-head build lands at index 1, the second
+        // chain re-commits at index 2, and the tail settles
+        // it — head 2 and ledger 20/10 stand untouched.
+        let (mut state, prior_rec, prior_obs, prior_sig, prior_plan) = committed_pair();
+        let prior_commit = PriorCommit {
+            transition_record: &prior_rec,
+            observation_record: &prior_obs,
+            prior_signals: std::slice::from_ref(&prior_sig),
+            prior_plans: std::slice::from_ref(&prior_plan),
+        };
+        let prior = PriorEntry::Ordinary(prior_commit);
+        advance_clock_on_state(&mut state, 400).expect("advance past the first deadline must succeed");
+        let (mut record, obs) =
+            second_eligible_at_head(&mut state, &prior, [0xD2; 32], [0xC1; 32], [0xE2; 32]);
+        let signal = second_signal_at_head(&state, &mut record, &obs, &prior, 2, SCALE);
+        advance_clock_on_state(&mut state, 500).expect("advance to the consensus deadline must succeed");
+        select_candidate_from_records(
+            &state, &mut record, &obs, std::slice::from_ref(&signal), std::slice::from_ref(&prior),
+        )
+        .expect("a closed window with a qualifying tally must select at the moved head");
+        open_planning_from_records(
+            &state, &mut record, &obs, std::slice::from_ref(&signal), [0x77; 32],
+            std::slice::from_ref(&prior),
+        )
+        .expect("a kernel-proven selection must open planning at the moved head");
+        assert_eq!(record.planning_deadline, 600);
+        let plan = submit_plan_from_records(
+            &state, &mut record, &obs, std::slice::from_ref(&signal), &[], &two_claims(), 700,
+            ag(2), 7, std::slice::from_ref(&prior),
+        )
+        .expect("a fitting plan must submit at the moved head");
+        advance_clock_on_state(&mut state, 600).expect("advance to the planning deadline must succeed");
+        reconcile_plans_from_records(
+            &state, &mut record, &obs, std::slice::from_ref(&signal),
+            std::slice::from_ref(&plan), std::slice::from_ref(&prior),
+        )
+        .expect("a fitting plan set must reconcile at the moved head");
+        validate_transition_from_records(
+            &state, &mut record, &obs, std::slice::from_ref(&signal),
+            std::slice::from_ref(&plan), std::slice::from_ref(&prior),
+        )
+        .expect("a fitting reconciled chain must validate at the moved head");
+        declare_transition_from_records(
+            &state, &mut record, &obs, std::slice::from_ref(&signal),
+            std::slice::from_ref(&plan), std::slice::from_ref(&prior),
+        )
+        .expect("a validated chain must declare at the moved head");
+        commit_transition_from_records(
+            &mut state, &mut record, &obs, std::slice::from_ref(&signal),
+            std::slice::from_ref(&plan), std::slice::from_ref(&prior),
+        )
+        .expect("a fitting declared chain must commit at the moved head");
+        assert_eq!(record.stage, TransitionRecord::COMMITTED);
+        assert_eq!(state.head_index, 2);
+        let life = settle_transition_from_records(
+            &state, &mut record, &obs, std::slice::from_ref(&signal),
+            std::slice::from_ref(&plan), std::slice::from_ref(&prior), [0xE2; 32],
+        )
+        .expect("a proven second commit must settle from its prior chain");
+        assert_eq!(life, Life::Settled);
+        assert_eq!(record.stage, TransitionRecord::SETTLED);
+        assert_eq!(state.head_index, 2);
+        assert_eq!(state.head_hash, [0xE2; 32]);
+        assert_eq!(state.committed_claims, [20 * SCALE, 10 * SCALE, 0]);
     }
 
     fn gov_action() -> GovAction {

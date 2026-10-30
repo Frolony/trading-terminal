@@ -2651,6 +2651,107 @@ accounts; the golden `.so` sha debt (slice-49
 `1de0c0a2…` still not reproducible from current source
 + pinned toolchain).
 
+## Slice 54 — the settle tail at helper level, ordinary path (2026-10-29)
+
+- `settle_transition_from_records`: `COMMITTED` (10) ->
+  `SETTLED` (11, a new program stage value matching the
+  kernel's `Life::Settled`), the first half of the bridge
+  slice-4 tail on-chain. The helper re-proves the commit
+  in a rebuilt kernel — ingest + register + evaluate +
+  mark_eligible at the stored `eligible_at`, signals at
+  their `submitted_at`, select + open_planning + plans at
+  the derived open clock, reconcile + validate + declare +
+  commit at the stored planning deadline (the slice-29
+  clock rule for historical reproduction) — and only then
+  runs the tail at the state's clock: `start_execution`
+  by the launch Executor, two `attest_settlement` calls
+  by the launch Settlers on the supplied realized hash
+  (threshold 2, so the first must return false and the
+  second true), and the `Settled` life assertion. On
+  success only the record's stage advances: the sealed
+  head and the slice-27 ledger are untouched, because
+  settle closes a commit that already moved both.
+- Gates, in order: sealed state (`NotSealed`); stage
+  exactly `COMMITTED` (`WrongStage` — a settled record
+  settles once only); observation linkage
+  (`RecordMismatch`); an ordinary type
+  (`GovernanceSettleRequired` otherwise — the governance
+  settle mirror is the next slice); the signal/plan
+  count anchors and ownership/round rules; proposer /
+  observer gates against the running kernel
+  (`UnknownProposer` / `NotObserver`); the stored
+  `compatible` verdict cross-checked against the
+  recomputed mirror, exactly as in the commit path.
+- The parent-head build, stated not smoothed: the earlier
+  chain replays against a parent state — the program
+  state with its head fields set to the target's parent —
+  so `kernel_at_head_from_entries`' own landing check
+  becomes the parent check (a chain overshooting the
+  parent, or stopping short of it, refuses with
+  `ParentMismatch` before any target replay). The
+  re-commit must land exactly one past the parent at the
+  declared next hash, or the stored `COMMITTED` label is
+  unproven. The live head is NOT required to equal the
+  declared hash: a successor may already have committed
+  past this transition, and requiring head equality would
+  brick settlement of every non-head commit.
+- The slice-27 ledger gate is deliberately NOT re-applied:
+  the ledger already contains this transition's claims
+  (written by the commit instruction), so re-applying it
+  would double-count and refuse every legitimate settle.
+  The kernel's own commit still judges the claims against
+  the sealed stocks in the rebuilt kernel.
+- Honesty bounds, stated not smoothed: the realized hash
+  is a helper argument and both attestations name it —
+  the kernel's per-hash vote counting plus the threshold
+  is what is proven here. The step-2 `SettlerGate`
+  ledger binding (settlers attest ONLY a hash an
+  observing process recorded) is NOT enforced at helper
+  level: no on-chain evidence record exists yet, so that
+  binding rides the instruction slice, which will source
+  the hash from stored evidence instead of a caller
+  argument. Outcome recording (`Settled` ->
+  `EvaluatedOutcome`, attribution) is the next slice after
+  the governance settle mirror, not this one: exactness
+  (realized == declared) therefore does not change this
+  slice's outcome — an inexact settle still settles, and
+  the halved-credit rule bites at outcome time.
+- Host tests 402/402 (392 prior + 10 slice-54: exact
+  settle with head and ledger untouched, inexact settle,
+  once-only, wrong-stage, governance-type,
+  past-execution-deadline (clock 1301 against the
+  300 + 1000 window), regressed-clock, unsealed,
+  overshooting-prior-chain, and settle of a second
+  commit at a moved head from its prior chain with head
+  2 and ledger 20/10 untouched). Clippy back to the
+  pre-existing profile (anchor macro `unexpected cfg`
+  noise + the slice-8 helper's `type_complexity` note +
+  the gov-helper `too_many_arguments` notes); zero new
+  warnings — one doc-wrap fix was needed to keep it
+  there (a doc line starting with `+` parsed as a
+  rustdoc list marker, the slice-26 trap).
+  `anchor build` green under the pinned toolchain
+  (Anchor 1.2.2 / Agave 4.3.2 / platform-tools v1.57);
+  IDL counts move by design (38 instructions, 7 accounts,
+  41 errors incl. `SettleFailed` and
+  `GovernanceSettleRequired`, 24 events incl.
+  `TransitionSettled` — no new instruction or account,
+  as designed); `.so` 1,658,984 bytes (sha256
+  `cb5bec94…`). Cu-golden re-measured against the new
+  `.so` (17 measured, blocked `[]`): append 4,682 (was
+  4,681), approve 37,629 (was 37,632), finalized-close
+  refusal 5,334 (was 5,332), the other fourteen values
+  exact — layout noise from the source change, not a
+  behavior change; the golden JSON + cu-golden README
+  carry the new values in the same pass.
+- Deliberately NOT slice 54: the `settle_transition`
+  instruction (remaining-account parse + the evidence
+  record the SettlerGate binding needs); the governance
+  settle mirror; outcome recording; and the golden `.so`
+  freeze, which still waits on the post-settle reclaim
+  ruling — this slice supplies the `SETTLED` stage that
+  ruling's gate will check.
+
 ## Build
 
 ```sh

@@ -336,6 +336,21 @@ not there). The four ruled conditions, as landed:
    the ruled sequence; until then `3afca38f…` is the
    migrated-build sha, not a frozen sha.
 
+## Slice-54 re-measurement (2026-10-29, same pins)
+
+Slice 54 (the settle helper, no new instruction) changed
+the program source, so the golden file was re-measured
+against the new `.so` sha
+`cb5bec94c3ae3c142a4df858939704721f3ea46b581d2c7f052bc633bd8f1fc1`
+(host tests 402/402; IDL now 38 instr / 7 accounts /
+41 errors / 24 events — the two new settle errors and the
+`TransitionSettled` event). Drift from the migration
+values is layout noise, not behavior: append
+4,681 -> 4,682 (all four append entries), approve
+37,632 -> 37,629, finalized-close refusal 5,332 -> 5,334;
+the other fourteen values reproduce exactly, blocked `[]`
+still. This `.so` is likewise NOT the golden freeze.
+
 ## Layout
 
 - `mollusk/` — standalone Rust crate (its own `[workspace]`
