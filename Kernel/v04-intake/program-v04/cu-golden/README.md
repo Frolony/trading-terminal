@@ -1064,9 +1064,55 @@ and unrelated lints — none at the new lines; the program-v04
 clippy gate was already failing before this change and is
 unchanged by it (no lint weakened, no allow added).
 
-Remaining before the final freeze: tripwire + smallframe guard
-re-runs on the enforcement-carrying binary, then the single
-final golden freeze.
+## MERGE-GATE FINAL GOLDEN FREEZE (2026-10-30, merge-gate item 4)
+
+FROZEN — program_v04 `.so` sha256
+`359c603ef98ed975b127ecb35b3373d73fa47801f8ad252ceaaf3e37bc478c5e`
+(1,860,848 bytes), the v0.4.2-based enforcement-carrying binary
+(chain-length gate `MAX_PRIOR_BUNDLES = 9`, `ChainTooLong`
+6046). This freeze supersedes the 1626 INTERIM re-freeze on the
+same binary: the binary did not change; what changed is that
+every merge-gate guard on it has now been re-run and passed,
+so the freeze is final rather than interim.
+
+- Source identity: staging `programs/program-v04/src/lib.rs`
+  verified byte-identical to the branch-staging copy before
+  the rebuild.
+- Reproducibility proof: forced rebuild (source touched for
+  mtime only, v04 pins Anchor 1.2.2 / Agave 4.3.2 /
+  platform-tools v1.57, `anchor build` exit 0) reproduces the
+  frozen sha exactly, same size. Build log:
+  `hidden_files/anchor-build-finalfreeze.log`.
+- Frame leg: the forced build shows ZERO linker
+  frame-overflow lines — no function frame exceeds 4,096
+  bytes. (As in prior passes, the linker reports only
+  overflows, never fitting sizes, so the gate-adoption
+  3,648-byte max figure is not re-derived by this build's
+  output; the pass/fail question — any frame > 4,096? — is
+  answered directly: none.)
+- Measurement proof: the mollusk golden harness re-run
+  against the rebuilt `.so` regenerates
+  `cu-golden-mollusk.json` BYTE-IDENTICAL to the frozen file
+  — all 63 CU values, both refusals, the empty blocked list,
+  and `so_sha256` unchanged.
+- Host suite: 459/459, single-threaded, on the same source.
+- Guards already proven on this exact binary (prior runs,
+  not re-run here because the binary is unchanged since):
+  tripwire (75% heap cap, all 63 CU identical) + smallframe
+  cap/frame modes (deterministic too-small-frame failure),
+  chain-length SBF-level at-limit (9 priors, 312,723 CU)
+  and limit+1 (`ChainTooLong` 6046, record still REGISTERED).
+- Freeze rule going forward, unchanged: before trusting any
+  CU run, check `sha256sum target/deploy/program_v04.so`
+  against the frozen sha above. A source change requires an
+  explicit re-freeze (new sha + full re-measurement), never
+  silent drift. The binary itself is NOT committed (the
+  snapshot push path accepts UTF-8 files only); the freeze
+  is this sha plus the proofs above.
+- What this freeze does NOT do: it does not merge anything
+  (merge stays Carlos-ruled, branch `kernel-v04` only) and
+  it does not deploy — W4.4 devnet deploy rides this frozen
+  binary next, devnet/test assets only.
 
 SBF-level at-limit / limit+1 proof (2026-10-30, this pass):
 the chainlen fixture now also measures N = 9 and proves the
