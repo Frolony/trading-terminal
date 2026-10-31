@@ -1303,6 +1303,51 @@ function perfMonthGrid(year,month){
   if(week.length){while(week.length<7)week.push(null);weeks.push(week);}
   return{year:year,month:month,weeks:weeks};
 }
+/* === N5.42 outcome distribution buckets (pure, Node-testable) ===
+   A137 (2026-10-30): presentation over the same N4.6 paper fills as N5.27, no new source.
+   Definitions, fixed here so the table and the harness agree:
+   - UNIT is the N5.27 closed trade: one sell fill matched against earlier buys for the same mint under FIFO; a partial close counts once, on its matched portion. Sells with no matched quantity are never scored.
+   - RETURN of a closed trade is realized P and L divided by matched buy cost. Bands partition the whole return line: above 500 percent; 200 to 500 percent inclusive of both ends; 0 to below 200 percent (a breakeven close lands here, since the band starts at zero); minus 50 percent to below zero; below minus 50 percent. Every closed trade lands in exactly one band.
+   - SHARE is the band count divided by total closed trades; with no closed trades every share is null and the table renders dashes, never a fabricated share.
+   - AVG BUY MC is the quantity-weighted mean of the matched lots buy market caps, and it exists ONLY where a buy fill carries an mcap value. The paper record today carries no buy market cap, so the column renders a dash until a fill carries one; the current discovery market cap is never backdated onto a historical buy, because that would dress todays price up as the buy price. A band whose matched lots carry no mcap at all renders a dash; a band with partial mcap coverage averages only the covered quantity.
+   - TOKENS counts distinct mint-or-symbol keys among closed trades, so the header can say how many closed trades span how many tokens. */
+function outcomeBandIndex(ret){
+  if(ret>5)return 0;
+  if(ret>=2)return 1;
+  if(ret>=0)return 2;
+  if(ret>=-0.5)return 3;
+  return 4;
+}
+function outcomeBuckets(fills){
+  const labels=['>500%','200–500%','0–200%','−50–0%','<−50%'];
+  const bands=labels.map(function(label){return{label:label,count:0,retSum:0,retCount:0,mcapNum:0,mcapDen:0};});
+  const lots={},tokens={};
+  let total=0;
+  for(const f of (fills||[])){
+    if(!f)continue;
+    const q=Number(f.qty),pr=Number(f.price);
+    if(!(q>0)||!(pr>0))continue;
+    const key=String(f.mint||f.symbol||'');
+    if(f.side==='buy'){if(!lots[key])lots[key]=[];lots[key].push({qty:q,price:pr,mcap:Number.isFinite(Number(f.mcap))?Number(f.mcap):null});continue;}
+    if(f.side!=='sell')continue;
+    let sell=q,matched=0,realized=0,cost=0,mcapNum=0,mcapDen=0;
+    const book=lots[key]||[];
+    while(sell>0&&book.length){
+      const lot=book[0],take=Math.min(lot.qty,sell);
+      realized+=(pr-lot.price)*take;matched+=take;cost+=lot.price*take;
+      if(lot.mcap!=null){mcapNum+=take*lot.mcap;mcapDen+=take;}
+      lot.qty-=take;sell-=take;
+      if(lot.qty<=1e-12)book.shift();
+    }
+    if(matched<=1e-12||cost<=0)continue;
+    total++;tokens[key]=true;
+    const b=bands[outcomeBandIndex(realized/cost)];
+    b.count++;b.retSum+=realized/cost;b.retCount++;
+    b.mcapNum+=mcapNum;b.mcapDen+=mcapDen;
+  }
+  return{total:total,tokens:Object.keys(tokens).length,bands:bands.map(function(b){return{label:b.label,count:b.count,share:total>0?b.count/total:null,avgRet:b.retCount>0?b.retSum/b.retCount:null,avgBuyMcap:b.mcapDen>0?b.mcapNum/b.mcapDen:null};})};
+}
+/* === end outcome-buckets pure block === */
 /* === end N5.27 pure block === */
 let dashMode='paper'; // memory-only; the N4.3 reload contract always lands in Paper
 let dashDigest='\u0000';
@@ -1320,7 +1365,7 @@ function dashFills(){
     if(o.side!=='buy'&&o.side!=='sell')continue;
     const q=Number(o.qty),p=Number(o.price);
     if(!(q>0)||!(p>0))continue;
-    fills.push({side:o.side,qty:q,price:p,mint:o.baseMint,symbol:o.baseSymbol,ts:(o.time instanceof Date?o.time.getTime():Number(new Date(o.time)))}); // N5.27: ts feeds the performance strip + calendar (hold time, last traded, day bucket)
+    fills.push({side:o.side,qty:q,price:p,mint:o.baseMint,symbol:o.baseSymbol,mcap:o.mcap,ts:(o.time instanceof Date?o.time.getTime():Number(new Date(o.time)))}); // N5.27: ts feeds the performance strip + calendar (hold time, last traded, day bucket)
   }
   return fills;
 }
@@ -1462,7 +1507,7 @@ function dashPaperHtml(){
     h+='<div class="dashgrid"><div class="dashstat"><div class="eyebrow">Realized</div><div class="v '+cls(m.totalRealized)+'">'+dbSignedMoney(m.totalRealized,qc,sp)+'</div><div class="sub">Closed paper trades</div></div><div class="dashstat"><div class="eyebrow">Unrealized</div><div class="v '+cls(m.totalUnreal)+'">'+dbSignedMoney(m.totalUnreal,qc,sp)+'</div><div class="sub">Open positions vs FIFO basis</div></div><div class="dashstat"><div class="eyebrow">Total return</div><div class="v '+cls(m.total)+'">'+dbSignedMoney(m.total,qc,sp)+'</div><div class="sub">Equity − '+dbMoney(PAPER_START_CASH,qc,sp)+' start</div></div></div>';
     h+=m.rows.length?'<div class="tablewrap"><table><thead><tr><th>Asset</th><th>Avg cost</th><th>Realized</th><th>Unrealized</th></tr></thead><tbody>'+m.rows.map(r=>'<tr><td><strong>'+esc(r.symbol)+'</strong>'+(r.basisNote?' <span class="staleb" title="'+esc(r.basisNote)+'">avg</span>':'')+'</td><td>'+(r.avgCost!=null?(qc==='SOL'?dbMoney(r.avgCost,qc,sp):formatPriceUsd(r.avgCost)):'—')+'</td><td class="'+cls(r.realized)+'">'+dbSignedMoney(r.realized,qc,sp)+'</td><td class="'+(r.unreal==null?'':cls(r.unreal))+'">'+(r.unreal==null?'—':dbSignedMoney(r.unreal,qc,sp))+'</td></tr>').join('')+'</tbody></table></div>':'<div class="sub">All positions closed — realized P&amp;L above is final for this account.</div>';
   }
-  h+=dashPerfHtml(pf,qc,sp); // N5.27: strip + calendar, paper only
+  h+=dashPerfHtml(pf,qc,sp,outcomeBuckets(dashFills())); // N5.27: strip + calendar; outcome buckets from the same fills, paper only
 h+='</div><div class="dashsec"><div class="sectiontitle"><h3>Recent activity</h3><span class="sub">latest '+acts.length+'</span></div>';
   h+=acts.length?'<div class="dashact">'+acts.map(a=>'<div class="arow"><div><span>'+esc(a.label)+'</span>'+dashActivityIdent(a)+'</div><span style="display:flex;align-items:center;gap:8px"><span class="mchip">'+(a.mode==='paper'?'PAPER':a.mode==='live'?'LIVE':'WATCHLIST')+'</span><span class="t">'+esc(dashActTime(a.ts))+'</span></span></div>').join('')+'</div>':'<div class="empty">No activity yet — fills and watchlist adds land here.</div>'; // N5.18: one readable line per event plus its identity line (watch: N3.3 block or honest fallback; fills: only what the record carries)
   h+='</div><div class="dashsec"><div class="sectiontitle"><h3>Watchlist movers</h3><span class="sub">'+esc(mv.listName||'Watchlist')+' · |24h change|'+(m.stale?' · '+dashStaleB():'')+'</span></div>'; // N5.17: sub-label names the actual (active) list, not a hardcoded Default
@@ -1475,7 +1520,7 @@ h+='</div><div class="dashsec"><div class="sectiontitle"><h3>Recent activity</h3
 }
 let perfCalYear=null,perfCalMonth=null; // N5.27: calendar month, session-only — never persisted, always opens on the current month
 function perfCalState(){if(perfCalYear===null){const n=new Date();perfCalYear=n.getFullYear();perfCalMonth=n.getMonth();}return{year:perfCalYear,month:perfCalMonth};}
-function dashPerfHtml(pf,qc,sp){
+function dashPerfHtml(pf,qc,sp,obIn){
   const cls=v=>v>=0?'positive':'negative';
   const wr=pf.winrate==null?'\u2014':(pf.winrate*100).toFixed(1)+'%';
   const last=pf.lastTraded?esc(pf.lastTraded.symbol)+' \u00b7 '+esc(new Date(pf.lastTraded.ts).toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'})):'\u2014';
@@ -1504,6 +1549,22 @@ function dashPerfHtml(pf,qc,sp){
   }
   h+='</tbody></table></div>';
   h+='<div class="sub" style="margin-top:6px">'+(monthTrades?('Month realized: <span class="'+cls(monthReal)+'">'+dbSignedMoney(monthReal,qc,sp)+'</span> \u00b7 '+monthTrades+' closed trade'+(monthTrades===1?'':'s')):'No closed trades this month \u2014 the calendar stays empty until a sell closes a position.')+'</div></div>';
+  const ob=obIn||outcomeBuckets([]);
+  h+='<div class="sectiontitle" style="margin-top:14px"><h3>Outcome distribution (simulated)</h3><span class="sub">PAPER \u00b7 simulated \u00b7 closed paper trades only</span></div>';
+  h+='<div class="sub">Share of closed paper trades by outcome band, with the average return and average buy market cap in each band. Buy market cap is shown only where a buy fill recorded one \u2014 the paper record carries none today, so that column reads \u2014 until fills carry it; it is never backfilled from today\u2019s discovery prices.</div>';
+  if(ob.total>0){
+    h+='<div class="sub" style="margin-top:6px">'+ob.total+' closed trade'+(ob.total===1?'':'s')+' across '+ob.tokens+' token'+(ob.tokens===1?'':'s')+'.</div>';
+    h+='<div class="tablewrap" style="margin-top:8px"><table><thead><tr><th>Outcome band</th><th>Closed trades</th><th>Share</th><th>Avg return</th><th>Avg buy MC</th></tr></thead><tbody>';
+    for(const b of ob.bands){
+      const share=b.share==null?'\u2014':(b.share*100).toFixed(1)+'%';
+      const avgRet=b.avgRet==null?'\u2014':((b.avgRet>=0?'+':'')+(b.avgRet*100).toFixed(1)+'%');
+      const avgMc=b.avgBuyMcap==null?'\u2014':usdCompact(b.avgBuyMcap);
+      h+='<tr><td><strong>'+esc(b.label)+'</strong></td><td>'+b.count+'</td><td>'+share+'</td><td class="'+(b.avgRet==null?'':(b.avgRet>=0?'positive':'negative'))+'">'+avgRet+'</td><td>'+avgMc+'</td></tr>';
+    }
+    h+='</tbody></table></div>';
+  }else{
+    h+='<div class="sub" style="margin-top:6px">No closed paper trades yet \u2014 buckets appear once a sell closes against earlier buys.</div>';
+  }
   return h;
 }
 /* N4.15 (A75, 2026-10-26): live balances must never render as false zeros.
