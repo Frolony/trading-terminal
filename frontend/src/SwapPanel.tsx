@@ -41,6 +41,16 @@ import {buildSwapFillEvent,recordTradeEvent} from './solana/tradeHistory';
 //   The slippage UI gained presets (0.1/0.5/1.0%) + custom input. The byte-faithful claim above
 //   covers the reconstruction era; post-seed evolution is documented here per amendment.
 import {useMemo,useState} from 'react';import {WalletMultiButton} from '@solana/wallet-adapter-react-ui';import {formatBaseUnits,PAIRS,parseAmountToBaseUnits,TOKENS} from './solana/tokens';import {useRaydiumSwap} from './solana/useRaydiumSwap';import type {QuoteResult} from './solana/raydiumApi';
+import {quoteRouteText,shortId} from './solana/raydiumApi';
+// N3.121 (2026-11-03, A263): mint -> display symbol for the route trace. Known
+// panel tokens resolve to their symbol; an unknown intermediate mint renders as
+// its shortened id, never as a guessed symbol.
+function tokenSymbolForMint(mint: string): string {
+  for (const key of Object.keys(TOKENS)) {
+    if (TOKENS[key].mint === mint) return TOKENS[key].symbol;
+  }
+  return shortId(mint);
+}
 // N3.115 (2026-11-03, A257): Raydium quote-freshness countdown ring. The swap page's
 // static "Quote age Ns · auto-refreshes every 25s" sentence becomes a ring that drains
 // over the 25 s refresh interval and refills when a fresh quote lands (quoteAge resets
@@ -270,7 +280,7 @@ return(<div className="shell">
 <input id="slippage" value={slippageBps} onChange={e=>onSlippageChange(e.target.value)} inputMode="numeric" disabled={busy} aria-label="Custom slippage in basis points" style={{width:'90px'}}/>
 </div>
 <p className="slippage-hint">{slippageHint}</p>
-{quote?(<div className="quote-details"><div className="quote-row"><span>Estimated output</span><strong title={`Raydium quote · ${quoteAge}s old · via /api/raydium/quote`}>{formatBaseUnits(quote.outputAmount,quote.outputDecimals)} {quote.outputSymbol}</strong></div><div className="quote-row"><span>Minimum after slippage</span><strong title={`Raydium quote · ${quoteAge}s old · via /api/raydium/quote`}>{formatBaseUnits(quote.minimumOut,quote.outputDecimals)} {quote.outputSymbol}</strong></div><div className="quote-row"><span>Route legs</span><strong>{quote.routeLegs}</strong></div><div className="quote-row"><span>Price impact</span><strong>{quote.priceImpactPct===null?'—':quote.priceImpactPct+'%'}</strong></div><div className="quote-row"><span>Quote age</span><strong><QuoteFreshRing ageSec={quoteAge}/> · auto-refreshes every 25s</strong></div><div className="quote-row"><span>Source</span><strong title="Raydium quote via /api/raydium/quote">Raydium quote</strong></div></div>):null}
+{quote?(<div className="quote-details"><div className="quote-row"><span>Estimated output</span><strong title={`Raydium quote · ${quoteAge}s old · via /api/raydium/quote`}>{formatBaseUnits(quote.outputAmount,quote.outputDecimals)} {quote.outputSymbol}</strong></div><div className="quote-row"><span>Minimum after slippage</span><strong title={`Raydium quote · ${quoteAge}s old · via /api/raydium/quote`}>{formatBaseUnits(quote.minimumOut,quote.outputDecimals)} {quote.outputSymbol}</strong></div><div className="quote-row"><span>Route</span><strong>{quoteRouteText(quote.route,tokenSymbolForMint)}</strong></div><div className="quote-row"><span>Price impact</span><strong>{quote.priceImpactPct===null?'—':quote.priceImpactPct+'%'}</strong></div><div className="quote-row"><span>Quote age</span><strong><QuoteFreshRing ageSec={quoteAge}/> · auto-refreshes every 25s</strong></div><div className="quote-row"><span>Source</span><strong title="Raydium quote via /api/raydium/quote">Raydium quote</strong></div></div>):null}
 {/* N4.8 (2026-10-23) — pre-wallet fee transparency. The network fee cannot be computed before a
     transaction exists, so the panel states honestly WHEN the estimate appears (at review, before
     signing) instead of inventing a number. The pool-fee note reuses the N4.4 tolerant reader
@@ -290,7 +300,7 @@ return(<div className="shell">
 <div className="quote-row"><span>Network fee</span><strong>{rvFeeSol!==null?rvFeeSol+' SOL'+(rvFeeUsd!==null?' (≈ $'+rvFeeUsd.toFixed(4)+')':' (USD estimate unavailable)'):prepareState==='preparing'?'Estimating…':'unavailable — confirm disabled'}</strong></div>
 <div className="quote-row"><span>Pool fees</span><strong>{rvPoolFee??SAFETY_COPY.poolFeesHonest}</strong></div>
 <div className="quote-row"><span>Total cost</span><strong>{rvFeeSol!==null?formatBaseUnits(reviewQuote.inputAmount,input.decimals)+' '+input.symbol+' + '+rvFeeSol+' SOL network fee':'—'}</strong></div>
-<div className="quote-row"><span>Route</span><strong>Raydium · {reviewQuote.routeLegs} leg{reviewQuote.routeLegs===1?'':'s'}</strong></div>
+<div className="quote-row"><span>Route</span><strong>{quoteRouteText(reviewQuote.route,tokenSymbolForMint)}</strong></div>
 <div className="quote-row"><span>Slippage tolerance</span><strong>{slippageBps} bps ({(Number(slippageBps)/100).toFixed(2)}%)</strong></div>
 <div className="quote-row"><span>Quote age</span><strong><QuoteFreshRing ageSec={quoteAge}/> · auto-refreshes every 25s</strong></div>
 <div className="quote-row"><span>Pre-flight simulation</span><strong style={{color:simStatus==='ok'?'#4ade80':simStatus?'#ff7b7b':'inherit'}}>{prepareState==='preparing'?'Running…':simStatus==='ok'?'Passed — expected to succeed on-chain':simStatus==='failed'?'Failed — see below':simStatus==='unavailable'?'Unavailable — confirm disabled':'—'}</strong></div>

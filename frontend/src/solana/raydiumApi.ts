@@ -27,12 +27,72 @@ export interface QuoteResult {
   priceImpactPct: number | null;
   /** Number of route legs (routePlan entries). */
   routeLegs: number;
+  /** One entry per routePlan leg, when the payload names both mints; [] when it does not. */
+  route: RouteLeg[];
   outputSymbol: string;
   outputDecimals: number;
   /** Epoch ms when the quote was fetched (drives the quote-age/refresh UI). */
   fetchedAt: number;
   /** Raw Raydium quote JSON, passed back to /api/raydium/build for signing. */
   raw: unknown;
+}
+
+/** One Raydium routePlan leg, in payload terms only. poolId is the leg's pool
+ *  key (ammKey) when the payload carries one, else null — never invented. */
+export interface RouteLeg {
+  inputMint: string;
+  outputMint: string;
+  poolId: string | null;
+}
+
+/** Parse a raw Raydium routePlan into RouteLegs. Returns [] unless EVERY leg
+ *  names both mints: a partial route would misname an intermediate, so an
+ *  incomplete plan is reported as no route, not as a guessed one. */
+export function parseRouteLegs(plan: unknown): RouteLeg[] {
+  if (!Array.isArray(plan) || plan.length === 0) return [];
+  const legs: RouteLeg[] = [];
+  for (const entry of plan) {
+    const rec = asRecord(entry);
+    const swap = asRecord(rec.swapInfo);
+    const source = swap.inputMint ? swap : rec;
+    const inputMint = asNonEmptyString(source.inputMint);
+    const outputMint = asNonEmptyString(source.outputMint);
+    if (!inputMint || !outputMint) return [];
+    const poolId = asNonEmptyString(swap.ammKey) ?? asNonEmptyString(swap.poolId) ?? asNonEmptyString(rec.ammKey) ?? asNonEmptyString(rec.poolId);
+    legs.push({ inputMint, outputMint, poolId });
+  }
+  return legs;
+}
+
+/** Shorten a mint/pool id for display: first 4 + ellipsis + last 4. Short ids
+ *  pass through unchanged. */
+export function shortId(id: string): string {
+  if (id.length <= 8) return id;
+  return id.slice(0, 4) + '…' + id.slice(-4);
+}
+
+// N3.121 (2026-11-03, A263): plain-words route trace for a /raydium/ quote.
+// Pure: takes parsed legs plus a mint->display resolver (the panel resolves
+// known mints to symbols and falls back to shortId for unknown ones), so no
+// symbol or pool is ever invented here. A route the payload does not name
+// renders as 'not reported by this quote'.
+export function quoteRouteText(legs: RouteLeg[], symbolFor: (mint: string) => string): string {
+  if (!Array.isArray(legs) || legs.length === 0) return 'not reported by this quote';
+  const chain: string[] = [symbolFor(legs[0].inputMint)];
+  for (const leg of legs) {
+    chain.push(symbolFor(leg.outputMint));
+  }
+  const path = chain.join(' → ');
+  const pools: string[] = [];
+  for (const leg of legs) {
+    if (leg.poolId) pools.push(shortId(leg.poolId));
+  }
+  if (legs.length === 1) {
+    if (pools.length === 1) return path + ', direct via Raydium pool ' + pools[0];
+    return path + ', direct via Raydium';
+  }
+  if (pools.length === legs.length) return path + ' via Raydium pools ' + pools.join(', ');
+  return path + ' via Raydium';
 }
 
 interface ApiEnvelope {
@@ -113,6 +173,7 @@ export async function getQuote(req: {
     minimumOut,
     priceImpactPct: asNumber(qdata.priceImpactPct) ?? asNumber(payload.price_impact_pct),
     routeLegs: routePlan.length,
+    route: parseRouteLegs(qdata.routePlan),
     outputSymbol: symbol ?? req.outputSymbol,
     outputDecimals: decimals === null ? 6 : Math.trunc(decimals),
     fetchedAt: Date.now(),
