@@ -471,6 +471,11 @@ fn main() {
     let proposer = Pubkey::new_from_array([0x99; 32]);
 
     let (kernel_state, _) = pda(&[b"kernel-state"], &program_id);
+    // Enrollment slice (attempt-2): the AgentRegistry PDA, created
+    // by `initialize_kernel` alongside the kernel state; every
+    // wired instruction now takes it as a read-only account right
+    // after the kernel state.
+    let (agent_registry, _) = pda(&[b"agent-registry"], &program_id);
     let (gov_record, _) = pda(&[b"transition", GOV_TID.as_ref()], &program_id);
     let (ord_record, _) = pda(&[b"transition", ORD_TID.as_ref()], &program_id);
     let (obs_record, _) = pda(&[b"observation", INGEST_OBS.as_ref()], &program_id);
@@ -564,6 +569,7 @@ fn main() {
         keyed_account_for_system_program(),
         mollusk.sysvars.keyed_account_for_clock_sysvar(),
         (kernel_state, empty.clone()),
+        (agent_registry, empty.clone()),
         (gov_record, empty.clone()),
         (ord_record, empty.clone()),
         (obs_record, empty.clone()),
@@ -626,6 +632,7 @@ fn main() {
         &disc("initialize_kernel"),
         vec![
             AccountMeta::new(kernel_state, false),
+            AccountMeta::new(agent_registry, false),
             AccountMeta::new(payer, true),
             AccountMeta::new_readonly(system_id, false),
         ],
@@ -638,6 +645,22 @@ fn main() {
     assert_eq!(ks.data[8], 0, "kernel state must start unsealed");
     assert_eq!(u64_at(&ks.data, 9), 0, "genesis head_index must be 0");
     assert_eq!(u64_at(&ks.data, 49), 0, "genesis clock must be 0");
+    // Enrollment slice (attempt-2): initialize also created the
+    // AgentRegistry — authority is the initializing payer, and the
+    // 11 enrollable slots are pre-seeded in profile order, all
+    // unoccupied. Layout: 8 (discriminator) + 32 (authority) +
+    // 1 (bump) + 11 * (32 agent_id + 32 pubkey + 1 occupied).
+    let reg = find(&accounts, &agent_registry);
+    assert_eq!(reg.data.len(), 756, "agent registry must carry the full seeded layout");
+    assert_eq!(reg.data[8..40], payer.to_bytes(), "registry authority must be the initializing payer");
+    for (i, expected) in [
+        [1u8; 32], [2u8; 32], [3u8; 32], [4u8; 32], [5u8; 32], [6u8; 32],
+        [0xA1u8; 32], [0xB1u8; 32], [0xB2u8; 32], [0xB3u8; 32], [0xB4u8; 32],
+    ].iter().enumerate() {
+        let off = 41 + i * 65;
+        assert_eq!(&reg.data[off..off + 32], expected, "slot {i} must be pre-seeded with its profile agent id");
+        assert_eq!(reg.data[off + 64], 0, "slot {i} must start unoccupied");
+    }
 
     // seal_kernel: sealed flag + clock 100 + head 0.
     let ix = Instruction::new_with_bytes(
@@ -769,6 +792,7 @@ fn main() {
         &data,
         vec![
             AccountMeta::new_readonly(kernel_state, false),
+            AccountMeta::new_readonly(agent_registry, false),
             AccountMeta::new(obs_record, false),
             AccountMeta::new(observer, true),
             AccountMeta::new_readonly(system_id, false),
@@ -873,6 +897,7 @@ fn main() {
         &data,
         vec![
             AccountMeta::new_readonly(kernel_state, false),
+            AccountMeta::new_readonly(agent_registry, false),
             AccountMeta::new(gov_record, false),
             AccountMeta::new_readonly(gov_action_account, false),
             AccountMeta::new(seat1, true),
@@ -898,6 +923,7 @@ fn main() {
         &data,
         vec![
             AccountMeta::new_readonly(kernel_state, false),
+            AccountMeta::new_readonly(agent_registry, false),
             AccountMeta::new(gov_record, false),
             AccountMeta::new_readonly(seat1, false),
             AccountMeta::new_readonly(gov_action_account, false),
@@ -926,6 +952,7 @@ fn main() {
         &data,
         vec![
             AccountMeta::new_readonly(kernel_state, false),
+            AccountMeta::new_readonly(agent_registry, false),
             AccountMeta::new(gov_record, false),
             AccountMeta::new(approval_record, false),
             AccountMeta::new_readonly(seat1, false),
@@ -1102,6 +1129,7 @@ fn main() {
         &data,
         vec![
             AccountMeta::new_readonly(kernel_state, false),
+            AccountMeta::new_readonly(agent_registry, false),
             AccountMeta::new(life_obs, false),
             AccountMeta::new(observer, true),
             AccountMeta::new_readonly(system_id, false),
@@ -1130,6 +1158,7 @@ fn main() {
         &data,
         vec![
             AccountMeta::new_readonly(kernel_state, false),
+            AccountMeta::new_readonly(agent_registry, false),
             AccountMeta::new(life_record, false),
             AccountMeta::new_readonly(life_obs, false),
             AccountMeta::new(seat1, true),
@@ -1162,6 +1191,7 @@ fn main() {
     let stage_accounts = |ks_mut: bool| -> Vec<AccountMeta> {
         vec![
             if ks_mut { AccountMeta::new(kernel_state, false) } else { AccountMeta::new_readonly(kernel_state, false) },
+            AccountMeta::new_readonly(agent_registry, false),
             AccountMeta::new(life_record, false),
             AccountMeta::new_readonly(life_obs, false),
             AccountMeta::new_readonly(payer, true),
@@ -1203,6 +1233,7 @@ fn main() {
         &data,
         vec![
             AccountMeta::new_readonly(kernel_state, false),
+            AccountMeta::new_readonly(agent_registry, false),
             AccountMeta::new(life_record, false),
             AccountMeta::new_readonly(life_obs, false),
             AccountMeta::new(life_signal, false),
@@ -1256,6 +1287,7 @@ fn main() {
         &stage_ix("open_planning"),
         vec![
             AccountMeta::new_readonly(kernel_state, false),
+            AccountMeta::new_readonly(agent_registry, false),
             AccountMeta::new(life_record, false),
             AccountMeta::new_readonly(life_obs, false),
             AccountMeta::new_readonly(seat1, true),
@@ -1287,6 +1319,7 @@ fn main() {
         &data,
         vec![
             AccountMeta::new_readonly(kernel_state, false),
+            AccountMeta::new_readonly(agent_registry, false),
             AccountMeta::new(life_record, false),
             AccountMeta::new_readonly(life_obs, false),
             AccountMeta::new(life_plan, false),
@@ -1509,6 +1542,7 @@ fn main() {
         &data,
         vec![
             AccountMeta::new_readonly(kernel_state, false),
+            AccountMeta::new_readonly(agent_registry, false),
             AccountMeta::new(gov2_record, false),
             AccountMeta::new_readonly(gov2_action_account, false),
             AccountMeta::new(seat1, true),
@@ -1537,6 +1571,7 @@ fn main() {
             &data,
             vec![
                 AccountMeta::new_readonly(kernel_state, false),
+                AccountMeta::new_readonly(agent_registry, false),
                 AccountMeta::new(gov2_record, false),
                 AccountMeta::new_readonly(seat1, false),
                 AccountMeta::new_readonly(gov2_action_account, false),
@@ -1566,6 +1601,7 @@ fn main() {
         &data,
         vec![
             AccountMeta::new_readonly(kernel_state, false),
+            AccountMeta::new_readonly(agent_registry, false),
             AccountMeta::new(gov2_obs, false),
             AccountMeta::new(observer, true),
             AccountMeta::new_readonly(system_id, false),
@@ -1583,6 +1619,7 @@ fn main() {
     // the finalized action account).
     let mut metas = vec![
         AccountMeta::new_readonly(kernel_state, false),
+        AccountMeta::new_readonly(agent_registry, false),
         AccountMeta::new(gov2_record, false),
         AccountMeta::new_readonly(gov2_obs, false),
         AccountMeta::new(seat1, true),
@@ -1598,6 +1635,7 @@ fn main() {
     // evaluate_governance gov2 @400 -> EVALUATED (2).
     let mut metas = vec![
         AccountMeta::new_readonly(kernel_state, false),
+        AccountMeta::new_readonly(agent_registry, false),
         AccountMeta::new(gov2_record, false),
         AccountMeta::new_readonly(gov2_obs, false),
         AccountMeta::new(payer, true),
@@ -1613,6 +1651,7 @@ fn main() {
     // mark_eligible_governance gov2 @400 -> ELIGIBLE (3), window 400/500.
     let mut metas = vec![
         AccountMeta::new(kernel_state, false),
+        AccountMeta::new_readonly(agent_registry, false),
         AccountMeta::new(gov2_record, false),
         AccountMeta::new_readonly(gov2_obs, false),
         AccountMeta::new_readonly(payer, true),
@@ -1639,6 +1678,7 @@ fn main() {
     data.extend_from_slice(&1u32.to_le_bytes());
     let mut metas = vec![
         AccountMeta::new_readonly(kernel_state, false),
+        AccountMeta::new_readonly(agent_registry, false),
         AccountMeta::new(gov2_record, false),
         AccountMeta::new_readonly(gov2_obs, false),
         AccountMeta::new(gov2_signal, false),
@@ -1677,6 +1717,7 @@ fn main() {
     // select_candidate_governance gov2 @500 (closed window) -> SELECTED (4).
     let mut metas = vec![
         AccountMeta::new_readonly(kernel_state, false),
+        AccountMeta::new_readonly(agent_registry, false),
         AccountMeta::new(gov2_record, false),
         AccountMeta::new_readonly(gov2_obs, false),
         AccountMeta::new_readonly(payer, true),
@@ -1695,6 +1736,7 @@ fn main() {
     // planning deadline 600.
     let mut metas = vec![
         AccountMeta::new_readonly(kernel_state, false),
+        AccountMeta::new_readonly(agent_registry, false),
         AccountMeta::new(gov2_record, false),
         AccountMeta::new_readonly(gov2_obs, false),
         AccountMeta::new_readonly(seat1, true),
@@ -1722,6 +1764,7 @@ fn main() {
     data.extend_from_slice(&1u32.to_le_bytes());
     let mut metas = vec![
         AccountMeta::new_readonly(kernel_state, false),
+        AccountMeta::new_readonly(agent_registry, false),
         AccountMeta::new(gov2_record, false),
         AccountMeta::new_readonly(gov2_obs, false),
         AccountMeta::new(gov2_plan, false),
@@ -1765,6 +1808,7 @@ fn main() {
     ] {
         let mut metas = vec![
             AccountMeta::new_readonly(kernel_state, false),
+            AccountMeta::new_readonly(agent_registry, false),
             AccountMeta::new(gov2_record, false),
             AccountMeta::new_readonly(gov2_obs, false),
             AccountMeta::new_readonly(payer, true),
@@ -1788,6 +1832,7 @@ fn main() {
     // then signal, plan, approvals (split_gov_commit_tail order).
     let mut metas = vec![
         AccountMeta::new(kernel_state, false),
+        AccountMeta::new_readonly(agent_registry, false),
         AccountMeta::new(gov2_record, false),
         AccountMeta::new_readonly(gov2_obs, false),
         AccountMeta::new_readonly(seat1, false),
@@ -1836,6 +1881,7 @@ fn main() {
     // head stands at index 2, the gov2 declared hash.
     let mut metas = vec![
         AccountMeta::new(kernel_state, false),
+        AccountMeta::new_readonly(agent_registry, false),
         AccountMeta::new(gov2_record, false),
         AccountMeta::new_readonly(gov2_obs, false),
         AccountMeta::new_readonly(seat1, false),
@@ -1869,6 +1915,7 @@ fn main() {
     data.extend_from_slice(&10i64.to_le_bytes());
     let mut metas = vec![
         AccountMeta::new(kernel_state, false),
+        AccountMeta::new_readonly(agent_registry, false),
         AccountMeta::new(gov2_record, false),
         AccountMeta::new_readonly(gov2_obs, false),
         AccountMeta::new_readonly(seat1, false),
@@ -1922,6 +1969,7 @@ fn main() {
     // signal and plan priors as remaining accounts.
     let metas = vec![
         AccountMeta::new(kernel_state, false),
+        AccountMeta::new_readonly(agent_registry, false),
         AccountMeta::new(life_record, false),
         AccountMeta::new_readonly(life_obs, false),
         AccountMeta::new_readonly(life_evidence, false),
@@ -1959,6 +2007,7 @@ fn main() {
         &data,
         vec![
             AccountMeta::new(kernel_state, false),
+            AccountMeta::new_readonly(agent_registry, false),
             AccountMeta::new(life_record, false),
             AccountMeta::new_readonly(life_obs, false),
             AccountMeta::new_readonly(life_evidence, false),

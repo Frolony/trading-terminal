@@ -1142,3 +1142,30 @@ instruction in the tail chain). The 1-prior row still
 reproduces the golden chain's `record_outcome_governance_gov2`
 EXACTLY (110,485). The derivation above is unchanged: shifts
 of tens of CU against a 1.4M limit move no Nmax.
+
+---
+
+## Attempt-2 enrollment run (2026-11-03)
+
+The enrollment slice's binary (see the program README) re-ran
+this harness end-to-end: all 63 measured steps and both refusals
+reproduce with identical labels and outcomes against the new
+`.so` (sha256 `70f8fdb1…`), with the AgentRegistry passed as a
+read-only account to every wired instruction and asserted right
+after `initialize_kernel` (authority = the initializing payer;
+11 pre-seeded slots, none occupied). 50 of 63 CU values move —
+expected: one more account per wired instruction plus registry
+reads in the resolution path. Written by `run-mollusk-attempt2.sh`
+to `cu-golden-mollusk-attempt2.json`; the attempt-1 golden
+(`cu-golden-mollusk.json`, sha256 `8efa3335…`) is frozen and was
+NOT overwritten.
+
+The enrollment scenario binary (`mollusk/src/bin/enroll_attempt2.rs`,
+run via `run-enroll-attempt2.sh`, report
+`cu-golden-enroll-attempt2.json`) proves the slice's five
+properties against the SBF binary with fresh per-run keys:
+registry authority/seeded slots after initialize; non-authority
+enroll refused 6047; enrolled OBSERVER ingests the golden life
+observation; enrolled ag(1) registers + replays the golden life
+transition; an unenrolled fresh key still refuses ingest 6009 —
+plus occupied-slot re-enroll refused 6049.

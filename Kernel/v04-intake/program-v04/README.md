@@ -3296,11 +3296,64 @@ accounts; the golden `.so` sha debt (slice-49
   themselves — the contract is documented here and at
   the allocator site).
 
+## Enrollment slice — the pubkey→agent mapping (2026-11-03, attempt-2)
+
+Carlos's 2026-11-03 ruling (option b): build the deferred
+pubkey→agent enrollment/mapping slice named in the module docs
+since slice 8/9/10. The attempt-1 deployment
+(`2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr`, binary
+`359c603e…`) is frozen exactly as it stands ("goober freeze",
+2026-11-03) and is never upgraded by this work; this binary is
+the attempt-2 candidate for a NEW program with its own freeze.
+
+- New account `AgentRegistry` (PDA `["agent-registry"]`):
+  `{ authority, bump, slots: [EnrollmentSlot; 11] }`, created by
+  `initialize_kernel` in the same instruction, with `authority`
+  = the initializing payer (the slice-6 genesis-authority
+  precedent). Slots pre-seed the 11 enrollable profile ids in
+  order — ag(1)..ag(6), OBSERVER, EXECUTOR, SETTLER_A,
+  SETTLER_B, RECORDER — all unoccupied. GEN is not enrollable.
+- New instruction `enroll_agent(agent_id, pubkey)`: authority
+  only (`NotEnrollmentAuthority` 6047); pure slot rules on
+  `AgentRegistry::enroll` — `UnknownProfileAgent` 6048,
+  `AgentAlreadyEnrolled` 6049 (refuse, no silent replace;
+  replacement is a future explicit slice),
+  `PubkeyAlreadyEnrolled` 6050. Errors appended only.
+  Emits `AgentEnrolled`.
+- New resolver `resolve_agent_id_mapped(registry, pubkey)`:
+  enrolled pubkey → its slot's agent id; otherwise identity
+  (`resolve_agent_id` unchanged, its pinned test stands). Every
+  instruction whose code path resolves an agent id — signer or
+  stored record, including stored signal agents and governance
+  seats, which were inline `to_bytes()` conversions — now takes
+  the registry as a required read-only account (33 instructions)
+  and resolves through the mapped resolver. Stored PLAN agents
+  are NOT remapped: `PlanRecord.agent` already stores the
+  resolved agent id, not a signer pubkey. `record_outcome`'s
+  recorder gate converts to mapped resolution on the same
+  principle. Instructions with no resolution path (probe, seal,
+  advance_clock, register_transition, the gov-action carrier,
+  record_settlement_evidence, init_reputation) are untouched.
+  The predicate is untouched; the delivered crate is untouched.
+- Proof: host tests 465/465 (459 pre-slice + 6 new); the full
+  mollusk golden chain re-runs green against the new binary
+  into `cu-golden/cu-golden-mollusk-attempt2.json` (attempt-1
+  golden byte-identical, never overwritten), and the new
+  scenario binary `cu-golden/mollusk/src/bin/enroll_attempt2.rs`
+  proves enrolled OBSERVER ingest, enrolled ag(1)
+  register+replay, non-authority refusal 6047, and unenrolled
+  refusal 6009 against the SBF binary
+  (`cu-golden/cu-golden-enroll-attempt2.json`).
+- IDL: 44 → 45 instructions, 9 → 10 accounts, 47 → 51 errors,
+  26 → 27 events. Candidate `.so`: 1,924,664 bytes, sha256
+  `70f8fdb1bcfd52e8cd9edd0e204683f8c06cdc1db2502e3ff27e1fee9cc527b7`
+  (candidate only — the attempt-2 freeze is a later phase).
+
 ## Build
 
 ```sh
 export RUSTUP_HOME=~/workspace/toolchains/rustup CARGO_HOME=~/workspace/toolchains/cargo
 export PATH=~/workspace/toolchains/cargo/bin:~/workspace/toolchains/solana/bin:$PATH
 ~/workspace/toolchains/anchor/bin/anchor build   # from this directory
-cargo test                                        # host tests, 457/457
+cargo test                                        # host tests, 465/465
 ```

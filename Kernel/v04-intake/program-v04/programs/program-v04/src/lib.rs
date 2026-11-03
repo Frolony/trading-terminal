@@ -1392,7 +1392,43 @@ pub mod program_v04 {
         let sealed = state.sealed;
         let head_index = state.head_index;
         *ctx.accounts.kernel_state = state;
+        // Enrollment slice (2026-11-03, Carlos's option-(b) ruling):
+        // the AgentRegistry PDA is created in the same instruction,
+        // with the initializing payer recorded as the enrollment
+        // authority — the slice-6 genesis-authority precedent (this
+        // payer is the genesis authority) applied to enrollment.
+        // All 11 enrollable profile slots start unoccupied.
+        *ctx.accounts.agent_registry =
+            AgentRegistry::seeded(ctx.accounts.payer.key(), ctx.bumps.agent_registry);
         emit!(KernelInitialized { sealed, head_index });
+        Ok(())
+    }
+
+    /// Enroll (enrollment slice, 2026-11-03): bind one real pubkey to
+    /// one enrollable launch-profile agent id in the `AgentRegistry`.
+    /// Only the registry's authority — the initializing payer recorded
+    /// at `initialize_kernel` — may enroll (`NotEnrollmentAuthority`
+    /// otherwise). The pure slot rules live in `AgentRegistry::enroll`:
+    /// an agent id outside the 11 enrollable profile identities
+    /// refuses `UnknownProfileAgent` (GEN, the kernel-internal genesis
+    /// authority retired at seal, is NOT enrollable), an occupied
+    /// agent slot refuses `AgentAlreadyEnrolled` (no silent replace —
+    /// a replacement path is a future explicit slice), and a pubkey
+    /// already enrolled for another agent id refuses
+    /// `PubkeyAlreadyEnrolled`. On success the slot is occupied and
+    /// every wired instruction's mapped resolution
+    /// (`resolve_agent_id_mapped`) presents the enrolled pubkey as
+    /// that agent id.
+    pub fn enroll_agent(
+        ctx: Context<EnrollAgent>,
+        agent_id: [u8; 32],
+        pubkey: Pubkey,
+    ) -> Result<()> {
+        if ctx.accounts.payer.key() != ctx.accounts.agent_registry.authority {
+            return Err(error!(ProgramV04Error::NotEnrollmentAuthority));
+        }
+        ctx.accounts.agent_registry.enroll(agent_id, pubkey)?;
+        emit!(AgentEnrolled { agent_id, pubkey });
         Ok(())
     }
 
@@ -1485,7 +1521,7 @@ pub mod program_v04 {
             transition_id,
             ctx.accounts.payer.key(),
         )?;
-        let record = build_governance_transition_record(
+        let record = build_governance_transition_record(&ctx.accounts.agent_registry, 
             &ctx.accounts.kernel_state,
             transition_id,
             transition_type,
@@ -1533,7 +1569,7 @@ pub mod program_v04 {
             &ctx.accounts.gov_action_account,
             &ctx.accounts.transition_record,
         )?;
-        let record = build_governance_approval_record(
+        let record = build_governance_approval_record(&ctx.accounts.agent_registry, 
             &ctx.accounts.kernel_state,
             &ctx.accounts.transition_record,
             ctx.accounts.payer.key(),
@@ -1595,7 +1631,7 @@ pub mod program_v04 {
             &ctx.accounts.gov_action_account,
             &ctx.accounts.transition_record,
         )?;
-        revise_governance_approval_record(
+        revise_governance_approval_record(&ctx.accounts.agent_registry, 
             &ctx.accounts.kernel_state,
             &ctx.accounts.transition_record,
             &mut ctx.accounts.approval_record,
@@ -1727,7 +1763,7 @@ pub mod program_v04 {
         expiry: u64,
         confidence_raw: u64,
     ) -> Result<()> {
-        let record = build_observation_record(
+        let record = build_observation_record(&ctx.accounts.agent_registry, 
             &ctx.accounts.kernel_state,
             observation_id,
             timestamp,
@@ -1773,7 +1809,7 @@ pub mod program_v04 {
         if !tail.is_empty() {
             return Err(error!(ProgramV04Error::RecordMismatch));
         }
-        replay_transition_from_records(
+        replay_transition_from_records(&ctx.accounts.agent_registry, 
             &ctx.accounts.kernel_state,
             &mut ctx.accounts.transition_record,
             &ctx.accounts.observation_record,
@@ -1833,7 +1869,7 @@ pub mod program_v04 {
         if !tail.is_empty() {
             return Err(error!(ProgramV04Error::RecordMismatch));
         }
-        evaluate_transition_from_records(
+        evaluate_transition_from_records(&ctx.accounts.agent_registry, 
             &ctx.accounts.kernel_state,
             &mut ctx.accounts.transition_record,
             &ctx.accounts.observation_record,
@@ -1880,7 +1916,7 @@ pub mod program_v04 {
         if !tail.is_empty() {
             return Err(error!(ProgramV04Error::RecordMismatch));
         }
-        mark_eligible_from_records(
+        mark_eligible_from_records(&ctx.accounts.agent_registry, 
             &mut ctx.accounts.kernel_state,
             &mut ctx.accounts.transition_record,
             &ctx.accounts.observation_record,
@@ -1937,7 +1973,7 @@ pub mod program_v04 {
                 _ => return Err(error!(ProgramV04Error::RecordMismatch)),
             }
         }
-        let (record, total, confidence) = submit_signal_from_records(
+        let (record, total, confidence) = submit_signal_from_records(&ctx.accounts.agent_registry, 
             &ctx.accounts.kernel_state,
             &mut ctx.accounts.transition_record,
             &ctx.accounts.observation_record,
@@ -2003,7 +2039,7 @@ pub mod program_v04 {
                 _ => return Err(error!(ProgramV04Error::RecordMismatch)),
             }
         }
-        select_candidate_from_records(
+        select_candidate_from_records(&ctx.accounts.agent_registry, 
             &ctx.accounts.kernel_state,
             &mut ctx.accounts.transition_record,
             &ctx.accounts.observation_record,
@@ -2127,7 +2163,7 @@ pub mod program_v04 {
                 return Err(error!(ProgramV04Error::RecordMismatch));
             }
         }
-        select_candidate_from_records_with_siblings(
+        select_candidate_from_records_with_siblings(&ctx.accounts.agent_registry, 
             &ctx.accounts.kernel_state,
             &mut ctx.accounts.transition_record,
             &ctx.accounts.observation_record,
@@ -2181,12 +2217,12 @@ pub mod program_v04 {
                 _ => return Err(error!(ProgramV04Error::RecordMismatch)),
             }
         }
-        let life = open_planning_from_records(
+        let life = open_planning_from_records(&ctx.accounts.agent_registry, 
             &ctx.accounts.kernel_state,
             &mut ctx.accounts.transition_record,
             &ctx.accounts.observation_record,
             &priors,
-            resolve_agent_id(ctx.accounts.payer.key()),
+            resolve_agent_id_mapped(&ctx.accounts.agent_registry, ctx.accounts.payer.key()),
             &prior_entries,
 )?;
         debug_assert_eq!(life, Life::Planning);
@@ -2251,7 +2287,7 @@ pub mod program_v04 {
                 _ => return Err(error!(ProgramV04Error::RecordMismatch)),
             }
         }
-        let plan = submit_plan_from_records(
+        let plan = submit_plan_from_records(&ctx.accounts.agent_registry, 
             &ctx.accounts.kernel_state,
             &mut ctx.accounts.transition_record,
             &ctx.accounts.observation_record,
@@ -2259,7 +2295,7 @@ pub mod program_v04 {
             &prior_plans,
             &claims,
             expires_at,
-            resolve_agent_id(ctx.accounts.payer.key()),
+            resolve_agent_id_mapped(&ctx.accounts.agent_registry, ctx.accounts.payer.key()),
             ctx.bumps.plan_record,
             &prior_entries,
 )?;
@@ -2327,7 +2363,7 @@ pub mod program_v04 {
                 _ => return Err(error!(ProgramV04Error::RecordMismatch)),
             }
         }
-        let life = reconcile_plans_from_records(
+        let life = reconcile_plans_from_records(&ctx.accounts.agent_registry, 
             &ctx.accounts.kernel_state,
             &mut ctx.accounts.transition_record,
             &ctx.accounts.observation_record,
@@ -2398,7 +2434,7 @@ pub mod program_v04 {
                 _ => return Err(error!(ProgramV04Error::RecordMismatch)),
             }
         }
-        let life = validate_transition_from_records(
+        let life = validate_transition_from_records(&ctx.accounts.agent_registry, 
             &ctx.accounts.kernel_state,
             &mut ctx.accounts.transition_record,
             &ctx.accounts.observation_record,
@@ -2465,7 +2501,7 @@ pub mod program_v04 {
                 _ => return Err(error!(ProgramV04Error::RecordMismatch)),
             }
         }
-        let life = declare_transition_from_records(
+        let life = declare_transition_from_records(&ctx.accounts.agent_registry, 
             &ctx.accounts.kernel_state,
             &mut ctx.accounts.transition_record,
             &ctx.accounts.observation_record,
@@ -2531,7 +2567,7 @@ pub mod program_v04 {
                 _ => return Err(error!(ProgramV04Error::RecordMismatch)),
             }
         }
-        let life = commit_transition_from_records(
+        let life = commit_transition_from_records(&ctx.accounts.agent_registry, 
             &mut ctx.accounts.kernel_state,
             &mut ctx.accounts.transition_record,
             &ctx.accounts.observation_record,
@@ -2610,12 +2646,12 @@ pub mod program_v04 {
         // approved action must hash to exactly its finalized
         // hash — a commit over a substituted action refuses
         // before any replay runs.
-        let action = check_gov_action_for_commit(
+        let action = check_gov_action_for_commit(&ctx.accounts.agent_registry, 
             &ctx.accounts.gov_action_account,
             &ctx.accounts.transition_record,
             &approval_records,
         )?;
-        let life = commit_governance_from_stored(
+        let life = commit_governance_from_stored(&ctx.accounts.agent_registry, 
             &mut ctx.accounts.kernel_state,
             &mut ctx.accounts.transition_record,
             &ctx.accounts.observation_record,
@@ -2730,7 +2766,7 @@ pub mod program_v04 {
                 _ => return Err(error!(ProgramV04Error::RecordMismatch)),
             }
         }
-        let life = settle_transition_from_records(
+        let life = settle_transition_from_records(&ctx.accounts.agent_registry, 
             &ctx.accounts.kernel_state,
             &mut ctx.accounts.transition_record,
             &ctx.accounts.observation_record,
@@ -2812,12 +2848,12 @@ pub mod program_v04 {
         // approved action must hash to exactly its finalized
         // hash — a settle over a substituted action refuses
         // before any replay runs.
-        let action = check_gov_action_for_commit(
+        let action = check_gov_action_for_commit(&ctx.accounts.agent_registry, 
             &ctx.accounts.gov_action_account,
             &ctx.accounts.transition_record,
             &approval_records,
         )?;
-        let life = settle_governance_transition_from_stored(
+        let life = settle_governance_transition_from_stored(&ctx.accounts.agent_registry, 
             &ctx.accounts.kernel_state,
             &mut ctx.accounts.transition_record,
             &ctx.accounts.observation_record,
@@ -2886,7 +2922,7 @@ pub mod program_v04 {
             split_outcome_tail(tail, signal_count, plan_count)?;
         let pairs: alloc::vec::Vec<(Pubkey, Delta)> =
             attributions.iter().map(|a| (a.agent, a.delta)).collect();
-        let (life, exact) = record_outcome_from_records(
+        let (life, exact) = record_outcome_from_records(&ctx.accounts.agent_registry, 
             &ctx.accounts.kernel_state,
             &mut ctx.accounts.transition_record,
             &ctx.accounts.observation_record,
@@ -2990,14 +3026,14 @@ pub mod program_v04 {
             ctx.accounts.transition_record.plan_count as usize,
             ctx.accounts.transition_record.approval_count as usize,
         )?;
-        let action = check_gov_action_for_commit(
+        let action = check_gov_action_for_commit(&ctx.accounts.agent_registry, 
             &ctx.accounts.gov_action_account,
             &ctx.accounts.transition_record,
             &approval_records,
         )?;
         let pairs: alloc::vec::Vec<(Pubkey, Delta)> =
             attributions.iter().map(|a| (a.agent, a.delta)).collect();
-        let (life, exact) = record_outcome_governance_from_records(
+        let (life, exact) = record_outcome_governance_from_records(&ctx.accounts.agent_registry, 
             &ctx.accounts.kernel_state,
             &mut ctx.accounts.transition_record,
             &ctx.accounts.observation_record,
@@ -3059,7 +3095,7 @@ pub mod program_v04 {
             transition_id,
             ctx.accounts.transition_record.proposer,
         )?;
-        replay_governance_from_records(
+        replay_governance_from_records(&ctx.accounts.agent_registry, 
             &ctx.accounts.kernel_state,
             &mut ctx.accounts.transition_record,
             &ctx.accounts.observation_record,
@@ -3106,7 +3142,7 @@ pub mod program_v04 {
             transition_id,
             ctx.accounts.transition_record.proposer,
         )?;
-        evaluate_governance_from_records(
+        evaluate_governance_from_records(&ctx.accounts.agent_registry, 
             &ctx.accounts.kernel_state,
             &mut ctx.accounts.transition_record,
             &ctx.accounts.observation_record,
@@ -3148,7 +3184,7 @@ pub mod program_v04 {
             transition_id,
             ctx.accounts.transition_record.proposer,
         )?;
-        mark_eligible_governance_from_records(
+        mark_eligible_governance_from_records(&ctx.accounts.agent_registry, 
             &mut ctx.accounts.kernel_state,
             &mut ctx.accounts.transition_record,
             &ctx.accounts.observation_record,
@@ -3207,7 +3243,7 @@ pub mod program_v04 {
             transition_id,
             ctx.accounts.transition_record.proposer,
         )?;
-        let (record, total, confidence) = submit_signal_governance_from_records(
+        let (record, total, confidence) = submit_signal_governance_from_records(&ctx.accounts.agent_registry, 
             &ctx.accounts.kernel_state,
             &mut ctx.accounts.transition_record,
             &ctx.accounts.observation_record,
@@ -3277,7 +3313,7 @@ pub mod program_v04 {
             transition_id,
             ctx.accounts.transition_record.proposer,
         )?;
-        select_candidate_governance_from_records(
+        select_candidate_governance_from_records(&ctx.accounts.agent_registry, 
             &ctx.accounts.kernel_state,
             &mut ctx.accounts.transition_record,
             &ctx.accounts.observation_record,
@@ -3461,7 +3497,7 @@ pub mod program_v04 {
                 return Err(error!(ProgramV04Error::RecordMismatch));
             }
         }
-        select_candidate_governance_from_records_with_siblings(
+        select_candidate_governance_from_records_with_siblings(&ctx.accounts.agent_registry, 
             &ctx.accounts.kernel_state,
             &mut ctx.accounts.transition_record,
             &ctx.accounts.observation_record,
@@ -3661,7 +3697,7 @@ pub mod program_v04 {
                 return Err(error!(ProgramV04Error::RecordMismatch));
             }
         }
-        select_candidate_mixed_from_records_with_siblings(
+        select_candidate_mixed_from_records_with_siblings(&ctx.accounts.agent_registry, 
             &ctx.accounts.kernel_state,
             &mut ctx.accounts.transition_record,
             &ctx.accounts.observation_record,
@@ -3711,13 +3747,13 @@ pub mod program_v04 {
             transition_id,
             ctx.accounts.transition_record.proposer,
         )?;
-        let life = open_planning_governance_from_records(
+        let life = open_planning_governance_from_records(&ctx.accounts.agent_registry, 
             &ctx.accounts.kernel_state,
             &mut ctx.accounts.transition_record,
             &ctx.accounts.observation_record,
             &approvals, &action,
             &priors,
-            resolve_agent_id(ctx.accounts.payer.key()),
+            resolve_agent_id_mapped(&ctx.accounts.agent_registry, ctx.accounts.payer.key()),
             &prior_entries,
         )?;
         debug_assert_eq!(life, Life::Planning);
@@ -3771,7 +3807,7 @@ pub mod program_v04 {
             transition_id,
             ctx.accounts.transition_record.proposer,
         )?;
-        let plan = submit_plan_governance_from_records(
+        let plan = submit_plan_governance_from_records(&ctx.accounts.agent_registry, 
             &ctx.accounts.kernel_state,
             &mut ctx.accounts.transition_record,
             &ctx.accounts.observation_record,
@@ -3780,7 +3816,7 @@ pub mod program_v04 {
             &prior_plans,
             &claims,
             expires_at,
-            resolve_agent_id(ctx.accounts.payer.key()),
+            resolve_agent_id_mapped(&ctx.accounts.agent_registry, ctx.accounts.payer.key()),
             ctx.bumps.plan_record,
             &prior_entries,
         )?;
@@ -3836,7 +3872,7 @@ pub mod program_v04 {
             transition_id,
             ctx.accounts.transition_record.proposer,
         )?;
-        let life = reconcile_plans_governance_from_records(
+        let life = reconcile_plans_governance_from_records(&ctx.accounts.agent_registry, 
             &ctx.accounts.kernel_state,
             &mut ctx.accounts.transition_record,
             &ctx.accounts.observation_record,
@@ -3900,7 +3936,7 @@ pub mod program_v04 {
             transition_id,
             ctx.accounts.transition_record.proposer,
         )?;
-        let life = validate_transition_governance_from_records(
+        let life = validate_transition_governance_from_records(&ctx.accounts.agent_registry, 
             &ctx.accounts.kernel_state,
             &mut ctx.accounts.transition_record,
             &ctx.accounts.observation_record,
@@ -3965,7 +4001,7 @@ pub mod program_v04 {
             transition_id,
             ctx.accounts.transition_record.proposer,
         )?;
-        let life = declare_transition_governance_from_records(
+        let life = declare_transition_governance_from_records(&ctx.accounts.agent_registry, 
             &ctx.accounts.kernel_state,
             &mut ctx.accounts.transition_record,
             &ctx.accounts.observation_record,
@@ -3992,6 +4028,11 @@ pub struct OpenPlanning<'info> {
     )]
     pub kernel_state: Account<'info, KernelState>,
     #[account(
+        seeds = [b"agent-registry"],
+        bump = agent_registry.bump,
+    )]
+    pub agent_registry: Account<'info, AgentRegistry>,
+    #[account(
         mut,
         seeds = [b"transition", transition_id.as_ref()],
         bump = transition_record.bump,
@@ -4013,6 +4054,11 @@ pub struct SubmitPlan<'info> {
         bump = kernel_state.bump,
     )]
     pub kernel_state: Account<'info, KernelState>,
+    #[account(
+        seeds = [b"agent-registry"],
+        bump = agent_registry.bump,
+    )]
+    pub agent_registry: Account<'info, AgentRegistry>,
     #[account(
         mut,
         seeds = [b"transition", transition_id.as_ref()],
@@ -4046,6 +4092,11 @@ pub struct ValidateTransition<'info> {
     )]
     pub kernel_state: Account<'info, KernelState>,
     #[account(
+        seeds = [b"agent-registry"],
+        bump = agent_registry.bump,
+    )]
+    pub agent_registry: Account<'info, AgentRegistry>,
+    #[account(
         mut,
         seeds = [b"transition", transition_id.as_ref()],
         bump = transition_record.bump,
@@ -4067,6 +4118,11 @@ pub struct DeclareTransition<'info> {
         bump = kernel_state.bump,
     )]
     pub kernel_state: Account<'info, KernelState>,
+    #[account(
+        seeds = [b"agent-registry"],
+        bump = agent_registry.bump,
+    )]
+    pub agent_registry: Account<'info, AgentRegistry>,
     #[account(
         mut,
         seeds = [b"transition", transition_id.as_ref()],
@@ -4091,6 +4147,11 @@ pub struct CommitTransition<'info> {
     )]
     pub kernel_state: Account<'info, KernelState>,
     #[account(
+        seeds = [b"agent-registry"],
+        bump = agent_registry.bump,
+    )]
+    pub agent_registry: Account<'info, AgentRegistry>,
+    #[account(
         mut,
         seeds = [b"transition", transition_id.as_ref()],
         bump = transition_record.bump,
@@ -4113,6 +4174,11 @@ pub struct CommitGovernance<'info> {
         bump = kernel_state.bump,
     )]
     pub kernel_state: Account<'info, KernelState>,
+    #[account(
+        seeds = [b"agent-registry"],
+        bump = agent_registry.bump,
+    )]
+    pub agent_registry: Account<'info, AgentRegistry>,
     #[account(
         mut,
         seeds = [b"transition", transition_id.as_ref()],
@@ -4180,6 +4246,11 @@ pub struct SettleTransition<'info> {
     )]
     pub kernel_state: Account<'info, KernelState>,
     #[account(
+        seeds = [b"agent-registry"],
+        bump = agent_registry.bump,
+    )]
+    pub agent_registry: Account<'info, AgentRegistry>,
+    #[account(
         mut,
         seeds = [b"transition", transition_id.as_ref()],
         bump = transition_record.bump,
@@ -4207,6 +4278,11 @@ pub struct SettleGovernance<'info> {
         bump = kernel_state.bump,
     )]
     pub kernel_state: Account<'info, KernelState>,
+    #[account(
+        seeds = [b"agent-registry"],
+        bump = agent_registry.bump,
+    )]
+    pub agent_registry: Account<'info, AgentRegistry>,
     #[account(
         mut,
         seeds = [b"transition", transition_id.as_ref()],
@@ -4246,6 +4322,11 @@ pub struct RecordOutcome<'info> {
     )]
     pub kernel_state: Account<'info, KernelState>,
     #[account(
+        seeds = [b"agent-registry"],
+        bump = agent_registry.bump,
+    )]
+    pub agent_registry: Account<'info, AgentRegistry>,
+    #[account(
         mut,
         seeds = [b"transition", transition_id.as_ref()],
         bump = transition_record.bump,
@@ -4278,6 +4359,11 @@ pub struct RecordOutcomeGovernance<'info> {
         bump = kernel_state.bump,
     )]
     pub kernel_state: Account<'info, KernelState>,
+    #[account(
+        seeds = [b"agent-registry"],
+        bump = agent_registry.bump,
+    )]
+    pub agent_registry: Account<'info, AgentRegistry>,
     #[account(
         mut,
         seeds = [b"transition", transition_id.as_ref()],
@@ -4342,6 +4428,11 @@ pub struct ReplayGovernance<'info> {
     )]
     pub kernel_state: Account<'info, KernelState>,
     #[account(
+        seeds = [b"agent-registry"],
+        bump = agent_registry.bump,
+    )]
+    pub agent_registry: Account<'info, AgentRegistry>,
+    #[account(
         mut,
         seeds = [b"transition", transition_id.as_ref()],
         bump = transition_record.bump,
@@ -4363,6 +4454,11 @@ pub struct EvaluateGovernance<'info> {
         bump = kernel_state.bump,
     )]
     pub kernel_state: Account<'info, KernelState>,
+    #[account(
+        seeds = [b"agent-registry"],
+        bump = agent_registry.bump,
+    )]
+    pub agent_registry: Account<'info, AgentRegistry>,
     #[account(
         mut,
         seeds = [b"transition", transition_id.as_ref()],
@@ -4387,6 +4483,11 @@ pub struct MarkEligibleGovernance<'info> {
     )]
     pub kernel_state: Account<'info, KernelState>,
     #[account(
+        seeds = [b"agent-registry"],
+        bump = agent_registry.bump,
+    )]
+    pub agent_registry: Account<'info, AgentRegistry>,
+    #[account(
         mut,
         seeds = [b"transition", transition_id.as_ref()],
         bump = transition_record.bump,
@@ -4408,6 +4509,11 @@ pub struct ReconcilePlans<'info> {
         bump = kernel_state.bump,
     )]
     pub kernel_state: Account<'info, KernelState>,
+    #[account(
+        seeds = [b"agent-registry"],
+        bump = agent_registry.bump,
+    )]
+    pub agent_registry: Account<'info, AgentRegistry>,
     #[account(
         mut,
         seeds = [b"transition", transition_id.as_ref()],
@@ -4431,6 +4537,11 @@ pub struct EvaluateTransition<'info> {
     )]
     pub kernel_state: Account<'info, KernelState>,
     #[account(
+        seeds = [b"agent-registry"],
+        bump = agent_registry.bump,
+    )]
+    pub agent_registry: Account<'info, AgentRegistry>,
+    #[account(
         mut,
         seeds = [b"transition", transition_id.as_ref()],
         bump = transition_record.bump,
@@ -4452,6 +4563,11 @@ pub struct SelectCandidate<'info> {
         bump = kernel_state.bump,
     )]
     pub kernel_state: Account<'info, KernelState>,
+    #[account(
+        seeds = [b"agent-registry"],
+        bump = agent_registry.bump,
+    )]
+    pub agent_registry: Account<'info, AgentRegistry>,
     #[account(
         mut,
         seeds = [b"transition", transition_id.as_ref()],
@@ -4475,6 +4591,11 @@ pub struct SelectCandidateWithSiblings<'info> {
     )]
     pub kernel_state: Account<'info, KernelState>,
     #[account(
+        seeds = [b"agent-registry"],
+        bump = agent_registry.bump,
+    )]
+    pub agent_registry: Account<'info, AgentRegistry>,
+    #[account(
         mut,
         seeds = [b"transition", transition_id.as_ref()],
         bump = transition_record.bump,
@@ -4496,6 +4617,11 @@ pub struct SelectCandidateGovernance<'info> {
         bump = kernel_state.bump,
     )]
     pub kernel_state: Account<'info, KernelState>,
+    #[account(
+        seeds = [b"agent-registry"],
+        bump = agent_registry.bump,
+    )]
+    pub agent_registry: Account<'info, AgentRegistry>,
     #[account(
         mut,
         seeds = [b"transition", transition_id.as_ref()],
@@ -4519,6 +4645,11 @@ pub struct SelectCandidateGovernanceWithSiblings<'info> {
     )]
     pub kernel_state: Account<'info, KernelState>,
     #[account(
+        seeds = [b"agent-registry"],
+        bump = agent_registry.bump,
+    )]
+    pub agent_registry: Account<'info, AgentRegistry>,
+    #[account(
         mut,
         seeds = [b"transition", transition_id.as_ref()],
         bump = transition_record.bump,
@@ -4540,6 +4671,11 @@ pub struct SelectCandidateMixedWithSiblings<'info> {
         bump = kernel_state.bump,
     )]
     pub kernel_state: Account<'info, KernelState>,
+    #[account(
+        seeds = [b"agent-registry"],
+        bump = agent_registry.bump,
+    )]
+    pub agent_registry: Account<'info, AgentRegistry>,
     #[account(
         mut,
         seeds = [b"transition", transition_id.as_ref()],
@@ -4563,6 +4699,11 @@ pub struct OpenPlanningGovernance<'info> {
     )]
     pub kernel_state: Account<'info, KernelState>,
     #[account(
+        seeds = [b"agent-registry"],
+        bump = agent_registry.bump,
+    )]
+    pub agent_registry: Account<'info, AgentRegistry>,
+    #[account(
         mut,
         seeds = [b"transition", transition_id.as_ref()],
         bump = transition_record.bump,
@@ -4584,6 +4725,11 @@ pub struct SubmitPlanGovernance<'info> {
         bump = kernel_state.bump,
     )]
     pub kernel_state: Account<'info, KernelState>,
+    #[account(
+        seeds = [b"agent-registry"],
+        bump = agent_registry.bump,
+    )]
+    pub agent_registry: Account<'info, AgentRegistry>,
     #[account(
         mut,
         seeds = [b"transition", transition_id.as_ref()],
@@ -4617,6 +4763,11 @@ pub struct ReconcilePlansGovernance<'info> {
     )]
     pub kernel_state: Account<'info, KernelState>,
     #[account(
+        seeds = [b"agent-registry"],
+        bump = agent_registry.bump,
+    )]
+    pub agent_registry: Account<'info, AgentRegistry>,
+    #[account(
         mut,
         seeds = [b"transition", transition_id.as_ref()],
         bump = transition_record.bump,
@@ -4638,6 +4789,11 @@ pub struct ValidateTransitionGovernance<'info> {
         bump = kernel_state.bump,
     )]
     pub kernel_state: Account<'info, KernelState>,
+    #[account(
+        seeds = [b"agent-registry"],
+        bump = agent_registry.bump,
+    )]
+    pub agent_registry: Account<'info, AgentRegistry>,
     #[account(
         mut,
         seeds = [b"transition", transition_id.as_ref()],
@@ -4661,6 +4817,11 @@ pub struct DeclareTransitionGovernance<'info> {
     )]
     pub kernel_state: Account<'info, KernelState>,
     #[account(
+        seeds = [b"agent-registry"],
+        bump = agent_registry.bump,
+    )]
+    pub agent_registry: Account<'info, AgentRegistry>,
+    #[account(
         mut,
         seeds = [b"transition", transition_id.as_ref()],
         bump = transition_record.bump,
@@ -4682,6 +4843,11 @@ pub struct SubmitSignal<'info> {
         bump = kernel_state.bump,
     )]
     pub kernel_state: Account<'info, KernelState>,
+    #[account(
+        seeds = [b"agent-registry"],
+        bump = agent_registry.bump,
+    )]
+    pub agent_registry: Account<'info, AgentRegistry>,
     #[account(
         mut,
         seeds = [b"transition", transition_id.as_ref()],
@@ -4714,6 +4880,11 @@ pub struct SubmitSignalGovernance<'info> {
         bump = kernel_state.bump,
     )]
     pub kernel_state: Account<'info, KernelState>,
+    #[account(
+        seeds = [b"agent-registry"],
+        bump = agent_registry.bump,
+    )]
+    pub agent_registry: Account<'info, AgentRegistry>,
     #[account(
         mut,
         seeds = [b"transition", transition_id.as_ref()],
@@ -4748,6 +4919,11 @@ pub struct MarkEligible<'info> {
     )]
     pub kernel_state: Account<'info, KernelState>,
     #[account(
+        seeds = [b"agent-registry"],
+        bump = agent_registry.bump,
+    )]
+    pub agent_registry: Account<'info, AgentRegistry>,
+    #[account(
         mut,
         seeds = [b"transition", transition_id.as_ref()],
         bump = transition_record.bump,
@@ -4781,6 +4957,11 @@ pub struct ReplayTransition<'info> {
     )]
     pub kernel_state: Account<'info, KernelState>,
     #[account(
+        seeds = [b"agent-registry"],
+        bump = agent_registry.bump,
+    )]
+    pub agent_registry: Account<'info, AgentRegistry>,
+    #[account(
         mut,
         seeds = [b"transition", transition_id.as_ref()],
         bump = transition_record.bump,
@@ -4802,6 +4983,11 @@ pub struct IngestObservation<'info> {
         bump = kernel_state.bump,
     )]
     pub kernel_state: Account<'info, KernelState>,
+    #[account(
+        seeds = [b"agent-registry"],
+        bump = agent_registry.bump,
+    )]
+    pub agent_registry: Account<'info, AgentRegistry>,
     #[account(
         init,
         payer = payer,
@@ -4845,6 +5031,11 @@ pub struct RegisterGovernanceTransition<'info> {
     )]
     pub kernel_state: Account<'info, KernelState>,
     #[account(
+        seeds = [b"agent-registry"],
+        bump = agent_registry.bump,
+    )]
+    pub agent_registry: Account<'info, AgentRegistry>,
+    #[account(
         init,
         payer = payer,
         space = TransitionRecord::SPACE,
@@ -4874,6 +5065,11 @@ pub struct ApproveGovernance<'info> {
         bump = kernel_state.bump,
     )]
     pub kernel_state: Account<'info, KernelState>,
+    #[account(
+        seeds = [b"agent-registry"],
+        bump = agent_registry.bump,
+    )]
+    pub agent_registry: Account<'info, AgentRegistry>,
     #[account(
         mut,
         seeds = [b"transition", transition_id.as_ref()],
@@ -4918,6 +5114,11 @@ pub struct ReviseGovernanceApproval<'info> {
         bump = kernel_state.bump,
     )]
     pub kernel_state: Account<'info, KernelState>,
+    #[account(
+        seeds = [b"agent-registry"],
+        bump = agent_registry.bump,
+    )]
+    pub agent_registry: Account<'info, AgentRegistry>,
     #[account(
         mut,
         seeds = [b"transition", transition_id.as_ref()],
@@ -5024,9 +5225,28 @@ pub struct InitializeKernel<'info> {
         bump,
     )]
     pub kernel_state: Account<'info, KernelState>,
+    #[account(
+        init,
+        payer = payer,
+        space = AgentRegistry::SPACE,
+        seeds = [b"agent-registry"],
+        bump,
+    )]
+    pub agent_registry: Account<'info, AgentRegistry>,
     #[account(mut)]
     pub payer: Signer<'info>,
     pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct EnrollAgent<'info> {
+    #[account(
+        mut,
+        seeds = [b"agent-registry"],
+        bump = agent_registry.bump,
+    )]
+    pub agent_registry: Account<'info, AgentRegistry>,
+    pub payer: Signer<'info>,
 }
 
 /// The first §3 account: the on-chain kernel state. It carries the
@@ -5069,6 +5289,120 @@ pub struct KernelState {
 impl KernelState {
     /// 8 (discriminator) + 1 + 8 + 32 + 8 + 8 + 32 + 8 + 1 + 24.
     pub const SPACE: usize = 130;
+}
+
+/// One enrollment slot of the `AgentRegistry` (enrollment slice,
+/// 2026-11-03): a launch-profile agent id and the real pubkey bound
+/// to it. Slots are pre-seeded with the enrollable agent ids at
+/// registry creation; `occupied` is false until `enroll_agent`
+/// binds a pubkey.
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EnrollmentSlot {
+    /// Launch-profile agent id this slot enrolls (one of
+    /// `enrollable_agent_ids()`).
+    pub agent_id: [u8; 32],
+    /// The enrolled real pubkey (default/zero until occupied).
+    pub pubkey: Pubkey,
+    /// False until the authority enrolls a pubkey for this agent id.
+    pub occupied: bool,
+}
+
+/// The pubkey→agent registry (enrollment slice, 2026-11-03 — the
+/// deferred mapping slice the module docs promised): created by
+/// `initialize_kernel` alongside `KernelState`, with the
+/// initializing payer recorded as `authority` (the slice-6 genesis
+/// authority precedent). Only the authority may enroll. Mapped
+/// resolution (`resolve_agent_id_mapped`) consults this account:
+/// an enrolled pubkey presents as its slot's agent id; every other
+/// pubkey resolves by identity, exactly as before this slice, so
+/// unenrolled keys keep every refusal they had. The registry feeds
+/// gate inputs only — it touches no kernel state, threshold, or
+/// mask, and the 13-bit `commit_fail_mask` predicate is untouched.
+#[account]
+#[derive(Debug)]
+pub struct AgentRegistry {
+    /// The enrollment authority: the payer that ran
+    /// `initialize_kernel`.
+    pub authority: Pubkey,
+    /// PDA bump for the `agent-registry` seeds.
+    pub bump: u8,
+    /// The 11 enrollable profile slots, in `enrollable_agent_ids()`
+    /// order.
+    pub slots: [EnrollmentSlot; 11],
+}
+
+/// The 11 enrollable launch-profile agent ids, in registry slot
+/// order: the six registered agents, then the four operator-role
+/// identities, then the outcome recorder. GEN (the kernel-internal
+/// genesis authority, retired at seal) is deliberately excluded —
+/// it is not enrollable.
+pub fn enrollable_agent_ids() -> [[u8; 32]; 11] {
+    [
+        ag(1),
+        ag(2),
+        ag(3),
+        ag(4),
+        ag(5),
+        ag(6),
+        OBSERVER,
+        EXECUTOR,
+        SETTLER_A,
+        SETTLER_B,
+        RECORDER,
+    ]
+}
+
+impl AgentRegistry {
+    /// 8 (discriminator) + 32 (authority) + 1 (bump) + 11 * (32 + 32 + 1).
+    pub const SPACE: usize = 756;
+
+    /// A fresh registry for `authority`: all 11 enrollable slots
+    /// pre-seeded with their agent ids, none occupied.
+    pub fn seeded(authority: Pubkey, bump: u8) -> AgentRegistry {
+        AgentRegistry {
+            authority,
+            bump,
+            slots: enrollable_agent_ids().map(|agent_id| EnrollmentSlot {
+                agent_id,
+                pubkey: Pubkey::default(),
+                occupied: false,
+            }),
+        }
+    }
+
+    /// The agent id `pubkey` is enrolled as, if any slot holds it.
+    pub fn agent_id_for(&self, pubkey: Pubkey) -> Option<[u8; 32]> {
+        self.slots
+            .iter()
+            .find(|slot| slot.occupied && slot.pubkey == pubkey)
+            .map(|slot| slot.agent_id)
+    }
+
+    /// Bind `pubkey` to `agent_id`'s slot (pure: unit-testable
+    /// without an Anchor context; the authority gate lives in the
+    /// `enroll_agent` instruction, not here). Refusals, in order:
+    /// `UnknownProfileAgent` if `agent_id` is not one of the 11
+    /// enrollable ids; `AgentAlreadyEnrolled` if that agent's slot
+    /// is already occupied (refuse — no silent replace; a
+    /// replacement path is a future explicit slice);
+    /// `PubkeyAlreadyEnrolled` if `pubkey` already occupies any
+    /// other slot (one pubkey presents as at most one agent id).
+    pub fn enroll(&mut self, agent_id: [u8; 32], pubkey: Pubkey) -> Result<()> {
+        let index = self
+            .slots
+            .iter()
+            .position(|slot| slot.agent_id == agent_id)
+            .ok_or(error!(ProgramV04Error::UnknownProfileAgent))?;
+        if self.slots[index].occupied {
+            return Err(error!(ProgramV04Error::AgentAlreadyEnrolled));
+        }
+        if self.agent_id_for(pubkey).is_some() {
+            return Err(error!(ProgramV04Error::PubkeyAlreadyEnrolled));
+        }
+        self.slots[index].pubkey = pubkey;
+        self.slots[index].occupied = true;
+        Ok(())
+    }
 }
 
 /// The second §3 account: one stored transition manifest. This is the
@@ -5285,6 +5619,7 @@ pub fn build_transition_record(
 /// yet, and this builder stores the manifest only.
 #[allow(clippy::too_many_arguments)]
 pub fn build_governance_transition_record(
+    registry: &AgentRegistry,
     kernel_state: &KernelState,
     transition_id: [u8; 32],
     transition_type: [u8; 32],
@@ -5305,7 +5640,7 @@ pub fn build_governance_transition_record(
     if !is_gov_type(&transition_type) {
         return Err(error!(ProgramV04Error::GovernanceTypeRequired));
     }
-    let agent_id = resolve_agent_id(proposer);
+    let agent_id = resolve_agent_id_mapped(registry, proposer);
     let k = sealed_launch_kernel().map_err(|_| error!(ProgramV04Error::KernelSeal))?;
     match k.agent(&agent_id) {
         Some(profile) if profile.active && k.is_seated(&agent_id) => {}
@@ -5699,6 +6034,7 @@ pub fn gov_action_from_account(account: &GovActionAccount) -> Result<GovAction> 
 }
 
 pub fn build_governance_approval_record(
+    registry: &AgentRegistry,
     kernel_state: &KernelState,
     transition_record: &TransitionRecord,
     seat: Pubkey,
@@ -5714,7 +6050,7 @@ pub fn build_governance_approval_record(
     if transition_record.stage != TransitionRecord::REGISTERED {
         return Err(error!(ProgramV04Error::WrongStage));
     }
-    let agent_id = resolve_agent_id(seat);
+    let agent_id = resolve_agent_id_mapped(registry, seat);
     let k = sealed_launch_kernel().map_err(|_| error!(ProgramV04Error::KernelSeal))?;
     match k.agent(&agent_id) {
         Some(profile) if profile.active && k.is_seated(&agent_id) => {}
@@ -5764,6 +6100,7 @@ pub fn note_governance_approval(transition_record: &mut TransitionRecord) -> Res
 /// `note_governance_approval` here, because this seat is already
 /// counted once in the bundle.
 pub fn revise_governance_approval_record(
+    registry: &AgentRegistry,
     kernel_state: &KernelState,
     transition_record: &TransitionRecord,
     approval_record: &mut GovApprovalRecord,
@@ -5776,7 +6113,7 @@ pub fn revise_governance_approval_record(
     if approval_record.seat != seat {
         return Err(error!(ProgramV04Error::RecordMismatch));
     }
-    let revised = build_governance_approval_record(
+    let revised = build_governance_approval_record(registry, 
         kernel_state,
         transition_record,
         seat,
@@ -6004,6 +6341,7 @@ pub fn check_gov_action_for_registration(
 /// seats approved refuses with `GovActionHashMismatch`, never
 /// with a silently substituted action. Pure.
 pub fn check_gov_action_for_commit(
+    registry: &AgentRegistry,
     account: &GovActionAccount,
     transition_record: &TransitionRecord,
     approval_records: &[GovApprovalRecord],
@@ -6018,7 +6356,7 @@ pub fn check_gov_action_for_commit(
     if gov_action_hash(&action)? != account.action_hash {
         return Err(error!(ProgramV04Error::GovActionHashMismatch));
     }
-    let _seats = gov_action_and_seats(&action, approval_records, transition_record.transition_id)?;
+    let _seats = gov_action_and_seats(registry, &action, approval_records, transition_record.transition_id)?;
     Ok(action)
 }
 
@@ -6140,6 +6478,23 @@ pub fn resolve_agent_id(payer: Pubkey) -> [u8; 32] {
     payer.to_bytes()
 }
 
+/// Mapped pubkey-to-agent resolution (enrollment slice, 2026-11-03):
+/// if `pubkey` occupies an `AgentRegistry` slot, it presents as
+/// that slot's launch-profile agent id; otherwise it resolves by
+/// identity (`resolve_agent_id`), exactly as before this slice.
+/// The fallback is what preserves every existing refusal for
+/// unenrolled keys: a real unenrolled pubkey's bytes match no
+/// profile identity, so the same gates refuse it for the same
+/// reasons. Every instruction whose code path resolves an agent id
+/// — from a signer or from a stored record — takes the registry as
+/// a required read-only account and resolves through this function.
+pub fn resolve_agent_id_mapped(registry: &AgentRegistry, pubkey: Pubkey) -> [u8; 32] {
+    match registry.agent_id_for(pubkey) {
+        Some(agent_id) => agent_id,
+        None => resolve_agent_id(pubkey),
+    }
+}
+
 /// Resolve a transition proposer: the signer's agent id must be a
 /// registered, active agent in the sealed launch profile. The Observer
 /// role holder is role-bearing but NOT a registered agent, so it is
@@ -6148,13 +6503,14 @@ pub fn resolve_agent_id(payer: Pubkey) -> [u8; 32] {
 /// The gate replays the sealed launch kernel (slice 7's constants), so it
 /// judges the pinned profile, not a caller-supplied roster.
 pub fn resolve_proposer(
+    registry: &AgentRegistry,
     kernel_state: &KernelState,
     payer: Pubkey,
 ) -> Result<[u8; 32]> {
     if !kernel_state.sealed {
         return Err(error!(ProgramV04Error::NotSealed));
     }
-    let agent_id = resolve_agent_id(payer);
+    let agent_id = resolve_agent_id_mapped(registry, payer);
     let k = sealed_launch_kernel().map_err(|_| error!(ProgramV04Error::KernelSeal))?;
     match k.agent(&agent_id) {
         Some(profile) if profile.active => Ok(agent_id),
@@ -6182,10 +6538,11 @@ pub fn resolve_proposer(
 /// replay time, remains the backstop. `resolve_proposer` itself is
 /// kept for callers that build no other kernel (host probe tests).
 pub fn resolve_proposer_on_kernel(
+    registry: &AgentRegistry,
     k: &LaunchKernelProgramEnv,
     payer: Pubkey,
 ) -> Result<[u8; 32]> {
-    let agent_id = resolve_agent_id(payer);
+    let agent_id = resolve_agent_id_mapped(registry, payer);
     match k.agent(&agent_id) {
         Some(profile) if profile.active => Ok(agent_id),
         _ => Err(error!(ProgramV04Error::UnknownProposer)),
@@ -6197,7 +6554,9 @@ pub fn resolve_proposer_on_kernel(
 /// profile, as in `resolve_proposer`), and the kernel's ingest window
 /// rules against the state's clock. Pure: a refused record leaves the
 /// state untouched, and the caller (instruction or test) owns persistence.
+#[allow(clippy::too_many_arguments)]
 pub fn build_observation_record(
+    registry: &AgentRegistry,
     kernel_state: &KernelState,
     observation_id: [u8; 32],
     timestamp: u64,
@@ -6209,7 +6568,7 @@ pub fn build_observation_record(
     if !kernel_state.sealed {
         return Err(error!(ProgramV04Error::NotSealed));
     }
-    let agent_id = resolve_agent_id(observer);
+    let agent_id = resolve_agent_id_mapped(registry, observer);
     let k = sealed_launch_kernel().map_err(|_| error!(ProgramV04Error::KernelSeal))?;
     if !k.has_role(&agent_id, Role::Observer) {
         return Err(error!(ProgramV04Error::NotObserver));
@@ -6239,6 +6598,7 @@ pub fn build_observation_record(
 /// overconfident observation all fail here, through the kernel, not
 /// through a program-side guess about them.
 pub fn replay_transition_from_records(
+    registry: &AgentRegistry,
     kernel_state: &KernelState,
     transition_record: &mut TransitionRecord,
     observation_record: &ObservationRecord,
@@ -6258,9 +6618,9 @@ pub fn replay_transition_from_records(
     if transition_record.observation_id != observation_record.observation_id {
         return Err(error!(ProgramV04Error::RecordMismatch));
     }
-    let observer_id = resolve_agent_id(observation_record.observer);
-    let mut k = kernel_at_head_from_entries(kernel_state, prior_entries)?;
-    let proposer = resolve_proposer_on_kernel(&k, transition_record.proposer)?;
+    let observer_id = resolve_agent_id_mapped(registry, observation_record.observer);
+    let mut k = kernel_at_head_from_entries(registry, kernel_state, prior_entries)?;
+    let proposer = resolve_proposer_on_kernel(registry, &k, transition_record.proposer)?;
     if !k.has_role(&observer_id, Role::Observer) {
         return Err(error!(ProgramV04Error::NotObserver));
     }
@@ -6321,6 +6681,7 @@ pub fn replay_transition_from_records(
 /// stage records only a proven evaluation. The relevant-groups
 /// derivation is slice 10's rule, reused here, not a kernel rule.
 pub fn evaluate_transition_from_records(
+    registry: &AgentRegistry,
     kernel_state: &KernelState,
     transition_record: &mut TransitionRecord,
     observation_record: &ObservationRecord,
@@ -6340,9 +6701,9 @@ pub fn evaluate_transition_from_records(
     if transition_record.observation_id != observation_record.observation_id {
         return Err(error!(ProgramV04Error::RecordMismatch));
     }
-    let observer_id = resolve_agent_id(observation_record.observer);
-    let mut k = kernel_at_head_from_entries(kernel_state, prior_entries)?;
-    let proposer = resolve_proposer_on_kernel(&k, transition_record.proposer)?;
+    let observer_id = resolve_agent_id_mapped(registry, observation_record.observer);
+    let mut k = kernel_at_head_from_entries(registry, kernel_state, prior_entries)?;
+    let proposer = resolve_proposer_on_kernel(registry, &k, transition_record.proposer)?;
     if !k.has_role(&observer_id, Role::Observer) {
         return Err(error!(ProgramV04Error::NotObserver));
     }
@@ -6410,6 +6771,7 @@ pub fn evaluate_transition_from_records(
 /// kernel's, not a persisted one (see module docs): this slice proves
 /// the eligibility gate and the stage advance, not field persistence.
 pub fn mark_eligible_from_records(
+    registry: &AgentRegistry,
     kernel_state: &mut KernelState,
     transition_record: &mut TransitionRecord,
     observation_record: &ObservationRecord,
@@ -6429,9 +6791,9 @@ pub fn mark_eligible_from_records(
     if transition_record.observation_id != observation_record.observation_id {
         return Err(error!(ProgramV04Error::RecordMismatch));
     }
-    let observer_id = resolve_agent_id(observation_record.observer);
-    let mut k = kernel_at_head_from_entries(kernel_state, prior_entries)?;
-    let proposer = resolve_proposer_on_kernel(&k, transition_record.proposer)?;
+    let observer_id = resolve_agent_id_mapped(registry, observation_record.observer);
+    let mut k = kernel_at_head_from_entries(registry, kernel_state, prior_entries)?;
+    let proposer = resolve_proposer_on_kernel(registry, &k, transition_record.proposer)?;
     if !k.has_role(&observer_id, Role::Observer) {
         return Err(error!(ProgramV04Error::NotObserver));
     }
@@ -6610,6 +6972,7 @@ pub fn signal_round(eligible_at: u64, consensus_deadline: u64, now: u64) -> u64 
 /// docs).
 #[allow(clippy::too_many_arguments)]
 pub fn submit_signal_from_records(
+    registry: &AgentRegistry,
     kernel_state: &KernelState,
     transition_record: &mut TransitionRecord,
     observation_record: &ObservationRecord,
@@ -6662,9 +7025,9 @@ pub fn submit_signal_from_records(
             return Err(error!(ProgramV04Error::RecordMismatch));
         }
     }
-    let observer_id = resolve_agent_id(observation_record.observer);
-    let mut k = kernel_at_head_from_entries(kernel_state, prior_entries)?;
-    let proposer = resolve_proposer_on_kernel(&k, transition_record.proposer)?;
+    let observer_id = resolve_agent_id_mapped(registry, observation_record.observer);
+    let mut k = kernel_at_head_from_entries(registry, kernel_state, prior_entries)?;
+    let proposer = resolve_proposer_on_kernel(registry, &k, transition_record.proposer)?;
     if !k.has_role(&observer_id, Role::Observer) {
         return Err(error!(ProgramV04Error::NotObserver));
     }
@@ -6716,7 +7079,7 @@ pub fn submit_signal_from_records(
             None
         };
         k.submit_round_signal(
-            &prior.agent.to_bytes(),
+            &resolve_agent_id_mapped(registry, prior.agent),
             &transition_record.transition_id,
             Amount::from_raw(prior.raw),
             support,
@@ -6724,7 +7087,7 @@ pub fn submit_signal_from_records(
         )
         .map_err(|_| error!(ProgramV04Error::SignalFailed))?;
     }
-    let agent_id = resolve_agent_id(agent);
+    let agent_id = resolve_agent_id_mapped(registry, agent);
     let support = if has_support {
         Some(Amount::from_raw(support_raw))
     } else {
@@ -6794,6 +7157,7 @@ pub fn submit_signal_from_records(
 /// sibling transitions before select can claim the full comparison
 /// (see module docs).
 pub fn select_candidate_from_records(
+    registry: &AgentRegistry,
     kernel_state: &KernelState,
     transition_record: &mut TransitionRecord,
     observation_record: &ObservationRecord,
@@ -6838,7 +7202,7 @@ pub fn select_candidate_from_records(
     {
         let mut seen: BTreeSet<([u8; 32], u64)> = BTreeSet::new();
         for prior in prior_signals {
-            if !seen.insert((prior.agent.to_bytes(), prior.round)) {
+            if !seen.insert((resolve_agent_id_mapped(registry, prior.agent), prior.round)) {
                 return Err(error!(ProgramV04Error::SelectFailed));
             }
         }
@@ -6859,9 +7223,9 @@ pub fn select_candidate_from_records(
     {
         return Err(error!(ProgramV04Error::SelectFailed));
     }
-    let observer_id = resolve_agent_id(observation_record.observer);
-    let mut k = kernel_at_head_from_entries(kernel_state, prior_entries)?;
-    let proposer = resolve_proposer_on_kernel(&k, transition_record.proposer)?;
+    let observer_id = resolve_agent_id_mapped(registry, observation_record.observer);
+    let mut k = kernel_at_head_from_entries(registry, kernel_state, prior_entries)?;
+    let proposer = resolve_proposer_on_kernel(registry, &k, transition_record.proposer)?;
     if !k.has_role(&observer_id, Role::Observer) {
         return Err(error!(ProgramV04Error::NotObserver));
     }
@@ -6913,7 +7277,7 @@ pub fn select_candidate_from_records(
             None
         };
         k.submit_round_signal(
-            &prior.agent.to_bytes(),
+            &resolve_agent_id_mapped(registry, prior.agent),
             &transition_record.transition_id,
             Amount::from_raw(prior.raw),
             support,
@@ -6977,6 +7341,7 @@ pub fn select_candidate_from_records(
 /// carries its plan map across a re-plan unchanged, and this
 /// helper does the same — reconcile judges the carried set.
 pub fn open_planning_from_records(
+    registry: &AgentRegistry,
     kernel_state: &KernelState,
     transition_record: &mut TransitionRecord,
     observation_record: &ObservationRecord,
@@ -6994,7 +7359,7 @@ pub fn open_planning_from_records(
     }
     let is_replan = transition_record.stage == TransitionRecord::BLOCKED;
     if is_replan {
-        let proposer_id = resolve_agent_id(transition_record.proposer);
+        let proposer_id = resolve_agent_id_mapped(registry, transition_record.proposer);
         let seated = sealed_launch_kernel()
             .map(|k| k.is_seated(&caller))
             .map_err(|_| error!(ProgramV04Error::PlanningFailed))?;
@@ -7037,14 +7402,14 @@ pub fn open_planning_from_records(
     {
         let mut seen: BTreeSet<([u8; 32], u64)> = BTreeSet::new();
         for prior in prior_signals {
-            if !seen.insert((prior.agent.to_bytes(), prior.round)) {
+            if !seen.insert((resolve_agent_id_mapped(registry, prior.agent), prior.round)) {
                 return Err(error!(ProgramV04Error::PlanningFailed));
             }
         }
     }
-    let observer_id = resolve_agent_id(observation_record.observer);
-    let mut k = kernel_at_head_from_entries(kernel_state, prior_entries)?;
-    let proposer = resolve_proposer_on_kernel(&k, transition_record.proposer)
+    let observer_id = resolve_agent_id_mapped(registry, observation_record.observer);
+    let mut k = kernel_at_head_from_entries(registry, kernel_state, prior_entries)?;
+    let proposer = resolve_proposer_on_kernel(registry, &k, transition_record.proposer)
         .map_err(|_| error!(ProgramV04Error::PlanningFailed))?;
     if !k.has_role(&observer_id, Role::Observer) {
         return Err(error!(ProgramV04Error::NotObserver));
@@ -7097,7 +7462,7 @@ pub fn open_planning_from_records(
             None
         };
         k.submit_round_signal(
-            &prior.agent.to_bytes(),
+            &resolve_agent_id_mapped(registry, prior.agent),
             &transition_record.transition_id,
             Amount::from_raw(prior.raw),
             support,
@@ -7535,6 +7900,7 @@ pub fn split_gov_outcome_tail(
 /// replay.
 #[allow(clippy::too_many_arguments)]
 pub fn submit_plan_from_records(
+    registry: &AgentRegistry,
     kernel_state: &KernelState,
     transition_record: &mut TransitionRecord,
     observation_record: &ObservationRecord,
@@ -7592,7 +7958,7 @@ pub fn submit_plan_from_records(
     {
         let mut seen: BTreeSet<([u8; 32], u64)> = BTreeSet::new();
         for prior in prior_signals {
-            if !seen.insert((prior.agent.to_bytes(), prior.round)) {
+            if !seen.insert((resolve_agent_id_mapped(registry, prior.agent), prior.round)) {
                 return Err(error!(ProgramV04Error::PlanFailed));
             }
         }
@@ -7626,9 +7992,9 @@ pub fn submit_plan_from_records(
             return Err(error!(ProgramV04Error::PlanFailed));
         }
     }
-    let observer_id = resolve_agent_id(observation_record.observer);
-    let mut k = kernel_at_head_from_entries(kernel_state, prior_entries)?;
-    let proposer = resolve_proposer_on_kernel(&k, transition_record.proposer)
+    let observer_id = resolve_agent_id_mapped(registry, observation_record.observer);
+    let mut k = kernel_at_head_from_entries(registry, kernel_state, prior_entries)?;
+    let proposer = resolve_proposer_on_kernel(registry, &k, transition_record.proposer)
         .map_err(|_| error!(ProgramV04Error::PlanFailed))?;
     if !k.has_role(&observer_id, Role::Observer) {
         return Err(error!(ProgramV04Error::NotObserver));
@@ -7681,7 +8047,7 @@ pub fn submit_plan_from_records(
             None
         };
         k.submit_round_signal(
-            &prior.agent.to_bytes(),
+            &resolve_agent_id_mapped(registry, prior.agent),
             &transition_record.transition_id,
             Amount::from_raw(prior.raw),
             support,
@@ -7799,7 +8165,9 @@ pub fn submit_plan_from_records(
 /// parent gate (`ParentMismatch`), and the linkage gates
 /// (`RecordMismatch`, `NotObserver`, `UnknownProposer`),
 /// which keep their own errors.
+#[allow(clippy::too_many_arguments)]
 pub fn reconcile_plans_governance_from_records(
+    registry: &AgentRegistry,
     kernel_state: &KernelState,
     transition_record: &mut TransitionRecord,
     observation_record: &ObservationRecord,
@@ -7858,7 +8226,7 @@ pub fn reconcile_plans_governance_from_records(
     {
         let mut seen: BTreeSet<([u8; 32], u64)> = BTreeSet::new();
         for prior in prior_signals {
-            if !seen.insert((prior.agent.to_bytes(), prior.round)) {
+            if !seen.insert((resolve_agent_id_mapped(registry, prior.agent), prior.round)) {
                 return Err(error!(ProgramV04Error::ReconcileFailed));
             }
         }
@@ -7881,10 +8249,10 @@ pub fn reconcile_plans_governance_from_records(
         }
     }
     let seats =
-        gov_action_and_seats(action, approval_records, transition_record.transition_id)?;
-    let observer_id = resolve_agent_id(observation_record.observer);
-    let mut k = kernel_at_head_from_entries(kernel_state, prior_entries)?;
-    let proposer = resolve_proposer_on_kernel(&k, transition_record.proposer)
+        gov_action_and_seats(registry, action, approval_records, transition_record.transition_id)?;
+    let observer_id = resolve_agent_id_mapped(registry, observation_record.observer);
+    let mut k = kernel_at_head_from_entries(registry, kernel_state, prior_entries)?;
+    let proposer = resolve_proposer_on_kernel(registry, &k, transition_record.proposer)
         .map_err(|_| error!(ProgramV04Error::ReconcileFailed))?;
     if !k.has_role(&observer_id, Role::Observer) {
         return Err(error!(ProgramV04Error::NotObserver));
@@ -7941,7 +8309,7 @@ pub fn reconcile_plans_governance_from_records(
             None
         };
         k.submit_round_signal(
-            &prior.agent.to_bytes(),
+            &resolve_agent_id_mapped(registry, prior.agent),
             &transition_record.transition_id,
             Amount::from_raw(prior.raw),
             support,
@@ -8076,7 +8444,9 @@ pub fn reconcile_plans_governance_from_records(
 /// as on the ordinary path — except the seal / stage / parent /
 /// linkage / type gates, which keep their own errors, as in
 /// slice 46.
+#[allow(clippy::too_many_arguments)]
 pub fn declare_transition_governance_from_records(
+    registry: &AgentRegistry,
     kernel_state: &KernelState,
     transition_record: &mut TransitionRecord,
     observation_record: &ObservationRecord,
@@ -8132,7 +8502,7 @@ pub fn declare_transition_governance_from_records(
     {
         let mut seen: BTreeSet<([u8; 32], u64)> = BTreeSet::new();
         for prior in prior_signals {
-            if !seen.insert((prior.agent.to_bytes(), prior.round)) {
+            if !seen.insert((resolve_agent_id_mapped(registry, prior.agent), prior.round)) {
                 return Err(error!(ProgramV04Error::DeclareFailed));
             }
         }
@@ -8155,10 +8525,10 @@ pub fn declare_transition_governance_from_records(
         }
     }
     let seats =
-        gov_action_and_seats(action, approval_records, transition_record.transition_id)?;
-    let observer_id = resolve_agent_id(observation_record.observer);
-    let mut k = kernel_at_head_from_entries(kernel_state, prior_entries)?;
-    let proposer = resolve_proposer_on_kernel(&k, transition_record.proposer)
+        gov_action_and_seats(registry, action, approval_records, transition_record.transition_id)?;
+    let observer_id = resolve_agent_id_mapped(registry, observation_record.observer);
+    let mut k = kernel_at_head_from_entries(registry, kernel_state, prior_entries)?;
+    let proposer = resolve_proposer_on_kernel(registry, &k, transition_record.proposer)
         .map_err(|_| error!(ProgramV04Error::DeclareFailed))?;
     if !k.has_role(&observer_id, Role::Observer) {
         return Err(error!(ProgramV04Error::NotObserver));
@@ -8215,7 +8585,7 @@ pub fn declare_transition_governance_from_records(
             None
         };
         k.submit_round_signal(
-            &prior.agent.to_bytes(),
+            &resolve_agent_id_mapped(registry, prior.agent),
             &transition_record.transition_id,
             Amount::from_raw(prior.raw),
             support,
@@ -8361,7 +8731,9 @@ pub fn declare_transition_governance_from_records(
 /// `ValidateFailed`, exactly as on the ordinary path — except
 /// the seal / stage / parent / linkage / type gates, which keep
 /// their own errors, as in slice 45.
+#[allow(clippy::too_many_arguments)]
 pub fn validate_transition_governance_from_records(
+    registry: &AgentRegistry,
     kernel_state: &KernelState,
     transition_record: &mut TransitionRecord,
     observation_record: &ObservationRecord,
@@ -8419,7 +8791,7 @@ pub fn validate_transition_governance_from_records(
     {
         let mut seen: BTreeSet<([u8; 32], u64)> = BTreeSet::new();
         for prior in prior_signals {
-            if !seen.insert((prior.agent.to_bytes(), prior.round)) {
+            if !seen.insert((resolve_agent_id_mapped(registry, prior.agent), prior.round)) {
                 return Err(error!(ProgramV04Error::ValidateFailed));
             }
         }
@@ -8442,10 +8814,10 @@ pub fn validate_transition_governance_from_records(
         }
     }
     let seats =
-        gov_action_and_seats(action, approval_records, transition_record.transition_id)?;
-    let observer_id = resolve_agent_id(observation_record.observer);
-    let mut k = kernel_at_head_from_entries(kernel_state, prior_entries)?;
-    let proposer = resolve_proposer_on_kernel(&k, transition_record.proposer)
+        gov_action_and_seats(registry, action, approval_records, transition_record.transition_id)?;
+    let observer_id = resolve_agent_id_mapped(registry, observation_record.observer);
+    let mut k = kernel_at_head_from_entries(registry, kernel_state, prior_entries)?;
+    let proposer = resolve_proposer_on_kernel(registry, &k, transition_record.proposer)
         .map_err(|_| error!(ProgramV04Error::ValidateFailed))?;
     if !k.has_role(&observer_id, Role::Observer) {
         return Err(error!(ProgramV04Error::NotObserver));
@@ -8502,7 +8874,7 @@ pub fn validate_transition_governance_from_records(
             None
         };
         k.submit_round_signal(
-            &prior.agent.to_bytes(),
+            &resolve_agent_id_mapped(registry, prior.agent),
             &transition_record.transition_id,
             Amount::from_raw(prior.raw),
             support,
@@ -8652,6 +9024,7 @@ pub fn validate_transition_governance_from_records(
 /// as on the ordinary path.
 #[allow(clippy::too_many_arguments)]
 pub fn submit_plan_governance_from_records(
+    registry: &AgentRegistry,
     kernel_state: &KernelState,
     transition_record: &mut TransitionRecord,
     observation_record: &ObservationRecord,
@@ -8717,7 +9090,7 @@ pub fn submit_plan_governance_from_records(
     {
         let mut seen: BTreeSet<([u8; 32], u64)> = BTreeSet::new();
         for prior in prior_signals {
-            if !seen.insert((prior.agent.to_bytes(), prior.round)) {
+            if !seen.insert((resolve_agent_id_mapped(registry, prior.agent), prior.round)) {
                 return Err(error!(ProgramV04Error::PlanFailed));
             }
         }
@@ -8752,10 +9125,10 @@ pub fn submit_plan_governance_from_records(
         }
     }
     let seats =
-        gov_action_and_seats(action, approval_records, transition_record.transition_id)?;
-    let observer_id = resolve_agent_id(observation_record.observer);
-    let mut k = kernel_at_head_from_entries(kernel_state, prior_entries)?;
-    let proposer = resolve_proposer_on_kernel(&k, transition_record.proposer)
+        gov_action_and_seats(registry, action, approval_records, transition_record.transition_id)?;
+    let observer_id = resolve_agent_id_mapped(registry, observation_record.observer);
+    let mut k = kernel_at_head_from_entries(registry, kernel_state, prior_entries)?;
+    let proposer = resolve_proposer_on_kernel(registry, &k, transition_record.proposer)
         .map_err(|_| error!(ProgramV04Error::PlanFailed))?;
     if !k.has_role(&observer_id, Role::Observer) {
         return Err(error!(ProgramV04Error::NotObserver));
@@ -8812,7 +9185,7 @@ pub fn submit_plan_governance_from_records(
             None
         };
         k.submit_round_signal(
-            &prior.agent.to_bytes(),
+            &resolve_agent_id_mapped(registry, prior.agent),
             &transition_record.transition_id,
             Amount::from_raw(prior.raw),
             support,
@@ -8936,6 +9309,7 @@ pub fn submit_plan_governance_from_records(
 /// (`not_expired` at the state's clock), so no legitimate reconcile
 /// is lost to the replay.
 pub fn reconcile_plans_from_records(
+    registry: &AgentRegistry,
     kernel_state: &KernelState,
     transition_record: &mut TransitionRecord,
     observation_record: &ObservationRecord,
@@ -8986,7 +9360,7 @@ pub fn reconcile_plans_from_records(
     {
         let mut seen: BTreeSet<([u8; 32], u64)> = BTreeSet::new();
         for prior in prior_signals {
-            if !seen.insert((prior.agent.to_bytes(), prior.round)) {
+            if !seen.insert((resolve_agent_id_mapped(registry, prior.agent), prior.round)) {
                 return Err(error!(ProgramV04Error::ReconcileFailed));
             }
         }
@@ -9008,9 +9382,9 @@ pub fn reconcile_plans_from_records(
             }
         }
     }
-    let observer_id = resolve_agent_id(observation_record.observer);
-    let mut k = kernel_at_head_from_entries(kernel_state, prior_entries)?;
-    let proposer = resolve_proposer_on_kernel(&k, transition_record.proposer)
+    let observer_id = resolve_agent_id_mapped(registry, observation_record.observer);
+    let mut k = kernel_at_head_from_entries(registry, kernel_state, prior_entries)?;
+    let proposer = resolve_proposer_on_kernel(registry, &k, transition_record.proposer)
         .map_err(|_| error!(ProgramV04Error::ReconcileFailed))?;
     if !k.has_role(&observer_id, Role::Observer) {
         return Err(error!(ProgramV04Error::NotObserver));
@@ -9063,7 +9437,7 @@ pub fn reconcile_plans_from_records(
             None
         };
         k.submit_round_signal(
-            &prior.agent.to_bytes(),
+            &resolve_agent_id_mapped(registry, prior.agent),
             &transition_record.transition_id,
             Amount::from_raw(prior.raw),
             support,
@@ -9200,6 +9574,7 @@ pub fn reconcile_plans_from_records(
 /// and the linkage gates (`RecordMismatch`, `NotObserver`,
 /// `UnknownProposer`), which keep their own errors.
 pub fn validate_transition_from_records(
+    registry: &AgentRegistry,
     kernel_state: &KernelState,
     transition_record: &mut TransitionRecord,
     observation_record: &ObservationRecord,
@@ -9249,7 +9624,7 @@ pub fn validate_transition_from_records(
     {
         let mut seen: BTreeSet<([u8; 32], u64)> = BTreeSet::new();
         for prior in prior_signals {
-            if !seen.insert((prior.agent.to_bytes(), prior.round)) {
+            if !seen.insert((resolve_agent_id_mapped(registry, prior.agent), prior.round)) {
                 return Err(error!(ProgramV04Error::ValidateFailed));
             }
         }
@@ -9271,9 +9646,9 @@ pub fn validate_transition_from_records(
             }
         }
     }
-    let observer_id = resolve_agent_id(observation_record.observer);
-    let mut k = kernel_at_head_from_entries(kernel_state, prior_entries)?;
-    let proposer = resolve_proposer_on_kernel(&k, transition_record.proposer)
+    let observer_id = resolve_agent_id_mapped(registry, observation_record.observer);
+    let mut k = kernel_at_head_from_entries(registry, kernel_state, prior_entries)?;
+    let proposer = resolve_proposer_on_kernel(registry, &k, transition_record.proposer)
         .map_err(|_| error!(ProgramV04Error::ValidateFailed))?;
     if !k.has_role(&observer_id, Role::Observer) {
         return Err(error!(ProgramV04Error::NotObserver));
@@ -9326,7 +9701,7 @@ pub fn validate_transition_from_records(
             None
         };
         k.submit_round_signal(
-            &prior.agent.to_bytes(),
+            &resolve_agent_id_mapped(registry, prior.agent),
             &transition_record.transition_id,
             Amount::from_raw(prior.raw),
             support,
@@ -9469,6 +9844,7 @@ pub fn validate_transition_from_records(
 /// `declare_commit` is permissionless, so no proposer, seat, or
 /// agent gate applies here.
 pub fn declare_transition_from_records(
+    registry: &AgentRegistry,
     kernel_state: &KernelState,
     transition_record: &mut TransitionRecord,
     observation_record: &ObservationRecord,
@@ -9516,7 +9892,7 @@ pub fn declare_transition_from_records(
     {
         let mut seen: BTreeSet<([u8; 32], u64)> = BTreeSet::new();
         for prior in prior_signals {
-            if !seen.insert((prior.agent.to_bytes(), prior.round)) {
+            if !seen.insert((resolve_agent_id_mapped(registry, prior.agent), prior.round)) {
                 return Err(error!(ProgramV04Error::DeclareFailed));
             }
         }
@@ -9538,9 +9914,9 @@ pub fn declare_transition_from_records(
             }
         }
     }
-    let observer_id = resolve_agent_id(observation_record.observer);
-    let mut k = kernel_at_head_from_entries(kernel_state, prior_entries)?;
-    let proposer = resolve_proposer_on_kernel(&k, transition_record.proposer)
+    let observer_id = resolve_agent_id_mapped(registry, observation_record.observer);
+    let mut k = kernel_at_head_from_entries(registry, kernel_state, prior_entries)?;
+    let proposer = resolve_proposer_on_kernel(registry, &k, transition_record.proposer)
         .map_err(|_| error!(ProgramV04Error::DeclareFailed))?;
     if !k.has_role(&observer_id, Role::Observer) {
         return Err(error!(ProgramV04Error::NotObserver));
@@ -9593,7 +9969,7 @@ pub fn declare_transition_from_records(
             None
         };
         k.submit_round_signal(
-            &prior.agent.to_bytes(),
+            &resolve_agent_id_mapped(registry, prior.agent),
             &transition_record.transition_id,
             Amount::from_raw(prior.raw),
             support,
@@ -9741,6 +10117,7 @@ pub fn declare_transition_from_records(
 /// is a fee payer only: kernel `commit` is permissionless,
 /// so no proposer, seat, or agent gate applies here.
 pub fn commit_transition_from_records(
+    registry: &AgentRegistry,
     kernel_state: &mut KernelState,
     transition_record: &mut TransitionRecord,
     observation_record: &ObservationRecord,
@@ -9791,7 +10168,7 @@ pub fn commit_transition_from_records(
     {
         let mut seen: BTreeSet<([u8; 32], u64)> = BTreeSet::new();
         for prior in prior_signals {
-            if !seen.insert((prior.agent.to_bytes(), prior.round)) {
+            if !seen.insert((resolve_agent_id_mapped(registry, prior.agent), prior.round)) {
                 return Err(error!(ProgramV04Error::CommitFailed));
             }
         }
@@ -9813,9 +10190,9 @@ pub fn commit_transition_from_records(
             }
         }
     }
-    let observer_id = resolve_agent_id(observation_record.observer);
-    let mut k = kernel_at_head_from_entries(kernel_state, prior_entries)?;
-    let proposer = resolve_proposer_on_kernel(&k, transition_record.proposer)
+    let observer_id = resolve_agent_id_mapped(registry, observation_record.observer);
+    let mut k = kernel_at_head_from_entries(registry, kernel_state, prior_entries)?;
+    let proposer = resolve_proposer_on_kernel(registry, &k, transition_record.proposer)
         .map_err(|_| error!(ProgramV04Error::CommitFailed))?;
     if !k.has_role(&observer_id, Role::Observer) {
         return Err(error!(ProgramV04Error::NotObserver));
@@ -9868,7 +10245,7 @@ pub fn commit_transition_from_records(
             None
         };
         k.submit_round_signal(
-            &prior.agent.to_bytes(),
+            &resolve_agent_id_mapped(registry, prior.agent),
             &transition_record.transition_id,
             Amount::from_raw(prior.raw),
             support,
@@ -10083,6 +10460,7 @@ pub fn commit_transition_from_records(
 /// the next slice.
 #[allow(clippy::too_many_arguments)]
 pub fn settle_transition_from_records(
+    registry: &AgentRegistry,
     kernel_state: &KernelState,
     transition_record: &mut TransitionRecord,
     observation_record: &ObservationRecord,
@@ -10129,7 +10507,7 @@ pub fn settle_transition_from_records(
     {
         let mut seen: BTreeSet<([u8; 32], u64)> = BTreeSet::new();
         for prior in prior_signals {
-            if !seen.insert((prior.agent.to_bytes(), prior.round)) {
+            if !seen.insert((resolve_agent_id_mapped(registry, prior.agent), prior.round)) {
                 return Err(error!(ProgramV04Error::SettleFailed));
             }
         }
@@ -10151,7 +10529,7 @@ pub fn settle_transition_from_records(
             }
         }
     }
-    let observer_id = resolve_agent_id(observation_record.observer);
+    let observer_id = resolve_agent_id_mapped(registry, observation_record.observer);
     // The parent state: the program state as it stood before
     // this commit, head-wise. The earlier chain must land at
     // the target's parent under the slice-29 discipline; the
@@ -10167,8 +10545,8 @@ pub fn settle_transition_from_records(
         bump: kernel_state.bump,
         committed_claims: kernel_state.committed_claims,
     };
-    let mut k = kernel_at_head_from_entries(&parent_state, prior_entries)?;
-    let proposer = resolve_proposer_on_kernel(&k, transition_record.proposer)
+    let mut k = kernel_at_head_from_entries(registry, &parent_state, prior_entries)?;
+    let proposer = resolve_proposer_on_kernel(registry, &k, transition_record.proposer)
         .map_err(|_| error!(ProgramV04Error::SettleFailed))?;
     if !k.has_role(&observer_id, Role::Observer) {
         return Err(error!(ProgramV04Error::NotObserver));
@@ -10221,7 +10599,7 @@ pub fn settle_transition_from_records(
             None
         };
         k.submit_round_signal(
-            &prior.agent.to_bytes(),
+            &resolve_agent_id_mapped(registry, prior.agent),
             &transition_record.transition_id,
             Amount::from_raw(prior.raw),
             support,
@@ -10421,6 +10799,7 @@ pub fn settle_transition_from_records(
 /// instead of taking it as a caller argument.
 #[allow(clippy::too_many_arguments)]
 pub fn settle_governance_transition_from_records(
+    registry: &AgentRegistry,
     kernel_state: &KernelState,
     transition_record: &mut TransitionRecord,
     observation_record: &ObservationRecord,
@@ -10469,7 +10848,7 @@ pub fn settle_governance_transition_from_records(
     {
         let mut seen: BTreeSet<([u8; 32], u64)> = BTreeSet::new();
         for prior in prior_signals {
-            if !seen.insert((prior.agent.to_bytes(), prior.round)) {
+            if !seen.insert((resolve_agent_id_mapped(registry, prior.agent), prior.round)) {
                 return Err(error!(ProgramV04Error::GovernanceSettleFailed));
             }
         }
@@ -10491,7 +10870,7 @@ pub fn settle_governance_transition_from_records(
             }
         }
     }
-    let observer_id = resolve_agent_id(observation_record.observer);
+    let observer_id = resolve_agent_id_mapped(registry, observation_record.observer);
     // The parent state: the program state as it stood before
     // this commit, head-wise — slice 54's build, unchanged.
     let parent_state = KernelState {
@@ -10505,8 +10884,8 @@ pub fn settle_governance_transition_from_records(
         bump: kernel_state.bump,
         committed_claims: kernel_state.committed_claims,
     };
-    let mut k = kernel_at_head_from_entries(&parent_state, prior_entries)?;
-    let proposer = resolve_proposer_on_kernel(&k, transition_record.proposer)
+    let mut k = kernel_at_head_from_entries(registry, &parent_state, prior_entries)?;
+    let proposer = resolve_proposer_on_kernel(registry, &k, transition_record.proposer)
         .map_err(|_| error!(ProgramV04Error::GovernanceSettleFailed))?;
     if !k.has_role(&observer_id, Role::Observer) {
         return Err(error!(ProgramV04Error::NotObserver));
@@ -10567,7 +10946,7 @@ pub fn settle_governance_transition_from_records(
             None
         };
         k.submit_round_signal(
-            &prior.agent.to_bytes(),
+            &resolve_agent_id_mapped(registry, prior.agent),
             &transition_record.transition_id,
             Amount::from_raw(prior.raw),
             support,
@@ -10743,6 +11122,7 @@ pub fn settle_governance_transition_from_records(
 /// as in slice 27.
 #[allow(clippy::too_many_arguments)]
 pub fn commit_governance_from_records(
+    registry: &AgentRegistry,
     kernel_state: &mut KernelState,
     transition_record: &mut TransitionRecord,
     observation_record: &ObservationRecord,
@@ -10795,7 +11175,7 @@ pub fn commit_governance_from_records(
     {
         let mut seen: BTreeSet<([u8; 32], u64)> = BTreeSet::new();
         for prior in prior_signals {
-            if !seen.insert((prior.agent.to_bytes(), prior.round)) {
+            if !seen.insert((resolve_agent_id_mapped(registry, prior.agent), prior.round)) {
                 return Err(error!(ProgramV04Error::GovernanceCommitFailed));
             }
         }
@@ -10817,9 +11197,9 @@ pub fn commit_governance_from_records(
             }
         }
     }
-    let observer_id = resolve_agent_id(observation_record.observer);
-    let mut k = kernel_at_head_from_entries(kernel_state, prior_entries)?;
-    let proposer = resolve_proposer_on_kernel(&k, transition_record.proposer)
+    let observer_id = resolve_agent_id_mapped(registry, observation_record.observer);
+    let mut k = kernel_at_head_from_entries(registry, kernel_state, prior_entries)?;
+    let proposer = resolve_proposer_on_kernel(registry, &k, transition_record.proposer)
         .map_err(|_| error!(ProgramV04Error::GovernanceCommitFailed))?;
     if !k.has_role(&observer_id, Role::Observer) {
         return Err(error!(ProgramV04Error::NotObserver));
@@ -10881,7 +11261,7 @@ pub fn commit_governance_from_records(
             None
         };
         k.submit_round_signal(
-            &prior.agent.to_bytes(),
+            &resolve_agent_id_mapped(registry, prior.agent),
             &transition_record.transition_id,
             Amount::from_raw(prior.raw),
             support,
@@ -11098,7 +11478,9 @@ pub fn split_gov_commit_tail(
 /// head, or refuses with the record standing `DECLARED`. Pure
 /// except for the record stage and the head move, exactly as
 /// the slice-28 helper is: a refusal writes neither.
+#[allow(clippy::too_many_arguments)]
 pub fn commit_governance_from_stored(
+    registry: &AgentRegistry,
     kernel_state: &mut KernelState,
     transition_record: &mut TransitionRecord,
     observation_record: &ObservationRecord,
@@ -11112,8 +11494,8 @@ pub fn commit_governance_from_stored(
         return Err(error!(ProgramV04Error::RecordMismatch));
     }
     let seats =
-        gov_action_and_seats(action, approval_records, transition_record.transition_id)?;
-    commit_governance_from_records(
+        gov_action_and_seats(registry, action, approval_records, transition_record.transition_id)?;
+    commit_governance_from_records(registry, 
         kernel_state,
         transition_record,
         observation_record,
@@ -11142,6 +11524,7 @@ pub fn commit_governance_from_stored(
 /// sealed head and the slice-27 ledger stand untouched.
 #[allow(clippy::too_many_arguments)]
 pub fn settle_governance_transition_from_stored(
+    registry: &AgentRegistry,
     kernel_state: &KernelState,
     transition_record: &mut TransitionRecord,
     observation_record: &ObservationRecord,
@@ -11156,8 +11539,8 @@ pub fn settle_governance_transition_from_stored(
         return Err(error!(ProgramV04Error::RecordMismatch));
     }
     let seats =
-        gov_action_and_seats(action, approval_records, transition_record.transition_id)?;
-    settle_governance_transition_from_records(
+        gov_action_and_seats(registry, action, approval_records, transition_record.transition_id)?;
+    settle_governance_transition_from_records(registry, 
         kernel_state,
         transition_record,
         observation_record,
@@ -11230,6 +11613,7 @@ pub fn settle_governance_transition_from_stored(
 /// setter — see that function's docs).
 #[allow(clippy::too_many_arguments)]
 pub fn record_outcome_from_records(
+    registry: &AgentRegistry,
     kernel_state: &KernelState,
     transition_record: &mut TransitionRecord,
     observation_record: &ObservationRecord,
@@ -11255,7 +11639,7 @@ pub fn record_outcome_from_records(
     if transition_record.planning_deadline == 0 {
         return Err(error!(ProgramV04Error::OutcomeFailed));
     }
-    if recorder.to_bytes() != RECORDER {
+    if resolve_agent_id_mapped(registry, recorder) != RECORDER {
         return Err(error!(ProgramV04Error::NotRecorder));
     }
     let genesis =
@@ -11282,7 +11666,7 @@ pub fn record_outcome_from_records(
     {
         let mut seen: BTreeSet<([u8; 32], u64)> = BTreeSet::new();
         for prior in prior_signals {
-            if !seen.insert((prior.agent.to_bytes(), prior.round)) {
+            if !seen.insert((resolve_agent_id_mapped(registry, prior.agent), prior.round)) {
                 return Err(error!(ProgramV04Error::OutcomeFailed));
             }
         }
@@ -11340,7 +11724,7 @@ pub fn record_outcome_from_records(
         compatible: transition_record.compatible,
         bump: transition_record.bump,
     };
-    let life = settle_transition_from_records(
+    let life = settle_transition_from_records(registry, 
         &replay_state,
         &mut reproof,
         observation_record,
@@ -11413,6 +11797,7 @@ pub fn record_outcome_from_records(
 /// setter — see that function's docs).
 #[allow(clippy::too_many_arguments)]
 pub fn record_outcome_governance_from_records(
+    registry: &AgentRegistry,
     kernel_state: &KernelState,
     transition_record: &mut TransitionRecord,
     observation_record: &ObservationRecord,
@@ -11444,8 +11829,8 @@ pub fn record_outcome_governance_from_records(
         return Err(error!(ProgramV04Error::RecordMismatch));
     }
     let seats =
-        gov_action_and_seats(action, approval_records, transition_record.transition_id)?;
-    if recorder.to_bytes() != RECORDER {
+        gov_action_and_seats(registry, action, approval_records, transition_record.transition_id)?;
+    if resolve_agent_id_mapped(registry, recorder) != RECORDER {
         return Err(error!(ProgramV04Error::NotRecorder));
     }
     let genesis =
@@ -11472,7 +11857,7 @@ pub fn record_outcome_governance_from_records(
     {
         let mut seen: BTreeSet<([u8; 32], u64)> = BTreeSet::new();
         for prior in prior_signals {
-            if !seen.insert((prior.agent.to_bytes(), prior.round)) {
+            if !seen.insert((resolve_agent_id_mapped(registry, prior.agent), prior.round)) {
                 return Err(error!(ProgramV04Error::OutcomeFailed));
             }
         }
@@ -11530,7 +11915,7 @@ pub fn record_outcome_governance_from_records(
         compatible: transition_record.compatible,
         bump: transition_record.bump,
     };
-    let life = settle_governance_transition_from_records(
+    let life = settle_governance_transition_from_records(registry, 
         &replay_state,
         &mut reproof,
         observation_record,
@@ -11774,6 +12159,7 @@ pub fn split_gov_plan_tail(
 /// the stored chain — the same proof-then-reproof shape the
 /// ordinary stages use.
 pub fn replay_governance_from_records(
+    registry: &AgentRegistry,
     kernel_state: &KernelState,
     transition_record: &mut TransitionRecord,
     observation_record: &ObservationRecord,
@@ -11802,10 +12188,10 @@ pub fn replay_governance_from_records(
         return Err(error!(ProgramV04Error::RecordMismatch));
     }
     let seats =
-        gov_action_and_seats(action, approval_records, transition_record.transition_id)?;
-    let observer_id = resolve_agent_id(observation_record.observer);
-    let mut k = kernel_at_head_from_entries(kernel_state, prior_entries)?;
-    let proposer = resolve_proposer_on_kernel(&k, transition_record.proposer)?;
+        gov_action_and_seats(registry, action, approval_records, transition_record.transition_id)?;
+    let observer_id = resolve_agent_id_mapped(registry, observation_record.observer);
+    let mut k = kernel_at_head_from_entries(registry, kernel_state, prior_entries)?;
+    let proposer = resolve_proposer_on_kernel(registry, &k, transition_record.proposer)?;
     if !k.has_role(&observer_id, Role::Observer) {
         return Err(error!(ProgramV04Error::NotObserver));
     }
@@ -11875,6 +12261,7 @@ pub fn replay_governance_from_records(
 /// adds required constraints would make the `Rejected` arm
 /// reachable here without any code change.
 pub fn evaluate_governance_from_records(
+    registry: &AgentRegistry,
     kernel_state: &KernelState,
     transition_record: &mut TransitionRecord,
     observation_record: &ObservationRecord,
@@ -11903,10 +12290,10 @@ pub fn evaluate_governance_from_records(
         return Err(error!(ProgramV04Error::RecordMismatch));
     }
     let seats =
-        gov_action_and_seats(action, approval_records, transition_record.transition_id)?;
-    let observer_id = resolve_agent_id(observation_record.observer);
-    let mut k = kernel_at_head_from_entries(kernel_state, prior_entries)?;
-    let proposer = resolve_proposer_on_kernel(&k, transition_record.proposer)?;
+        gov_action_and_seats(registry, action, approval_records, transition_record.transition_id)?;
+    let observer_id = resolve_agent_id_mapped(registry, observation_record.observer);
+    let mut k = kernel_at_head_from_entries(registry, kernel_state, prior_entries)?;
+    let proposer = resolve_proposer_on_kernel(registry, &k, transition_record.proposer)?;
     if !k.has_role(&observer_id, Role::Observer) {
         return Err(error!(ProgramV04Error::NotObserver));
     }
@@ -11975,6 +12362,7 @@ pub fn evaluate_governance_from_records(
 /// exactly as the ordinary helper counts an ordinary one, so
 /// the select gates judge the full eligible field.
 pub fn mark_eligible_governance_from_records(
+    registry: &AgentRegistry,
     kernel_state: &mut KernelState,
     transition_record: &mut TransitionRecord,
     observation_record: &ObservationRecord,
@@ -12003,10 +12391,10 @@ pub fn mark_eligible_governance_from_records(
         return Err(error!(ProgramV04Error::RecordMismatch));
     }
     let seats =
-        gov_action_and_seats(action, approval_records, transition_record.transition_id)?;
-    let observer_id = resolve_agent_id(observation_record.observer);
-    let mut k = kernel_at_head_from_entries(kernel_state, prior_entries)?;
-    let proposer = resolve_proposer_on_kernel(&k, transition_record.proposer)?;
+        gov_action_and_seats(registry, action, approval_records, transition_record.transition_id)?;
+    let observer_id = resolve_agent_id_mapped(registry, observation_record.observer);
+    let mut k = kernel_at_head_from_entries(registry, kernel_state, prior_entries)?;
+    let proposer = resolve_proposer_on_kernel(registry, &k, transition_record.proposer)?;
     if !k.has_role(&observer_id, Role::Observer) {
         return Err(error!(ProgramV04Error::NotObserver));
     }
@@ -12117,6 +12505,7 @@ pub fn mark_eligible_governance_from_records(
 /// will check the supplied set against `signal_count`.
 #[allow(clippy::too_many_arguments)]
 pub fn submit_signal_governance_from_records(
+    registry: &AgentRegistry,
     kernel_state: &KernelState,
     transition_record: &mut TransitionRecord,
     observation_record: &ObservationRecord,
@@ -12178,10 +12567,10 @@ pub fn submit_signal_governance_from_records(
         }
     }
     let seats =
-        gov_action_and_seats(action, approval_records, transition_record.transition_id)?;
-    let observer_id = resolve_agent_id(observation_record.observer);
-    let mut k = kernel_at_head_from_entries(kernel_state, prior_entries)?;
-    let proposer = resolve_proposer_on_kernel(&k, transition_record.proposer)?;
+        gov_action_and_seats(registry, action, approval_records, transition_record.transition_id)?;
+    let observer_id = resolve_agent_id_mapped(registry, observation_record.observer);
+    let mut k = kernel_at_head_from_entries(registry, kernel_state, prior_entries)?;
+    let proposer = resolve_proposer_on_kernel(registry, &k, transition_record.proposer)?;
     if !k.has_role(&observer_id, Role::Observer) {
         return Err(error!(ProgramV04Error::NotObserver));
     }
@@ -12237,7 +12626,7 @@ pub fn submit_signal_governance_from_records(
             None
         };
         k.submit_round_signal(
-            &prior.agent.to_bytes(),
+            &resolve_agent_id_mapped(registry, prior.agent),
             &transition_record.transition_id,
             Amount::from_raw(prior.raw),
             support,
@@ -12245,7 +12634,7 @@ pub fn submit_signal_governance_from_records(
         )
         .map_err(|_| error!(ProgramV04Error::SignalFailed))?;
     }
-    let agent_id = resolve_agent_id(agent);
+    let agent_id = resolve_agent_id_mapped(registry, agent);
     let support = if has_support {
         Some(Amount::from_raw(support_raw))
     } else {
@@ -12328,7 +12717,9 @@ pub fn submit_signal_governance_from_records(
 /// cannot fire in this slice — a sibling-aware governance
 /// select is the next slice's work, named here rather than
 /// claimed here.
+#[allow(clippy::too_many_arguments)]
 pub fn select_candidate_governance_from_records(
+    registry: &AgentRegistry,
     kernel_state: &KernelState,
     transition_record: &mut TransitionRecord,
     observation_record: &ObservationRecord,
@@ -12381,7 +12772,7 @@ pub fn select_candidate_governance_from_records(
     {
         let mut seen: BTreeSet<([u8; 32], u64)> = BTreeSet::new();
         for prior in prior_signals {
-            if !seen.insert((prior.agent.to_bytes(), prior.round)) {
+            if !seen.insert((resolve_agent_id_mapped(registry, prior.agent), prior.round)) {
                 return Err(error!(ProgramV04Error::SelectFailed));
             }
         }
@@ -12393,10 +12784,10 @@ pub fn select_candidate_governance_from_records(
         return Err(error!(ProgramV04Error::SelectFailed));
     }
     let seats =
-        gov_action_and_seats(action, approval_records, transition_record.transition_id)?;
-    let observer_id = resolve_agent_id(observation_record.observer);
-    let mut k = kernel_at_head_from_entries(kernel_state, prior_entries)?;
-    let proposer = resolve_proposer_on_kernel(&k, transition_record.proposer)?;
+        gov_action_and_seats(registry, action, approval_records, transition_record.transition_id)?;
+    let observer_id = resolve_agent_id_mapped(registry, observation_record.observer);
+    let mut k = kernel_at_head_from_entries(registry, kernel_state, prior_entries)?;
+    let proposer = resolve_proposer_on_kernel(registry, &k, transition_record.proposer)?;
     if !k.has_role(&observer_id, Role::Observer) {
         return Err(error!(ProgramV04Error::NotObserver));
     }
@@ -12452,7 +12843,7 @@ pub fn select_candidate_governance_from_records(
             None
         };
         k.submit_round_signal(
-            &prior.agent.to_bytes(),
+            &resolve_agent_id_mapped(registry, prior.agent),
             &transition_record.transition_id,
             Amount::from_raw(prior.raw),
             support,
@@ -12543,6 +12934,7 @@ pub fn select_candidate_governance_from_records(
 /// supply and therefore cannot select past.
 #[allow(clippy::too_many_arguments)]
 pub fn select_candidate_governance_from_records_with_siblings(
+    registry: &AgentRegistry,
     kernel_state: &KernelState,
     transition_record: &mut TransitionRecord,
     observation_record: &ObservationRecord,
@@ -12596,7 +12988,7 @@ pub fn select_candidate_governance_from_records_with_siblings(
     {
         let mut seen: BTreeSet<([u8; 32], u64)> = BTreeSet::new();
         for prior in prior_signals {
-            if !seen.insert((prior.agent.to_bytes(), prior.round)) {
+            if !seen.insert((resolve_agent_id_mapped(registry, prior.agent), prior.round)) {
                 return Err(error!(ProgramV04Error::SelectFailed));
             }
         }
@@ -12645,7 +13037,7 @@ pub fn select_candidate_governance_from_records_with_siblings(
                 {
                     return Err(error!(ProgramV04Error::RecordMismatch));
                 }
-                if !seen.insert((prior.agent.to_bytes(), prior.round)) {
+                if !seen.insert((resolve_agent_id_mapped(registry, prior.agent), prior.round)) {
                     return Err(error!(ProgramV04Error::SelectFailed));
                 }
             }
@@ -12678,7 +13070,7 @@ pub fn select_candidate_governance_from_records_with_siblings(
     {
         return Err(error!(ProgramV04Error::SelectFailed));
     }
-    let mut k = kernel_at_head_from_entries(kernel_state, prior_entries)?;
+    let mut k = kernel_at_head_from_entries(registry, kernel_state, prior_entries)?;
     // One merged timeline, as in slice 17: (time, kind rank, tie
     // rank, index) with kind rank 0 = eligibility chain, 1 =
     // signal, so a chain always precedes same-time signals; tie
@@ -12728,7 +13120,7 @@ pub fn select_candidate_governance_from_records_with_siblings(
         match event {
             TimelineEvent::Chain(idx) => {
                 if *idx == usize::MAX {
-                    replay_governance_transition_chain(
+                    replay_governance_transition_chain(registry, 
                         kernel_state,
                         &mut k,
                         transition_record,
@@ -12738,7 +13130,7 @@ pub fn select_candidate_governance_from_records_with_siblings(
                     )?;
                 } else {
                     let sibling = &siblings[*idx];
-                    replay_governance_transition_chain(
+                    replay_governance_transition_chain(registry, 
                         kernel_state,
                         &mut k,
                         sibling.transition_record,
@@ -12755,7 +13147,7 @@ pub fn select_candidate_governance_from_records_with_siblings(
                     None
                 };
                 k.submit_round_signal(
-                    &prior.agent.to_bytes(),
+                    &resolve_agent_id_mapped(registry, prior.agent),
                     tid,
                     Amount::from_raw(prior.raw),
                     support,
@@ -12871,6 +13263,7 @@ pub fn select_candidate_governance_from_records_with_siblings(
 /// the helper refuse a census-complete field for no safety gain.
 #[allow(clippy::too_many_arguments)]
 pub fn select_candidate_mixed_from_records_with_siblings(
+    registry: &AgentRegistry,
     kernel_state: &KernelState,
     transition_record: &mut TransitionRecord,
     observation_record: &ObservationRecord,
@@ -12925,7 +13318,7 @@ pub fn select_candidate_mixed_from_records_with_siblings(
     {
         let mut seen: BTreeSet<([u8; 32], u64)> = BTreeSet::new();
         for prior in prior_signals {
-            if !seen.insert((prior.agent.to_bytes(), prior.round)) {
+            if !seen.insert((resolve_agent_id_mapped(registry, prior.agent), prior.round)) {
                 return Err(error!(ProgramV04Error::SelectFailed));
             }
         }
@@ -12982,7 +13375,7 @@ pub fn select_candidate_mixed_from_records_with_siblings(
                 {
                     return Err(error!(ProgramV04Error::RecordMismatch));
                 }
-                if !seen.insert((prior.agent.to_bytes(), prior.round)) {
+                if !seen.insert((resolve_agent_id_mapped(registry, prior.agent), prior.round)) {
                     return Err(error!(ProgramV04Error::SelectFailed));
                 }
             }
@@ -13002,7 +13395,7 @@ pub fn select_candidate_mixed_from_records_with_siblings(
     {
         return Err(error!(ProgramV04Error::SelectFailed));
     }
-    let mut k = kernel_at_head_from_entries(kernel_state, prior_entries)?;
+    let mut k = kernel_at_head_from_entries(registry, kernel_state, prior_entries)?;
     enum TimelineEvent<'a> {
         Chain(usize),
         Signal(&'a SignalRecord, [u8; 32]),
@@ -13046,7 +13439,7 @@ pub fn select_candidate_mixed_from_records_with_siblings(
             TimelineEvent::Chain(idx) => {
                 if *idx == usize::MAX {
                     if is_gov_type(&transition_record.transition_type) {
-                        replay_governance_transition_chain(
+                        replay_governance_transition_chain(registry, 
                             kernel_state,
                             &mut k,
                             transition_record,
@@ -13055,7 +13448,7 @@ pub fn select_candidate_mixed_from_records_with_siblings(
                             target_action.ok_or(error!(ProgramV04Error::RecordMismatch))?,
                         )?;
                     } else {
-                        replay_transition_chain(
+                        replay_transition_chain(registry, 
                             kernel_state,
                             &mut k,
                             transition_record,
@@ -13065,7 +13458,7 @@ pub fn select_candidate_mixed_from_records_with_siblings(
                 } else {
                     let sibling = &siblings[*idx];
                     if is_gov_type(&sibling.transition_record.transition_type) {
-                        replay_governance_transition_chain(
+                        replay_governance_transition_chain(registry, 
                             kernel_state,
                             &mut k,
                             sibling.transition_record,
@@ -13074,7 +13467,7 @@ pub fn select_candidate_mixed_from_records_with_siblings(
                             sibling.action.as_ref().ok_or(error!(ProgramV04Error::RecordMismatch))?,
                         )?;
                     } else {
-                        replay_transition_chain(
+                        replay_transition_chain(registry, 
                             kernel_state,
                             &mut k,
                             sibling.transition_record,
@@ -13090,7 +13483,7 @@ pub fn select_candidate_mixed_from_records_with_siblings(
                     None
                 };
                 k.submit_round_signal(
-                    &prior.agent.to_bytes(),
+                    &resolve_agent_id_mapped(registry, prior.agent),
                     tid,
                     Amount::from_raw(prior.raw),
                     support,
@@ -13162,6 +13555,7 @@ pub fn select_candidate_mixed_from_records_with_siblings(
 /// then prior signals) split by `split_gov_signal_tail`.
 #[allow(clippy::too_many_arguments)]
 pub fn open_planning_governance_from_records(
+    registry: &AgentRegistry,
     kernel_state: &KernelState,
     transition_record: &mut TransitionRecord,
     observation_record: &ObservationRecord,
@@ -13181,7 +13575,7 @@ pub fn open_planning_governance_from_records(
     }
     let is_replan = transition_record.stage == TransitionRecord::BLOCKED;
     if is_replan {
-        let proposer_id = resolve_agent_id(transition_record.proposer);
+        let proposer_id = resolve_agent_id_mapped(registry, transition_record.proposer);
         let seated = sealed_launch_kernel()
             .map(|k| k.is_seated(&caller))
             .map_err(|_| error!(ProgramV04Error::PlanningFailed))?;
@@ -13230,16 +13624,16 @@ pub fn open_planning_governance_from_records(
     {
         let mut seen: BTreeSet<([u8; 32], u64)> = BTreeSet::new();
         for prior in prior_signals {
-            if !seen.insert((prior.agent.to_bytes(), prior.round)) {
+            if !seen.insert((resolve_agent_id_mapped(registry, prior.agent), prior.round)) {
                 return Err(error!(ProgramV04Error::PlanningFailed));
             }
         }
     }
     let seats =
-        gov_action_and_seats(action, approval_records, transition_record.transition_id)?;
-    let observer_id = resolve_agent_id(observation_record.observer);
-    let mut k = kernel_at_head_from_entries(kernel_state, prior_entries)?;
-    let proposer = resolve_proposer_on_kernel(&k, transition_record.proposer)
+        gov_action_and_seats(registry, action, approval_records, transition_record.transition_id)?;
+    let observer_id = resolve_agent_id_mapped(registry, observation_record.observer);
+    let mut k = kernel_at_head_from_entries(registry, kernel_state, prior_entries)?;
+    let proposer = resolve_proposer_on_kernel(registry, &k, transition_record.proposer)
         .map_err(|_| error!(ProgramV04Error::PlanningFailed))?;
     if !k.has_role(&observer_id, Role::Observer) {
         return Err(error!(ProgramV04Error::NotObserver));
@@ -13296,7 +13690,7 @@ pub fn open_planning_governance_from_records(
             None
         };
         k.submit_round_signal(
-            &prior.agent.to_bytes(),
+            &resolve_agent_id_mapped(registry, prior.agent),
             &transition_record.transition_id,
             Amount::from_raw(prior.raw),
             support,
@@ -13684,6 +14078,7 @@ pub fn prior_entries_of(bundles: &[OwnedPriorBundle]) -> alloc::vec::Vec<PriorEn
 /// exactly one past the prior's parent at its declared next hash,
 /// or the history refuses.
 fn drive_prior_commit_to_commit(
+    registry: &AgentRegistry,
     kernel_state: &KernelState,
     k: &mut LaunchKernelProgramEnv,
     prior: &PriorCommit,
@@ -13729,7 +14124,7 @@ fn drive_prior_commit_to_commit(
     {
         let mut seen: BTreeSet<([u8; 32], u64)> = BTreeSet::new();
         for prior_signal in prior_signals {
-            if !seen.insert((prior_signal.agent.to_bytes(), prior_signal.round)) {
+            if !seen.insert((resolve_agent_id_mapped(registry, prior_signal.agent), prior_signal.round)) {
                 return Err(error!(ProgramV04Error::CommitFailed));
             }
         }
@@ -13751,9 +14146,9 @@ fn drive_prior_commit_to_commit(
             }
         }
     }
-    let proposer = resolve_proposer_on_kernel(k, transition_record.proposer)
+    let proposer = resolve_proposer_on_kernel(registry, k, transition_record.proposer)
         .map_err(|_| error!(ProgramV04Error::CommitFailed))?;
-    let observer_id = resolve_agent_id(observation_record.observer);
+    let observer_id = resolve_agent_id_mapped(registry, observation_record.observer);
     if !k.has_role(&observer_id, Role::Observer) {
         return Err(error!(ProgramV04Error::NotObserver));
     }
@@ -13805,7 +14200,7 @@ fn drive_prior_commit_to_commit(
             None
         };
         k.submit_round_signal(
-            &prior_signal.agent.to_bytes(),
+            &resolve_agent_id_mapped(registry, prior_signal.agent),
             &transition_record.transition_id,
             Amount::from_raw(prior_signal.raw),
             support,
@@ -13954,6 +14349,7 @@ fn drive_prior_commit_to_commit(
 /// count. Pure: a refusal returns nothing, and the caller owns
 /// the seat set.
 pub fn gov_action_and_seats(
+    registry: &AgentRegistry,
     action: &GovAction,
     approval_records: &[GovApprovalRecord],
     transition_id: [u8; 32],
@@ -13965,13 +14361,13 @@ pub fn gov_action_and_seats(
         if approval.transition_id != transition_id {
             return Err(error!(ProgramV04Error::RecordMismatch));
         }
-        if !seen_seats.insert(approval.seat.to_bytes()) {
+        if !seen_seats.insert(resolve_agent_id_mapped(registry, approval.seat)) {
             return Err(error!(ProgramV04Error::GovernanceCommitFailed));
         }
         if approval.action_hash != expected {
             return Err(error!(ProgramV04Error::GovActionHashMismatch));
         }
-        seats.push(approval.seat.to_bytes());
+        seats.push(resolve_agent_id_mapped(registry, approval.seat));
     }
     if seats.is_empty() {
         return Err(error!(ProgramV04Error::GovernanceCommitFailed));
@@ -13981,6 +14377,7 @@ pub fn gov_action_and_seats(
 
 
 fn drive_prior_governance_commit_to_commit(
+    registry: &AgentRegistry,
     kernel_state: &KernelState,
     k: &mut LaunchKernelProgramEnv,
     prior: &GovPriorCommit,
@@ -14026,7 +14423,7 @@ fn drive_prior_governance_commit_to_commit(
     {
         let mut seen: BTreeSet<([u8; 32], u64)> = BTreeSet::new();
         for prior_signal in prior_signals {
-            if !seen.insert((prior_signal.agent.to_bytes(), prior_signal.round)) {
+            if !seen.insert((resolve_agent_id_mapped(registry, prior_signal.agent), prior_signal.round)) {
                 return Err(error!(ProgramV04Error::GovernanceCommitFailed));
             }
         }
@@ -14058,13 +14455,13 @@ fn drive_prior_governance_commit_to_commit(
         .action
         .ok_or(error!(ProgramV04Error::GovernanceCommitFailed))?;
     let seats =
-        gov_action_and_seats(action, prior.approval_records, transition_record.transition_id)?;
-    let proposer_id = transition_record.proposer.to_bytes();
+        gov_action_and_seats(registry, action, prior.approval_records, transition_record.transition_id)?;
+    let proposer_id = resolve_agent_id_mapped(registry, transition_record.proposer);
     let relevant_groups = match k.agent(&proposer_id) {
         Some(profile) if profile.active => profile.groups.clone(),
         _ => return Err(error!(ProgramV04Error::UnknownProposer)),
     };
-    let observer_id = resolve_agent_id(observation_record.observer);
+    let observer_id = resolve_agent_id_mapped(registry, observation_record.observer);
     if !k.has_role(&observer_id, Role::Observer) {
         return Err(error!(ProgramV04Error::NotObserver));
     }
@@ -14125,7 +14522,7 @@ fn drive_prior_governance_commit_to_commit(
             None
         };
         k.submit_round_signal(
-            &prior_signal.agent.to_bytes(),
+            &resolve_agent_id_mapped(registry, prior_signal.agent),
             &transition_record.transition_id,
             Amount::from_raw(prior_signal.raw),
             support,
@@ -14256,6 +14653,7 @@ fn drive_prior_governance_commit_to_commit(
 /// prior's planning deadline — the next transition's window must
 /// open after it (see the slice-29 module note).
 pub fn kernel_at_head_from_commits(
+    registry: &AgentRegistry,
     kernel_state: &KernelState,
     prior_commits: &[PriorCommit],
 ) -> Result<LaunchKernelProgramEnv> {
@@ -14271,7 +14669,7 @@ pub fn kernel_at_head_from_commits(
         {
             return Err(error!(ProgramV04Error::ParentMismatch));
         }
-        let new_state = drive_prior_commit_to_commit(kernel_state, &mut k, prior)?;
+        let new_state = drive_prior_commit_to_commit(registry, kernel_state, &mut k, prior)?;
         running_index = new_state.index;
         running_hash = new_state.hash;
     }
@@ -14299,6 +14697,7 @@ pub fn kernel_at_head_from_commits(
 /// remaining accounts, so this helper is what every replay
 /// builder calls, not only the test builders.
 pub fn kernel_at_head_from_entries(
+    registry: &AgentRegistry,
     kernel_state: &KernelState,
     entries: &[PriorEntry],
 ) -> Result<LaunchKernelProgramEnv> {
@@ -14321,9 +14720,9 @@ pub fn kernel_at_head_from_entries(
             return Err(error!(ProgramV04Error::ParentMismatch));
         }
         let new_state = match entry {
-            PriorEntry::Ordinary(p) => drive_prior_commit_to_commit(kernel_state, &mut k, p)?,
+            PriorEntry::Ordinary(p) => drive_prior_commit_to_commit(registry, kernel_state, &mut k, p)?,
             PriorEntry::Governance(p) => {
-                drive_prior_governance_commit_to_commit(kernel_state, &mut k, p)?
+                drive_prior_governance_commit_to_commit(registry, kernel_state, &mut k, p)?
             }
         };
         running_index = new_state.index;
@@ -14414,6 +14813,7 @@ pub struct MixedSiblingReplay<'a> {
 /// transition's gates, so the pre-replay gates of the calling
 /// helper carry the distinct errors.
 fn replay_governance_transition_chain(
+    registry: &AgentRegistry,
     _kernel_state: &KernelState,
     k: &mut LaunchKernelProgramEnv,
     transition_record: &TransitionRecord,
@@ -14422,10 +14822,10 @@ fn replay_governance_transition_chain(
     action: &GovAction,
 ) -> Result<()> {
     let seats =
-        gov_action_and_seats(action, approval_records, transition_record.transition_id)?;
-    let proposer = resolve_proposer_on_kernel(k, transition_record.proposer)
+        gov_action_and_seats(registry, action, approval_records, transition_record.transition_id)?;
+    let proposer = resolve_proposer_on_kernel(registry, k, transition_record.proposer)
         .map_err(|_| error!(ProgramV04Error::SelectFailed))?;
-    let observer_id = resolve_agent_id(observation_record.observer);
+    let observer_id = resolve_agent_id_mapped(registry, observation_record.observer);
     if !k.has_role(&observer_id, Role::Observer) {
         return Err(error!(ProgramV04Error::SelectFailed));
     }
@@ -14482,14 +14882,15 @@ fn replay_governance_transition_chain(
 /// single transition's gates, so the pre-replay gates of the calling
 /// helper carry the distinct errors.
 fn replay_transition_chain(
+    registry: &AgentRegistry,
     _kernel_state: &KernelState,
     k: &mut LaunchKernelProgramEnv,
     transition_record: &TransitionRecord,
     observation_record: &ObservationRecord,
 ) -> Result<()> {
-    let proposer = resolve_proposer_on_kernel(k, transition_record.proposer)
+    let proposer = resolve_proposer_on_kernel(registry, k, transition_record.proposer)
         .map_err(|_| error!(ProgramV04Error::SelectFailed))?;
-    let observer_id = resolve_agent_id(observation_record.observer);
+    let observer_id = resolve_agent_id_mapped(registry, observation_record.observer);
     if !k.has_role(&observer_id, Role::Observer) {
         return Err(error!(ProgramV04Error::SelectFailed));
     }
@@ -14577,6 +14978,7 @@ fn replay_transition_chain(
 /// competitor refuses here rather than passing unjudged.
 #[allow(clippy::too_many_arguments)]
 pub fn select_candidate_from_records_with_siblings(
+    registry: &AgentRegistry,
     kernel_state: &KernelState,
     transition_record: &mut TransitionRecord,
     observation_record: &ObservationRecord,
@@ -14622,7 +15024,7 @@ pub fn select_candidate_from_records_with_siblings(
     {
         let mut seen: BTreeSet<([u8; 32], u64)> = BTreeSet::new();
         for prior in prior_signals {
-            if !seen.insert((prior.agent.to_bytes(), prior.round)) {
+            if !seen.insert((resolve_agent_id_mapped(registry, prior.agent), prior.round)) {
                 return Err(error!(ProgramV04Error::SelectFailed));
             }
         }
@@ -14665,7 +15067,7 @@ pub fn select_candidate_from_records_with_siblings(
                 {
                     return Err(error!(ProgramV04Error::RecordMismatch));
                 }
-                if !seen.insert((prior.agent.to_bytes(), prior.round)) {
+                if !seen.insert((resolve_agent_id_mapped(registry, prior.agent), prior.round)) {
                     return Err(error!(ProgramV04Error::SelectFailed));
                 }
             }
@@ -14698,7 +15100,7 @@ pub fn select_candidate_from_records_with_siblings(
     {
         return Err(error!(ProgramV04Error::SelectFailed));
     }
-    let mut k = kernel_at_head_from_entries(kernel_state, prior_entries)?;
+    let mut k = kernel_at_head_from_entries(registry, kernel_state, prior_entries)?;
     // One merged timeline: (time, kind rank, tie rank, index) with
     // kind rank 0 = eligibility chain, 1 = signal, so a chain always
     // precedes same-time signals; tie rank 0 = sibling, 1 = target,
@@ -14750,7 +15152,7 @@ pub fn select_candidate_from_records_with_siblings(
         match event {
             TimelineEvent::Chain(idx) => {
                 if *idx == usize::MAX {
-                    replay_transition_chain(
+                    replay_transition_chain(registry, 
                         kernel_state,
                         &mut k,
                         transition_record,
@@ -14758,7 +15160,7 @@ pub fn select_candidate_from_records_with_siblings(
                     )?;
                 } else {
                     let sibling = &siblings[*idx];
-                    replay_transition_chain(
+                    replay_transition_chain(registry, 
                         kernel_state,
                         &mut k,
                         sibling.transition_record,
@@ -14773,7 +15175,7 @@ pub fn select_candidate_from_records_with_siblings(
                     None
                 };
                 k.submit_round_signal(
-                    &prior.agent.to_bytes(),
+                    &resolve_agent_id_mapped(registry, prior.agent),
                     tid,
                     Amount::from_raw(prior.raw),
                     support,
@@ -14871,6 +15273,12 @@ pub struct KernelInitialized {
 pub struct KernelSealed {
     pub head_index: u64,
     pub clock: u64,
+}
+
+#[event]
+pub struct AgentEnrolled {
+    pub agent_id: [u8; 32],
+    pub pubkey: Pubkey,
 }
 
 #[event]
@@ -15134,6 +15542,14 @@ pub enum ProgramV04Error {
     UnknownAgent,
     #[msg("program-v04 replay: prior bundle count exceeds the chain-length limit (MAX_PRIOR_BUNDLES)")]
     ChainTooLong,
+    #[msg("program-v04 enroll: signer is not the registry's enrollment authority")]
+    NotEnrollmentAuthority,
+    #[msg("program-v04 enroll: agent id is not one of the enrollable launch-profile identities")]
+    UnknownProfileAgent,
+    #[msg("program-v04 enroll: agent id already has an enrolled pubkey")]
+    AgentAlreadyEnrolled,
+    #[msg("program-v04 enroll: pubkey is already enrolled for another agent id")]
+    PubkeyAlreadyEnrolled,
 }
 
 // ---------------------------------------------------------------- launch genesis
@@ -15730,7 +16146,7 @@ mod tests {
         // head parent, and the seat proposer.
         let state = sealed_state();
         let (id, _, parent_index, parent_hash, declared, obs, expires) = record_args();
-        let record = build_governance_transition_record(
+        let record = build_governance_transition_record(&test_registry(), 
             &state, id, T_GOV_ADJUSTABLE, parent_index, parent_hash, declared, obs, expires,
             Pubkey::new_from_array(ag(1)), 7,
         )
@@ -15751,7 +16167,7 @@ mod tests {
         // only route (see the builder test below).
         let state = sealed_state();
         let (id, ttype, parent_index, parent_hash, declared, obs, expires) = record_args();
-        let err = build_governance_transition_record(
+        let err = build_governance_transition_record(&test_registry(), 
             &state, id, ttype, parent_index, parent_hash, declared, obs, expires,
             Pubkey::new_from_array(ag(1)), 1,
         )
@@ -15766,7 +16182,7 @@ mod tests {
         // governance path requires.
         let state = sealed_state();
         let (id, _, parent_index, parent_hash, declared, obs, expires) = record_args();
-        let err = build_governance_transition_record(
+        let err = build_governance_transition_record(&test_registry(), 
             &state, id, T_GOV_COUNCIL, parent_index, parent_hash, declared, obs, expires,
             Pubkey::new_from_array(ag(4)), 1,
         )
@@ -15780,7 +16196,7 @@ mod tests {
         // the pinned profile, and an outsider is refused outright.
         let state = sealed_state();
         let (id, _, parent_index, parent_hash, declared, obs, expires) = record_args();
-        let err = build_governance_transition_record(
+        let err = build_governance_transition_record(&test_registry(), 
             &state, id, T_GOV_ADJUSTABLE, parent_index, parent_hash, declared, obs, expires,
             Pubkey::new_from_array([0x99; 32]), 1,
         )
@@ -15792,7 +16208,7 @@ mod tests {
     fn build_governance_transition_record_refuses_unsealed() {
         let state = genesis_kernel_state().expect("genesis must construct");
         let (id, _, parent_index, parent_hash, declared, obs, expires) = record_args();
-        let err = build_governance_transition_record(
+        let err = build_governance_transition_record(&test_registry(), 
             &state, id, T_GOV_ADJUSTABLE, parent_index, parent_hash, declared, obs, expires,
             Pubkey::new_from_array(ag(1)), 1,
         )
@@ -15804,7 +16220,7 @@ mod tests {
     fn build_governance_transition_record_refuses_parent_mismatch() {
         let state = sealed_state();
         let (id, _, _, parent_hash, declared, obs, expires) = record_args();
-        let err = build_governance_transition_record(
+        let err = build_governance_transition_record(&test_registry(), 
             &state, id, T_GOV_ADJUSTABLE, 1, parent_hash, declared, obs, expires,
             Pubkey::new_from_array(ag(1)), 1,
         )
@@ -15832,7 +16248,7 @@ mod tests {
         // sealed head, proposed by seat ag(1).
         let state = sealed_state();
         let (id, _, parent_index, parent_hash, declared, obs, expires) = record_args();
-        build_governance_transition_record(
+        build_governance_transition_record(&test_registry(), 
             &state, id, ttype, parent_index, parent_hash, declared, obs, expires,
             Pubkey::new_from_array(ag(1)), 7,
         )
@@ -15902,7 +16318,7 @@ mod tests {
             resource: RES_EXIT_WINDOW,
             capacity: Amount::from_raw(400 * SCALE),
         };
-        let approval = build_governance_approval_record(
+        let approval = build_governance_approval_record(&test_registry(), 
             &state, &record, Pubkey::new_from_array(ag(1)), &action, 9,
         )
         .expect("seat approval of a matching action must build");
@@ -15931,7 +16347,7 @@ mod tests {
             resource: RES_EXIT_WINDOW,
             capacity: Amount::from_raw(400 * SCALE),
         };
-        let err = build_governance_approval_record(
+        let err = build_governance_approval_record(&test_registry(), 
             &state, &ordinary, Pubkey::new_from_array(ag(1)), &action, 1,
         )
         .expect_err("ordinary record must refuse approval");
@@ -15948,7 +16364,7 @@ mod tests {
             resource: RES_EXIT_WINDOW,
             capacity: Amount::from_raw(400 * SCALE),
         };
-        let err = build_governance_approval_record(
+        let err = build_governance_approval_record(&test_registry(), 
             &state, &record, Pubkey::new_from_array(ag(4)), &action, 1,
         )
         .expect_err("non-seat agent must refuse approval");
@@ -15963,7 +16379,7 @@ mod tests {
             resource: RES_EXIT_WINDOW,
             capacity: Amount::from_raw(400 * SCALE),
         };
-        let err = build_governance_approval_record(
+        let err = build_governance_approval_record(&test_registry(), 
             &state, &record, Pubkey::new_from_array([0x99; 32]), &action, 1,
         )
         .expect_err("unknown approver must refuse approval");
@@ -15978,7 +16394,7 @@ mod tests {
             resource: RES_EXIT_WINDOW,
             capacity: Amount::from_raw(400 * SCALE),
         };
-        let err = build_governance_approval_record(
+        let err = build_governance_approval_record(&test_registry(), 
             &state, &record, Pubkey::new_from_array(ag(1)), &action, 1,
         )
         .expect_err("unsealed approval must refuse");
@@ -15996,7 +16412,7 @@ mod tests {
             resource: RES_EXIT_WINDOW,
             capacity: Amount::from_raw(400 * SCALE),
         };
-        let err = build_governance_approval_record(
+        let err = build_governance_approval_record(&test_registry(), 
             &state, &record, Pubkey::new_from_array(ag(1)), &action, 1,
         )
         .expect_err("advanced record must refuse approval");
@@ -16014,7 +16430,7 @@ mod tests {
             resource: RES_EXIT_WINDOW,
             capacity: Amount::from_raw(400 * SCALE),
         };
-        let err = build_governance_approval_record(
+        let err = build_governance_approval_record(&test_registry(), 
             &state, &record, Pubkey::new_from_array(ag(1)), &action, 1,
         )
         .expect_err("category mismatch must refuse approval");
@@ -16033,7 +16449,7 @@ mod tests {
             resource: RES_EXIT_WINDOW,
             capacity: Amount::from_raw(400 * SCALE),
         };
-        let mut approval = build_governance_approval_record(
+        let mut approval = build_governance_approval_record(&test_registry(), 
             &state, &record, Pubkey::new_from_array(ag(1)), &old, 9,
         )
         .expect("first approval must build");
@@ -16041,7 +16457,7 @@ mod tests {
             resource: RES_EXIT_WINDOW,
             capacity: Amount::from_raw(500 * SCALE),
         };
-        revise_governance_approval_record(
+        revise_governance_approval_record(&test_registry(), 
             &state, &record, &mut approval, Pubkey::new_from_array(ag(1)), &new,
         )
         .expect("own revision must succeed");
@@ -16061,12 +16477,12 @@ mod tests {
             resource: RES_EXIT_WINDOW,
             capacity: Amount::from_raw(400 * SCALE),
         };
-        let mut approval = build_governance_approval_record(
+        let mut approval = build_governance_approval_record(&test_registry(), 
             &state, &record, Pubkey::new_from_array(ag(1)), &old, 9,
         )
         .expect("first approval must build");
         let new = GovAction::GrantRole { who: ag(2), role: Role::Observer };
-        revise_governance_approval_record(
+        revise_governance_approval_record(&test_registry(), 
             &state, &record, &mut approval, Pubkey::new_from_array(ag(1)), &new,
         )
         .expect("same-category revision must succeed");
@@ -16089,22 +16505,22 @@ mod tests {
             resource: RES_EXIT_WINDOW,
             capacity: Amount::from_raw(500 * SCALE),
         };
-        let mut first = build_governance_approval_record(
+        let mut first = build_governance_approval_record(&test_registry(), 
             &state, &record, Pubkey::new_from_array(ag(1)), &old, 9,
         )
         .expect("first approval must build");
-        let second = build_governance_approval_record(
+        let second = build_governance_approval_record(&test_registry(), 
             &state, &record, Pubkey::new_from_array(ag(2)), &new, 8,
         )
         .expect("second approval must build");
         // Mixed by construction: the two stored actions differ,
         // so no unanimous decode exists before the revision.
         assert_ne!(first.action_hash, second.action_hash);
-        revise_governance_approval_record(
+        revise_governance_approval_record(&test_registry(), 
             &state, &record, &mut first, Pubkey::new_from_array(ag(1)), &new,
         )
         .expect("revision must succeed");
-        let seats = gov_action_and_seats(
+        let seats = gov_action_and_seats(&test_registry(), 
             &new,
             &[first, second],
             [0xD1; 32],
@@ -16126,7 +16542,7 @@ mod tests {
             resource: RES_EXIT_WINDOW,
             capacity: Amount::from_raw(400 * SCALE),
         };
-        let mut approval = build_governance_approval_record(
+        let mut approval = build_governance_approval_record(&test_registry(), 
             &state, &record, Pubkey::new_from_array(ag(1)), &old, 9,
         )
         .expect("first approval must build");
@@ -16134,7 +16550,7 @@ mod tests {
             resource: RES_EXIT_WINDOW,
             capacity: Amount::from_raw(500 * SCALE),
         };
-        revise_governance_approval_record(
+        revise_governance_approval_record(&test_registry(), 
             &state, &record, &mut approval, Pubkey::new_from_array(ag(1)), &new,
         )
         .expect("revision must succeed");
@@ -16151,7 +16567,7 @@ mod tests {
             resource: RES_EXIT_WINDOW,
             capacity: Amount::from_raw(400 * SCALE),
         };
-        let mut approval = build_governance_approval_record(
+        let mut approval = build_governance_approval_record(&test_registry(), 
             &state, &record, Pubkey::new_from_array(ag(1)), &old, 9,
         )
         .expect("first approval must build");
@@ -16160,7 +16576,7 @@ mod tests {
             resource: RES_EXIT_WINDOW,
             capacity: Amount::from_raw(500 * SCALE),
         };
-        let err = revise_governance_approval_record(
+        let err = revise_governance_approval_record(&test_registry(), 
             &state, &record, &mut approval, Pubkey::new_from_array(ag(1)), &new,
         )
         .expect_err("foreign approval must refuse revision");
@@ -16179,7 +16595,7 @@ mod tests {
             resource: RES_EXIT_WINDOW,
             capacity: Amount::from_raw(400 * SCALE),
         };
-        let mut approval = build_governance_approval_record(
+        let mut approval = build_governance_approval_record(&test_registry(), 
             &state, &record, Pubkey::new_from_array(ag(1)), &old, 9,
         )
         .expect("first approval must build");
@@ -16187,7 +16603,7 @@ mod tests {
             resource: RES_EXIT_WINDOW,
             capacity: Amount::from_raw(500 * SCALE),
         };
-        let err = revise_governance_approval_record(
+        let err = revise_governance_approval_record(&test_registry(), 
             &state, &record, &mut approval, Pubkey::new_from_array(ag(2)), &new,
         )
         .expect_err("another seat must not revise this approval");
@@ -16206,7 +16622,7 @@ mod tests {
             resource: RES_EXIT_WINDOW,
             capacity: Amount::from_raw(400 * SCALE),
         };
-        let mut approval = build_governance_approval_record(
+        let mut approval = build_governance_approval_record(&test_registry(), 
             &state, &record, Pubkey::new_from_array(ag(1)), &old, 9,
         )
         .expect("first approval must build");
@@ -16215,7 +16631,7 @@ mod tests {
             resource: RES_EXIT_WINDOW,
             capacity: Amount::from_raw(500 * SCALE),
         };
-        let err = revise_governance_approval_record(
+        let err = revise_governance_approval_record(&test_registry(), 
             &state, &record, &mut approval, Pubkey::new_from_array(ag(1)), &new,
         )
         .expect_err("advanced record must refuse revision");
@@ -16231,7 +16647,7 @@ mod tests {
         let state = sealed_state();
         let record = gov_record(T_GOV_COUNCIL);
         let old = GovAction::InstallCouncil { seats: alloc::vec![ag(1), ag(2), ag(3)] };
-        let mut approval = build_governance_approval_record(
+        let mut approval = build_governance_approval_record(&test_registry(), 
             &state, &record, Pubkey::new_from_array(ag(1)), &old, 9,
         )
         .expect("first approval must build");
@@ -16239,7 +16655,7 @@ mod tests {
             resource: RES_EXIT_WINDOW,
             capacity: Amount::from_raw(500 * SCALE),
         };
-        let err = revise_governance_approval_record(
+        let err = revise_governance_approval_record(&test_registry(), 
             &state, &record, &mut approval, Pubkey::new_from_array(ag(1)), &new,
         )
         .expect_err("category mismatch must refuse revision");
@@ -16261,7 +16677,7 @@ mod tests {
             capacity: Amount::from_raw(400 * SCALE),
         };
         let sealed = sealed_state();
-        let mut approval = build_governance_approval_record(
+        let mut approval = build_governance_approval_record(&test_registry(), 
             &sealed, &record, Pubkey::new_from_array(ag(1)), &old, 9,
         )
         .expect("first approval must build");
@@ -16269,7 +16685,7 @@ mod tests {
             resource: RES_EXIT_WINDOW,
             capacity: Amount::from_raw(500 * SCALE),
         };
-        let err = revise_governance_approval_record(
+        let err = revise_governance_approval_record(&test_registry(), 
             &state, &record, &mut approval, Pubkey::new_from_array(ag(1)), &new,
         )
         .expect_err("unsealed state must refuse revision");
@@ -16346,7 +16762,7 @@ mod tests {
         // binding is checked before any kernel call runs.
         let (state, mut record, obs, mut approvals) = gov_registered_pair();
         approvals[2].action_hash = [0x77; 32];
-        let err = replay_governance_from_records(&state, &mut record, &obs, &approvals, &gov_action(), &[])
+        let err = replay_governance_from_records(&test_registry(), &state, &mut record, &obs, &approvals, &gov_action(), &[])
             .expect_err("a hash-tampered approval set must refuse");
         assert!(format!("{:?}", err).contains("GovActionHashMismatch"));
         assert_eq!(record.stage, TransitionRecord::REGISTERED);
@@ -16390,6 +16806,14 @@ mod tests {
         Pubkey::new_from_array(OBSERVER)
     }
 
+    /// An empty (nothing enrolled) registry for the pre-enrollment
+    /// test battery: mapped resolution against it is identity for
+    /// every pubkey, so every existing test keeps its exact
+    /// pre-slice semantics.
+    fn test_registry() -> AgentRegistry {
+        AgentRegistry::seeded(Pubkey::new_from_array([0xEE; 32]), 255)
+    }
+
     #[test]
     fn resolve_agent_id_is_identity() {
         let pubkey = Pubkey::new_from_array([0x42; 32]);
@@ -16399,9 +16823,155 @@ mod tests {
     }
 
     #[test]
+    fn agent_registry_seeded_slots_in_profile_order() {
+        // Creation pre-seeds the 11 enrollable ids in fixed order —
+        // ag(1)..ag(6), OBSERVER, EXECUTOR, SETTLER_A, SETTLER_B,
+        // RECORDER — all unoccupied, GEN nowhere among them, and
+        // records the authority it was seeded with.
+        let authority = Pubkey::new_from_array([0x77; 32]);
+        let registry = AgentRegistry::seeded(authority, 254);
+        assert_eq!(registry.authority, authority);
+        assert_eq!(registry.bump, 254);
+        assert_eq!(registry.slots.len(), 11);
+        for (slot, expected) in registry.slots.iter().zip(enrollable_agent_ids().iter()) {
+            assert_eq!(&slot.agent_id, expected);
+            assert!(!slot.occupied);
+            assert_eq!(slot.pubkey, Pubkey::default());
+        }
+        assert!(!enrollable_agent_ids().contains(&GEN));
+        assert_eq!(AgentRegistry::SPACE, 8 + 32 + 1 + 11 * 65);
+    }
+
+    #[test]
+    fn agent_registry_borsh_round_trips() {
+        use anchor_lang::{AccountDeserialize, AccountSerialize};
+        let mut registry = test_registry();
+        registry
+            .enroll(OBSERVER, Pubkey::new_from_array([0x42; 32]))
+            .expect("enroll must succeed");
+        let mut bytes = Vec::new();
+        registry.try_serialize(&mut bytes).expect("serialize must succeed");
+        assert_eq!(bytes.len(), AgentRegistry::SPACE);
+        let back = <AgentRegistry as AccountDeserialize>::try_deserialize(&mut &bytes[..])
+            .expect("deserialize must succeed");
+        assert_eq!(back.authority, registry.authority);
+        assert_eq!(back.agent_id_for(Pubkey::new_from_array([0x42; 32])), Some(OBSERVER));
+    }
+
+    #[test]
+    fn enroll_pure_method_rules() {
+        let mut registry = test_registry();
+        let fresh = Pubkey::new_from_array([0x42; 32]);
+        // Unknown agent id (including GEN) refuses.
+        let err = registry
+            .enroll([0x99; 32], fresh)
+            .expect_err("unknown agent id must refuse");
+        assert!(format!("{:?}", err).contains("UnknownProfileAgent"));
+        let err = registry.enroll(GEN, fresh).expect_err("GEN is not enrollable");
+        assert!(format!("{:?}", err).contains("UnknownProfileAgent"));
+        // Happy path sets the slot.
+        registry.enroll(OBSERVER, fresh).expect("observer enroll must succeed");
+        assert_eq!(registry.agent_id_for(fresh), Some(OBSERVER));
+        // Duplicate agent refuses — no silent replace.
+        let other = Pubkey::new_from_array([0x43; 32]);
+        let err = registry
+            .enroll(OBSERVER, other)
+            .expect_err("occupied agent slot must refuse");
+        assert!(format!("{:?}", err).contains("AgentAlreadyEnrolled"));
+        assert_eq!(registry.agent_id_for(fresh), Some(OBSERVER));
+        assert_eq!(registry.agent_id_for(other), None);
+        // Duplicate pubkey under another agent refuses.
+        let err = registry
+            .enroll(ag(1), fresh)
+            .expect_err("already-enrolled pubkey must refuse");
+        assert!(format!("{:?}", err).contains("PubkeyAlreadyEnrolled"));
+        // A different pubkey for a different agent still enrolls.
+        registry.enroll(ag(1), other).expect("second enroll must succeed");
+        assert_eq!(registry.agent_id_for(other), Some(ag(1)));
+    }
+
+    #[test]
+    fn mapped_resolution_enrolled_and_unenrolled() {
+        let mut registry = test_registry();
+        let fresh_observer = Pubkey::new_from_array([0x42; 32]);
+        let fresh_agent = Pubkey::new_from_array([0x43; 32]);
+        let stranger = Pubkey::new_from_array([0x44; 32]);
+        // Unenrolled: identity for everyone — fixture pubkeys
+        // resolve to themselves, preserving harness semantics.
+        assert_eq!(resolve_agent_id_mapped(&registry, fresh_observer), [0x42; 32]);
+        assert_eq!(resolve_agent_id_mapped(&registry, observer_pubkey()), OBSERVER);
+        assert_eq!(
+            resolve_agent_id_mapped(&registry, Pubkey::new_from_array(ag(1))),
+            ag(1)
+        );
+        registry.enroll(OBSERVER, fresh_observer).expect("enroll observer");
+        registry.enroll(ag(1), fresh_agent).expect("enroll ag1");
+        // Enrolled: the slot's agent id, not the pubkey bytes.
+        assert_eq!(resolve_agent_id_mapped(&registry, fresh_observer), OBSERVER);
+        assert_eq!(resolve_agent_id_mapped(&registry, fresh_agent), ag(1));
+        // Still unenrolled: identity, unchanged.
+        assert_eq!(resolve_agent_id_mapped(&registry, stranger), [0x44; 32]);
+        assert_eq!(resolve_agent_id_mapped(&registry, observer_pubkey()), OBSERVER);
+    }
+
+    #[test]
+    fn enrolled_observer_ingests_and_unenrolled_still_refuses() {
+        // The slice's core proof at the pure level: a fresh pubkey
+        // enrolled as OBSERVER builds an observation record (the
+        // identity-only code refused it NotObserver), and an
+        // unenrolled fresh pubkey is still refused NotObserver.
+        let state = sealed_state();
+        let mut registry = test_registry();
+        let fresh = Pubkey::new_from_array([0x42; 32]);
+        let err = build_observation_record(
+            &registry,
+            &state,
+            [0xC0; 32],
+            100,
+            9100,
+            900_000,
+            fresh,
+            1,
+        )
+        .expect_err("unenrolled fresh observer must refuse");
+        assert!(format!("{:?}", err).contains("NotObserver"));
+        registry.enroll(OBSERVER, fresh).expect("enroll observer");
+        let record = build_observation_record(
+            &registry,
+            &state,
+            [0xC0; 32],
+            100,
+            9100,
+            900_000,
+            fresh,
+            1,
+        )
+        .expect("enrolled observer must ingest");
+        assert_eq!(record.observer, fresh);
+    }
+
+    #[test]
+    fn enrolled_agent_resolves_as_proposer_and_unenrolled_refuses() {
+        // The replay-side proposer gate with a mapped registry: an
+        // enrolled fresh pubkey resolves to its agent id; an
+        // unenrolled one still refuses UnknownProposer.
+        let state = sealed_state();
+        let mut registry = test_registry();
+        let fresh = Pubkey::new_from_array([0x43; 32]);
+        let err = resolve_proposer(&registry, &state, fresh)
+            .expect_err("unenrolled fresh proposer must refuse");
+        assert!(format!("{:?}", err).contains("UnknownProposer"));
+        registry.enroll(ag(2), fresh).expect("enroll ag2");
+        assert_eq!(
+            resolve_proposer(&registry, &state, fresh).expect("enrolled proposer must resolve"),
+            ag(2)
+        );
+    }
+
+    #[test]
     fn build_observation_record_refuses_unsealed() {
         let state = genesis_kernel_state().expect("genesis must construct");
-        let err = build_observation_record(
+        let err = build_observation_record(&test_registry(), 
             &state, [0xC0; 32], 100, 9100, 900_000, observer_pubkey(), 1,
         )
         .expect_err("unsealed ingest must refuse");
@@ -16412,7 +16982,7 @@ mod tests {
     fn build_observation_record_refuses_non_observer_agent() {
         // Agent 1 is registered and active but holds no Observer role.
         let state = sealed_state();
-        let err = build_observation_record(
+        let err = build_observation_record(&test_registry(), 
             &state, [0xC0; 32], 100, 9100, 900_000,
             Pubkey::new_from_array(ag(1)), 1,
         )
@@ -16423,7 +16993,7 @@ mod tests {
     #[test]
     fn build_observation_record_refuses_unknown_pubkey() {
         let state = sealed_state();
-        let err = build_observation_record(
+        let err = build_observation_record(&test_registry(), 
             &state, [0xC0; 32], 100, 9100, 900_000,
             Pubkey::new_from_array([0x77; 32]), 1,
         )
@@ -16435,7 +17005,7 @@ mod tests {
     fn build_observation_record_refuses_future_timestamp() {
         let state = sealed_state();
         assert_eq!(state.clock, 100);
-        let err = build_observation_record(
+        let err = build_observation_record(&test_registry(), 
             &state, [0xC0; 32], 101, 9100, 900_000, observer_pubkey(), 1,
         )
         .expect_err("timestamp after the clock must refuse");
@@ -16445,12 +17015,12 @@ mod tests {
     #[test]
     fn build_observation_record_refuses_expired_and_overconfident() {
         let state = sealed_state();
-        let expired = build_observation_record(
+        let expired = build_observation_record(&test_registry(), 
             &state, [0xC0; 32], 100, 100, 900_000, observer_pubkey(), 1,
         )
         .expect_err("expiry at the clock must refuse");
         assert!(format!("{:?}", expired).contains("ObservationBadWindow"));
-        let overconfident = build_observation_record(
+        let overconfident = build_observation_record(&test_registry(), 
             &state, [0xC0; 32], 100, 9100, SCALE + 1, observer_pubkey(), 1,
         )
         .expect_err("confidence above SCALE must refuse");
@@ -16460,7 +17030,7 @@ mod tests {
     #[test]
     fn build_observation_record_accepts_observer_at_genesis_clock() {
         let state = sealed_state();
-        let record = build_observation_record(
+        let record = build_observation_record(&test_registry(), 
             &state, [0xC0; 32], 100, 9100, 900_000, observer_pubkey(), 7,
         )
         .expect("observer at the genesis clock must ingest");
@@ -16476,7 +17046,7 @@ mod tests {
     fn resolve_proposer_accepts_seeded_agents() {
         let state = sealed_state();
         for n in [1u8, 6u8] {
-            let resolved = resolve_proposer(&state, Pubkey::new_from_array(ag(n)))
+            let resolved = resolve_proposer(&test_registry(), &state, Pubkey::new_from_array(ag(n)))
                 .expect("seeded agent must resolve");
             assert_eq!(resolved, ag(n));
         }
@@ -16485,16 +17055,16 @@ mod tests {
     #[test]
     fn resolve_proposer_refuses_observer_and_unknown() {
         let state = sealed_state();
-        let observer_err = resolve_proposer(&state, observer_pubkey())
+        let observer_err = resolve_proposer(&test_registry(), &state, observer_pubkey())
             .expect_err("role holder without agent registration must refuse");
         assert!(format!("{:?}", observer_err).contains("UnknownProposer"));
-        let unknown_err = resolve_proposer(
+        let unknown_err = resolve_proposer(&test_registry(), 
             &state, Pubkey::new_from_array([0x77; 32]),
         )
         .expect_err("unknown pubkey must refuse");
         assert!(format!("{:?}", unknown_err).contains("UnknownProposer"));
         let unsealed = genesis_kernel_state().expect("genesis must construct");
-        let unsealed_err = resolve_proposer(&unsealed, Pubkey::new_from_array(ag(1)))
+        let unsealed_err = resolve_proposer(&test_registry(), &unsealed, Pubkey::new_from_array(ag(1)))
             .expect_err("unsealed proposer must refuse");
         assert!(format!("{:?}", unsealed_err).contains("NotSealed"));
     }
@@ -16506,15 +17076,15 @@ mod tests {
         // the Observer role holder and unknown pubkeys refuse.
         let k = sealed_launch_kernel_env().expect("a genesis kernel must build");
         for n in [1u8, 6u8] {
-            let resolved = resolve_proposer_on_kernel(&k, Pubkey::new_from_array(ag(n)))
+            let resolved = resolve_proposer_on_kernel(&test_registry(), &k, Pubkey::new_from_array(ag(n)))
                 .expect("seeded agent must resolve on the kernel");
             assert_eq!(resolved, ag(n));
         }
-        let observer_err = resolve_proposer_on_kernel(&k, observer_pubkey())
+        let observer_err = resolve_proposer_on_kernel(&test_registry(), &k, observer_pubkey())
             .expect_err("role holder without agent registration must refuse");
         assert!(format!("{:?}", observer_err).contains("UnknownProposer"));
         let unknown_err =
-            resolve_proposer_on_kernel(&k, Pubkey::new_from_array([0x77; 32]))
+            resolve_proposer_on_kernel(&test_registry(), &k, Pubkey::new_from_array([0x77; 32]))
                 .expect_err("unknown pubkey must refuse");
         assert!(format!("{:?}", unknown_err).contains("UnknownProposer"));
     }
@@ -16529,7 +17099,7 @@ mod tests {
         let observer_id =
             resolve_agent_id(observer_pubkey());
         let proposer_id =
-            resolve_proposer(&state, Pubkey::new_from_array(ag(1)))
+            resolve_proposer(&test_registry(), &state, Pubkey::new_from_array(ag(1)))
                 .expect("agent 1 must resolve as proposer");
         assert_eq!(observer_id, OBSERVER);
         assert_eq!(proposer_id, ag(1));
@@ -16564,7 +17134,7 @@ mod tests {
             Pubkey::new_from_array(ag(1)), 7,
         )
         .expect("sealed-head register must build");
-        let obs = build_observation_record(
+        let obs = build_observation_record(&test_registry(), 
             &state, [0xC0; 32], 100, 9100, 900_000, observer_pubkey(), 7,
         )
         .expect("observer at the genesis clock must ingest");
@@ -16574,7 +17144,7 @@ mod tests {
     #[test]
     fn replay_advances_registered_record_to_kernel_registered() {
         let (state, mut record, obs) = replay_pair();
-        let life = replay_transition_from_records(&state, &mut record, &obs,
+        let life = replay_transition_from_records(&test_registry(), &state, &mut record, &obs,
     &[]
 )
             .expect("genesis-clock pair must replay");
@@ -16595,7 +17165,7 @@ mod tests {
     fn replay_refuses_unsealed() {
         let (mut state, mut record, obs) = replay_pair();
         state.sealed = false;
-        let err = replay_transition_from_records(&state, &mut record, &obs,
+        let err = replay_transition_from_records(&test_registry(), &state, &mut record, &obs,
     &[]
 )
             .expect_err("unsealed replay must refuse");
@@ -16606,11 +17176,11 @@ mod tests {
     #[test]
     fn replay_is_once_only() {
         let (state, mut record, obs) = replay_pair();
-        replay_transition_from_records(&state, &mut record, &obs,
+        replay_transition_from_records(&test_registry(), &state, &mut record, &obs,
     &[]
 )
             .expect("first replay must succeed");
-        let err = replay_transition_from_records(&state, &mut record, &obs,
+        let err = replay_transition_from_records(&test_registry(), &state, &mut record, &obs,
     &[]
 )
             .expect_err("second replay must refuse");
@@ -16622,7 +17192,7 @@ mod tests {
     fn replay_refuses_parent_mismatch() {
         let (state, mut record, obs) = replay_pair();
         record.parent_index = 1;
-        let err = replay_transition_from_records(&state, &mut record, &obs,
+        let err = replay_transition_from_records(&test_registry(), &state, &mut record, &obs,
     &[]
 )
             .expect_err("parent off the sealed head must refuse");
@@ -16633,11 +17203,11 @@ mod tests {
     #[test]
     fn replay_refuses_observation_mismatch() {
         let (state, mut record, _) = replay_pair();
-        let other = build_observation_record(
+        let other = build_observation_record(&test_registry(), 
             &state, [0xC1; 32], 100, 9100, 900_000, observer_pubkey(), 7,
         )
         .expect("second observation must build");
-        let err = replay_transition_from_records(&state, &mut record, &other,
+        let err = replay_transition_from_records(&test_registry(), &state, &mut record, &other,
     &[]
 )
             .expect_err("observation id mismatch must refuse");
@@ -16651,7 +17221,7 @@ mod tests {
         // record can exist — replay is where it must be refused.
         let (state, mut record, obs) = replay_pair();
         record.proposer = Pubkey::new_from_array([0x99; 32]);
-        let err = replay_transition_from_records(&state, &mut record, &obs,
+        let err = replay_transition_from_records(&test_registry(), &state, &mut record, &obs,
     &[]
 )
             .expect_err("unknown proposer must refuse");
@@ -16672,7 +17242,7 @@ mod tests {
             observer: Pubkey::new_from_array(ag(1)),
             bump: 7,
         };
-        let err = replay_transition_from_records(&state, &mut record, &obs,
+        let err = replay_transition_from_records(&test_registry(), &state, &mut record, &obs,
     &[]
 )
             .expect_err("non-observer observation must refuse");
@@ -16684,7 +17254,7 @@ mod tests {
     fn replay_refuses_expired_transition_and_overconfident_observation() {
         let (state, mut record, obs) = replay_pair();
         record.expires_at = 100;
-        let err = replay_transition_from_records(&state, &mut record, &obs,
+        let err = replay_transition_from_records(&test_registry(), &state, &mut record, &obs,
     &[]
 )
             .expect_err("expiry at the clock must refuse in the kernel");
@@ -16699,7 +17269,7 @@ mod tests {
             observer: observer_pubkey(),
             bump: 7,
         };
-        let err = replay_transition_from_records(&state, &mut record, &obs,
+        let err = replay_transition_from_records(&test_registry(), &state, &mut record, &obs,
     &[]
 )
             .expect_err("confidence above SCALE must refuse in the kernel");
@@ -16711,7 +17281,7 @@ mod tests {
     fn replay_refuses_governance_and_unknown_types() {
         let (state, mut record, obs) = replay_pair();
         record.transition_type = T_GOV_COUNCIL;
-        let err = replay_transition_from_records(&state, &mut record, &obs,
+        let err = replay_transition_from_records(&test_registry(), &state, &mut record, &obs,
     &[]
 )
             .expect_err("governance type must refuse in the kernel");
@@ -16719,7 +17289,7 @@ mod tests {
         assert_eq!(record.stage, TransitionRecord::REGISTERED);
         let (state, mut record, obs) = replay_pair();
         record.transition_type = [0x77; 32];
-        let err = replay_transition_from_records(&state, &mut record, &obs,
+        let err = replay_transition_from_records(&test_registry(), &state, &mut record, &obs,
     &[]
 )
             .expect_err("type without a policy must refuse in the kernel");
@@ -16778,13 +17348,13 @@ mod tests {
     #[test]
     fn advanced_clock_unblocks_later_observation() {
         let mut state = sealed_state();
-        let refused = build_observation_record(
+        let refused = build_observation_record(&test_registry(), 
             &state, [0xC0; 32], 150, 9100, 900_000, observer_pubkey(), 7,
         )
         .expect_err("timestamp after the genesis clock must refuse");
         assert!(format!("{:?}", refused).contains("ObservationFromFuture"));
         advance_clock_on_state(&mut state, 200).expect("advance must succeed");
-        let record = build_observation_record(
+        let record = build_observation_record(&test_registry(), 
             &state, [0xC0; 32], 150, 9100, 900_000, observer_pubkey(), 7,
         )
         .expect("timestamp at or before the advanced clock must ingest");
@@ -16799,11 +17369,11 @@ mod tests {
             Pubkey::new_from_array(ag(1)), 7,
         )
         .expect("sealed-head register must build at the advanced clock");
-        let obs = build_observation_record(
+        let obs = build_observation_record(&test_registry(), 
             &state, [0xC0; 32], 150, 9100, 900_000, observer_pubkey(), 7,
         )
         .expect("post-genesis observation must build");
-        let life = replay_transition_from_records(&state, &mut record, &obs,
+        let life = replay_transition_from_records(&test_registry(), &state, &mut record, &obs,
     &[]
 )
             .expect("post-genesis pair must replay at the advanced clock");
@@ -16816,7 +17386,7 @@ mod tests {
         let (state, mut record, obs) = replay_pair();
         let mut advanced = state;
         advance_clock_on_state(&mut advanced, 9100).expect("advance must succeed");
-        let err = replay_transition_from_records(&advanced, &mut record, &obs,
+        let err = replay_transition_from_records(&test_registry(), &advanced, &mut record, &obs,
     &[]
 )
             .expect_err("observation lapsed by the advance must refuse in the kernel");
@@ -16835,11 +17405,11 @@ mod tests {
             Pubkey::new_from_array(ag(1)), 7,
         )
         .expect("sealed-head register must build");
-        let obs = build_observation_record(
+        let obs = build_observation_record(&test_registry(), 
             &state, [0xC0; 32], 250, 9100, 900_000, observer_pubkey(), 7,
         )
         .expect("observation inside the advanced window must build");
-        let life = replay_transition_from_records(&state, &mut record, &obs,
+        let life = replay_transition_from_records(&test_registry(), &state, &mut record, &obs,
     &[]
 )
             .expect("pair must replay after chained advances");
@@ -16849,7 +17419,7 @@ mod tests {
 
     fn evaluated_pair() -> (KernelState, TransitionRecord, ObservationRecord) {
         let (state, mut record, obs) = replay_pair();
-        replay_transition_from_records(&state, &mut record, &obs,
+        replay_transition_from_records(&test_registry(), &state, &mut record, &obs,
     &[]
 )
             .expect("pair must replay before evaluate");
@@ -16860,7 +17430,7 @@ mod tests {
     #[test]
     fn evaluate_advances_kernel_registered_to_evaluated() {
         let (state, mut record, obs) = evaluated_pair();
-        let life = evaluate_transition_from_records(&state, &mut record, &obs,
+        let life = evaluate_transition_from_records(&test_registry(), &state, &mut record, &obs,
     &[]
 )
             .expect("kernel-registered pair must evaluate");
@@ -16880,7 +17450,7 @@ mod tests {
     #[test]
     fn evaluate_refuses_registered_stage() {
         let (state, mut record, obs) = replay_pair();
-        let err = evaluate_transition_from_records(&state, &mut record, &obs,
+        let err = evaluate_transition_from_records(&test_registry(), &state, &mut record, &obs,
     &[]
 )
             .expect_err("a merely-registered record has nothing to evaluate");
@@ -16891,11 +17461,11 @@ mod tests {
     #[test]
     fn evaluate_is_once_only() {
         let (state, mut record, obs) = evaluated_pair();
-        evaluate_transition_from_records(&state, &mut record, &obs,
+        evaluate_transition_from_records(&test_registry(), &state, &mut record, &obs,
     &[]
 )
             .expect("first evaluate must succeed");
-        let err = evaluate_transition_from_records(&state, &mut record, &obs,
+        let err = evaluate_transition_from_records(&test_registry(), &state, &mut record, &obs,
     &[]
 )
             .expect_err("second evaluate must refuse");
@@ -16907,7 +17477,7 @@ mod tests {
     fn evaluate_refuses_unsealed() {
         let (mut state, mut record, obs) = evaluated_pair();
         state.sealed = false;
-        let err = evaluate_transition_from_records(&state, &mut record, &obs,
+        let err = evaluate_transition_from_records(&test_registry(), &state, &mut record, &obs,
     &[]
 )
             .expect_err("unsealed evaluate must refuse");
@@ -16919,7 +17489,7 @@ mod tests {
     fn evaluate_refuses_parent_mismatch() {
         let (state, mut record, obs) = evaluated_pair();
         record.parent_index = 1;
-        let err = evaluate_transition_from_records(&state, &mut record, &obs,
+        let err = evaluate_transition_from_records(&test_registry(), &state, &mut record, &obs,
     &[]
 )
             .expect_err("parent off the sealed head must refuse");
@@ -16930,11 +17500,11 @@ mod tests {
     #[test]
     fn evaluate_refuses_observation_mismatch() {
         let (state, mut record, _) = evaluated_pair();
-        let other = build_observation_record(
+        let other = build_observation_record(&test_registry(), 
             &state, [0xC1; 32], 100, 9100, 900_000, observer_pubkey(), 7,
         )
         .expect("second observation must build");
-        let err = evaluate_transition_from_records(&state, &mut record, &other,
+        let err = evaluate_transition_from_records(&test_registry(), &state, &mut record, &other,
     &[]
 )
             .expect_err("observation id mismatch must refuse");
@@ -16946,7 +17516,7 @@ mod tests {
     fn evaluate_refuses_unknown_proposer() {
         let (state, mut record, obs) = evaluated_pair();
         record.proposer = Pubkey::new_from_array([0x99; 32]);
-        let err = evaluate_transition_from_records(&state, &mut record, &obs,
+        let err = evaluate_transition_from_records(&test_registry(), &state, &mut record, &obs,
     &[]
 )
             .expect_err("unknown proposer must refuse");
@@ -16959,7 +17529,7 @@ mod tests {
         let (state, mut record, obs) = evaluated_pair();
         let mut advanced = state;
         advance_clock_on_state(&mut advanced, 200).expect("advance must succeed");
-        let life = evaluate_transition_from_records(&advanced, &mut record, &obs,
+        let life = evaluate_transition_from_records(&test_registry(), &advanced, &mut record, &obs,
     &[]
 )
             .expect("pair must evaluate at the advanced clock");
@@ -17022,7 +17592,7 @@ mod tests {
 
     fn eligible_pair() -> (KernelState, TransitionRecord, ObservationRecord) {
         let (state, mut record, obs) = evaluated_pair();
-        evaluate_transition_from_records(&state, &mut record, &obs,
+        evaluate_transition_from_records(&test_registry(), &state, &mut record, &obs,
     &[]
 )
             .expect("pair must evaluate before marking eligible");
@@ -17033,7 +17603,7 @@ mod tests {
     #[test]
     fn mark_eligible_advances_evaluated_to_eligible() {
         let (mut state, mut record, obs) = eligible_pair();
-        let life = mark_eligible_from_records(&mut state, &mut record, &obs,
+        let life = mark_eligible_from_records(&test_registry(), &mut state, &mut record, &obs,
     &[]
 )
             .expect("evaluated pair must mark eligible");
@@ -17058,7 +17628,7 @@ mod tests {
     #[test]
     fn mark_eligible_refuses_kernel_registered_stage() {
         let (mut state, mut record, obs) = evaluated_pair();
-        let err = mark_eligible_from_records(&mut state, &mut record, &obs,
+        let err = mark_eligible_from_records(&test_registry(), &mut state, &mut record, &obs,
     &[]
 )
             .expect_err("a merely kernel-registered record has no evaluation to make eligible");
@@ -17069,11 +17639,11 @@ mod tests {
     #[test]
     fn mark_eligible_is_once_only() {
         let (mut state, mut record, obs) = eligible_pair();
-        mark_eligible_from_records(&mut state, &mut record, &obs,
+        mark_eligible_from_records(&test_registry(), &mut state, &mut record, &obs,
     &[]
 )
             .expect("first mark_eligible must succeed");
-        let err = mark_eligible_from_records(&mut state, &mut record, &obs,
+        let err = mark_eligible_from_records(&test_registry(), &mut state, &mut record, &obs,
     &[]
 )
             .expect_err("second mark_eligible must refuse");
@@ -17085,7 +17655,7 @@ mod tests {
     fn mark_eligible_refuses_unsealed() {
         let (mut state, mut record, obs) = eligible_pair();
         state.sealed = false;
-        let err = mark_eligible_from_records(&mut state, &mut record, &obs,
+        let err = mark_eligible_from_records(&test_registry(), &mut state, &mut record, &obs,
     &[]
 )
             .expect_err("unsealed mark_eligible must refuse");
@@ -17097,7 +17667,7 @@ mod tests {
     fn mark_eligible_refuses_parent_mismatch() {
         let (mut state, mut record, obs) = eligible_pair();
         record.parent_index = 1;
-        let err = mark_eligible_from_records(&mut state, &mut record, &obs,
+        let err = mark_eligible_from_records(&test_registry(), &mut state, &mut record, &obs,
     &[]
 )
             .expect_err("parent off the sealed head must refuse");
@@ -17108,11 +17678,11 @@ mod tests {
     #[test]
     fn mark_eligible_refuses_observation_mismatch() {
         let (mut state, mut record, _) = eligible_pair();
-        let other = build_observation_record(
+        let other = build_observation_record(&test_registry(), 
             &state, [0xC1; 32], 100, 9100, 900_000, observer_pubkey(), 7,
         )
         .expect("second observation must build");
-        let err = mark_eligible_from_records(&mut state, &mut record, &other,
+        let err = mark_eligible_from_records(&test_registry(), &mut state, &mut record, &other,
     &[]
 )
             .expect_err("observation id mismatch must refuse");
@@ -17124,7 +17694,7 @@ mod tests {
     fn mark_eligible_refuses_unknown_proposer() {
         let (mut state, mut record, obs) = eligible_pair();
         record.proposer = Pubkey::new_from_array([0x99; 32]);
-        let err = mark_eligible_from_records(&mut state, &mut record, &obs,
+        let err = mark_eligible_from_records(&test_registry(), &mut state, &mut record, &obs,
     &[]
 )
             .expect_err("unknown proposer must refuse");
@@ -17146,7 +17716,7 @@ mod tests {
             observer: Pubkey::new_from_array(ag(1)),
             bump: 7,
         };
-        let err = mark_eligible_from_records(&mut state, &mut record, &obs,
+        let err = mark_eligible_from_records(&test_registry(), &mut state, &mut record, &obs,
     &[]
 )
             .expect_err("non-observer observation must refuse");
@@ -17159,7 +17729,7 @@ mod tests {
         let (state, mut record, obs) = eligible_pair();
         let mut advanced = state;
         advance_clock_on_state(&mut advanced, 200).expect("advance must succeed");
-        let life = mark_eligible_from_records(&mut advanced, &mut record, &obs,
+        let life = mark_eligible_from_records(&test_registry(), &mut advanced, &mut record, &obs,
     &[]
 )
             .expect("pair must mark eligible at the advanced clock");
@@ -17177,7 +17747,7 @@ mod tests {
         assert_eq!(record.consensus_deadline, 0);
         let mut advanced = state;
         advance_clock_on_state(&mut advanced, 200).expect("advance must succeed");
-        mark_eligible_from_records(&mut advanced, &mut record, &obs,
+        mark_eligible_from_records(&test_registry(), &mut advanced, &mut record, &obs,
     &[]
 )
             .expect("pair must mark eligible at the advanced clock");
@@ -17193,7 +17763,7 @@ mod tests {
         let (state, mut record, obs) = eligible_pair();
         let mut advanced = state;
         advance_clock_on_state(&mut advanced, 9100).expect("advance must succeed");
-        let err = mark_eligible_from_records(&mut advanced, &mut record, &obs,
+        let err = mark_eligible_from_records(&test_registry(), &mut advanced, &mut record, &obs,
     &[]
 )
             .expect_err("lapsed observation must refuse eligibility in the kernel");
@@ -17212,7 +17782,7 @@ mod tests {
         let (state, mut record, obs) = eligible_pair();
         let mut advanced = state;
         advance_clock_on_state(&mut advanced, 9100).expect("advance must succeed");
-        let err = mark_eligible_from_records(&mut advanced, &mut record, &obs,
+        let err = mark_eligible_from_records(&test_registry(), &mut advanced, &mut record, &obs,
     &[]
 )
             .expect_err("lapsed observation must refuse eligibility in the kernel");
@@ -17222,7 +17792,7 @@ mod tests {
 
     fn signal_pair() -> (KernelState, TransitionRecord, ObservationRecord) {
         let (mut state, mut record, obs) = eligible_pair();
-        mark_eligible_from_records(&mut state, &mut record, &obs,
+        mark_eligible_from_records(&test_registry(), &mut state, &mut record, &obs,
     &[]
 )
             .expect("pair must mark eligible before signalling");
@@ -17291,7 +17861,7 @@ mod tests {
         // confidence 1.0. The tally comes from the kernel, not from a
         // program-side sum.
         let (state, mut record, obs) = signal_pair();
-        let (signal, total, confidence) = submit_signal_from_records(
+        let (signal, total, confidence) = submit_signal_from_records(&test_registry(), 
             &state, &mut record, &obs, &[], Pubkey::new_from_array(ag(2)),
             0, SCALE, SCALE, true, 7,
             &[],
@@ -17321,7 +17891,7 @@ mod tests {
         // weight: the tally stays zero, and a caller-supplied
         // support_raw with has_support false normalizes to 0.
         let (state, mut record, obs) = signal_pair();
-        let (signal, total, confidence) = submit_signal_from_records(
+        let (signal, total, confidence) = submit_signal_from_records(&test_registry(), 
             &state, &mut record, &obs, &[], Pubkey::new_from_array(ag(3)),
             0, SCALE, 5, false, 7,
             &[],
@@ -17336,7 +17906,7 @@ mod tests {
     #[test]
     fn submit_signal_refuses_wrong_stage() {
         let (state, mut record, obs) = evaluated_pair();
-        let err = submit_signal_from_records(
+        let err = submit_signal_from_records(&test_registry(), 
             &state, &mut record, &obs, &[], Pubkey::new_from_array(ag(2)),
             0, SCALE, SCALE, true, 7,
             &[],
@@ -17348,11 +17918,11 @@ mod tests {
     #[test]
     fn submit_signal_refuses_observation_mismatch() {
         let (state, mut record, _) = signal_pair();
-        let other = build_observation_record(
+        let other = build_observation_record(&test_registry(), 
             &state, [0xC1; 32], 100, 9100, 900_000, observer_pubkey(), 7,
         )
         .expect("second observation must build");
-        let err = submit_signal_from_records(
+        let err = submit_signal_from_records(&test_registry(), 
             &state, &mut record, &other, &[], Pubkey::new_from_array(ag(2)),
             0, SCALE, SCALE, true, 7,
             &[],
@@ -17364,14 +17934,14 @@ mod tests {
     #[test]
     fn submit_signal_refuses_unknown_agent_and_over_range_raw() {
         let (state, mut record, obs) = signal_pair();
-        let err = submit_signal_from_records(
+        let err = submit_signal_from_records(&test_registry(), 
             &state, &mut record, &obs, &[], Pubkey::new_from_array([0x77; 32]),
             0, SCALE, SCALE, true, 7,
             &[],
 )
         .expect_err("unknown pubkey is no agent and must refuse in the kernel");
         assert!(format!("{:?}", err).contains("SignalFailed"));
-        let err = submit_signal_from_records(
+        let err = submit_signal_from_records(&test_registry(), 
             &state, &mut record, &obs, &[], Pubkey::new_from_array(ag(2)),
             0, SCALE + 1, SCALE, true, 7,
             &[],
@@ -17383,7 +17953,7 @@ mod tests {
     #[test]
     fn submit_signal_refuses_wrong_round_arg() {
         let (state, mut record, obs) = signal_pair();
-        let err = submit_signal_from_records(
+        let err = submit_signal_from_records(&test_registry(), 
             &state, &mut record, &obs, &[], Pubkey::new_from_array(ag(2)),
             1, SCALE, SCALE, true, 7,
             &[],
@@ -17405,7 +17975,7 @@ mod tests {
             submitted_at: 100,
             bump: 7,
         };
-        let err = submit_signal_from_records(
+        let err = submit_signal_from_records(&test_registry(), 
             &state, &mut record, &obs, &[foreign], Pubkey::new_from_array(ag(3)),
             0, SCALE, SCALE, true, 7,
             &[],
@@ -17419,7 +17989,7 @@ mod tests {
         record: &mut TransitionRecord,
         obs: &ObservationRecord,
     ) -> SignalRecord {
-        let (signal, _, _) = submit_signal_from_records(
+        let (signal, _, _) = submit_signal_from_records(&test_registry(), 
             state, record, obs, &[], Pubkey::new_from_array(ag(2)),
             0, SCALE, SCALE, true, 7,
             &[],
@@ -17432,7 +18002,7 @@ mod tests {
     fn submit_signal_refuses_same_round_duplicate() {
         let (state, mut record, obs) = signal_pair();
         let first = first_signal_at_genesis(&state, &mut record, &obs);
-        let err = submit_signal_from_records(
+        let err = submit_signal_from_records(&test_registry(), 
             &state, &mut record, &obs, &[first], Pubkey::new_from_array(ag(2)),
             0, SCALE, SCALE, true, 7,
             &[],
@@ -17451,7 +18021,7 @@ mod tests {
         let first = first_signal_at_genesis(&state, &mut record, &obs);
         let mut advanced = state;
         advance_clock_on_state(&mut advanced, 133).expect("advance must succeed");
-        let (signal, total, confidence) = submit_signal_from_records(
+        let (signal, total, confidence) = submit_signal_from_records(&test_registry(), 
             &advanced, &mut record, &obs, &[first], Pubkey::new_from_array(ag(2)),
             1, SCALE, SCALE, true, 7,
             &[],
@@ -17472,7 +18042,7 @@ mod tests {
         let first = first_signal_at_genesis(&state, &mut record, &obs);
         let mut advanced = state;
         advance_clock_on_state(&mut advanced, 133).expect("advance must succeed");
-        let err = submit_signal_from_records(
+        let err = submit_signal_from_records(&test_registry(), 
             &advanced, &mut record, &obs, &[first], Pubkey::new_from_array(ag(2)),
             1, SCALE, 0, true, 7,
             &[],
@@ -17489,7 +18059,7 @@ mod tests {
         // accumulates across agents, not just the submitting one.
         let (state, mut record, obs) = signal_pair();
         let first = first_signal_at_genesis(&state, &mut record, &obs);
-        let (second, total, confidence) = submit_signal_from_records(
+        let (second, total, confidence) = submit_signal_from_records(&test_registry(), 
             &state, &mut record, &obs, &[first], Pubkey::new_from_array(ag(3)),
             0, SCALE, 0, true, 7,
             &[],
@@ -17508,7 +18078,7 @@ mod tests {
         let (state, mut record, obs) = signal_pair();
         let mut advanced = state;
         advance_clock_on_state(&mut advanced, 200).expect("advance must succeed");
-        let err = submit_signal_from_records(
+        let err = submit_signal_from_records(&test_registry(), 
             &advanced, &mut record, &obs, &[], Pubkey::new_from_array(ag(2)),
             2, SCALE, SCALE, true, 7,
             &[],
@@ -17519,7 +18089,7 @@ mod tests {
 
     fn selected_pair() -> (KernelState, TransitionRecord, ObservationRecord, SignalRecord) {
         let (state, mut record, obs) = signal_pair();
-        let (signal, _, _) = submit_signal_from_records(
+        let (signal, _, _) = submit_signal_from_records(&test_registry(), 
             &state, &mut record, &obs, &[], Pubkey::new_from_array(ag(2)),
             0, SCALE, SCALE, true, 7,
             &[],
@@ -17532,7 +18102,7 @@ mod tests {
     fn two_signals() -> (KernelState, TransitionRecord, ObservationRecord, SignalRecord, SignalRecord)
     {
         let (state, mut record, obs, first) = selected_pair();
-        let (second, _, _) = submit_signal_from_records(
+        let (second, _, _) = submit_signal_from_records(&test_registry(), 
             &state, &mut record, &obs, &[first], Pubkey::new_from_array(ag(3)),
             0, SCALE, 0, true, 7,
             &[],
@@ -17549,7 +18119,7 @@ mod tests {
         // qualifies, so the kernel selects and the stage advances to 4.
         let (mut state, mut record, obs, first) = selected_pair();
         advance_clock_on_state(&mut state, 200).expect("advance to the deadline must succeed");
-        let life = select_candidate_from_records(&state, &mut record, &obs, &[first],
+        let life = select_candidate_from_records(&test_registry(), &state, &mut record, &obs, &[first],
     &[]
 )
             .expect("closed window with a qualifying tally must select");
@@ -17565,7 +18135,7 @@ mod tests {
         // ConsensusStillOpen must refuse, and the stage stays ELIGIBLE.
         let (mut state, mut record, obs, first) = selected_pair();
         advance_clock_on_state(&mut state, 199).expect("advance must succeed");
-        let err = select_candidate_from_records(&state, &mut record, &obs, &[first],
+        let err = select_candidate_from_records(&test_registry(), &state, &mut record, &obs, &[first],
     &[]
 )
             .expect_err("an open window must refuse selection");
@@ -17576,7 +18146,7 @@ mod tests {
     #[test]
     fn select_refuses_wrong_stage() {
         let (state, mut record, obs) = evaluated_pair();
-        let err = select_candidate_from_records(&state, &mut record, &obs, &[],
+        let err = select_candidate_from_records(&test_registry(), &state, &mut record, &obs, &[],
     &[]
 )
             .expect_err("a merely-evaluated record has no window to select in");
@@ -17590,7 +18160,7 @@ mod tests {
         // omitted-record set can never prove the tally.
         let (mut state, mut record, obs, first, _) = two_signals();
         advance_clock_on_state(&mut state, 200).expect("advance must succeed");
-        let err = select_candidate_from_records(&state, &mut record, &obs, &[first],
+        let err = select_candidate_from_records(&test_registry(), &state, &mut record, &obs, &[first],
     &[]
 )
             .expect_err("a set short of signal_count must refuse");
@@ -17605,7 +18175,7 @@ mod tests {
         // reaching the count by duplication cannot pass either.
         let (mut state, mut record, obs, first, _) = two_signals();
         advance_clock_on_state(&mut state, 200).expect("advance must succeed");
-        let err = select_candidate_from_records(&state, &mut record, &obs, &[first, first],
+        let err = select_candidate_from_records(&test_registry(), &state, &mut record, &obs, &[first, first],
     &[]
 )
             .expect_err("a duplicated prior must refuse");
@@ -17619,7 +18189,7 @@ mod tests {
         // quorum, but confidence 0 is below the 0.5 threshold, so the
         // kernel refuses and the stage stays ELIGIBLE.
         let (state, mut record, obs) = signal_pair();
-        let (signal, _, _) = submit_signal_from_records(
+        let (signal, _, _) = submit_signal_from_records(&test_registry(), 
             &state, &mut record, &obs, &[], Pubkey::new_from_array(ag(2)),
             0, SCALE, 0, true, 7,
             &[],
@@ -17627,7 +18197,7 @@ mod tests {
         .expect("support-0 signal must submit");
         let mut advanced = state;
         advance_clock_on_state(&mut advanced, 200).expect("advance must succeed");
-        let err = select_candidate_from_records(&advanced, &mut record, &obs, &[signal],
+        let err = select_candidate_from_records(&test_registry(), &advanced, &mut record, &obs, &[signal],
     &[]
 )
             .expect_err("confidence below threshold must refuse selection");
@@ -17649,7 +18219,7 @@ mod tests {
             submitted_at: 100,
             bump: 7,
         };
-        let err = select_candidate_from_records(&state, &mut record, &obs, &[foreign],
+        let err = select_candidate_from_records(&test_registry(), &state, &mut record, &obs, &[foreign],
     &[]
 )
             .expect_err("a prior from another transition must refuse");
@@ -17661,11 +18231,11 @@ mod tests {
     fn select_is_once_only() {
         let (mut state, mut record, obs, first) = selected_pair();
         advance_clock_on_state(&mut state, 200).expect("advance must succeed");
-        select_candidate_from_records(&state, &mut record, &obs, &[first],
+        select_candidate_from_records(&test_registry(), &state, &mut record, &obs, &[first],
     &[]
 )
             .expect("first select must succeed");
-        let err = select_candidate_from_records(&state, &mut record, &obs, &[first],
+        let err = select_candidate_from_records(&test_registry(), &state, &mut record, &obs, &[first],
     &[]
 )
             .expect_err("a second select must refuse on stage");
@@ -17680,7 +18250,7 @@ mod tests {
         let (state, mut record, obs) = signal_pair();
         let first = first_signal_at_genesis(&state, &mut record, &obs);
         assert_eq!(record.signal_count, 1);
-        let err = submit_signal_from_records(
+        let err = submit_signal_from_records(&test_registry(), 
             &state, &mut record, &obs, &[first], Pubkey::new_from_array(ag(2)),
             0, SCALE, SCALE, true, 7,
             &[],
@@ -17690,7 +18260,7 @@ mod tests {
         assert_eq!(record.signal_count, 1);
         let mut advanced = state;
         advance_clock_on_state(&mut advanced, 133).expect("advance must succeed");
-        let (_, _, _) = submit_signal_from_records(
+        let (_, _, _) = submit_signal_from_records(&test_registry(), 
             &advanced, &mut record, &obs, &[first], Pubkey::new_from_array(ag(2)),
             1, SCALE, SCALE, true, 7,
             &[],
@@ -17722,19 +18292,19 @@ mod tests {
             Pubkey::new_from_array(ag(1)), 7,
         )
         .expect("sibling register must build");
-        let obs = build_observation_record(
+        let obs = build_observation_record(&test_registry(), 
             &state, obs_id, 100, 9100, 900_000, observer_pubkey(), 7,
         )
         .expect("sibling observation must build");
-        replay_transition_from_records(&state, &mut record, &obs,
+        replay_transition_from_records(&test_registry(), &state, &mut record, &obs,
     &[]
 )
             .expect("sibling replay must succeed");
-        evaluate_transition_from_records(&state, &mut record, &obs,
+        evaluate_transition_from_records(&test_registry(), &state, &mut record, &obs,
     &[]
 )
             .expect("sibling evaluate must succeed");
-        mark_eligible_from_records(&mut state, &mut record, &obs,
+        mark_eligible_from_records(&test_registry(), &mut state, &mut record, &obs,
     &[]
 )
             .expect("sibling mark eligible must succeed");
@@ -17756,7 +18326,7 @@ mod tests {
         if at_clock > state.clock {
             advance_clock_on_state(&mut state, at_clock).expect("advance must succeed");
         }
-        let (sig, _, _) = submit_signal_from_records(
+        let (sig, _, _) = submit_signal_from_records(&test_registry(), 
             &state, record, obs, priors, Pubkey::new_from_array(ag(agent_n)),
             0, SCALE, support_raw, true, 7,
             &[],
@@ -17788,7 +18358,7 @@ mod tests {
             observation_record: &sib_obs,
             prior_signals: &[sib_sig],
         };
-        let life = select_candidate_from_records_with_siblings(
+        let life = select_candidate_from_records_with_siblings(&test_registry(), 
             &state, &mut target, &target_obs, &[first], &[sibling],
             &[],
 )
@@ -17815,7 +18385,7 @@ mod tests {
             observation_record: &sib_obs,
             prior_signals: &[sib_sig],
         };
-        let err = select_candidate_from_records_with_siblings(
+        let err = select_candidate_from_records_with_siblings(&test_registry(), 
             &state, &mut target, &target_obs, &[first, second], &[sibling],
             &[],
 )
@@ -17839,7 +18409,7 @@ mod tests {
             observation_record: &sib_obs,
             prior_signals: &[sib_sig],
         };
-        let err = select_candidate_from_records_with_siblings(
+        let err = select_candidate_from_records_with_siblings(&test_registry(), 
             &state, &mut target, &target_obs, &[first], &[sibling],
             &[],
 )
@@ -17864,7 +18434,7 @@ mod tests {
             observation_record: &sib_obs,
             prior_signals: &[sib_sig],
         };
-        let err = select_candidate_from_records_with_siblings(
+        let err = select_candidate_from_records_with_siblings(&test_registry(), 
             &state, &mut target, &target_obs, &[target_sig], &[sibling],
             &[],
 )
@@ -17888,7 +18458,7 @@ mod tests {
             observation_record: &sib_obs,
             prior_signals: &[sib_sig],
         };
-        let life = select_candidate_from_records_with_siblings(
+        let life = select_candidate_from_records_with_siblings(&test_registry(), 
             &state, &mut target, &target_obs, &[first], &[sibling],
             &[],
 )
@@ -17913,7 +18483,7 @@ mod tests {
             observation_record: &sib_obs,
             prior_signals: &[sib_sig],
         };
-        let err = select_candidate_from_records_with_siblings(
+        let err = select_candidate_from_records_with_siblings(&test_registry(), 
             &state, &mut target, &target_obs, &[first], &[sibling],
             &[],
 )
@@ -17939,7 +18509,7 @@ mod tests {
             observation_record: &sib_obs,
             prior_signals: &[sib_sig],
         };
-        let life = select_candidate_from_records_with_siblings(
+        let life = select_candidate_from_records_with_siblings(&test_registry(), 
             &state, &mut target, &target_obs, &[target_sig], &[sibling],
             &[],
 )
@@ -17965,7 +18535,7 @@ mod tests {
             observation_record: &sib_obs,
             prior_signals: &[sib_first],
         };
-        let err = select_candidate_from_records_with_siblings(
+        let err = select_candidate_from_records_with_siblings(&test_registry(), 
             &state, &mut target, &target_obs, &[first], &[sibling],
             &[],
 )
@@ -18014,7 +18584,7 @@ mod tests {
             observation_record: &sib_obs,
             prior_signals: &[],
         };
-        let err = select_candidate_from_records_with_siblings(
+        let err = select_candidate_from_records_with_siblings(&test_registry(), 
             &state, &mut target, &target_obs, &[first], &[sibling],
             &[],
 )
@@ -18037,15 +18607,15 @@ mod tests {
             Pubkey::new_from_array(ag(1)), 7,
         )
         .expect("sibling register must build");
-        let sib_obs = build_observation_record(
+        let sib_obs = build_observation_record(&test_registry(), 
             &eval_state, [0xC1; 32], 100, 9100, 900_000, observer_pubkey(), 7,
         )
         .expect("sibling observation must build");
-        replay_transition_from_records(&eval_state, &mut sib, &sib_obs,
+        replay_transition_from_records(&test_registry(), &eval_state, &mut sib, &sib_obs,
     &[]
 )
             .expect("sibling replay must succeed");
-        evaluate_transition_from_records(&eval_state, &mut sib, &sib_obs,
+        evaluate_transition_from_records(&test_registry(), &eval_state, &mut sib, &sib_obs,
     &[]
 )
             .expect("sibling evaluate must succeed");
@@ -18055,7 +18625,7 @@ mod tests {
             observation_record: &sib_obs,
             prior_signals: &[],
         };
-        let err = select_candidate_from_records_with_siblings(
+        let err = select_candidate_from_records_with_siblings(&test_registry(), 
             &state, &mut target, &target_obs, &[first], &[sibling],
             &[],
 )
@@ -18078,7 +18648,7 @@ mod tests {
             observation_record: &sib_obs,
             prior_signals: &[sib_sig],
         };
-        let err = select_candidate_from_records_with_siblings(
+        let err = select_candidate_from_records_with_siblings(&test_registry(), 
             &state, &mut target, &target_obs, &[first], &[sibling.clone(), sibling],
             &[],
 )
@@ -18101,7 +18671,7 @@ mod tests {
             observation_record: &target_obs,
             prior_signals: &[sib_sig],
         };
-        let err = select_candidate_from_records_with_siblings(
+        let err = select_candidate_from_records_with_siblings(&test_registry(), 
             &state, &mut target, &target_obs, &[first], &[sibling],
             &[],
 )
@@ -18117,7 +18687,7 @@ mod tests {
         let mut state = select_state_at(200);
         state.eligible_sibling_count = 1; // slice 19: target + 0 supplied sibling(s)
         let (_, mut target, target_obs, first) = selected_pair();
-        let life = select_candidate_from_records_with_siblings(
+        let life = select_candidate_from_records_with_siblings(&test_registry(), 
             &state, &mut target, &target_obs, &[first], &[],
             &[],
 )
@@ -18153,7 +18723,7 @@ mod tests {
             observation_record: &sib_obs,
             prior_signals: &[sib_sig],
         };
-        let err = select_candidate_from_records_with_siblings(
+        let err = select_candidate_from_records_with_siblings(&test_registry(), 
             &state, &mut target, &target_obs, &[target_sig], &[sibling],
             &[],
 )
@@ -18182,7 +18752,7 @@ mod tests {
             observation_record: &sib_obs,
             prior_signals: &[sib_sig],
         };
-        let err = select_candidate_from_records_with_siblings(
+        let err = select_candidate_from_records_with_siblings(&test_registry(), 
             &state, &mut target, &target_obs, &[first], &[sibling],
             &[],
 )
@@ -18210,7 +18780,7 @@ mod tests {
             observation_record: &sib_obs,
             prior_signals: &[sib_first, sib_second],
         };
-        let err = select_candidate_from_records_with_siblings(
+        let err = select_candidate_from_records_with_siblings(&test_registry(), 
             &state, &mut target, &target_obs, &[first], &[sibling],
             &[],
 )
@@ -18237,7 +18807,7 @@ mod tests {
             observation_record: &sib_obs,
             prior_signals: &[sib_sig],
         };
-        let err = select_candidate_from_records_with_siblings(
+        let err = select_candidate_from_records_with_siblings(&test_registry(), 
             &state, &mut target, &target_obs, &[first], &[sibling],
             &[],
 )
@@ -18271,7 +18841,7 @@ mod tests {
             observation_record: &sib2_obs,
             prior_signals: &[sib2_sig],
         };
-        let err = select_candidate_from_records_with_siblings(
+        let err = select_candidate_from_records_with_siblings(&test_registry(), 
             &state, &mut target, &target_obs, &[first], &[first_sibling, second_sibling],
             &[],
 )
@@ -18307,7 +18877,7 @@ mod tests {
             observation_record: &weaker_obs,
             prior_signals: &[weaker_sig],
         };
-        let err = select_candidate_from_records_with_siblings(
+        let err = select_candidate_from_records_with_siblings(&test_registry(), 
             &state, &mut target, &target_obs, &[target_sig], &[selected_sibling, weaker_sibling],
             &[],
 )
@@ -18347,7 +18917,7 @@ mod tests {
             observation_record: &sib_obs,
             prior_signals: &[sib_first],
         };
-        let err = select_candidate_from_records_with_siblings(
+        let err = select_candidate_from_records_with_siblings(&test_registry(), 
             &state, &mut target, &target_obs, &[first], &[sibling],
             &[],
 )
@@ -18368,7 +18938,7 @@ mod tests {
         // and leaves the census untouched, proven elsewhere).
         let (mut state, mut record, obs) = eligible_pair();
         assert_eq!(state.eligible_sibling_count, 0);
-        mark_eligible_from_records(&mut state, &mut record, &obs,
+        mark_eligible_from_records(&test_registry(), &mut state, &mut record, &obs,
     &[]
 )
             .expect("first mark eligible must succeed");
@@ -18380,19 +18950,19 @@ mod tests {
             Pubkey::new_from_array(ag(1)), 7,
         )
         .expect("second register must build");
-        let second_obs = build_observation_record(
+        let second_obs = build_observation_record(&test_registry(), 
             &state, [0xC1; 32], 100, 9100, 900_000, observer_pubkey(), 7,
         )
         .expect("second observation must build");
-        replay_transition_from_records(&state, &mut second, &second_obs,
+        replay_transition_from_records(&test_registry(), &state, &mut second, &second_obs,
     &[]
 )
             .expect("second replay must succeed");
-        evaluate_transition_from_records(&state, &mut second, &second_obs,
+        evaluate_transition_from_records(&test_registry(), &state, &mut second, &second_obs,
     &[]
 )
             .expect("second evaluate must succeed");
-        mark_eligible_from_records(&mut state, &mut second, &second_obs,
+        mark_eligible_from_records(&test_registry(), &mut state, &mut second, &second_obs,
     &[]
 )
             .expect("second mark eligible must succeed");
@@ -18411,7 +18981,7 @@ mod tests {
         state.eligible_sibling_parent_index = 9;
         state.eligible_sibling_parent_hash = [0xAB; 32];
         state.eligible_sibling_count = 99;
-        mark_eligible_from_records(&mut state, &mut record, &obs,
+        mark_eligible_from_records(&test_registry(), &mut state, &mut record, &obs,
     &[]
 )
             .expect("mark eligible must succeed");
@@ -18428,7 +18998,7 @@ mod tests {
         let (state, mut record, obs) = eligible_pair();
         let mut advanced = state;
         advance_clock_on_state(&mut advanced, 9100).expect("advance must succeed");
-        let err = mark_eligible_from_records(&mut advanced, &mut record, &obs,
+        let err = mark_eligible_from_records(&test_registry(), &mut advanced, &mut record, &obs,
     &[]
 )
             .expect_err("lapsed observation must refuse eligibility");
@@ -18451,7 +19021,7 @@ mod tests {
         advance_clock_on_state(&mut state, 200).expect("advance must succeed");
         assert_eq!(state.eligible_sibling_count, 1);
         state.eligible_sibling_count = 2;
-        let err = select_candidate_from_records(&state, &mut record, &obs, &[first],
+        let err = select_candidate_from_records(&test_registry(), &state, &mut record, &obs, &[first],
     &[]
 )
             .expect_err("a census above 1 must refuse the plain select");
@@ -18478,7 +19048,7 @@ mod tests {
             observation_record: &sib1_obs,
             prior_signals: &[sib1_sig],
         };
-        let err = select_candidate_from_records_with_siblings(
+        let err = select_candidate_from_records_with_siblings(&test_registry(), 
             &state, &mut target, &target_obs, &[first], &[sibling],
             &[],
 )
@@ -18504,7 +19074,7 @@ mod tests {
             observation_record: &sib_obs,
             prior_signals: &[sib_sig],
         };
-        let err = select_candidate_from_records_with_siblings(
+        let err = select_candidate_from_records_with_siblings(&test_registry(), 
             &state, &mut target, &target_obs, &[first], &[sibling],
             &[],
 )
@@ -18519,7 +19089,7 @@ mod tests {
         // kernel selects and the stage advances to 4.
         let (mut state, mut record, obs, first) = selected_pair();
         advance_clock_on_state(&mut state, 200).expect("advance to the deadline must succeed");
-        let life = select_candidate_from_records(&state, &mut record, &obs, &[first],
+        let life = select_candidate_from_records(&test_registry(), &state, &mut record, &obs, &[first],
     &[]
 )
             .expect("closed window with a qualifying tally must select");
@@ -18537,7 +19107,7 @@ mod tests {
         // is "anyone", and a proposer-only reading would contradict
         // it.
         let (state, mut record, obs, first) = planning_pair();
-        let life = open_planning_from_records(&state, &mut record, &obs, &[first], [0x77; 32],
+        let life = open_planning_from_records(&test_registry(), &state, &mut record, &obs, &[first], [0x77; 32],
     &[]
 )
             .expect("a kernel-proven selection must open planning");
@@ -18553,7 +19123,7 @@ mod tests {
         // Still ELIGIBLE, never selected: the stage gate refuses
         // before any replay, and nothing on the record moves.
         let (state, mut record, obs, first) = selected_pair();
-        let err = open_planning_from_records(&state, &mut record, &obs, &[first], ag(1),
+        let err = open_planning_from_records(&test_registry(), &state, &mut record, &obs, &[first], ag(1),
     &[]
 )
             .expect_err("an unselected record must refuse planning");
@@ -18565,11 +19135,11 @@ mod tests {
     #[test]
     fn open_planning_is_once_only() {
         let (state, mut record, obs, first) = planning_pair();
-        open_planning_from_records(&state, &mut record, &obs, &[first], ag(1),
+        open_planning_from_records(&test_registry(), &state, &mut record, &obs, &[first], ag(1),
     &[]
 )
             .expect("first planning open must succeed");
-        let err = open_planning_from_records(&state, &mut record, &obs, &[first], ag(1),
+        let err = open_planning_from_records(&test_registry(), &state, &mut record, &obs, &[first], ag(1),
     &[]
 )
             .expect_err("a second planning open must refuse");
@@ -18585,7 +19155,7 @@ mod tests {
         // and the SELECTED stage and zero deadline stand.
         let (state, mut record, obs, first) = planning_pair();
         record.signal_count = 2;
-        let err = open_planning_from_records(&state, &mut record, &obs, &[first], ag(1),
+        let err = open_planning_from_records(&test_registry(), &state, &mut record, &obs, &[first], ag(1),
     &[]
 )
             .expect_err("a short prior set must refuse planning");
@@ -18602,7 +19172,7 @@ mod tests {
         // stays closed with the deadline untouched.
         let (mut state, mut record, obs, first) = planning_pair();
         state.clock = 199;
-        let err = open_planning_from_records(&state, &mut record, &obs, &[first], ag(1),
+        let err = open_planning_from_records(&test_registry(), &state, &mut record, &obs, &[first], ag(1),
     &[]
 )
             .expect_err("an unreproducible selection must refuse planning");
@@ -18617,7 +19187,7 @@ mod tests {
         // selection ran at: at 500 the deadline is 600.
         let (mut state, mut record, obs, first) = planning_pair();
         advance_clock_on_state(&mut state, 500).expect("advance past selection must succeed");
-        open_planning_from_records(&state, &mut record, &obs, &[first], ag(1),
+        open_planning_from_records(&test_registry(), &state, &mut record, &obs, &[first], ag(1),
     &[]
 )
             .expect("planning at a later clock must succeed");
@@ -18629,7 +19199,7 @@ mod tests {
     fn open_planning_refuses_unsealed() {
         let (mut state, mut record, obs, first) = planning_pair();
         state.sealed = false;
-        let err = open_planning_from_records(&state, &mut record, &obs, &[first], ag(1),
+        let err = open_planning_from_records(&test_registry(), &state, &mut record, &obs, &[first], ag(1),
     &[]
 )
             .expect_err("an unsealed state must refuse planning");
@@ -18642,7 +19212,7 @@ mod tests {
     fn open_planning_refuses_parent_mismatch() {
         let (mut state, mut record, obs, first) = planning_pair();
         state.head_index = 9;
-        let err = open_planning_from_records(&state, &mut record, &obs, &[first], ag(1),
+        let err = open_planning_from_records(&test_registry(), &state, &mut record, &obs, &[first], ag(1),
     &[]
 )
             .expect_err("a record off the sealed head must refuse planning");
@@ -18673,7 +19243,7 @@ mod tests {
         // BLOCKED -> PLANNING, deadline reset to clock 200 + window
         // 100 = 300, replans 0 -> 1.
         let (state, mut record, obs, first) = blocked_pair();
-        let life = open_planning_from_records(&state, &mut record, &obs, &[first], ag(1),
+        let life = open_planning_from_records(&test_registry(), &state, &mut record, &obs, &[first], ag(1),
     &[]
 )
             .expect("a proposer re-plan must open planning");
@@ -18690,7 +19260,7 @@ mod tests {
         // caller ag(2) qualifies on the seat ground alone.
         let (state, mut record, obs, first) = blocked_pair();
         record.proposer = Pubkey::new_from_array(ag(4));
-        let life = open_planning_from_records(&state, &mut record, &obs, &[first], ag(2),
+        let life = open_planning_from_records(&test_registry(), &state, &mut record, &obs, &[first], ag(2),
     &[]
 )
             .expect("a seat re-plan must open planning");
@@ -18706,7 +19276,7 @@ mod tests {
         // qualifies on the proposer ground alone.
         let (state, mut record, obs, first) = blocked_pair();
         record.proposer = Pubkey::new_from_array(ag(4));
-        let life = open_planning_from_records(&state, &mut record, &obs, &[first], ag(4),
+        let life = open_planning_from_records(&test_registry(), &state, &mut record, &obs, &[first], ag(4),
     &[]
 )
             .expect("a non-seat proposer re-plan must open planning");
@@ -18720,7 +19290,7 @@ mod tests {
         // Neither proposer nor seat: ReplanRefused, and the record
         // stands exactly as it stood — stage, deadline, count.
         let (state, mut record, obs, first) = blocked_pair();
-        let err = open_planning_from_records(&state, &mut record, &obs, &[first], [0x77; 32],
+        let err = open_planning_from_records(&test_registry(), &state, &mut record, &obs, &[first], [0x77; 32],
     &[]
 )
             .expect_err("a stranger re-plan must refuse");
@@ -18736,7 +19306,7 @@ mod tests {
         // and the count does not advance past the cap.
         let (state, mut record, obs, first) = blocked_pair();
         record.replans = 3;
-        let err = open_planning_from_records(&state, &mut record, &obs, &[first], ag(1),
+        let err = open_planning_from_records(&test_registry(), &state, &mut record, &obs, &[first], ag(1),
     &[]
 )
             .expect_err("a capped re-plan must refuse");
@@ -18752,11 +19322,11 @@ mod tests {
         // stage is PLANNING, so a second open refuses WrongStage
         // and the count stays at 1, not 2.
         let (state, mut record, obs, first) = blocked_pair();
-        open_planning_from_records(&state, &mut record, &obs, &[first], ag(1),
+        open_planning_from_records(&test_registry(), &state, &mut record, &obs, &[first], ag(1),
     &[]
 )
             .expect("first re-plan must succeed");
-        let err = open_planning_from_records(&state, &mut record, &obs, &[first], ag(1),
+        let err = open_planning_from_records(&test_registry(), &state, &mut record, &obs, &[first], ag(1),
     &[]
 )
             .expect_err("a second planning open must refuse");
@@ -18770,7 +19340,7 @@ mod tests {
     fn selected_open_leaves_replans_untouched() {
         // The Selected path is not a re-plan: replans stays 0.
         let (state, mut record, obs, first) = planning_pair();
-        open_planning_from_records(&state, &mut record, &obs, &[first], ag(1),
+        open_planning_from_records(&test_registry(), &state, &mut record, &obs, &[first], ag(1),
     &[]
 )
             .expect("a Selected open must succeed");
@@ -18783,7 +19353,7 @@ mod tests {
         // 300 and the derived open clock is 200: the replay clock
         // for select and open_planning in every plan test below.
         let (state, mut record, obs, first) = planning_pair();
-        let life = open_planning_from_records(&state, &mut record, &obs, &[first], ag(1),
+        let life = open_planning_from_records(&test_registry(), &state, &mut record, &obs, &[first], ag(1),
     &[]
 )
             .expect("planning open must succeed");
@@ -18839,7 +19409,7 @@ mod tests {
         // the deadline: the record stays PLANNING, the deadline
         // stands, and plan_count moves 0 -> 1 on success only.
         let (state, mut record, obs, first) = planned_pair();
-        let plan = submit_plan_from_records(
+        let plan = submit_plan_from_records(&test_registry(), 
             &state, &mut record, &obs, &[first], &[], &two_claims(), 400, ag(2), 7,
             &[],
 )
@@ -18865,13 +19435,13 @@ mod tests {
         // the first plan's claims are what the kernel judged, not
         // a fresh single-plan kernel.
         let (state, mut record, obs, first) = planned_pair();
-        let prior = submit_plan_from_records(
+        let prior = submit_plan_from_records(&test_registry(), 
             &state, &mut record, &obs, &[first], &[], &two_claims(), 400, ag(2), 7,
             &[],
 )
         .expect("first plan must submit");
         assert_eq!(record.plan_count, 1);
-        let second = submit_plan_from_records(
+        let second = submit_plan_from_records(&test_registry(), 
             &state,
             &mut record,
             &obs,
@@ -18896,7 +19466,7 @@ mod tests {
         // Still ELIGIBLE, never planned: the stage gate refuses
         // before any replay, and plan_count stays 0.
         let (state, mut record, obs, first) = selected_pair();
-        let err = submit_plan_from_records(
+        let err = submit_plan_from_records(&test_registry(), 
             &state, &mut record, &obs, &[first], &[], &two_claims(), 400, ag(2), 7,
             &[],
 )
@@ -18911,7 +19481,7 @@ mod tests {
         // gate refuses, and the record is untouched.
         let (mut state, mut record, obs, first) = planned_pair();
         advance_clock_on_state(&mut state, 300).expect("advance to the deadline must succeed");
-        let err = submit_plan_from_records(
+        let err = submit_plan_from_records(&test_registry(), 
             &state, &mut record, &obs, &[first], &[], &two_claims(), 400, ag(2), 7,
             &[],
 )
@@ -18927,7 +19497,7 @@ mod tests {
         // kernel's BadWindow rule, judged against the stored
         // deadline, refuses before any plan is recorded.
         let (state, mut record, obs, first) = planned_pair();
-        let err = submit_plan_from_records(
+        let err = submit_plan_from_records(&test_registry(), 
             &state, &mut record, &obs, &[first], &[], &two_claims(), 300, ag(2), 7,
             &[],
 )
@@ -18942,7 +19512,7 @@ mod tests {
         // the kernel's agent gate: a fresh id that is no seeded
         // agent refuses through the kernel, not by a program guess.
         let (state, mut record, obs, first) = planned_pair();
-        let err = submit_plan_from_records(
+        let err = submit_plan_from_records(&test_registry(), 
             &state, &mut record, &obs, &[first], &[], &two_claims(), 400, [0x77; 32], 7,
             &[],
 )
@@ -18957,12 +19527,12 @@ mod tests {
         // with its own first plan supplied as the prior set,
         // refuses at the kernel's Duplicate arm.
         let (state, mut record, obs, first) = planned_pair();
-        let prior = submit_plan_from_records(
+        let prior = submit_plan_from_records(&test_registry(), 
             &state, &mut record, &obs, &[first], &[], &two_claims(), 400, ag(2), 7,
             &[],
 )
         .expect("first plan must submit");
-        let err = submit_plan_from_records(
+        let err = submit_plan_from_records(&test_registry(), 
             &state, &mut record, &obs, &[first], &[prior], &two_claims(), 500, ag(2), 7,
             &[],
 )
@@ -18981,7 +19551,7 @@ mod tests {
             PlanClaimArg { resource: RES_TREASURY_TRANCHE, amount_raw: 10 * SCALE },
             PlanClaimArg { resource: RES_TREASURY_TRANCHE, amount_raw: 20 * SCALE },
         ];
-        let err = submit_plan_from_records(
+        let err = submit_plan_from_records(&test_registry(), 
             &state, &mut record, &obs, &[first], &[], &dup, 400, ag(2), 7,
             &[],
 )
@@ -18996,7 +19566,7 @@ mod tests {
         // the slice-21 anchor refuses before any replay.
         let (state, mut record, obs, first) = planned_pair();
         record.plan_count = 1;
-        let err = submit_plan_from_records(
+        let err = submit_plan_from_records(&test_registry(), 
             &state, &mut record, &obs, &[first], &[], &two_claims(), 400, ag(2), 7,
             &[],
 )
@@ -19012,7 +19582,7 @@ mod tests {
         // exactly as in open_planning.
         let (state, mut record, obs, first) = planned_pair();
         record.signal_count = 2;
-        let err = submit_plan_from_records(
+        let err = submit_plan_from_records(&test_registry(), 
             &state, &mut record, &obs, &[first], &[], &two_claims(), 400, ag(2), 7,
             &[],
 )
@@ -19025,7 +19595,7 @@ mod tests {
     fn submit_plan_refuses_unsealed() {
         let (mut state, mut record, obs, first) = planned_pair();
         state.sealed = false;
-        let err = submit_plan_from_records(
+        let err = submit_plan_from_records(&test_registry(), 
             &state, &mut record, &obs, &[first], &[], &two_claims(), 400, ag(2), 7,
             &[],
 )
@@ -19045,7 +19615,7 @@ mod tests {
         // two-resource plan from ag(2): the reconcile-success
         // fixture every slice-23 test below builds from.
         let (state, mut record, obs, first) = planned_pair();
-        let plan = submit_plan_from_records(
+        let plan = submit_plan_from_records(&test_registry(), 
             &state, &mut record, &obs, &[first], &[], &two_claims(), 400, ag(2), 7,
             &[],
 )
@@ -19061,7 +19631,7 @@ mod tests {
         // fitting plan set records compatible true.
         let (mut state, mut record, obs, first, plan) = one_plan_pair();
         advance_clock_on_state(&mut state, 300).expect("advance to the deadline must succeed");
-        let life = reconcile_plans_from_records(&state, &mut record, &obs, &[first], &[plan],
+        let life = reconcile_plans_from_records(&test_registry(), &state, &mut record, &obs, &[first], &[plan],
     &[]
 )
             .expect("a kernel-proven plan set at the deadline must reconcile");
@@ -19081,7 +19651,7 @@ mod tests {
         // instead of the call failing to happen.
         let (mut state, mut record, obs, first) = planned_pair();
         advance_clock_on_state(&mut state, 300).expect("advance to the deadline must succeed");
-        let life = reconcile_plans_from_records(&state, &mut record, &obs, &[first], &[],
+        let life = reconcile_plans_from_records(&test_registry(), &state, &mut record, &obs, &[first], &[],
     &[]
 )
             .expect("an empty plan set must reconcile to incompatible, not refuse");
@@ -19100,19 +19670,19 @@ mod tests {
         // stage, exactly as the kernel's fits_capacity judges it.
         let (mut state, mut record, obs, first) = planned_pair();
         let big = vec![PlanClaimArg { resource: RES_TREASURY_TRANCHE, amount_raw: 600 * SCALE }];
-        let first_plan = submit_plan_from_records(
+        let first_plan = submit_plan_from_records(&test_registry(), 
             &state, &mut record, &obs, &[first], &[], &big, 400, ag(2), 7,
             &[],
 )
         .expect("first big plan must submit");
-        let second_plan = submit_plan_from_records(
+        let second_plan = submit_plan_from_records(&test_registry(), 
             &state, &mut record, &obs, &[first], std::slice::from_ref(&first_plan), &big, 400, ag(3), 8,
             &[],
 )
         .expect("second big plan must submit");
         assert_eq!(record.plan_count, 2);
         advance_clock_on_state(&mut state, 300).expect("advance to the deadline must succeed");
-        let life = reconcile_plans_from_records(
+        let life = reconcile_plans_from_records(&test_registry(), 
             &state,
             &mut record,
             &obs,
@@ -19133,7 +19703,7 @@ mod tests {
         // stands PLANNING with compatible still false.
         let (mut state, mut record, obs, first, plan) = one_plan_pair();
         advance_clock_on_state(&mut state, 299).expect("advance must succeed");
-        let err = reconcile_plans_from_records(&state, &mut record, &obs, &[first], &[plan],
+        let err = reconcile_plans_from_records(&test_registry(), &state, &mut record, &obs, &[first], &[plan],
     &[]
 )
             .expect_err("an open window must refuse reconcile");
@@ -19150,7 +19720,7 @@ mod tests {
         // SELECTED; `selected_pair` only holds a signal and is
         // still ELIGIBLE.)
         let (state, mut record, obs, first) = planning_pair();
-        let err = reconcile_plans_from_records(&state, &mut record, &obs, &[first], &[],
+        let err = reconcile_plans_from_records(&test_registry(), &state, &mut record, &obs, &[first], &[],
     &[]
 )
             .expect_err("an unplanned record must refuse reconcile");
@@ -19163,11 +19733,11 @@ mod tests {
     fn reconcile_is_once_only() {
         let (mut state, mut record, obs, first, plan) = one_plan_pair();
         advance_clock_on_state(&mut state, 300).expect("advance to the deadline must succeed");
-        reconcile_plans_from_records(&state, &mut record, &obs, &[first], std::slice::from_ref(&plan),
+        reconcile_plans_from_records(&test_registry(), &state, &mut record, &obs, &[first], std::slice::from_ref(&plan),
     &[]
 )
             .expect("first reconcile must succeed");
-        let err = reconcile_plans_from_records(&state, &mut record, &obs, &[first], &[plan],
+        let err = reconcile_plans_from_records(&test_registry(), &state, &mut record, &obs, &[first], &[plan],
     &[]
 )
             .expect_err("a second reconcile must refuse");
@@ -19183,7 +19753,7 @@ mod tests {
         let (mut state, mut record, obs, first, plan) = one_plan_pair();
         record.plan_count = 2;
         advance_clock_on_state(&mut state, 300).expect("advance to the deadline must succeed");
-        let err = reconcile_plans_from_records(&state, &mut record, &obs, &[first], &[plan],
+        let err = reconcile_plans_from_records(&test_registry(), &state, &mut record, &obs, &[first], &[plan],
     &[]
 )
             .expect_err("a short prior plan set must refuse reconcile");
@@ -19200,7 +19770,7 @@ mod tests {
         let (mut state, mut record, obs, first, plan) = one_plan_pair();
         record.signal_count = 2;
         advance_clock_on_state(&mut state, 300).expect("advance to the deadline must succeed");
-        let err = reconcile_plans_from_records(&state, &mut record, &obs, &[first], &[plan],
+        let err = reconcile_plans_from_records(&test_registry(), &state, &mut record, &obs, &[first], &[plan],
     &[]
 )
             .expect_err("a short prior signal set must refuse reconcile");
@@ -19218,7 +19788,7 @@ mod tests {
         let (mut state, mut record, obs, first, mut plan) = one_plan_pair();
         plan.agent = Pubkey::new_from_array([0x77; 32]);
         advance_clock_on_state(&mut state, 300).expect("advance to the deadline must succeed");
-        let err = reconcile_plans_from_records(&state, &mut record, &obs, &[first], &[plan],
+        let err = reconcile_plans_from_records(&test_registry(), &state, &mut record, &obs, &[first], &[plan],
     &[]
 )
             .expect_err("an unreproducible plan must refuse reconcile");
@@ -19232,7 +19802,7 @@ mod tests {
         let (mut state, mut record, obs, first, plan) = one_plan_pair();
         advance_clock_on_state(&mut state, 300).expect("advance to the deadline must succeed");
         state.sealed = false;
-        let err = reconcile_plans_from_records(&state, &mut record, &obs, &[first], &[plan],
+        let err = reconcile_plans_from_records(&test_registry(), &state, &mut record, &obs, &[first], &[plan],
     &[]
 )
             .expect_err("an unsealed state must refuse reconcile");
@@ -19246,7 +19816,7 @@ mod tests {
         let (mut state, mut record, obs, first, plan) = one_plan_pair();
         advance_clock_on_state(&mut state, 300).expect("advance to the deadline must succeed");
         state.head_index = 9;
-        let err = reconcile_plans_from_records(&state, &mut record, &obs, &[first], &[plan],
+        let err = reconcile_plans_from_records(&test_registry(), &state, &mut record, &obs, &[first], &[plan],
     &[]
 )
             .expect_err("a record off the sealed head must refuse reconcile");
@@ -19267,7 +19837,7 @@ mod tests {
         // below builds from.
         let (mut state, mut record, obs, first, plan) = one_plan_pair();
         advance_clock_on_state(&mut state, 300).expect("advance to the deadline must succeed");
-        let life = reconcile_plans_from_records(&state, &mut record, &obs, &[first], std::slice::from_ref(&plan),
+        let life = reconcile_plans_from_records(&test_registry(), &state, &mut record, &obs, &[first], std::slice::from_ref(&plan),
     &[]
 )
             .expect("a fitting plan set at the deadline must reconcile");
@@ -19282,7 +19852,7 @@ mod tests {
         // so validate blocks rather than validates.
         let (mut state, mut record, obs, first) = planned_pair();
         advance_clock_on_state(&mut state, 300).expect("advance to the deadline must succeed");
-        let life = reconcile_plans_from_records(&state, &mut record, &obs, &[first], &[],
+        let life = reconcile_plans_from_records(&test_registry(), &state, &mut record, &obs, &[first], &[],
     &[]
 )
             .expect("an empty plan set must reconcile to incompatible");
@@ -19298,7 +19868,7 @@ mod tests {
         // fresh observation at clock 300: the predicate passes,
         // the stage advances to 8, and the stored verdict stands.
         let (state, mut record, obs, first, plan) = reconciling_pair();
-        let life = validate_transition_from_records(&state, &mut record, &obs, &[first], &[plan],
+        let life = validate_transition_from_records(&test_registry(), &state, &mut record, &obs, &[first], &[plan],
     &[]
 )
             .expect("a fitting reconciled chain must validate");
@@ -19315,7 +19885,7 @@ mod tests {
         // record says so, so the re-plan path (slice 22) opens
         // from it instead of the call failing to happen.
         let (state, mut record, obs, first) = empty_reconciling_pair();
-        let life = validate_transition_from_records(&state, &mut record, &obs, &[first], &[],
+        let life = validate_transition_from_records(&test_registry(), &state, &mut record, &obs, &[first], &[],
     &[]
 )
             .expect("an incompatible set must validate to Blocked, not refuse");
@@ -19332,24 +19902,24 @@ mod tests {
         // with the plan set untouched.
         let (mut state, mut record, obs, first) = planned_pair();
         let big = vec![PlanClaimArg { resource: RES_TREASURY_TRANCHE, amount_raw: 600 * SCALE }];
-        let first_plan = submit_plan_from_records(
+        let first_plan = submit_plan_from_records(&test_registry(), 
             &state, &mut record, &obs, &[first], &[], &big, 400, ag(2), 7,
             &[],
 )
         .expect("first big plan must submit");
-        let second_plan = submit_plan_from_records(
+        let second_plan = submit_plan_from_records(&test_registry(), 
             &state, &mut record, &obs, &[first], std::slice::from_ref(&first_plan), &big, 400, ag(3), 8,
             &[],
 )
         .expect("second big plan must submit");
         advance_clock_on_state(&mut state, 300).expect("advance to the deadline must succeed");
         let plans = [first_plan, second_plan];
-        reconcile_plans_from_records(&state, &mut record, &obs, &[first], &plans,
+        reconcile_plans_from_records(&test_registry(), &state, &mut record, &obs, &[first], &plans,
     &[]
 )
             .expect("an over-capacity set must reconcile to incompatible");
         assert!(!record.compatible);
-        let life = validate_transition_from_records(&state, &mut record, &obs, &[first], &plans,
+        let life = validate_transition_from_records(&test_registry(), &state, &mut record, &obs, &[first], &plans,
     &[]
 )
             .expect("an incompatible set must validate to Blocked, not refuse");
@@ -19364,7 +19934,7 @@ mod tests {
         // Still PLANNING, never reconciled: the stage gate refuses
         // before any replay, and nothing on the record moves.
         let (state, mut record, obs, first, plan) = one_plan_pair();
-        let err = validate_transition_from_records(&state, &mut record, &obs, &[first], &[plan],
+        let err = validate_transition_from_records(&test_registry(), &state, &mut record, &obs, &[first], &[plan],
     &[]
 )
             .expect_err("an unreconciled record must refuse validate");
@@ -19378,12 +19948,12 @@ mod tests {
         // A validated record is past validate: the stage gate
         // refuses a second call, and the VALIDATED stage stands.
         let (state, mut record, obs, first, plan) = reconciling_pair();
-        validate_transition_from_records(&state, &mut record, &obs, &[first], std::slice::from_ref(&plan),
+        validate_transition_from_records(&test_registry(), &state, &mut record, &obs, &[first], std::slice::from_ref(&plan),
     &[]
 )
             .expect("first validate must succeed");
         assert_eq!(record.stage, TransitionRecord::VALIDATED);
-        let err = validate_transition_from_records(&state, &mut record, &obs, &[first], std::slice::from_ref(&plan),
+        let err = validate_transition_from_records(&test_registry(), &state, &mut record, &obs, &[first], std::slice::from_ref(&plan),
     &[]
 )
             .expect_err("a second validate must refuse");
@@ -19399,12 +19969,12 @@ mod tests {
         // predicate inputs, so the kernel reports StillBlocked,
         // the call refuses, and the record stands BLOCKED.
         let (state, mut record, obs, first) = empty_reconciling_pair();
-        validate_transition_from_records(&state, &mut record, &obs, &[first], &[],
+        validate_transition_from_records(&test_registry(), &state, &mut record, &obs, &[first], &[],
     &[]
 )
             .expect("first validate must block");
         assert_eq!(record.stage, TransitionRecord::BLOCKED);
-        let err = validate_transition_from_records(&state, &mut record, &obs, &[first], &[],
+        let err = validate_transition_from_records(&test_registry(), &state, &mut record, &obs, &[first], &[],
     &[]
 )
             .expect_err("a still-blocked record must refuse re-validate");
@@ -19422,7 +19992,7 @@ mod tests {
         // RECONCILING, neither validated nor blocked on a lie.
         let (state, mut record, obs, first, plan) = reconciling_pair();
         record.compatible = false;
-        let err = validate_transition_from_records(&state, &mut record, &obs, &[first], &[plan],
+        let err = validate_transition_from_records(&test_registry(), &state, &mut record, &obs, &[first], &[plan],
     &[]
 )
             .expect_err("a mismatched stored verdict must refuse validate");
@@ -19439,7 +20009,7 @@ mod tests {
         // stands, so this is a verdict, not a refusal.
         let (mut state, mut record, obs, first, plan) = reconciling_pair();
         advance_clock_on_state(&mut state, 9100).expect("advance to the observation expiry must succeed");
-        let life = validate_transition_from_records(&state, &mut record, &obs, &[first], &[plan],
+        let life = validate_transition_from_records(&test_registry(), &state, &mut record, &obs, &[first], &[plan],
     &[]
 )
             .expect("a stale observation must validate to Blocked, not refuse");
@@ -19454,7 +20024,7 @@ mod tests {
         // the slice-21 anchor refuses before any replay.
         let (state, mut record, obs, first, plan) = reconciling_pair();
         record.plan_count = 2;
-        let err = validate_transition_from_records(&state, &mut record, &obs, &[first], &[plan],
+        let err = validate_transition_from_records(&test_registry(), &state, &mut record, &obs, &[first], &[plan],
     &[]
 )
             .expect_err("a short prior plan set must refuse validate");
@@ -19470,7 +20040,7 @@ mod tests {
         // supplied: the slice-16 anchor refuses before any replay.
         let (state, mut record, obs, first, plan) = reconciling_pair();
         record.signal_count = 2;
-        let err = validate_transition_from_records(&state, &mut record, &obs, &[first], &[plan],
+        let err = validate_transition_from_records(&test_registry(), &state, &mut record, &obs, &[first], &[plan],
     &[]
 )
             .expect_err("a short prior signal set must refuse validate");
@@ -19487,7 +20057,7 @@ mod tests {
         // record stands.
         let (state, mut record, obs, first, mut plan) = reconciling_pair();
         plan.agent = Pubkey::new_from_array([0x77; 32]);
-        let err = validate_transition_from_records(&state, &mut record, &obs, &[first], &[plan],
+        let err = validate_transition_from_records(&test_registry(), &state, &mut record, &obs, &[first], &[plan],
     &[]
 )
             .expect_err("an unreproducible plan must refuse validate");
@@ -19500,7 +20070,7 @@ mod tests {
     fn validate_refuses_unsealed() {
         let (mut state, mut record, obs, first, plan) = reconciling_pair();
         state.sealed = false;
-        let err = validate_transition_from_records(&state, &mut record, &obs, &[first], &[plan],
+        let err = validate_transition_from_records(&test_registry(), &state, &mut record, &obs, &[first], &[plan],
     &[]
 )
             .expect_err("an unsealed state must refuse validate");
@@ -19513,7 +20083,7 @@ mod tests {
     fn validate_refuses_parent_mismatch() {
         let (mut state, mut record, obs, first, plan) = reconciling_pair();
         state.head_index = 9;
-        let err = validate_transition_from_records(&state, &mut record, &obs, &[first], &[plan],
+        let err = validate_transition_from_records(&test_registry(), &state, &mut record, &obs, &[first], &[plan],
     &[]
 )
             .expect_err("a record off the sealed head must refuse validate");
@@ -19532,7 +20102,7 @@ mod tests {
         // Validated at clock 300 with one fitting plan: the
         // declare-success fixture every slice-25 test builds from.
         let (state, mut record, obs, first, plan) = reconciling_pair();
-        let life = validate_transition_from_records(&state, &mut record, &obs, &[first], std::slice::from_ref(&plan),
+        let life = validate_transition_from_records(&test_registry(), &state, &mut record, &obs, &[first], std::slice::from_ref(&plan),
     &[]
 )
             .expect("a fitting reconciled chain must validate");
@@ -19551,7 +20121,7 @@ mod tests {
         let (state, mut record, obs, first, plan) = validated_pair();
         let head_index = state.head_index;
         let head_hash = state.head_hash;
-        let life = declare_transition_from_records(&state, &mut record, &obs, &[first], &[plan],
+        let life = declare_transition_from_records(&test_registry(), &state, &mut record, &obs, &[first], &[plan],
     &[]
 )
             .expect("a fitting validated chain must declare");
@@ -19568,12 +20138,12 @@ mod tests {
         // A declared record is past declare: the stage gate
         // refuses a second call, and the DECLARED stage stands.
         let (state, mut record, obs, first, plan) = validated_pair();
-        declare_transition_from_records(&state, &mut record, &obs, &[first], std::slice::from_ref(&plan),
+        declare_transition_from_records(&test_registry(), &state, &mut record, &obs, &[first], std::slice::from_ref(&plan),
     &[]
 )
             .expect("first declare must succeed");
         assert_eq!(record.stage, TransitionRecord::DECLARED);
-        let err = declare_transition_from_records(&state, &mut record, &obs, &[first], std::slice::from_ref(&plan),
+        let err = declare_transition_from_records(&test_registry(), &state, &mut record, &obs, &[first], std::slice::from_ref(&plan),
     &[]
 )
             .expect_err("a second declare must refuse");
@@ -19588,7 +20158,7 @@ mod tests {
         // stage gate refuses before any replay, and nothing on
         // the record moves.
         let (state, mut record, obs, first, plan) = one_plan_pair();
-        let err = declare_transition_from_records(&state, &mut record, &obs, &[first], &[plan],
+        let err = declare_transition_from_records(&test_registry(), &state, &mut record, &obs, &[first], &[plan],
     &[]
 )
             .expect_err("an unvalidated record must refuse declare");
@@ -19603,12 +20173,12 @@ mod tests {
         // the stage gate refuses, and the record stands BLOCKED
         // for the re-plan path — declare never re-labels it.
         let (state, mut record, obs, first) = empty_reconciling_pair();
-        validate_transition_from_records(&state, &mut record, &obs, &[first], &[],
+        validate_transition_from_records(&test_registry(), &state, &mut record, &obs, &[first], &[],
     &[]
 )
             .expect("first validate must block");
         assert_eq!(record.stage, TransitionRecord::BLOCKED);
-        let err = declare_transition_from_records(&state, &mut record, &obs, &[first], &[],
+        let err = declare_transition_from_records(&test_registry(), &state, &mut record, &obs, &[first], &[],
     &[]
 )
             .expect_err("a blocked record must refuse declare");
@@ -19629,7 +20199,7 @@ mod tests {
         // not declared.
         let (mut state, mut record, obs, first, plan) = validated_pair();
         advance_clock_on_state(&mut state, 400).expect("advance to the plan expiry must succeed");
-        let err = declare_transition_from_records(&state, &mut record, &obs, &[first], &[plan],
+        let err = declare_transition_from_records(&test_registry(), &state, &mut record, &obs, &[first], &[plan],
     &[]
 )
             .expect_err("an expired-plan predicate must refuse declare");
@@ -19648,7 +20218,7 @@ mod tests {
         // declare or for the exception path to judge.
         let (mut state, mut record, obs, first, plan) = validated_pair();
         advance_clock_on_state(&mut state, 9100).expect("advance to the observation expiry must succeed");
-        let err = declare_transition_from_records(&state, &mut record, &obs, &[first], &[plan],
+        let err = declare_transition_from_records(&test_registry(), &state, &mut record, &obs, &[first], &[plan],
     &[]
 )
             .expect_err("a stale observation must refuse declare");
@@ -19667,7 +20237,7 @@ mod tests {
         // declared nor blocked on a lie.
         let (state, mut record, obs, first, plan) = validated_pair();
         record.compatible = false;
-        let err = declare_transition_from_records(&state, &mut record, &obs, &[first], &[plan],
+        let err = declare_transition_from_records(&test_registry(), &state, &mut record, &obs, &[first], &[plan],
     &[]
 )
             .expect_err("a mismatched stored verdict must refuse declare");
@@ -19683,7 +20253,7 @@ mod tests {
         // replay.
         let (state, mut record, obs, first, plan) = validated_pair();
         record.plan_count = 2;
-        let err = declare_transition_from_records(&state, &mut record, &obs, &[first], &[plan],
+        let err = declare_transition_from_records(&test_registry(), &state, &mut record, &obs, &[first], &[plan],
     &[]
 )
             .expect_err("a short prior plan set must refuse declare");
@@ -19700,7 +20270,7 @@ mod tests {
         // replay.
         let (state, mut record, obs, first, plan) = validated_pair();
         record.signal_count = 2;
-        let err = declare_transition_from_records(&state, &mut record, &obs, &[first], &[plan],
+        let err = declare_transition_from_records(&test_registry(), &state, &mut record, &obs, &[first], &[plan],
     &[]
 )
             .expect_err("a short prior signal set must refuse declare");
@@ -19717,7 +20287,7 @@ mod tests {
         // the record stands.
         let (state, mut record, obs, first, mut plan) = validated_pair();
         plan.agent = Pubkey::new_from_array([0x77; 32]);
-        let err = declare_transition_from_records(&state, &mut record, &obs, &[first], &[plan],
+        let err = declare_transition_from_records(&test_registry(), &state, &mut record, &obs, &[first], &[plan],
     &[]
 )
             .expect_err("an unreproducible plan must refuse declare");
@@ -19730,7 +20300,7 @@ mod tests {
     fn declare_refuses_unsealed() {
         let (mut state, mut record, obs, first, plan) = validated_pair();
         state.sealed = false;
-        let err = declare_transition_from_records(&state, &mut record, &obs, &[first], &[plan],
+        let err = declare_transition_from_records(&test_registry(), &state, &mut record, &obs, &[first], &[plan],
     &[]
 )
             .expect_err("an unsealed state must refuse declare");
@@ -19743,7 +20313,7 @@ mod tests {
     fn declare_refuses_parent_mismatch() {
         let (mut state, mut record, obs, first, plan) = validated_pair();
         state.head_index = 9;
-        let err = declare_transition_from_records(&state, &mut record, &obs, &[first], &[plan],
+        let err = declare_transition_from_records(&test_registry(), &state, &mut record, &obs, &[first], &[plan],
     &[]
 )
             .expect_err("a record off the sealed head must refuse declare");
@@ -19761,7 +20331,7 @@ mod tests {
     ) {
         // declare-success fixture every slice-26 test builds from.
         let (state, mut record, obs, first, plan) = validated_pair();
-        let life = declare_transition_from_records(&state, &mut record, &obs, &[first], std::slice::from_ref(&plan),
+        let life = declare_transition_from_records(&test_registry(), &state, &mut record, &obs, &[first], std::slice::from_ref(&plan),
     &[]
 )
             .expect("a fitting validated chain must declare");
@@ -19783,7 +20353,7 @@ mod tests {
         let (mut state, mut record, obs, first, plan) = declared_pair();
         let old_index = state.head_index;
         let next_hash = record.declared_next_hash;
-        let life = commit_transition_from_records(&mut state, &mut record, &obs, &[first], &[plan],
+        let life = commit_transition_from_records(&test_registry(), &mut state, &mut record, &obs, &[first], &[plan],
     &[]
 )
             .expect("a fitting declared chain must commit");
@@ -19815,14 +20385,14 @@ mod tests {
         // refuses a second call, and the stage and the head
         // stand exactly where the first commit left them.
         let (mut state, mut record, obs, first, plan) = declared_pair();
-        commit_transition_from_records(&mut state, &mut record, &obs, &[first], std::slice::from_ref(&plan),
+        commit_transition_from_records(&test_registry(), &mut state, &mut record, &obs, &[first], std::slice::from_ref(&plan),
     &[]
 )
             .expect("first commit must succeed");
         assert_eq!(record.stage, TransitionRecord::COMMITTED);
         let head_index = state.head_index;
         let head_hash = state.head_hash;
-        let err = commit_transition_from_records(&mut state, &mut record, &obs, &[first], std::slice::from_ref(&plan),
+        let err = commit_transition_from_records(&test_registry(), &mut state, &mut record, &obs, &[first], std::slice::from_ref(&plan),
     &[]
 )
             .expect_err("a second commit must refuse");
@@ -19840,7 +20410,7 @@ mod tests {
         let (mut state, mut record, obs, first, plan) = validated_pair();
         let head_index = state.head_index;
         let head_hash = state.head_hash;
-        let err = commit_transition_from_records(&mut state, &mut record, &obs, &[first], &[plan],
+        let err = commit_transition_from_records(&test_registry(), &mut state, &mut record, &obs, &[first], &[plan],
     &[]
 )
             .expect_err("an undeclared record must refuse commit");
@@ -19865,7 +20435,7 @@ mod tests {
         record.transition_type = T_GOV_COUNCIL;
         let head_index = state.head_index;
         let head_hash = state.head_hash;
-        let err = commit_transition_from_records(&mut state, &mut record, &obs, &[first], &[plan],
+        let err = commit_transition_from_records(&test_registry(), &mut state, &mut record, &obs, &[first], &[plan],
     &[]
 )
             .expect_err("a governance record must refuse ordinary commit");
@@ -19888,7 +20458,7 @@ mod tests {
         advance_clock_on_state(&mut state, 400).expect("advance to the plan expiry must succeed");
         let head_index = state.head_index;
         let head_hash = state.head_hash;
-        let err = commit_transition_from_records(&mut state, &mut record, &obs, &[first], &[plan],
+        let err = commit_transition_from_records(&test_registry(), &mut state, &mut record, &obs, &[first], &[plan],
     &[]
 )
             .expect_err("an expired-plan predicate must refuse commit");
@@ -19910,7 +20480,7 @@ mod tests {
         advance_clock_on_state(&mut state, 9100).expect("advance to the observation expiry must succeed");
         let head_index = state.head_index;
         let head_hash = state.head_hash;
-        let err = commit_transition_from_records(&mut state, &mut record, &obs, &[first], &[plan],
+        let err = commit_transition_from_records(&test_registry(), &mut state, &mut record, &obs, &[first], &[plan],
     &[]
 )
             .expect_err("a stale observation must refuse commit");
@@ -19930,7 +20500,7 @@ mod tests {
         // unmoved, neither committed nor blocked on a lie.
         let (mut state, mut record, obs, first, plan) = declared_pair();
         record.compatible = false;
-        let err = commit_transition_from_records(&mut state, &mut record, &obs, &[first], &[plan],
+        let err = commit_transition_from_records(&test_registry(), &mut state, &mut record, &obs, &[first], &[plan],
     &[]
 )
             .expect_err("a mismatched stored verdict must refuse commit");
@@ -19947,7 +20517,7 @@ mod tests {
         // replay, and the head stands.
         let (mut state, mut record, obs, first, plan) = declared_pair();
         record.plan_count = 2;
-        let err = commit_transition_from_records(&mut state, &mut record, &obs, &[first], &[plan],
+        let err = commit_transition_from_records(&test_registry(), &mut state, &mut record, &obs, &[first], &[plan],
     &[]
 )
             .expect_err("a short prior plan set must refuse commit");
@@ -19964,7 +20534,7 @@ mod tests {
         // replay, and the head stands.
         let (mut state, mut record, obs, first, plan) = declared_pair();
         record.signal_count = 2;
-        let err = commit_transition_from_records(&mut state, &mut record, &obs, &[first], &[plan],
+        let err = commit_transition_from_records(&test_registry(), &mut state, &mut record, &obs, &[first], &[plan],
     &[]
 )
             .expect_err("a short prior signal set must refuse commit");
@@ -19981,7 +20551,7 @@ mod tests {
         // record and the head stand.
         let (mut state, mut record, obs, first, mut plan) = declared_pair();
         plan.agent = Pubkey::new_from_array([0x77; 32]);
-        let err = commit_transition_from_records(&mut state, &mut record, &obs, &[first], &[plan],
+        let err = commit_transition_from_records(&test_registry(), &mut state, &mut record, &obs, &[first], &[plan],
     &[]
 )
             .expect_err("an unreproducible plan must refuse commit");
@@ -19994,7 +20564,7 @@ mod tests {
     fn commit_refuses_unsealed() {
         let (mut state, mut record, obs, first, plan) = declared_pair();
         state.sealed = false;
-        let err = commit_transition_from_records(&mut state, &mut record, &obs, &[first], &[plan],
+        let err = commit_transition_from_records(&test_registry(), &mut state, &mut record, &obs, &[first], &[plan],
     &[]
 )
             .expect_err("an unsealed state must refuse commit");
@@ -20010,7 +20580,7 @@ mod tests {
         // refuses, and commit moves the head no further.
         let (mut state, mut record, obs, first, plan) = declared_pair();
         state.head_index = 9;
-        let err = commit_transition_from_records(&mut state, &mut record, &obs, &[first], &[plan],
+        let err = commit_transition_from_records(&test_registry(), &mut state, &mut record, &obs, &[first], &[plan],
     &[]
 )
             .expect_err("a record off the sealed head must refuse commit");
@@ -20029,7 +20599,7 @@ mod tests {
         // at the enforcement point.
         let (mut state, mut record, obs, first, plan) = declared_pair();
         assert_eq!(state.committed_claims, [0, 0, 0]);
-        commit_transition_from_records(&mut state, &mut record, &obs, &[first], std::slice::from_ref(&plan),
+        commit_transition_from_records(&test_registry(), &mut state, &mut record, &obs, &[first], std::slice::from_ref(&plan),
     &[]
 )
             .expect("a fitting declared chain must commit");
@@ -20048,7 +20618,7 @@ mod tests {
         // ledger stands at the pre-seeded totals, unmoved.
         let (mut state, mut record, obs, first, plan) = declared_pair();
         state.committed_claims = [995 * SCALE, 0, 0];
-        let err = commit_transition_from_records(&mut state, &mut record, &obs, &[first], &[plan],
+        let err = commit_transition_from_records(&test_registry(), &mut state, &mut record, &obs, &[first], &[plan],
     &[]
 )
             .expect_err("a ledger-exhausting commit must refuse");
@@ -20068,7 +20638,7 @@ mod tests {
         // positive claim on either resource must refuse.
         let (mut state, mut record, obs, first, plan) = declared_pair();
         state.committed_claims = [990 * SCALE, 495 * SCALE, 0];
-        commit_transition_from_records(&mut state, &mut record, &obs, &[first], std::slice::from_ref(&plan),
+        commit_transition_from_records(&test_registry(), &mut state, &mut record, &obs, &[first], std::slice::from_ref(&plan),
     &[]
 )
             .expect("an exactly-fitting ledger must commit");
@@ -20086,7 +20656,7 @@ mod tests {
         let (mut state, mut record, obs, first, plan) = declared_pair();
         state.committed_claims = [100 * SCALE, 50 * SCALE, 25 * SCALE];
         advance_clock_on_state(&mut state, 9100).expect("advance to the observation expiry must succeed");
-        let err = commit_transition_from_records(&mut state, &mut record, &obs, &[first], &[plan],
+        let err = commit_transition_from_records(&test_registry(), &mut state, &mut record, &obs, &[first], &[plan],
     &[]
 )
             .expect_err("a stale-observation commit must refuse");
@@ -20107,7 +20677,7 @@ mod tests {
         let head_hash = state.head_hash;
         let ledger = state.committed_claims;
         let realized = record.declared_next_hash;
-        let life = settle_transition_from_records(
+        let life = settle_transition_from_records(&test_registry(), 
             &state, &mut record, &obs, &[first], std::slice::from_ref(&plan), &[], realized,
         )
         .expect("a proven committed chain must settle on its declared hash");
@@ -20127,7 +20697,7 @@ mod tests {
         // the halved-credit rule bites at outcome time, the
         // next slice, not here.
         let (state, mut record, obs, first, plan) = committed_pair();
-        let life = settle_transition_from_records(
+        let life = settle_transition_from_records(&test_registry(), 
             &state, &mut record, &obs, &[first], std::slice::from_ref(&plan), &[], [0x99; 32],
         )
         .expect("an inexact realized hash must still settle");
@@ -20142,12 +20712,12 @@ mod tests {
         // stand exactly where the first settle left them.
         let (state, mut record, obs, first, plan) = committed_pair();
         let realized = record.declared_next_hash;
-        settle_transition_from_records(
+        settle_transition_from_records(&test_registry(), 
             &state, &mut record, &obs, &[first], std::slice::from_ref(&plan), &[], realized,
         )
         .expect("first settle must succeed");
         assert_eq!(record.stage, TransitionRecord::SETTLED);
-        let err = settle_transition_from_records(
+        let err = settle_transition_from_records(&test_registry(), 
             &state, &mut record, &obs, &[first], std::slice::from_ref(&plan), &[], realized,
         )
         .expect_err("a second settle must refuse");
@@ -20169,7 +20739,7 @@ mod tests {
         // fixture every slice-59 test builds from.
         let (state, mut record, obs, first, plan) = committed_pair();
         let realized = record.declared_next_hash;
-        let life = settle_transition_from_records(
+        let life = settle_transition_from_records(&test_registry(), 
             &state, &mut record, &obs, &[first], std::slice::from_ref(&plan), &[], realized,
         )
         .expect("a proven committed chain must settle");
@@ -20191,7 +20761,7 @@ mod tests {
         let head_hash = state.head_hash;
         let ledger = state.committed_claims;
         let realized = record.declared_next_hash;
-        let (life, exact) = record_outcome_from_records(
+        let (life, exact) = record_outcome_from_records(&test_registry(), 
             &state,
             &mut record,
             &obs,
@@ -20219,7 +20789,7 @@ mod tests {
         // halved-positive-credit rule's input, carried by
         // the event for the future reputation slice.
         let (state, mut record, obs, first, plan) = settled_pair();
-        let (life, exact) = record_outcome_from_records(
+        let (life, exact) = record_outcome_from_records(&test_registry(), 
             &state,
             &mut record,
             &obs,
@@ -20242,7 +20812,7 @@ mod tests {
         // refuses a second call, and the stage stands at 12.
         let (state, mut record, obs, first, plan) = settled_pair();
         let realized = record.declared_next_hash;
-        record_outcome_from_records(
+        record_outcome_from_records(&test_registry(), 
             &state,
             &mut record,
             &obs,
@@ -20255,7 +20825,7 @@ mod tests {
         )
         .expect("first outcome must succeed");
         assert_eq!(record.stage, TransitionRecord::EVALUATED_OUTCOME);
-        let err = record_outcome_from_records(
+        let err = record_outcome_from_records(&test_registry(), 
             &state,
             &mut record,
             &obs,
@@ -20277,7 +20847,7 @@ mod tests {
         // refuses before any replay, and nothing moves.
         let (state, mut record, obs, first, plan) = committed_pair();
         let realized = record.declared_next_hash;
-        let err = record_outcome_from_records(
+        let err = record_outcome_from_records(&test_registry(), 
             &state,
             &mut record,
             &obs,
@@ -20301,13 +20871,13 @@ mod tests {
         let (state, mut record, obs, first, plan, approvals) = gov_committed_bundle();
         let action = gov_action();
         let realized = record.declared_next_hash;
-        settle_governance_transition_from_stored(
+        settle_governance_transition_from_stored(&test_registry(), 
             &state, &mut record, &obs, &[first], std::slice::from_ref(&plan), &approvals, &action,
             &[], realized,
         )
         .expect("a proven committed governance bundle must settle");
         assert_eq!(record.stage, TransitionRecord::SETTLED);
-        let err = record_outcome_from_records(
+        let err = record_outcome_from_records(&test_registry(), 
             &state,
             &mut record,
             &obs,
@@ -20330,7 +20900,7 @@ mod tests {
         // replay, and the record stands SETTLED.
         let (state, mut record, obs, first, plan) = settled_pair();
         let realized = record.declared_next_hash;
-        let err = record_outcome_from_records(
+        let err = record_outcome_from_records(&test_registry(), 
             &state,
             &mut record,
             &obs,
@@ -20353,7 +20923,7 @@ mod tests {
         // transition refuses, and the record stands SETTLED.
         let (state, mut record, obs, first, plan) = settled_pair();
         let realized = record.declared_next_hash;
-        let err = record_outcome_from_records(
+        let err = record_outcome_from_records(&test_registry(), 
             &state,
             &mut record,
             &obs,
@@ -20376,7 +20946,7 @@ mod tests {
         let (mut state, mut record, obs, first, plan) = settled_pair();
         state.sealed = false;
         let realized = record.declared_next_hash;
-        let err = record_outcome_from_records(
+        let err = record_outcome_from_records(&test_registry(), 
             &state,
             &mut record,
             &obs,
@@ -20400,7 +20970,7 @@ mod tests {
         // nothing to attribute is not stuck at SETTLED.
         let (state, mut record, obs, first, plan) = settled_pair();
         let realized = record.declared_next_hash;
-        let (life, exact) = record_outcome_from_records(
+        let (life, exact) = record_outcome_from_records(&test_registry(), 
             &state,
             &mut record,
             &obs,
@@ -20428,7 +20998,7 @@ mod tests {
         let (mut state, mut record, obs, first, plan) = settled_pair();
         advance_clock_on_state(&mut state, 5000).expect("advance past the execution deadline must succeed");
         let realized = record.declared_next_hash;
-        let (life, _) = record_outcome_from_records(
+        let (life, _) = record_outcome_from_records(&test_registry(), 
             &state,
             &mut record,
             &obs,
@@ -20455,7 +21025,7 @@ mod tests {
         let (state, mut record, obs, first, plan, approvals) = gov_committed_bundle();
         let action = gov_action();
         let realized = record.declared_next_hash;
-        settle_governance_transition_from_stored(
+        settle_governance_transition_from_stored(&test_registry(), 
             &state, &mut record, &obs, &[first], std::slice::from_ref(&plan), &approvals, &action,
             &[], realized,
         )
@@ -20464,7 +21034,7 @@ mod tests {
         let head_index = state.head_index;
         let head_hash = state.head_hash;
         let ledger = state.committed_claims;
-        let (life, exact) = record_outcome_governance_from_records(
+        let (life, exact) = record_outcome_governance_from_records(&test_registry(), 
             &state,
             &mut record,
             &obs,
@@ -20497,12 +21067,12 @@ mod tests {
         let (state, mut record, obs, first, plan, approvals) = gov_committed_bundle();
         let action = gov_action();
         let realized = record.declared_next_hash;
-        settle_governance_transition_from_stored(
+        settle_governance_transition_from_stored(&test_registry(), 
             &state, &mut record, &obs, &[first], std::slice::from_ref(&plan), &approvals, &action,
             &[], realized,
         )
         .expect("a proven committed governance bundle must settle");
-        let (life, exact) = record_outcome_governance_from_records(
+        let (life, exact) = record_outcome_governance_from_records(&test_registry(), 
             &state,
             &mut record,
             &obs,
@@ -20529,12 +21099,12 @@ mod tests {
         let (state, mut record, obs, first, plan, approvals) = gov_committed_bundle();
         let action = gov_action();
         let realized = record.declared_next_hash;
-        settle_governance_transition_from_stored(
+        settle_governance_transition_from_stored(&test_registry(), 
             &state, &mut record, &obs, &[first], std::slice::from_ref(&plan), &approvals, &action,
             &[], realized,
         )
         .expect("a proven committed governance bundle must settle");
-        record_outcome_governance_from_records(
+        record_outcome_governance_from_records(&test_registry(), 
             &state,
             &mut record,
             &obs,
@@ -20549,7 +21119,7 @@ mod tests {
         )
         .expect("first governance outcome must succeed");
         assert_eq!(record.stage, TransitionRecord::EVALUATED_OUTCOME);
-        let err = record_outcome_governance_from_records(
+        let err = record_outcome_governance_from_records(&test_registry(), 
             &state,
             &mut record,
             &obs,
@@ -20577,7 +21147,7 @@ mod tests {
         let (state, mut record, obs, first, plan) = settled_pair();
         let action = gov_action();
         let realized = record.declared_next_hash;
-        let err = record_outcome_governance_from_records(
+        let err = record_outcome_governance_from_records(&test_registry(), 
             &state,
             &mut record,
             &obs,
@@ -20602,7 +21172,7 @@ mod tests {
         let (state, mut record, obs, first, plan, approvals) = gov_committed_bundle();
         let action = gov_action();
         let realized = record.declared_next_hash;
-        let err = record_outcome_governance_from_records(
+        let err = record_outcome_governance_from_records(&test_registry(), 
             &state,
             &mut record,
             &obs,
@@ -20628,12 +21198,12 @@ mod tests {
         let (state, mut record, obs, first, plan, approvals) = gov_committed_bundle();
         let action = gov_action();
         let realized = record.declared_next_hash;
-        settle_governance_transition_from_stored(
+        settle_governance_transition_from_stored(&test_registry(), 
             &state, &mut record, &obs, &[first], std::slice::from_ref(&plan), &approvals, &action,
             &[], realized,
         )
         .expect("a proven committed governance bundle must settle");
-        let err = record_outcome_governance_from_records(
+        let err = record_outcome_governance_from_records(&test_registry(), 
             &state,
             &mut record,
             &obs,
@@ -20660,12 +21230,12 @@ mod tests {
         let (state, mut record, obs, first, plan, approvals) = gov_committed_bundle();
         let action = gov_action();
         let realized = record.declared_next_hash;
-        settle_governance_transition_from_stored(
+        settle_governance_transition_from_stored(&test_registry(), 
             &state, &mut record, &obs, &[first], std::slice::from_ref(&plan), &approvals, &action,
             &[], realized,
         )
         .expect("a proven committed governance bundle must settle");
-        let err = record_outcome_governance_from_records(
+        let err = record_outcome_governance_from_records(&test_registry(), 
             &state,
             &mut record,
             &obs,
@@ -20692,12 +21262,12 @@ mod tests {
         let (state, mut record, obs, first, plan, approvals) = gov_committed_bundle();
         let action = gov_action();
         let realized = record.declared_next_hash;
-        settle_governance_transition_from_stored(
+        settle_governance_transition_from_stored(&test_registry(), 
             &state, &mut record, &obs, &[first], std::slice::from_ref(&plan), &approvals, &action,
             &[], realized,
         )
         .expect("a proven committed governance bundle must settle");
-        let err = record_outcome_governance_from_records(
+        let err = record_outcome_governance_from_records(&test_registry(), 
             &state,
             &mut record,
             &obs,
@@ -20725,12 +21295,12 @@ mod tests {
         let (state, mut record, obs, first, plan, approvals) = gov_committed_bundle();
         let action = gov_action();
         let realized = record.declared_next_hash;
-        settle_governance_transition_from_stored(
+        settle_governance_transition_from_stored(&test_registry(), 
             &state, &mut record, &obs, &[first], std::slice::from_ref(&plan), &approvals, &action,
             &[], realized,
         )
         .expect("a proven committed governance bundle must settle");
-        let (life, exact) = record_outcome_governance_from_records(
+        let (life, exact) = record_outcome_governance_from_records(&test_registry(), 
             &state,
             &mut record,
             &obs,
@@ -20762,13 +21332,13 @@ mod tests {
         let (mut state, mut record, obs, first, plan, approvals) = gov_committed_bundle();
         let action = gov_action();
         let realized = record.declared_next_hash;
-        settle_governance_transition_from_stored(
+        settle_governance_transition_from_stored(&test_registry(), 
             &state, &mut record, &obs, &[first], std::slice::from_ref(&plan), &approvals, &action,
             &[], realized,
         )
         .expect("a proven committed governance bundle must settle");
         advance_clock_on_state(&mut state, 5000).expect("advance past the execution deadline must succeed");
-        let (life, _) = record_outcome_governance_from_records(
+        let (life, _) = record_outcome_governance_from_records(&test_registry(), 
             &state,
             &mut record,
             &obs,
@@ -21021,7 +21591,7 @@ mod tests {
         // same +10 halves to +5, the kernel's inexact rule.
         let (state, mut record, obs, first, plan) = settled_pair();
         let realized = record.declared_next_hash;
-        let (life, exact) = record_outcome_from_records(
+        let (life, exact) = record_outcome_from_records(&test_registry(), 
             &state,
             &mut record,
             &obs,
@@ -21043,7 +21613,7 @@ mod tests {
         .expect("the exact outcome's reputations must apply");
         assert_eq!(updates, vec![(plan.agent, 50 * SCALE + 10)]);
         let (state, mut record, obs, first, plan) = settled_pair();
-        let (life, exact) = record_outcome_from_records(
+        let (life, exact) = record_outcome_from_records(&test_registry(), 
             &state,
             &mut record,
             &obs,
@@ -21072,7 +21642,7 @@ mod tests {
         // refuses before any replay, and nothing moves.
         let (state, mut record, obs, first, plan) = declared_pair();
         let realized = record.declared_next_hash;
-        let err = settle_transition_from_records(
+        let err = settle_transition_from_records(&test_registry(), 
             &state, &mut record, &obs, &[first], std::slice::from_ref(&plan), &[], realized,
         )
         .expect_err("a declared record must refuse settle");
@@ -21088,14 +21658,14 @@ mod tests {
         let (mut state, mut record, obs, first, plan) = gov_declared_pair();
         let action = gov_action();
         let approvals = gov_approvals();
-        commit_governance_from_records(
+        commit_governance_from_records(&test_registry(), 
             &mut state, &mut record, &obs, std::slice::from_ref(&first), std::slice::from_ref(&plan),
             &action, &approvals, &[],
         )
         .expect("a unanimous governance chain must commit");
         assert_eq!(record.stage, TransitionRecord::COMMITTED);
         let realized = record.declared_next_hash;
-        let err = settle_transition_from_records(
+        let err = settle_transition_from_records(&test_registry(), 
             &state, &mut record, &obs, std::slice::from_ref(&first), std::slice::from_ref(&plan),
             &[], realized,
         )
@@ -21113,7 +21683,7 @@ mod tests {
         let (mut state, mut record, obs, first, plan) = committed_pair();
         advance_clock_on_state(&mut state, 1301).expect("advance past the execution deadline must succeed");
         let realized = record.declared_next_hash;
-        let err = settle_transition_from_records(
+        let err = settle_transition_from_records(&test_registry(), 
             &state, &mut record, &obs, &[first], std::slice::from_ref(&plan), &[], realized,
         )
         .expect_err("a past-deadline settle must refuse");
@@ -21131,7 +21701,7 @@ mod tests {
         let (mut state, mut record, obs, first, plan) = committed_pair();
         state.clock = 250;
         let realized = record.declared_next_hash;
-        let err = settle_transition_from_records(
+        let err = settle_transition_from_records(&test_registry(), 
             &state, &mut record, &obs, &[first], std::slice::from_ref(&plan), &[], realized,
         )
         .expect_err("a regressed-clock settle must refuse");
@@ -21146,7 +21716,7 @@ mod tests {
         let (mut state, mut record, obs, first, plan) = committed_pair();
         state.sealed = false;
         let realized = record.declared_next_hash;
-        let err = settle_transition_from_records(
+        let err = settle_transition_from_records(&test_registry(), 
             &state, &mut record, &obs, &[first], std::slice::from_ref(&plan), &[], realized,
         )
         .expect_err("an unsealed settle must refuse");
@@ -21171,7 +21741,7 @@ mod tests {
         };
         let prior = PriorEntry::Ordinary(overshoot);
         let realized = record.declared_next_hash;
-        let err = settle_transition_from_records(
+        let err = settle_transition_from_records(&test_registry(), 
             &state, &mut record, &obs, &[first], std::slice::from_ref(&plan),
             std::slice::from_ref(&prior), realized,
         )
@@ -21200,45 +21770,45 @@ mod tests {
             second_eligible_at_head(&mut state, &prior, [0xD2; 32], [0xC1; 32], [0xE2; 32]);
         let signal = second_signal_at_head(&state, &mut record, &obs, &prior, 2, SCALE);
         advance_clock_on_state(&mut state, 500).expect("advance to the consensus deadline must succeed");
-        select_candidate_from_records(
+        select_candidate_from_records(&test_registry(), 
             &state, &mut record, &obs, std::slice::from_ref(&signal), std::slice::from_ref(&prior),
         )
         .expect("a closed window with a qualifying tally must select at the moved head");
-        open_planning_from_records(
+        open_planning_from_records(&test_registry(), 
             &state, &mut record, &obs, std::slice::from_ref(&signal), [0x77; 32],
             std::slice::from_ref(&prior),
         )
         .expect("a kernel-proven selection must open planning at the moved head");
         assert_eq!(record.planning_deadline, 600);
-        let plan = submit_plan_from_records(
+        let plan = submit_plan_from_records(&test_registry(), 
             &state, &mut record, &obs, std::slice::from_ref(&signal), &[], &two_claims(), 700,
             ag(2), 7, std::slice::from_ref(&prior),
         )
         .expect("a fitting plan must submit at the moved head");
         advance_clock_on_state(&mut state, 600).expect("advance to the planning deadline must succeed");
-        reconcile_plans_from_records(
+        reconcile_plans_from_records(&test_registry(), 
             &state, &mut record, &obs, std::slice::from_ref(&signal),
             std::slice::from_ref(&plan), std::slice::from_ref(&prior),
         )
         .expect("a fitting plan set must reconcile at the moved head");
-        validate_transition_from_records(
+        validate_transition_from_records(&test_registry(), 
             &state, &mut record, &obs, std::slice::from_ref(&signal),
             std::slice::from_ref(&plan), std::slice::from_ref(&prior),
         )
         .expect("a fitting reconciled chain must validate at the moved head");
-        declare_transition_from_records(
+        declare_transition_from_records(&test_registry(), 
             &state, &mut record, &obs, std::slice::from_ref(&signal),
             std::slice::from_ref(&plan), std::slice::from_ref(&prior),
         )
         .expect("a validated chain must declare at the moved head");
-        commit_transition_from_records(
+        commit_transition_from_records(&test_registry(), 
             &mut state, &mut record, &obs, std::slice::from_ref(&signal),
             std::slice::from_ref(&plan), std::slice::from_ref(&prior),
         )
         .expect("a fitting declared chain must commit at the moved head");
         assert_eq!(record.stage, TransitionRecord::COMMITTED);
         assert_eq!(state.head_index, 2);
-        let life = settle_transition_from_records(
+        let life = settle_transition_from_records(&test_registry(), 
             &state, &mut record, &obs, std::slice::from_ref(&signal),
             std::slice::from_ref(&plan), std::slice::from_ref(&prior), [0xE2; 32],
         )
@@ -21263,7 +21833,7 @@ mod tests {
         let (mut state, mut record, obs, first, plan) = gov_declared_pair();
         let action = gov_action();
         let approvals = gov_approvals();
-        let life = commit_governance_from_records(
+        let life = commit_governance_from_records(&test_registry(), 
             &mut state, &mut record, &obs, std::slice::from_ref(&first), std::slice::from_ref(&plan),
             &action, &approvals, &[],
         )
@@ -21289,7 +21859,7 @@ mod tests {
         let action = gov_action();
         let approvals = gov_approvals();
         let realized = record.declared_next_hash;
-        let life = settle_governance_transition_from_records(
+        let life = settle_governance_transition_from_records(&test_registry(), 
             &state, &mut record, &obs, &[first], std::slice::from_ref(&plan), &action, &approvals,
             &[], realized,
         )
@@ -21311,7 +21881,7 @@ mod tests {
         let (state, mut record, obs, first, plan) = gov_committed_pair();
         let action = gov_action();
         let approvals = gov_approvals();
-        let life = settle_governance_transition_from_records(
+        let life = settle_governance_transition_from_records(&test_registry(), 
             &state, &mut record, &obs, &[first], std::slice::from_ref(&plan), &action, &approvals,
             &[], [0x99; 32],
         )
@@ -21330,13 +21900,13 @@ mod tests {
         let action = gov_action();
         let approvals = gov_approvals();
         let realized = record.declared_next_hash;
-        settle_governance_transition_from_records(
+        settle_governance_transition_from_records(&test_registry(), 
             &state, &mut record, &obs, &[first], std::slice::from_ref(&plan), &action, &approvals,
             &[], realized,
         )
         .expect("first governance settle must succeed");
         assert_eq!(record.stage, TransitionRecord::SETTLED);
-        let err = settle_governance_transition_from_records(
+        let err = settle_governance_transition_from_records(&test_registry(), 
             &state, &mut record, &obs, &[first], std::slice::from_ref(&plan), &action, &approvals,
             &[], realized,
         )
@@ -21355,7 +21925,7 @@ mod tests {
         let action = gov_action();
         let approvals = gov_approvals();
         let realized = record.declared_next_hash;
-        let err = settle_governance_transition_from_records(
+        let err = settle_governance_transition_from_records(&test_registry(), 
             &state, &mut record, &obs, &[first], std::slice::from_ref(&plan), &action, &approvals,
             &[], realized,
         )
@@ -21377,7 +21947,7 @@ mod tests {
         let action = gov_action();
         let approvals = [ag(1), ag(2)];
         let realized = record.declared_next_hash;
-        let err = settle_governance_transition_from_records(
+        let err = settle_governance_transition_from_records(&test_registry(), 
             &state, &mut record, &obs, &[first], std::slice::from_ref(&plan), &action, &approvals,
             &[], realized,
         )
@@ -21398,7 +21968,7 @@ mod tests {
         let action = gov_action();
         let approvals = [ag(1), ag(2), ag(9)];
         let realized = record.declared_next_hash;
-        let err = settle_governance_transition_from_records(
+        let err = settle_governance_transition_from_records(&test_registry(), 
             &state, &mut record, &obs, &[first], std::slice::from_ref(&plan), &action, &approvals,
             &[], realized,
         )
@@ -21416,7 +21986,7 @@ mod tests {
         let action = gov_action();
         let approvals = gov_approvals();
         let realized = record.declared_next_hash;
-        let err = settle_governance_transition_from_records(
+        let err = settle_governance_transition_from_records(&test_registry(), 
             &state, &mut record, &obs, &[first], std::slice::from_ref(&plan), &action, &approvals,
             &[], realized,
         )
@@ -21437,7 +22007,7 @@ mod tests {
         let action = gov_action();
         let approvals = gov_approvals();
         let realized = record.declared_next_hash;
-        let err = settle_governance_transition_from_records(
+        let err = settle_governance_transition_from_records(&test_registry(), 
             &state, &mut record, &obs, &[first], std::slice::from_ref(&plan), &action, &approvals,
             &[], realized,
         )
@@ -21456,7 +22026,7 @@ mod tests {
         let action = gov_action();
         let approvals = gov_approvals();
         let realized = record.declared_next_hash;
-        let err = settle_governance_transition_from_records(
+        let err = settle_governance_transition_from_records(&test_registry(), 
             &state, &mut record, &obs, &[first], std::slice::from_ref(&plan), &action, &approvals,
             &[], realized,
         )
@@ -21484,7 +22054,7 @@ mod tests {
         let action = gov_action();
         let approvals = gov_approvals();
         let realized = record.declared_next_hash;
-        let err = settle_governance_transition_from_records(
+        let err = settle_governance_transition_from_records(&test_registry(), 
             &state, &mut record, &obs, &[first], std::slice::from_ref(&plan), &action, &approvals,
             std::slice::from_ref(&prior), realized,
         )
@@ -21511,7 +22081,7 @@ mod tests {
         let ledger = state.committed_claims;
         let action = gov_action();
         let realized = record.declared_next_hash;
-        let life = settle_governance_transition_from_stored(
+        let life = settle_governance_transition_from_stored(&test_registry(), 
             &state, &mut record, &obs, &[first], std::slice::from_ref(&plan), &approvals, &action,
             &[], realized,
         )
@@ -21533,7 +22103,7 @@ mod tests {
         let (state, mut record, obs, first, plan, approvals) = gov_committed_bundle();
         let action = gov_action();
         let realized = record.declared_next_hash;
-        let err = settle_governance_transition_from_stored(
+        let err = settle_governance_transition_from_stored(&test_registry(), 
             &state, &mut record, &obs, &[first], std::slice::from_ref(&plan), &approvals[..2],
             &action, &[], realized,
         )
@@ -21558,22 +22128,22 @@ mod tests {
         };
         record.stage = TransitionRecord::REGISTERED;
         let mixed = [
-            build_governance_approval_record(
+            build_governance_approval_record(&test_registry(), 
                 &state, &record, Pubkey::new_from_array(ag(1)), &action, 1,
             )
             .expect("seat 1 approval must build"),
-            build_governance_approval_record(
+            build_governance_approval_record(&test_registry(), 
                 &state, &record, Pubkey::new_from_array(ag(2)), &other, 1,
             )
             .expect("seat 2 approval must build"),
-            build_governance_approval_record(
+            build_governance_approval_record(&test_registry(), 
                 &state, &record, Pubkey::new_from_array(ag(3)), &action, 1,
             )
             .expect("seat 3 approval must build"),
         ];
         record.stage = TransitionRecord::COMMITTED;
         let realized = record.declared_next_hash;
-        let err = settle_governance_transition_from_stored(
+        let err = settle_governance_transition_from_stored(&test_registry(), 
             &state, &mut record, &obs, &[first], std::slice::from_ref(&plan), &mixed, &action,
             &[], realized,
         )
@@ -21593,7 +22163,7 @@ mod tests {
         record.stage = TransitionRecord::DECLARED;
         let action = gov_action();
         let realized = record.declared_next_hash;
-        let err = settle_governance_transition_from_stored(
+        let err = settle_governance_transition_from_stored(&test_registry(), 
             &state, &mut record, &obs, &[first], std::slice::from_ref(&plan), &approvals, &action,
             &[], realized,
         )
@@ -21634,27 +22204,27 @@ mod tests {
         // approvals, so a label earned as ordinary proves
         // nothing the helper does not re-prove itself.
         let (mut state, mut record, obs, first) = planned_pair();
-        let plan = submit_plan_from_records(
+        let plan = submit_plan_from_records(&test_registry(), 
             &state, &mut record, &obs, &[first], &[], &[], 400, ag(2), 7,
             &[],
 )
         .expect("an empty-claims governance plan must submit");
         assert_eq!(record.plan_count, 1);
         advance_clock_on_state(&mut state, 300).expect("advance to the deadline must succeed");
-        let life = reconcile_plans_from_records(
+        let life = reconcile_plans_from_records(&test_registry(), 
             &state, &mut record, &obs, std::slice::from_ref(&first), std::slice::from_ref(&plan),
             &[],
 )
         .expect("an empty-claims plan set must reconcile");
         assert_eq!(life, Life::Reconciling);
         assert!(record.compatible);
-        let life = validate_transition_from_records(
+        let life = validate_transition_from_records(&test_registry(), 
             &state, &mut record, &obs, std::slice::from_ref(&first), std::slice::from_ref(&plan),
             &[],
 )
         .expect("a compatible governance-shaped chain must validate");
         assert_eq!(life, Life::Validated);
-        let life = declare_transition_from_records(
+        let life = declare_transition_from_records(&test_registry(), 
             &state, &mut record, &obs, std::slice::from_ref(&first), std::slice::from_ref(&plan),
             &[],
 )
@@ -21681,7 +22251,7 @@ mod tests {
         let approvals = gov_approvals();
         let old_index = state.head_index;
         let next_hash = record.declared_next_hash;
-        let life = commit_governance_from_records(
+        let life = commit_governance_from_records(&test_registry(), 
             &mut state, &mut record, &obs, std::slice::from_ref(&first), std::slice::from_ref(&plan),
             &action, &approvals,
             &[],
@@ -21692,7 +22262,7 @@ mod tests {
         assert_eq!(state.head_index, old_index + 1);
         assert_eq!(state.head_hash, next_hash);
         assert_eq!(state.committed_claims, [0, 0, 0]);
-        let err = commit_governance_from_records(
+        let err = commit_governance_from_records(&test_registry(), 
             &mut state, &mut record, &obs, std::slice::from_ref(&first), std::slice::from_ref(&plan),
             &action, &approvals,
             &[],
@@ -21713,7 +22283,7 @@ mod tests {
         let approvals = gov_approvals();
         let head_index = state.head_index;
         let head_hash = state.head_hash;
-        let err = commit_governance_from_records(
+        let err = commit_governance_from_records(&test_registry(), 
             &mut state, &mut record, &obs, &[first], &[plan], &action, &approvals,
             &[],
 )
@@ -21737,7 +22307,7 @@ mod tests {
         let approvals = [ag(1), ag(2)];
         let head_index = state.head_index;
         let head_hash = state.head_hash;
-        let err = commit_governance_from_records(
+        let err = commit_governance_from_records(&test_registry(), 
             &mut state, &mut record, &obs, &[first], &[plan], &action, &approvals,
             &[],
 )
@@ -21759,7 +22329,7 @@ mod tests {
         record.transition_type = T_GOV_COUNCIL;
         let action = gov_action();
         let approvals = gov_approvals();
-        let err = commit_governance_from_records(
+        let err = commit_governance_from_records(&test_registry(), 
             &mut state, &mut record, &obs, &[first], &[plan], &action, &approvals,
             &[],
 )
@@ -21774,7 +22344,7 @@ mod tests {
         record.stage = TransitionRecord::VALIDATED;
         let action = gov_action();
         let approvals = gov_approvals();
-        let err = commit_governance_from_records(
+        let err = commit_governance_from_records(&test_registry(), 
             &mut state, &mut record, &obs, &[first], &[plan], &action, &approvals,
             &[],
 )
@@ -21793,7 +22363,7 @@ mod tests {
         advance_clock_on_state(&mut state, 400).expect("advance to the plan expiry must succeed");
         let action = gov_action();
         let approvals = gov_approvals();
-        let err = commit_governance_from_records(
+        let err = commit_governance_from_records(&test_registry(), 
             &mut state, &mut record, &obs, &[first], &[plan], &action, &approvals,
             &[],
 )
@@ -21814,7 +22384,7 @@ mod tests {
         advance_clock_on_state(&mut state, 9100).expect("advance to the observation expiry must succeed");
         let action = gov_action();
         let approvals = gov_approvals();
-        let err = commit_governance_from_records(
+        let err = commit_governance_from_records(&test_registry(), 
             &mut state, &mut record, &obs, &[first], &[plan], &action, &approvals,
             &[],
 )
@@ -21834,7 +22404,7 @@ mod tests {
         state.committed_claims = [100 * SCALE, 50 * SCALE, 25 * SCALE];
         let action = gov_action();
         let approvals = gov_approvals();
-        let life = commit_governance_from_records(
+        let life = commit_governance_from_records(&test_registry(), 
             &mut state, &mut record, &obs, &[first], &[plan], &action, &approvals,
             &[],
 )
@@ -21850,7 +22420,7 @@ mod tests {
         state.sealed = false;
         let action = gov_action();
         let approvals = gov_approvals();
-        let err = commit_governance_from_records(
+        let err = commit_governance_from_records(&test_registry(), 
             &mut state, &mut record, &obs, &[first], &[plan], &action, &approvals,
             &[],
 )
@@ -21865,7 +22435,7 @@ mod tests {
         state.head_index = 9;
         let action = gov_action();
         let approvals = gov_approvals();
-        let err = commit_governance_from_records(
+        let err = commit_governance_from_records(&test_registry(), 
             &mut state, &mut record, &obs, &[first], &[plan], &action, &approvals,
             &[],
 )
@@ -22001,7 +22571,7 @@ mod tests {
         let (mut state, mut record, obs, first, plan) = gov_declared_pair();
         let action = gov_action();
         let approvals = gov_approvals();
-        let life = commit_governance_from_records(
+        let life = commit_governance_from_records(&test_registry(), 
             &mut state, &mut record, &obs, std::slice::from_ref(&first), std::slice::from_ref(&plan),
             &action, &approvals,
             &[],
@@ -22011,15 +22581,15 @@ mod tests {
         assert_eq!(record.stage, TransitionRecord::COMMITTED);
         record.stage = TransitionRecord::REGISTERED;
         let approval_records = [
-            build_governance_approval_record(
+            build_governance_approval_record(&test_registry(), 
                 &state, &record, Pubkey::new_from_array(ag(1)), &action, 1,
             )
             .expect("seat 1 approval must build"),
-            build_governance_approval_record(
+            build_governance_approval_record(&test_registry(), 
                 &state, &record, Pubkey::new_from_array(ag(2)), &action, 1,
             )
             .expect("seat 2 approval must build"),
-            build_governance_approval_record(
+            build_governance_approval_record(&test_registry(), 
                 &state, &record, Pubkey::new_from_array(ag(3)), &action, 1,
             )
             .expect("seat 3 approval must build"),
@@ -22065,7 +22635,7 @@ mod tests {
         let (state, record, obs, first, plan, approvals) = gov_committed_bundle();
         let action = gov_action();
         let prior = gov_prior_of(&record, &obs, &first, &plan, &approvals, &action);
-        let k = kernel_at_head_from_entries(&state, &[PriorEntry::Governance(prior)])
+        let k = kernel_at_head_from_entries(&test_registry(), &state, &[PriorEntry::Governance(prior)])
             .expect("a committed governance prior must replay");
         assert_eq!(k.declared_state().index, state.head_index);
         assert_eq!(k.declared_state().hash, state.head_hash);
@@ -22088,15 +22658,15 @@ mod tests {
         };
         record.stage = TransitionRecord::REGISTERED;
         let mixed = [
-            build_governance_approval_record(
+            build_governance_approval_record(&test_registry(), 
                 &state, &record, Pubkey::new_from_array(ag(1)), &action, 1,
             )
             .expect("seat 1 approval must build"),
-            build_governance_approval_record(
+            build_governance_approval_record(&test_registry(), 
                 &state, &record, Pubkey::new_from_array(ag(2)), &other, 1,
             )
             .expect("seat 2 approval must build"),
-            build_governance_approval_record(
+            build_governance_approval_record(&test_registry(), 
                 &state, &record, Pubkey::new_from_array(ag(3)), &action, 1,
             )
             .expect("seat 3 approval must build"),
@@ -22104,7 +22674,7 @@ mod tests {
         record.stage = TransitionRecord::COMMITTED;
         let action = gov_action();
         let prior = gov_prior_of(&record, &obs, &first, &plan, &mixed, &action);
-        let err = kernel_at_head_from_entries(&state, &[PriorEntry::Governance(prior)])
+        let err = kernel_at_head_from_entries(&test_registry(), &state, &[PriorEntry::Governance(prior)])
             .err()
             .expect("a mixed-action approval set must refuse");
         assert!(format!("{:?}", err).contains("GovActionHashMismatch"));
@@ -22120,22 +22690,22 @@ mod tests {
         let (state, mut record, obs, first, plan, approvals) = gov_committed_bundle();
         let action = gov_action();
         let prior = gov_prior_of(&record, &obs, &first, &plan, &approvals[..2], &action);
-        let err = kernel_at_head_from_entries(&state, &[PriorEntry::Governance(prior)])
+        let err = kernel_at_head_from_entries(&test_registry(), &state, &[PriorEntry::Governance(prior)])
             .err()
             .expect("a two-seat approval set must refuse");
         assert!(format!("{:?}", err).contains("GovernanceCommitFailed"));
         let action = gov_action();
         record.stage = TransitionRecord::REGISTERED;
         let dup = [
-            build_governance_approval_record(
+            build_governance_approval_record(&test_registry(), 
                 &state, &record, Pubkey::new_from_array(ag(1)), &action, 1,
             )
             .expect("seat 1 approval must build"),
-            build_governance_approval_record(
+            build_governance_approval_record(&test_registry(), 
                 &state, &record, Pubkey::new_from_array(ag(1)), &action, 1,
             )
             .expect("seat 1 approval must build"),
-            build_governance_approval_record(
+            build_governance_approval_record(&test_registry(), 
                 &state, &record, Pubkey::new_from_array(ag(3)), &action, 1,
             )
             .expect("seat 3 approval must build"),
@@ -22143,7 +22713,7 @@ mod tests {
         record.stage = TransitionRecord::COMMITTED;
         let action = gov_action();
         let prior = gov_prior_of(&record, &obs, &first, &plan, &dup, &action);
-        let err = kernel_at_head_from_entries(&state, &[PriorEntry::Governance(prior)])
+        let err = kernel_at_head_from_entries(&test_registry(), &state, &[PriorEntry::Governance(prior)])
             .err()
             .expect("a duplicate-seat approval set must refuse");
         assert!(format!("{:?}", err).contains("GovernanceCommitFailed"));
@@ -22160,7 +22730,7 @@ mod tests {
         approvals[1].transition_id = [0xEE; 32];
         let action = gov_action();
         let prior = gov_prior_of(&record, &obs, &first, &plan, &approvals, &action);
-        let err = kernel_at_head_from_entries(&state, &[PriorEntry::Governance(prior)])
+        let err = kernel_at_head_from_entries(&test_registry(), &state, &[PriorEntry::Governance(prior)])
             .err()
             .expect("a foreign approval must refuse");
         assert!(format!("{:?}", err).contains("RecordMismatch"));
@@ -22168,7 +22738,7 @@ mod tests {
         approvals[2].action_hash = [0x99; 32];
         let action = gov_action();
         let prior = gov_prior_of(&record, &obs, &first, &plan, &approvals, &action);
-        let err = kernel_at_head_from_entries(&state, &[PriorEntry::Governance(prior)])
+        let err = kernel_at_head_from_entries(&test_registry(), &state, &[PriorEntry::Governance(prior)])
             .err()
             .expect("a hash-tampered approval must refuse");
         assert!(format!("{:?}", err).contains("GovActionHashMismatch"));
@@ -22184,7 +22754,7 @@ mod tests {
         record.stage = TransitionRecord::VALIDATED;
         let action = gov_action();
         let prior = gov_prior_of(&record, &obs, &first, &plan, &approvals, &action);
-        let err = kernel_at_head_from_entries(&state, &[PriorEntry::Governance(prior)])
+        let err = kernel_at_head_from_entries(&test_registry(), &state, &[PriorEntry::Governance(prior)])
             .err()
             .expect("a non-committed governance prior must refuse");
         assert!(format!("{:?}", err).contains("WrongStage"));
@@ -22192,7 +22762,7 @@ mod tests {
         state.sealed = false;
         let action = gov_action();
         let prior = gov_prior_of(&record, &obs, &first, &plan, &approvals, &action);
-        let err = kernel_at_head_from_entries(&state, &[PriorEntry::Governance(prior)])
+        let err = kernel_at_head_from_entries(&test_registry(), &state, &[PriorEntry::Governance(prior)])
             .err()
             .expect("an unsealed state must refuse replay");
         assert!(format!("{:?}", err).contains("NotSealed"));
@@ -22207,7 +22777,7 @@ mod tests {
         // own stocks are untouched by a governance action it
         // never replayed.
         let genesis = sealed_state();
-        let k = kernel_at_head_from_entries(&genesis, &[])
+        let k = kernel_at_head_from_entries(&test_registry(), &genesis, &[])
             .expect("an empty mixed chain at genesis must return the genesis kernel");
         assert_eq!(k.declared_state().index, genesis.head_index);
         assert_eq!(k.capacity_of(RES_EXIT_WINDOW).map(|a| a.raw()), Some(250 * SCALE));
@@ -22220,11 +22790,11 @@ mod tests {
         // and the final check against the genesis head refuses.
         let mut short = sealed_state();
         advance_clock_on_state(&mut short, 300).expect("advance to the deadline must succeed");
-        let err = kernel_at_head_from_entries(&short, &[PriorEntry::Governance(prior)])
+        let err = kernel_at_head_from_entries(&test_registry(), &short, &[PriorEntry::Governance(prior)])
             .err()
             .expect("a chain overshooting the state head must refuse");
         assert!(format!("{:?}", err).contains("ParentMismatch"));
-        let err = kernel_at_head_from_entries(&state, &[])
+        let err = kernel_at_head_from_entries(&test_registry(), &state, &[])
             .err()
             .expect("a moved head with no history must refuse");
         assert!(format!("{:?}", err).contains("ParentMismatch"));
@@ -22242,7 +22812,7 @@ mod tests {
         // head 1 at the record's declared next hash, ledger
         // tranche 10 / lending book 5.
         let (mut state, mut record, obs, first, plan) = declared_pair();
-        let life = commit_transition_from_records(
+        let life = commit_transition_from_records(&test_registry(), 
             &mut state, &mut record, &obs, &[first], std::slice::from_ref(&plan),
             &[],
 )
@@ -22272,7 +22842,7 @@ mod tests {
             prior_signals: std::slice::from_ref(&first),
             prior_plans: std::slice::from_ref(&plan),
         };
-        let mut k = kernel_at_head_from_commits(&state, std::slice::from_ref(&prior))
+        let mut k = kernel_at_head_from_commits(&test_registry(), &state, std::slice::from_ref(&prior))
             .expect("a proven prior commit must rebuild to the moved head");
         assert_eq!(k.declared_state().index, 1);
         assert_eq!(k.declared_state().hash, record.declared_next_hash);
@@ -22330,7 +22900,7 @@ mod tests {
         // No history, genesis head: the empty chain is the genesis
         // kernel itself, at index 0 with the sealed stocks intact.
         let state = sealed_state();
-        let k = kernel_at_head_from_commits(&state, &[])
+        let k = kernel_at_head_from_commits(&test_registry(), &state, &[])
             .expect("an empty chain at genesis must return the genesis kernel");
         assert_eq!(k.declared_state().index, 0);
         assert_eq!(k.declared_state().hash, [0; 32]);
@@ -22348,7 +22918,7 @@ mod tests {
         // replaying a successor against stocks that never saw
         // the first commit's debit.
         let (state, _, _, _, _) = committed_pair();
-        let err = kernel_at_head_from_commits(&state, &[])
+        let err = kernel_at_head_from_commits(&test_registry(), &state, &[])
             .err()
             .expect("a moved head with no history must refuse");
         assert!(format!("{:?}", err).contains("ParentMismatch"));
@@ -22366,7 +22936,7 @@ mod tests {
             prior_signals: std::slice::from_ref(&first),
             prior_plans: std::slice::from_ref(&plan),
         };
-        let err = kernel_at_head_from_commits(&state, std::slice::from_ref(&prior))
+        let err = kernel_at_head_from_commits(&test_registry(), &state, std::slice::from_ref(&prior))
             .err()
             .expect("a merely-declared prior must refuse");
         assert!(format!("{:?}", err).contains("WrongStage"));
@@ -22385,7 +22955,7 @@ mod tests {
             prior_signals: std::slice::from_ref(&first),
             prior_plans: std::slice::from_ref(&plan),
         };
-        let err = kernel_at_head_from_commits(&state, std::slice::from_ref(&prior))
+        let err = kernel_at_head_from_commits(&test_registry(), &state, std::slice::from_ref(&prior))
             .err()
             .expect("a prior off the running head must refuse");
         assert!(format!("{:?}", err).contains("ParentMismatch"));
@@ -22407,7 +22977,7 @@ mod tests {
             prior_signals: std::slice::from_ref(&first),
             prior_plans: std::slice::from_ref(&bad_plan),
         };
-        let err = kernel_at_head_from_commits(&state, std::slice::from_ref(&prior))
+        let err = kernel_at_head_from_commits(&test_registry(), &state, std::slice::from_ref(&prior))
             .err()
             .expect("an unreproducible prior plan must refuse");
         assert!(format!("{:?}", err).contains("CommitFailed"));
@@ -22427,7 +22997,7 @@ mod tests {
             prior_signals: std::slice::from_ref(&first),
             prior_plans: std::slice::from_ref(&plan),
         };
-        let err = kernel_at_head_from_commits(&state, std::slice::from_ref(&prior))
+        let err = kernel_at_head_from_commits(&test_registry(), &state, std::slice::from_ref(&prior))
             .err()
             .expect("a governance prior must refuse without its commit path");
         assert!(format!("{:?}", err).contains("GovernanceCommitRequired"));
@@ -22447,7 +23017,7 @@ mod tests {
             prior_signals: std::slice::from_ref(&first),
             prior_plans: std::slice::from_ref(&plan),
         };
-        let err = kernel_at_head_from_commits(&state, std::slice::from_ref(&prior))
+        let err = kernel_at_head_from_commits(&test_registry(), &state, std::slice::from_ref(&prior))
             .err()
             .expect("a future-deadline prior must refuse");
         assert!(format!("{:?}", err).contains("CommitFailed"));
@@ -22463,7 +23033,7 @@ mod tests {
             prior_signals: std::slice::from_ref(&first),
             prior_plans: std::slice::from_ref(&plan),
         };
-        let err = kernel_at_head_from_commits(&state, std::slice::from_ref(&prior))
+        let err = kernel_at_head_from_commits(&test_registry(), &state, std::slice::from_ref(&prior))
             .err()
             .expect("an unsealed state must refuse");
         assert!(format!("{:?}", err).contains("NotSealed"));
@@ -22530,7 +23100,7 @@ mod tests {
         advance_clock_on_state(&mut state, 600).expect("advance to the second deadline must succeed");
         state.head_index = 2;
         state.head_hash = [0xE2; 32];
-        let k = kernel_at_head_from_commits(&state, &[prior1, prior2])
+        let k = kernel_at_head_from_commits(&test_registry(), &state, &[prior1, prior2])
             .expect("two proven priors must rebuild to index 2");
         assert_eq!(k.declared_state().index, 2);
         assert_eq!(k.declared_state().hash, [0xE2; 32]);
@@ -22596,7 +23166,7 @@ mod tests {
             prior_plans: std::slice::from_ref(&plan2),
         };
         advance_clock_on_state(&mut state, 600).expect("advance to the second deadline must succeed");
-        let err = kernel_at_head_from_commits(&state, &[prior1, prior2])
+        let err = kernel_at_head_from_commits(&test_registry(), &state, &[prior1, prior2])
             .err()
             .expect("a chain overshooting the program head must refuse");
         assert!(format!("{:?}", err).contains("ParentMismatch"));
@@ -22622,17 +23192,17 @@ mod tests {
             Pubkey::new_from_array(ag(1)), 7,
         )
         .expect("a record against the moved head must build");
-        let obs = build_observation_record(
+        let obs = build_observation_record(&test_registry(), 
             state, obs_id, clock, 9500, 900_000, observer_pubkey(), 7,
         )
         .expect("an observation at the moved-head clock must build");
-        replay_transition_from_records(state, &mut record, &obs, std::slice::from_ref(prior))
+        replay_transition_from_records(&test_registry(), state, &mut record, &obs, std::slice::from_ref(prior))
             .expect("a second transition must replay at the moved head");
         assert_eq!(record.stage, TransitionRecord::KERNEL_REGISTERED);
-        evaluate_transition_from_records(state, &mut record, &obs, std::slice::from_ref(prior))
+        evaluate_transition_from_records(&test_registry(), state, &mut record, &obs, std::slice::from_ref(prior))
             .expect("a second transition must evaluate at the moved head");
         assert_eq!(record.stage, TransitionRecord::EVALUATED);
-        mark_eligible_from_records(state, &mut record, &obs, std::slice::from_ref(prior))
+        mark_eligible_from_records(&test_registry(), state, &mut record, &obs, std::slice::from_ref(prior))
             .expect("a second transition must mark eligible at the moved head");
         assert_eq!(record.stage, TransitionRecord::ELIGIBLE);
         assert_eq!(record.eligible_at, clock);
@@ -22648,7 +23218,7 @@ mod tests {
         agent_n: u8,
         support_raw: u64,
     ) -> SignalRecord {
-        let (signal, _, _) = submit_signal_from_records(
+        let (signal, _, _) = submit_signal_from_records(&test_registry(), 
             state, record, obs, &[], Pubkey::new_from_array(ag(agent_n)),
             0, SCALE, support_raw, true, 7, std::slice::from_ref(prior),
         )
@@ -22679,45 +23249,45 @@ mod tests {
             second_eligible_at_head(&mut state, &prior, [0xD2; 32], [0xC1; 32], [0xE2; 32]);
         let signal = second_signal_at_head(&state, &mut record, &obs, &prior, 2, SCALE);
         advance_clock_on_state(&mut state, 500).expect("advance to the consensus deadline must succeed");
-        let life = select_candidate_from_records(
+        let life = select_candidate_from_records(&test_registry(), 
             &state, &mut record, &obs, std::slice::from_ref(&signal), std::slice::from_ref(&prior),
         )
         .expect("a closed window with a qualifying tally must select at the moved head");
         assert_eq!(life, Life::Selected);
-        let life = open_planning_from_records(
+        let life = open_planning_from_records(&test_registry(), 
             &state, &mut record, &obs, std::slice::from_ref(&signal), [0x77; 32],
             std::slice::from_ref(&prior),
         )
         .expect("a kernel-proven selection must open planning at the moved head");
         assert_eq!(life, Life::Planning);
         assert_eq!(record.planning_deadline, 600);
-        let plan = submit_plan_from_records(
+        let plan = submit_plan_from_records(&test_registry(), 
             &state, &mut record, &obs, std::slice::from_ref(&signal), &[], &two_claims(), 700,
             ag(2), 7, std::slice::from_ref(&prior),
         )
         .expect("a fitting plan must submit at the moved head");
         assert_eq!(record.plan_count, 1);
         advance_clock_on_state(&mut state, 600).expect("advance to the planning deadline must succeed");
-        let life = reconcile_plans_from_records(
+        let life = reconcile_plans_from_records(&test_registry(), 
             &state, &mut record, &obs, std::slice::from_ref(&signal),
             std::slice::from_ref(&plan), std::slice::from_ref(&prior),
         )
         .expect("a fitting plan set must reconcile at the moved head");
         assert_eq!(life, Life::Reconciling);
         assert!(record.compatible);
-        let life = validate_transition_from_records(
+        let life = validate_transition_from_records(&test_registry(), 
             &state, &mut record, &obs, std::slice::from_ref(&signal),
             std::slice::from_ref(&plan), std::slice::from_ref(&prior),
         )
         .expect("a fitting reconciled chain must validate at the moved head");
         assert_eq!(life, Life::Validated);
-        let life = declare_transition_from_records(
+        let life = declare_transition_from_records(&test_registry(), 
             &state, &mut record, &obs, std::slice::from_ref(&signal),
             std::slice::from_ref(&plan), std::slice::from_ref(&prior),
         )
         .expect("a validated chain must declare at the moved head");
         assert_eq!(life, Life::Committable);
-        let life = commit_transition_from_records(
+        let life = commit_transition_from_records(&test_registry(), 
             &mut state, &mut record, &obs, std::slice::from_ref(&signal),
             std::slice::from_ref(&plan), std::slice::from_ref(&prior),
         )
@@ -22733,7 +23303,7 @@ mod tests {
             prior_signals: std::slice::from_ref(&signal),
             prior_plans: std::slice::from_ref(&plan),
         };
-        let k = kernel_at_head_from_commits(&state, &[prior_commit, prior2])
+        let k = kernel_at_head_from_commits(&test_registry(), &state, &[prior_commit, prior2])
             .expect("both priors must rebuild to index 2");
         assert_eq!(k.declared_state().index, 2);
         assert_eq!(
@@ -22775,7 +23345,7 @@ mod tests {
             observation_record: &sib_obs,
             prior_signals: std::slice::from_ref(&sib_sig),
         };
-        let life = select_candidate_from_records_with_siblings(
+        let life = select_candidate_from_records_with_siblings(&test_registry(), 
             &state, &mut target, &target_obs, std::slice::from_ref(&target_sig),
             std::slice::from_ref(&sibling), std::slice::from_ref(&prior),
         )
@@ -22805,33 +23375,33 @@ mod tests {
             second_eligible_at_head(&mut state, &prior, [0xD2; 32], [0xC1; 32], [0xE2; 32]);
         let signal = second_signal_at_head(&state, &mut record, &obs, &prior, 2, SCALE);
         advance_clock_on_state(&mut state, 500).expect("advance to the consensus deadline must succeed");
-        select_candidate_from_records(
+        select_candidate_from_records(&test_registry(), 
             &state, &mut record, &obs, std::slice::from_ref(&signal), std::slice::from_ref(&prior),
         )
         .expect("a closed window with a qualifying tally must select at the moved head");
-        open_planning_from_records(
+        open_planning_from_records(&test_registry(), 
             &state, &mut record, &obs, std::slice::from_ref(&signal), [0x77; 32],
             std::slice::from_ref(&prior),
         )
         .expect("a kernel-proven selection must open planning at the moved head");
-        let plan = submit_plan_from_records(
+        let plan = submit_plan_from_records(&test_registry(), 
             &state, &mut record, &obs, std::slice::from_ref(&signal), &[], &[], 700,
             ag(2), 7, std::slice::from_ref(&prior),
         )
         .expect("an empty-claims governance plan must submit at the moved head");
         advance_clock_on_state(&mut state, 600).expect("advance to the planning deadline must succeed");
-        reconcile_plans_from_records(
+        reconcile_plans_from_records(&test_registry(), 
             &state, &mut record, &obs, std::slice::from_ref(&signal),
             std::slice::from_ref(&plan), std::slice::from_ref(&prior),
         )
         .expect("an empty-claims plan set must reconcile at the moved head");
         assert!(record.compatible);
-        validate_transition_from_records(
+        validate_transition_from_records(&test_registry(), 
             &state, &mut record, &obs, std::slice::from_ref(&signal),
             std::slice::from_ref(&plan), std::slice::from_ref(&prior),
         )
         .expect("a compatible governance-shaped chain must validate at the moved head");
-        declare_transition_from_records(
+        declare_transition_from_records(&test_registry(), 
             &state, &mut record, &obs, std::slice::from_ref(&signal),
             std::slice::from_ref(&plan), std::slice::from_ref(&prior),
         )
@@ -22839,7 +23409,7 @@ mod tests {
         record.transition_type = T_GOV_ADJUSTABLE;
         let action = gov_action();
         let approvals = gov_approvals();
-        let life = commit_governance_from_records(
+        let life = commit_governance_from_records(&test_registry(), 
             &mut state, &mut record, &obs, std::slice::from_ref(&signal),
             std::slice::from_ref(&plan), &action, &approvals, std::slice::from_ref(&prior),
         )
@@ -22863,11 +23433,11 @@ mod tests {
             [0xC1; 32], 10_400, Pubkey::new_from_array(ag(1)), 7,
         )
         .expect("a record against the moved head must build");
-        let obs = build_observation_record(
+        let obs = build_observation_record(&test_registry(), 
             &state, [0xC1; 32], 400, 9500, 900_000, observer_pubkey(), 7,
         )
         .expect("an observation at the moved-head clock must build");
-        let err = replay_transition_from_records(&state, &mut record, &obs, &[])
+        let err = replay_transition_from_records(&test_registry(), &state, &mut record, &obs, &[])
             .expect_err("a moved head with no history must refuse");
         assert!(format!("{:?}", err).contains("ParentMismatch"));
         assert_eq!(record.stage, TransitionRecord::REGISTERED);
@@ -22893,11 +23463,11 @@ mod tests {
             [0xC1; 32], 10_400, Pubkey::new_from_array(ag(1)), 7,
         )
         .expect("a record against the moved head must build");
-        let obs = build_observation_record(
+        let obs = build_observation_record(&test_registry(), 
             &state, [0xC1; 32], 400, 9500, 900_000, observer_pubkey(), 7,
         )
         .expect("an observation at the moved-head clock must build");
-        let err = replay_transition_from_records(
+        let err = replay_transition_from_records(&test_registry(), 
             &state,
             &mut record,
             &obs,
@@ -23059,33 +23629,33 @@ mod tests {
         let signal = second_signal_at_head(&state, &mut record, &obs, &prior, 2, SCALE);
         advance_clock_on_state(&mut state, 500)
             .expect("advance to the consensus deadline must succeed");
-        select_candidate_from_records(
+        select_candidate_from_records(&test_registry(), 
             &state, &mut record, &obs, std::slice::from_ref(&signal), std::slice::from_ref(&prior),
         )
         .expect("a closed window with a qualifying tally must select at the moved head");
-        open_planning_from_records(
+        open_planning_from_records(&test_registry(), 
             &state, &mut record, &obs, std::slice::from_ref(&signal), [0x77; 32],
             std::slice::from_ref(&prior),
         )
         .expect("a kernel-proven selection must open planning at the moved head");
-        let plan = submit_plan_from_records(
+        let plan = submit_plan_from_records(&test_registry(), 
             &state, &mut record, &obs, std::slice::from_ref(&signal), &[], &[], 700,
             ag(2), 7, std::slice::from_ref(&prior),
         )
         .expect("an empty-claims governance plan must submit at the moved head");
         advance_clock_on_state(&mut state, 600)
             .expect("advance to the planning deadline must succeed");
-        reconcile_plans_from_records(
+        reconcile_plans_from_records(&test_registry(), 
             &state, &mut record, &obs, std::slice::from_ref(&signal),
             std::slice::from_ref(&plan), std::slice::from_ref(&prior),
         )
         .expect("an empty-claims plan set must reconcile at the moved head");
-        validate_transition_from_records(
+        validate_transition_from_records(&test_registry(), 
             &state, &mut record, &obs, std::slice::from_ref(&signal),
             std::slice::from_ref(&plan), std::slice::from_ref(&prior),
         )
         .expect("a compatible governance-shaped chain must validate at the moved head");
-        declare_transition_from_records(
+        declare_transition_from_records(&test_registry(), 
             &state, &mut record, &obs, std::slice::from_ref(&signal),
             std::slice::from_ref(&plan), std::slice::from_ref(&prior),
         )
@@ -23093,7 +23663,7 @@ mod tests {
         record.transition_type = T_GOV_ADJUSTABLE;
         let action = gov_action();
         let approvals = gov_approvals();
-        let life = commit_governance_from_records(
+        let life = commit_governance_from_records(&test_registry(), 
             &mut state, &mut record, &obs, std::slice::from_ref(&signal),
             std::slice::from_ref(&plan), &action, &approvals, std::slice::from_ref(&prior),
         )
@@ -23107,15 +23677,15 @@ mod tests {
         // REGISTERED, the stage at which approvals are collected.
         record.stage = TransitionRecord::REGISTERED;
         let approval_records = [
-            build_governance_approval_record(
+            build_governance_approval_record(&test_registry(), 
                 &state, &record, Pubkey::new_from_array(ag(1)), &action, 1,
             )
             .expect("seat 1 approval must build"),
-            build_governance_approval_record(
+            build_governance_approval_record(&test_registry(), 
                 &state, &record, Pubkey::new_from_array(ag(2)), &action, 1,
             )
             .expect("seat 2 approval must build"),
-            build_governance_approval_record(
+            build_governance_approval_record(&test_registry(), 
                 &state, &record, Pubkey::new_from_array(ag(3)), &action, 1,
             )
             .expect("seat 3 approval must build"),
@@ -23135,11 +23705,11 @@ mod tests {
             [0xC4; 32], 10_400, Pubkey::new_from_array(ag(1)), 7,
         )
         .expect("a record against the mixed head must build");
-        let target_obs = build_observation_record(
+        let target_obs = build_observation_record(&test_registry(), 
             &state, [0xC4; 32], state.clock, 9500, 900_000, observer_pubkey(), 7,
         )
         .expect("an observation at the mixed-head clock must build");
-        let life = replay_transition_from_records(
+        let life = replay_transition_from_records(&test_registry(), 
             &state,
             &mut target,
             &target_obs,
@@ -23153,7 +23723,7 @@ mod tests {
             [0xC4; 32], 10_400, Pubkey::new_from_array(ag(1)), 7,
         )
         .expect("a second record against the mixed head must build");
-        let err = replay_transition_from_records(
+        let err = replay_transition_from_records(&test_registry(), 
             &state,
             &mut target2,
             &target_obs,
@@ -23295,15 +23865,15 @@ mod tests {
         let action = gov_action();
         record.stage = TransitionRecord::REGISTERED;
         let approvals = [
-            build_governance_approval_record(
+            build_governance_approval_record(&test_registry(), 
                 &state, &record, Pubkey::new_from_array(ag(1)), &action, 1,
             )
             .expect("seat 1 approval must build"),
-            build_governance_approval_record(
+            build_governance_approval_record(&test_registry(), 
                 &state, &record, Pubkey::new_from_array(ag(2)), &action, 1,
             )
             .expect("seat 2 approval must build"),
-            build_governance_approval_record(
+            build_governance_approval_record(&test_registry(), 
                 &state, &record, Pubkey::new_from_array(ag(3)), &action, 1,
             )
             .expect("seat 3 approval must build"),
@@ -23326,7 +23896,7 @@ mod tests {
         let (mut state, mut record, obs, first, plan, approvals) = gov_declared_with_approvals();
         let old_index = state.head_index;
         let next_hash = record.declared_next_hash;
-        let life = commit_governance_from_stored(
+        let life = commit_governance_from_stored(&test_registry(), 
             &mut state, &mut record, &obs, std::slice::from_ref(&first), std::slice::from_ref(&plan),
             &approvals, &gov_action(), &[],
         )
@@ -23335,7 +23905,7 @@ mod tests {
         assert_eq!(record.stage, TransitionRecord::COMMITTED);
         assert_eq!(state.head_index, old_index + 1);
         assert_eq!(state.head_hash, next_hash);
-        let err = commit_governance_from_stored(
+        let err = commit_governance_from_stored(&test_registry(), 
             &mut state, &mut record, &obs, std::slice::from_ref(&first), std::slice::from_ref(&plan),
             &approvals, &gov_action(), &[],
         )
@@ -23354,7 +23924,7 @@ mod tests {
         // defense in depth behind it.
         let (mut state, mut record, obs, first, plan, approvals) = gov_declared_with_approvals();
         let head_index = state.head_index;
-        let err = commit_governance_from_stored(
+        let err = commit_governance_from_stored(&test_registry(), 
             &mut state, &mut record, &obs, std::slice::from_ref(&first), std::slice::from_ref(&plan),
             &approvals[..2], &gov_action(), &[],
         )
@@ -23375,7 +23945,7 @@ mod tests {
         // standing DECLARED with the head unmoved.
         let (mut state, mut record, obs, first, plan, mut approvals) = gov_declared_with_approvals();
         approvals[2].transition_id = [0x99; 32];
-        let err = commit_governance_from_stored(
+        let err = commit_governance_from_stored(&test_registry(), 
             &mut state, &mut record, &obs, std::slice::from_ref(&first), std::slice::from_ref(&plan),
             &approvals, &gov_action(), &[],
         )
@@ -23386,12 +23956,12 @@ mod tests {
         let (mut state, mut record, obs, first, plan, mut approvals) = gov_declared_with_approvals();
         let other = GovAction::SetCapacity { resource: RES_EXIT_WINDOW, capacity: Amount::from_raw(401 * SCALE) };
         record.stage = TransitionRecord::REGISTERED;
-        approvals[2] = build_governance_approval_record(
+        approvals[2] = build_governance_approval_record(&test_registry(), 
             &state, &record, Pubkey::new_from_array(ag(3)), &other, 1,
         )
         .expect("a different-action approval must build");
         record.stage = TransitionRecord::DECLARED;
-        let err = commit_governance_from_stored(
+        let err = commit_governance_from_stored(&test_registry(), 
             &mut state, &mut record, &obs, std::slice::from_ref(&first), std::slice::from_ref(&plan),
             &approvals, &gov_action(), &[],
         )
@@ -23402,12 +23972,12 @@ mod tests {
         let (mut state, mut record, obs, first, plan, mut approvals) = gov_declared_with_approvals();
         let action = gov_action();
         record.stage = TransitionRecord::REGISTERED;
-        approvals[1] = build_governance_approval_record(
+        approvals[1] = build_governance_approval_record(&test_registry(), 
             &state, &record, Pubkey::new_from_array(ag(1)), &action, 1,
         )
         .expect("a second record for seat 1 must build at helper level");
         record.stage = TransitionRecord::DECLARED;
-        let err = commit_governance_from_stored(
+        let err = commit_governance_from_stored(&test_registry(), 
             &mut state, &mut record, &obs, std::slice::from_ref(&first), std::slice::from_ref(&plan),
             &approvals, &gov_action(), &[],
         )
@@ -23428,7 +23998,7 @@ mod tests {
         // stands DECLARED.
         let (mut state, mut record, obs, first, plan, mut approvals) = gov_declared_with_approvals();
         approvals[2].action_hash = [0x15; 32];
-        let err = commit_governance_from_stored(
+        let err = commit_governance_from_stored(&test_registry(), 
             &mut state, &mut record, &obs, std::slice::from_ref(&first), std::slice::from_ref(&plan),
             &approvals, &gov_action(), &[],
         )
@@ -23438,7 +24008,7 @@ mod tests {
 
         let (mut state, mut record, obs, first, plan, approvals) = gov_declared_with_approvals();
         record.approval_count = 2;
-        let err = commit_governance_from_stored(
+        let err = commit_governance_from_stored(&test_registry(), 
             &mut state, &mut record, &obs, std::slice::from_ref(&first), std::slice::from_ref(&plan),
             &approvals[..2], &gov_action(), &[],
         )
@@ -23541,26 +24111,26 @@ mod tests {
         // and the action is the bridge's capacity rule change
         // (exit-window stock 250 -> 400).
         let state = sealed_state();
-        let mut record = build_governance_transition_record(
+        let mut record = build_governance_transition_record(&test_registry(), 
             &state, [0xD2; 32], T_GOV_ADJUSTABLE, 0, [0; 32], [0xE2; 32], [0xC0; 32], 10_100,
             Pubkey::new_from_array(ag(1)), 7,
         )
         .expect("seated proposer at the sealed head must build");
-        let obs = build_observation_record(
+        let obs = build_observation_record(&test_registry(), 
             &state, [0xC0; 32], 100, 9100, 900_000, observer_pubkey(), 7,
         )
         .expect("observer at the genesis clock must ingest");
         let action = gov_action();
         let approvals = [
-            build_governance_approval_record(
+            build_governance_approval_record(&test_registry(), 
                 &state, &record, Pubkey::new_from_array(ag(1)), &action, 1,
             )
             .expect("seat 1 approval must build"),
-            build_governance_approval_record(
+            build_governance_approval_record(&test_registry(), 
                 &state, &record, Pubkey::new_from_array(ag(2)), &action, 1,
             )
             .expect("seat 2 approval must build"),
-            build_governance_approval_record(
+            build_governance_approval_record(&test_registry(), 
                 &state, &record, Pubkey::new_from_array(ag(3)), &action, 1,
             )
             .expect("seat 3 approval must build"),
@@ -23577,11 +24147,11 @@ mod tests {
         // stage — the slice-10 once-only rule, on the
         // governance path.
         let (state, mut record, obs, approvals) = gov_registered_pair();
-        let life = replay_governance_from_records(&state, &mut record, &obs, &approvals, &gov_action(), &[])
+        let life = replay_governance_from_records(&test_registry(), &state, &mut record, &obs, &approvals, &gov_action(), &[])
             .expect("a unanimous stored-approval pair must replay");
         assert_eq!(life, Life::Proposed);
         assert_eq!(record.stage, TransitionRecord::KERNEL_REGISTERED);
-        let err = replay_governance_from_records(&state, &mut record, &obs, &approvals, &gov_action(), &[])
+        let err = replay_governance_from_records(&test_registry(), &state, &mut record, &obs, &approvals, &gov_action(), &[])
             .expect_err("a second governance replay must refuse");
         assert!(format!("{:?}", err).contains("WrongStage"));
         assert_eq!(record.stage, TransitionRecord::KERNEL_REGISTERED);
@@ -23598,14 +24168,14 @@ mod tests {
         // `NotGovernanceTransition`, never reaching the kernel.
         let (state, mut record, obs, approvals) = gov_registered_pair();
         record.approval_count = 2;
-        let err = replay_governance_from_records(&state, &mut record, &obs, &approvals[..2], &gov_action(), &[])
+        let err = replay_governance_from_records(&test_registry(), &state, &mut record, &obs, &approvals[..2], &gov_action(), &[])
             .expect_err("a non-unanimous approval set must refuse");
         assert!(format!("{:?}", err).contains("ReplayFailed"));
         assert_eq!(record.stage, TransitionRecord::REGISTERED);
 
         let (state, mut record, obs, approvals) = gov_registered_pair();
         record.transition_type = TT;
-        let err = replay_governance_from_records(&state, &mut record, &obs, &approvals, &gov_action(), &[])
+        let err = replay_governance_from_records(&test_registry(), &state, &mut record, &obs, &approvals, &gov_action(), &[])
             .expect_err("an ordinary-typed record must refuse the governance replay");
         assert!(format!("{:?}", err).contains("NotGovernanceTransition"));
         assert_eq!(record.stage, TransitionRecord::REGISTERED);
@@ -23619,19 +24189,19 @@ mod tests {
         // stage. An evaluate against a merely-registered record
         // refuses the same way, as in slice 12.
         let (state, mut record, obs, approvals) = gov_registered_pair();
-        replay_governance_from_records(&state, &mut record, &obs, &approvals, &gov_action(), &[])
+        replay_governance_from_records(&test_registry(), &state, &mut record, &obs, &approvals, &gov_action(), &[])
             .expect("pair must replay before governance evaluate");
-        let life = evaluate_governance_from_records(&state, &mut record, &obs, &approvals, &gov_action(), &[])
+        let life = evaluate_governance_from_records(&test_registry(), &state, &mut record, &obs, &approvals, &gov_action(), &[])
             .expect("a kernel-registered governance pair must evaluate");
         assert_eq!(life, Life::Evaluated);
         assert_eq!(record.stage, TransitionRecord::EVALUATED);
-        let err = evaluate_governance_from_records(&state, &mut record, &obs, &approvals, &gov_action(), &[])
+        let err = evaluate_governance_from_records(&test_registry(), &state, &mut record, &obs, &approvals, &gov_action(), &[])
             .expect_err("a second governance evaluate must refuse");
         assert!(format!("{:?}", err).contains("WrongStage"));
         assert_eq!(record.stage, TransitionRecord::EVALUATED);
 
         let (state, mut record, obs, approvals) = gov_registered_pair();
-        let err = evaluate_governance_from_records(&state, &mut record, &obs, &approvals, &gov_action(), &[])
+        let err = evaluate_governance_from_records(&test_registry(), &state, &mut record, &obs, &approvals, &gov_action(), &[])
             .expect_err("a merely-registered record has nothing to evaluate");
         assert!(format!("{:?}", err).contains("WrongStage"));
         assert_eq!(record.stage, TransitionRecord::REGISTERED);
@@ -23652,17 +24222,17 @@ mod tests {
         // stands at 0 before the success path runs.
         let (mut state, mut record, obs, approvals) = gov_registered_pair();
         assert_eq!(state.eligible_sibling_count, 0);
-        let err = mark_eligible_governance_from_records(
+        let err = mark_eligible_governance_from_records(&test_registry(), 
             &mut state, &mut record, &obs, &approvals, &gov_action(), &[],
         )
         .expect_err("a merely-registered record cannot mark eligible");
         assert!(format!("{:?}", err).contains("WrongStage"));
         assert_eq!(state.eligible_sibling_count, 0);
-        replay_governance_from_records(&state, &mut record, &obs, &approvals, &gov_action(), &[])
+        replay_governance_from_records(&test_registry(), &state, &mut record, &obs, &approvals, &gov_action(), &[])
             .expect("pair must replay before governance eligible");
-        evaluate_governance_from_records(&state, &mut record, &obs, &approvals, &gov_action(), &[])
+        evaluate_governance_from_records(&test_registry(), &state, &mut record, &obs, &approvals, &gov_action(), &[])
             .expect("pair must evaluate before governance eligible");
-        let life = mark_eligible_governance_from_records(
+        let life = mark_eligible_governance_from_records(&test_registry(), 
             &mut state, &mut record, &obs, &approvals, &gov_action(), &[],
         )
         .expect("an evaluated governance pair must mark eligible");
@@ -23672,7 +24242,7 @@ mod tests {
         assert_eq!(record.consensus_deadline, 200);
         assert_eq!(state.eligible_sibling_parent_index, 0);
         assert_eq!(state.eligible_sibling_count, 1);
-        let err = mark_eligible_governance_from_records(
+        let err = mark_eligible_governance_from_records(&test_registry(), 
             &mut state, &mut record, &obs, &approvals, &gov_action(), &[],
         )
         .expect_err("a second governance mark-eligible must refuse");
@@ -23778,11 +24348,11 @@ mod tests {
         // ordinary `signal_pair` window — so a governance
         // signal at round 0 submits at the state's clock.
         let (mut state, mut record, obs, approvals) = gov_registered_pair();
-        replay_governance_from_records(&state, &mut record, &obs, &approvals, &gov_action(), &[])
+        replay_governance_from_records(&test_registry(), &state, &mut record, &obs, &approvals, &gov_action(), &[])
             .expect("pair must replay before governance signal");
-        evaluate_governance_from_records(&state, &mut record, &obs, &approvals, &gov_action(), &[])
+        evaluate_governance_from_records(&test_registry(), &state, &mut record, &obs, &approvals, &gov_action(), &[])
             .expect("pair must evaluate before governance signal");
-        mark_eligible_governance_from_records(&mut state, &mut record, &obs, &approvals, &gov_action(), &[])
+        mark_eligible_governance_from_records(&test_registry(), &mut state, &mut record, &obs, &approvals, &gov_action(), &[])
             .expect("pair must mark eligible before governance signal");
         assert_eq!(record.stage, TransitionRecord::ELIGIBLE);
         assert_eq!(record.eligible_at, 100);
@@ -23798,7 +24368,7 @@ mod tests {
         // confidence 1.0, the stage stays ELIGIBLE, the window
         // is untouched, and only `signal_count` moves, to 1.
         let (state, mut record, obs, approvals) = gov_eligible_pair();
-        let (signal, total, confidence) = submit_signal_governance_from_records(
+        let (signal, total, confidence) = submit_signal_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals, &gov_action(), &[],
             Pubkey::new_from_array(ag(2)), 0, SCALE, SCALE, true, 7, &[],
         )
@@ -23827,7 +24397,7 @@ mod tests {
         // `signal_count` at 1, not 2.
         let (state, mut record, obs, approvals) = gov_eligible_pair();
         let first = {
-            let (signal, _, _) = submit_signal_governance_from_records(
+            let (signal, _, _) = submit_signal_governance_from_records(&test_registry(), 
                 &state, &mut record, &obs, &approvals, &gov_action(), &[],
                 Pubkey::new_from_array(ag(2)), 0, SCALE, SCALE, true, 7, &[],
             )
@@ -23835,7 +24405,7 @@ mod tests {
             signal
         };
         assert_eq!(record.signal_count, 1);
-        let err = submit_signal_governance_from_records(
+        let err = submit_signal_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals, &gov_action(), &[first],
             Pubkey::new_from_array(ag(2)), 0, SCALE, SCALE, true, 7, &[],
         )
@@ -23855,11 +24425,11 @@ mod tests {
         // the signal refuses with `SignalFailed` and the record
         // stands ELIGIBLE with its count untouched.
         let (state, mut record, obs, approvals) = gov_registered_pair();
-        replay_governance_from_records(&state, &mut record, &obs, &approvals, &gov_action(), &[])
+        replay_governance_from_records(&test_registry(), &state, &mut record, &obs, &approvals, &gov_action(), &[])
             .expect("pair must replay before governance evaluate");
-        evaluate_governance_from_records(&state, &mut record, &obs, &approvals, &gov_action(), &[])
+        evaluate_governance_from_records(&test_registry(), &state, &mut record, &obs, &approvals, &gov_action(), &[])
             .expect("pair must evaluate before the stage refusal");
-        let err = submit_signal_governance_from_records(
+        let err = submit_signal_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals, &gov_action(), &[],
             Pubkey::new_from_array(ag(2)), 0, SCALE, SCALE, true, 7, &[],
         )
@@ -23868,7 +24438,7 @@ mod tests {
 
         let (state, mut record, obs, approvals) = gov_eligible_pair();
         record.transition_type = TT;
-        let err = submit_signal_governance_from_records(
+        let err = submit_signal_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals, &gov_action(), &[],
             Pubkey::new_from_array(ag(2)), 0, SCALE, SCALE, true, 7, &[],
         )
@@ -23877,7 +24447,7 @@ mod tests {
 
         let (state, mut record, obs, approvals) = gov_eligible_pair();
         record.approval_count = 2;
-        let err = submit_signal_governance_from_records(
+        let err = submit_signal_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals[..2], &gov_action(), &[],
             Pubkey::new_from_array(ag(2)), 0, SCALE, SCALE, true, 7, &[],
         )
@@ -23972,7 +24542,7 @@ mod tests {
         // 1.0 at round 0, so the tally is weight 2.0 and
         // confidence 1.0, and the count stands at 1.
         let (state, mut record, obs, approvals) = gov_eligible_pair();
-        let (signal, _, _) = submit_signal_governance_from_records(
+        let (signal, _, _) = submit_signal_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals, &gov_action(), &[],
             Pubkey::new_from_array(ag(2)), 0, SCALE, SCALE, true, 7, &[],
         )
@@ -23993,7 +24563,7 @@ mod tests {
         // the tally to count 2, mirroring the ordinary
         // two-signal fixture.
         let (state, mut record, obs, approvals, first) = gov_selected_pair();
-        let (second, _, _) = submit_signal_governance_from_records(
+        let (second, _, _) = submit_signal_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals, &gov_action(), &[first], Pubkey::new_from_array(ag(3)),
             0, SCALE, 0, true, 7, &[],
         )
@@ -24010,7 +24580,7 @@ mod tests {
         // the kernel selects and the stage advances to 4.
         let (mut state, mut record, obs, approvals, first) = gov_selected_pair();
         advance_clock_on_state(&mut state, 200).expect("advance to the deadline must succeed");
-        let life = select_candidate_governance_from_records(
+        let life = select_candidate_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals, &gov_action(), &[first], &[],
         )
         .expect("closed window with a qualifying governance tally must select");
@@ -24027,7 +24597,7 @@ mod tests {
         // ELIGIBLE.
         let (mut state, mut record, obs, approvals, first) = gov_selected_pair();
         advance_clock_on_state(&mut state, 199).expect("advance must succeed");
-        let err = select_candidate_governance_from_records(
+        let err = select_candidate_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals, &gov_action(), &[first], &[],
         )
         .expect_err("an open window must refuse governance selection");
@@ -24047,11 +24617,11 @@ mod tests {
         // The merely-evaluated case is built from the
         // registered pair, not the selected pair.
         let (state2, mut record2, obs2, approvals2) = gov_registered_pair();
-        replay_governance_from_records(&state2, &mut record2, &obs2, &approvals2, &gov_action(), &[])
+        replay_governance_from_records(&test_registry(), &state2, &mut record2, &obs2, &approvals2, &gov_action(), &[])
             .expect("pair must replay before governance evaluate");
-        evaluate_governance_from_records(&state2, &mut record2, &obs2, &approvals2, &gov_action(), &[])
+        evaluate_governance_from_records(&test_registry(), &state2, &mut record2, &obs2, &approvals2, &gov_action(), &[])
             .expect("pair must evaluate before the stage refusal");
-        let err = select_candidate_governance_from_records(
+        let err = select_candidate_governance_from_records(&test_registry(), 
             &state2, &mut record2, &obs2, &approvals2, &gov_action(), &[], &[],
         )
         .expect_err("a merely-evaluated record has no window to select in");
@@ -24060,7 +24630,7 @@ mod tests {
         let (mut state, mut record, obs, approvals, first) = gov_selected_pair();
         record.transition_type = TT;
         advance_clock_on_state(&mut state, 200).expect("advance must succeed");
-        let err = select_candidate_governance_from_records(
+        let err = select_candidate_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals, &gov_action(), &[first], &[],
         )
         .expect_err("an ordinary-typed record must refuse the governance select");
@@ -24069,7 +24639,7 @@ mod tests {
         let (mut state, mut record, obs, approvals, first) = gov_selected_pair();
         record.approval_count = 2;
         advance_clock_on_state(&mut state, 200).expect("advance must succeed");
-        let err = select_candidate_governance_from_records(
+        let err = select_candidate_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals[..2], &gov_action(), &[first], &[],
         )
         .expect_err("a non-unanimous approval set must refuse the governance select");
@@ -24086,7 +24656,7 @@ mod tests {
         // is refused explicitly.
         let (mut state, mut record, obs, approvals, first, _) = gov_two_signals();
         advance_clock_on_state(&mut state, 200).expect("advance must succeed");
-        let err = select_candidate_governance_from_records(
+        let err = select_candidate_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals, &gov_action(), &[first], &[],
         )
         .expect_err("a set short of signal_count must refuse");
@@ -24095,7 +24665,7 @@ mod tests {
 
         let (mut state, mut record, obs, approvals, first, _) = gov_two_signals();
         advance_clock_on_state(&mut state, 200).expect("advance must succeed");
-        let err = select_candidate_governance_from_records(
+        let err = select_candidate_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals, &gov_action(), &[first, first], &[],
         )
         .expect_err("a duplicated prior must refuse");
@@ -24109,14 +24679,14 @@ mod tests {
         // 2.0 clears the 1.0 quorum, but confidence 0 is
         // below the 0.5 threshold, so the kernel refuses.
         let (state, mut record, obs, approvals) = gov_eligible_pair();
-        let (signal, _, _) = submit_signal_governance_from_records(
+        let (signal, _, _) = submit_signal_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals, &gov_action(), &[],
             Pubkey::new_from_array(ag(2)), 0, SCALE, 0, true, 7, &[],
         )
         .expect("support-0 governance signal must submit");
         let mut advanced = state;
         advance_clock_on_state(&mut advanced, 200).expect("advance must succeed");
-        let err = select_candidate_governance_from_records(
+        let err = select_candidate_governance_from_records(&test_registry(), 
             &advanced, &mut record, &obs, &approvals, &gov_action(), &[signal], &[],
         )
         .expect_err("confidence below threshold must refuse governance selection");
@@ -24130,7 +24700,7 @@ mod tests {
         let (mut state, mut record, obs, approvals, first) = gov_selected_pair();
         state.eligible_sibling_count = 2;
         advance_clock_on_state(&mut state, 200).expect("advance must succeed");
-        let err = select_candidate_governance_from_records(
+        let err = select_candidate_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals, &gov_action(), &[first], &[],
         )
         .expect_err("a competitor census must refuse the plain governance select");
@@ -24142,11 +24712,11 @@ mod tests {
     fn gov_select_is_once_only() {
         let (mut state, mut record, obs, approvals, first) = gov_selected_pair();
         advance_clock_on_state(&mut state, 200).expect("advance must succeed");
-        select_candidate_governance_from_records(
+        select_candidate_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals, &gov_action(), &[first], &[],
         )
         .expect("first governance select must succeed");
-        let err = select_candidate_governance_from_records(
+        let err = select_candidate_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals, &gov_action(), &[first], &[],
         )
         .expect_err("a second governance select must refuse on stage");
@@ -24178,36 +24748,36 @@ mod tests {
         if mark_clock > state.clock {
             advance_clock_on_state(&mut state, mark_clock).expect("advance must succeed");
         }
-        let mut record = build_governance_transition_record(
+        let mut record = build_governance_transition_record(&test_registry(), 
             &state, tid, T_GOV_ADJUSTABLE, 0, [0; 32], declared, obs_id, 10_100,
             Pubkey::new_from_array(ag(1)), 7,
         )
         .expect("seated proposer at the sealed head must build");
-        let obs = build_observation_record(
+        let obs = build_observation_record(&test_registry(), 
             &state, obs_id, 100, 9100, 900_000, observer_pubkey(), 7,
         )
         .expect("observer at the sibling clock must ingest");
         let action = gov_action();
         let approvals = [
-            build_governance_approval_record(
+            build_governance_approval_record(&test_registry(), 
                 &state, &record, Pubkey::new_from_array(ag(1)), &action, 1,
             )
             .expect("seat 1 approval must build"),
-            build_governance_approval_record(
+            build_governance_approval_record(&test_registry(), 
                 &state, &record, Pubkey::new_from_array(ag(2)), &action, 1,
             )
             .expect("seat 2 approval must build"),
-            build_governance_approval_record(
+            build_governance_approval_record(&test_registry(), 
                 &state, &record, Pubkey::new_from_array(ag(3)), &action, 1,
             )
             .expect("seat 3 approval must build"),
         ];
         record.approval_count = approvals.len() as u64;
-        replay_governance_from_records(&state, &mut record, &obs, &approvals, &gov_action(), &[])
+        replay_governance_from_records(&test_registry(), &state, &mut record, &obs, &approvals, &gov_action(), &[])
             .expect("pair must replay before governance eligible");
-        evaluate_governance_from_records(&state, &mut record, &obs, &approvals, &gov_action(), &[])
+        evaluate_governance_from_records(&test_registry(), &state, &mut record, &obs, &approvals, &gov_action(), &[])
             .expect("pair must evaluate before governance eligible");
-        mark_eligible_governance_from_records(&mut state, &mut record, &obs, &approvals, &gov_action(), &[])
+        mark_eligible_governance_from_records(&test_registry(), &mut state, &mut record, &obs, &approvals, &gov_action(), &[])
             .expect("pair must mark eligible");
         assert_eq!(record.stage, TransitionRecord::ELIGIBLE);
         assert_eq!(record.eligible_at, mark_clock);
@@ -24233,7 +24803,7 @@ mod tests {
         if at_clock > state.clock {
             advance_clock_on_state(&mut state, at_clock).expect("advance must succeed");
         }
-        let (sig, _, _) = submit_signal_governance_from_records(
+        let (sig, _, _) = submit_signal_governance_from_records(&test_registry(), 
             &state, record, obs, approvals, &gov_action(), priors, Pubkey::new_from_array(ag(agent_n)),
             0, SCALE, support_raw, true, 7, &[],
         )
@@ -24259,7 +24829,7 @@ mod tests {
             prior_signals: &[sib_sig],
             action: gov_action(),
         };
-        let life = select_candidate_governance_from_records_with_siblings(
+        let life = select_candidate_governance_from_records_with_siblings(&test_registry(), 
             &state, &mut target, &target_obs, &target_approvals, &gov_action(), &[first], &[sibling], &[],
         )
         .expect("target outranking its governance sibling must select");
@@ -24288,7 +24858,7 @@ mod tests {
             prior_signals: &[sib_sig],
             action: gov_action(),
         };
-        let err = select_candidate_governance_from_records_with_siblings(
+        let err = select_candidate_governance_from_records_with_siblings(&test_registry(), 
             &state, &mut target, &target_obs, &target_approvals, &gov_action(), &[first, second], &[sibling], &[],
         )
         .expect_err("a higher-confidence governance sibling must refuse selection");
@@ -24316,7 +24886,7 @@ mod tests {
             prior_signals: &[sib_sig],
             action: gov_action(),
         };
-        let err = select_candidate_governance_from_records_with_siblings(
+        let err = select_candidate_governance_from_records_with_siblings(&test_registry(), 
             &state, &mut target, &target_obs, &target_approvals, &gov_action(), &[first], &[sibling], &[],
         )
         .expect_err("an open governance sibling window must refuse selection");
@@ -24344,7 +24914,7 @@ mod tests {
             prior_signals: &[sib_sig],
             action: gov_action(),
         };
-        let life = select_candidate_governance_from_records_with_siblings(
+        let life = select_candidate_governance_from_records_with_siblings(&test_registry(), 
             &state, &mut target, &target_obs, &target_approvals, &gov_action(), &[first], &[sibling], &[],
         )
         .expect("the earlier governance target must win its tie");
@@ -24373,7 +24943,7 @@ mod tests {
             prior_signals: &[sib_sig],
             action: gov_action(),
         };
-        let err = select_candidate_governance_from_records_with_siblings(
+        let err = select_candidate_governance_from_records_with_siblings(&test_registry(), 
             &state, &mut target, &target_obs, &target_approvals, &gov_action(), &[first], &[sibling], &[],
         )
         .expect_err("an equal-eligibility governance tie must refuse the target");
@@ -24400,7 +24970,7 @@ mod tests {
             prior_signals: &[sib_sig],
             action: gov_action(),
         };
-        let err = select_candidate_governance_from_records_with_siblings(
+        let err = select_candidate_governance_from_records_with_siblings(&test_registry(), 
             &state, &mut target, &target_obs, &target_approvals, &gov_action(), &[first], &[sibling], &[],
         )
         .expect_err("a field short of the census must refuse");
@@ -24432,7 +25002,7 @@ mod tests {
             prior_signals: &[sib_sig],
             action: gov_action(),
         };
-        let err = select_candidate_governance_from_records_with_siblings(
+        let err = select_candidate_governance_from_records_with_siblings(&test_registry(), 
             &state, &mut target, &target_obs, &target_approvals, &gov_action(), &[first], &[sibling], &[],
         )
         .expect_err("an ordinary-typed sibling must refuse the governance select");
@@ -24482,7 +25052,7 @@ mod tests {
             prior_signals: &[sib_sig],
             action: gov_action(),
         };
-        let err = select_candidate_governance_from_records_with_siblings(
+        let err = select_candidate_governance_from_records_with_siblings(&test_registry(), 
             &state, &mut target, &target_obs, &target_approvals, &gov_action(), &[target_sig], &[sibling], &[],
         )
         .expect_err("an already-selected governance sibling must block the target");
@@ -24514,7 +25084,7 @@ mod tests {
             prior_signals: &[sib_sig],
             action: gov_action(),
         };
-        let err = select_candidate_governance_from_records_with_siblings(
+        let err = select_candidate_governance_from_records_with_siblings(&test_registry(), 
             &state, &mut target, &target_obs, &target_approvals, &gov_action(), &[first], &[sibling], &[],
         )
         .expect_err("an unqualified selected governance sibling must refuse");
@@ -24547,7 +25117,7 @@ mod tests {
             prior_signals: &[sib_first, sib_second],
             action: gov_action(),
         };
-        let err = select_candidate_governance_from_records_with_siblings(
+        let err = select_candidate_governance_from_records_with_siblings(&test_registry(), 
             &state, &mut target, &target_obs, &target_approvals, &gov_action(), &[first], &[sibling], &[],
         )
         .expect_err("an outranked selected governance sibling must refuse");
@@ -24577,7 +25147,7 @@ mod tests {
             prior_signals: &[sib_sig],
             action: gov_action(),
         };
-        let err = select_candidate_governance_from_records_with_siblings(
+        let err = select_candidate_governance_from_records_with_siblings(&test_registry(), 
             &state, &mut target, &target_obs, &target_approvals, &gov_action(), &[first], &[sibling], &[],
         )
         .expect_err("a selected governance sibling with an open window must refuse");
@@ -24620,7 +25190,7 @@ mod tests {
             prior_signals: &[sib2_sig],
             action: gov_action(),
         };
-        let err = select_candidate_governance_from_records_with_siblings(
+        let err = select_candidate_governance_from_records_with_siblings(&test_registry(), 
             &state, &mut target, &target_obs, &target_approvals, &gov_action(), &[first],
             &[first_sibling, second_sibling], &[],
         )
@@ -24669,7 +25239,7 @@ mod tests {
             prior_signals: &[weaker_sig],
             action: gov_action(),
         };
-        let err = select_candidate_governance_from_records_with_siblings(
+        let err = select_candidate_governance_from_records_with_siblings(&test_registry(), 
             &state, &mut target, &target_obs, &target_approvals, &gov_action(), &[target_sig],
             &[selected_sibling, weaker_sibling], &[],
         )
@@ -24704,7 +25274,7 @@ mod tests {
             prior_signals: &[sib_first],
             action: gov_action(),
         };
-        let err = select_candidate_governance_from_records_with_siblings(
+        let err = select_candidate_governance_from_records_with_siblings(&test_registry(), 
             &state, &mut target, &target_obs, &target_approvals, &gov_action(), &[first], &[sibling], &[],
         )
         .expect_err("a short selected governance sibling signal set must refuse");
@@ -24736,7 +25306,7 @@ mod tests {
             prior_signals: &[sib_first],
             action: gov_action(),
         };
-        let err = select_candidate_governance_from_records_with_siblings(
+        let err = select_candidate_governance_from_records_with_siblings(&test_registry(), 
             &state, &mut target, &target_obs, &target_approvals, &gov_action(), &[first], &[sibling], &[],
         )
         .expect_err("a sibling set short of its signal_count must refuse");
@@ -24764,7 +25334,7 @@ mod tests {
             prior_signals: &[sib_sig],
             action: gov_action(),
         };
-        let err = select_candidate_governance_from_records_with_siblings(
+        let err = select_candidate_governance_from_records_with_siblings(&test_registry(), 
             &state, &mut target, &target_obs, &target_approvals, &gov_action(), &[first], &[sibling.clone(), sibling], &[],
         )
         .expect_err("a duplicated sibling must refuse");
@@ -24780,7 +25350,7 @@ mod tests {
         let mut state = select_state_at(200);
         state.eligible_sibling_count = 1;
         let (_, mut target, target_obs, target_approvals, first) = gov_selected_pair();
-        let life = select_candidate_governance_from_records_with_siblings(
+        let life = select_candidate_governance_from_records_with_siblings(&test_registry(), 
             &state, &mut target, &target_obs, &target_approvals, &gov_action(), &[first], &[], &[],
         )
         .expect("an empty sibling field at census 1 must select like the plain path");
@@ -24814,7 +25384,7 @@ mod tests {
             prior_signals: &[sib_sig],
             action: None,
         };
-        let life = select_candidate_mixed_from_records_with_siblings(
+        let life = select_candidate_mixed_from_records_with_siblings(&test_registry(), 
             &state, &mut target, &target_obs, &target_approvals, Some(&gov_action()), &[first], &[sibling], &[],
         )
         .expect("a governance target outranking its ordinary sibling must select");
@@ -24839,7 +25409,7 @@ mod tests {
             prior_signals: &[sib_sig],
             action: Some(gov_action()),
         };
-        let life = select_candidate_mixed_from_records_with_siblings(
+        let life = select_candidate_mixed_from_records_with_siblings(&test_registry(), 
             &state, &mut target, &target_obs, &[], None, &[first], &[sibling], &[],
         )
         .expect("an ordinary target outranking its governance sibling must select");
@@ -24865,7 +25435,7 @@ mod tests {
             prior_signals: &[sib_sig],
             action: None,
         };
-        let err = select_candidate_mixed_from_records_with_siblings(
+        let err = select_candidate_mixed_from_records_with_siblings(&test_registry(), 
             &state, &mut target, &target_obs, &target_approvals, Some(&gov_action()), &[first, second], &[sibling],
             &[],
         )
@@ -24892,7 +25462,7 @@ mod tests {
             prior_signals: &[sib_sig],
             action: Some(gov_action()),
         };
-        let err = select_candidate_mixed_from_records_with_siblings(
+        let err = select_candidate_mixed_from_records_with_siblings(&test_registry(), 
             &state, &mut target, &target_obs, &[], None, &[first, second], &[sibling], &[],
         )
         .expect_err("a higher-confidence governance sibling must refuse the ordinary target");
@@ -24928,7 +25498,7 @@ mod tests {
             prior_signals: &[sib_sig],
             action: None,
         };
-        let err = select_candidate_mixed_from_records_with_siblings(
+        let err = select_candidate_mixed_from_records_with_siblings(&test_registry(), 
             &state, &mut target, &target_obs, &target_approvals, Some(&gov_action()), &[target_sig], &[sibling], &[],
         )
         .expect_err("an already-selected ordinary sibling must block the governance target");
@@ -24959,7 +25529,7 @@ mod tests {
             prior_signals: &[sib_sig],
             action: Some(gov_action()),
         };
-        let err = select_candidate_mixed_from_records_with_siblings(
+        let err = select_candidate_mixed_from_records_with_siblings(&test_registry(), 
             &state, &mut target, &target_obs, &[], None, &[target_sig], &[sibling], &[],
         )
         .expect_err("an already-selected governance sibling must block the ordinary target");
@@ -24988,7 +25558,7 @@ mod tests {
             prior_signals: &[sib_sig],
             action: Some(gov_action()),
         };
-        let err = select_candidate_mixed_from_records_with_siblings(
+        let err = select_candidate_mixed_from_records_with_siblings(&test_registry(), 
             &state, &mut target, &target_obs, &target_approvals, Some(&gov_action()), &[first], &[sibling], &[],
         )
         .expect_err("approvals on an ordinary sibling must refuse");
@@ -25016,7 +25586,7 @@ mod tests {
             prior_signals: &[sib_sig],
             action: None,
         };
-        let err = select_candidate_mixed_from_records_with_siblings(
+        let err = select_candidate_mixed_from_records_with_siblings(&test_registry(), 
             &state, &mut target, &target_obs, &target_approvals, Some(&gov_action()), &[first], &[sibling], &[],
         )
         .expect_err("a governance sibling without approvals must refuse");
@@ -25042,7 +25612,7 @@ mod tests {
             prior_signals: &[sib_sig],
             action: None,
         };
-        let err = select_candidate_mixed_from_records_with_siblings(
+        let err = select_candidate_mixed_from_records_with_siblings(&test_registry(), 
             &state, &mut target, &target_obs, &target_approvals, Some(&gov_action()), &[first], &[sibling], &[],
         )
         .expect_err("an open ordinary sibling window must refuse the governance target");
@@ -25070,7 +25640,7 @@ mod tests {
             prior_signals: &[sib_sig],
             action: None,
         };
-        let err = select_candidate_mixed_from_records_with_siblings(
+        let err = select_candidate_mixed_from_records_with_siblings(&test_registry(), 
             &state, &mut target, &target_obs, &target_approvals, Some(&gov_action()), &[first], &[sibling], &[],
         )
         .expect_err("an equal-eligibility cross-type tie must refuse the target");
@@ -25091,7 +25661,7 @@ mod tests {
         // zero deadline, exactly as the ordinary planning pair.
         let (mut state, mut record, obs, approvals, first) = gov_selected_pair();
         advance_clock_on_state(&mut state, 200).expect("advance to the deadline must succeed");
-        let life = select_candidate_governance_from_records(
+        let life = select_candidate_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals, &gov_action(), &[first], &[],
         )
         .expect("closed window with a qualifying governance tally must select");
@@ -25133,7 +25703,7 @@ mod tests {
         // is "anyone", and a proposer-only reading would contradict
         // it, on the governance path exactly as on the ordinary one.
         let (state, mut record, obs, approvals, first) = gov_planning_pair();
-        let life = open_planning_governance_from_records(
+        let life = open_planning_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals, &gov_action(), &[first], [0x77; 32], &[],
         )
         .expect("a kernel-proven governance selection must open planning");
@@ -25149,7 +25719,7 @@ mod tests {
         // Still ELIGIBLE, never selected: the stage gate refuses
         // before any replay, and nothing on the record moves.
         let (state, mut record, obs, approvals, first) = gov_selected_pair();
-        let err = open_planning_governance_from_records(
+        let err = open_planning_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals, &gov_action(), &[first], ag(1), &[],
         )
         .expect_err("an unselected governance record must refuse planning");
@@ -25161,11 +25731,11 @@ mod tests {
     #[test]
     fn gov_open_planning_is_once_only() {
         let (state, mut record, obs, approvals, first) = gov_planning_pair();
-        open_planning_governance_from_records(
+        open_planning_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals, &gov_action(), &[first], ag(1), &[],
         )
         .expect("first governance planning open must succeed");
-        let err = open_planning_governance_from_records(
+        let err = open_planning_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals, &gov_action(), &[first], ag(1), &[],
         )
         .expect_err("a second governance planning open must refuse");
@@ -25181,7 +25751,7 @@ mod tests {
         // replay, and the SELECTED stage and zero deadline stand.
         let (state, mut record, obs, approvals, first) = gov_planning_pair();
         record.signal_count = 2;
-        let err = open_planning_governance_from_records(
+        let err = open_planning_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals, &gov_action(), &[first], ag(1), &[],
         )
         .expect_err("a short prior set must refuse governance planning");
@@ -25198,7 +25768,7 @@ mod tests {
         // stays closed with the deadline untouched.
         let (mut state, mut record, obs, approvals, first) = gov_planning_pair();
         state.clock = 199;
-        let err = open_planning_governance_from_records(
+        let err = open_planning_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals, &gov_action(), &[first], ag(1), &[],
         )
         .expect_err("an unreproducible governance selection must refuse planning");
@@ -25213,7 +25783,7 @@ mod tests {
         // selection ran at: at 500 the deadline is 600.
         let (mut state, mut record, obs, approvals, first) = gov_planning_pair();
         advance_clock_on_state(&mut state, 500).expect("advance past selection must succeed");
-        open_planning_governance_from_records(
+        open_planning_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals, &gov_action(), &[first], ag(1), &[],
         )
         .expect("governance planning at a later clock must succeed");
@@ -25228,7 +25798,7 @@ mod tests {
         // ordinary helper, never here.
         let (state, mut record, obs, approvals, first) = gov_planning_pair();
         record.transition_type = TT;
-        let err = open_planning_governance_from_records(
+        let err = open_planning_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals, &gov_action(), &[first], ag(1), &[],
         )
         .expect_err("an ordinary-typed record must refuse the governance planning open");
@@ -25245,7 +25815,7 @@ mod tests {
         // SELECTED with a zero deadline.
         let (state, mut record, obs, approvals, first) = gov_planning_pair();
         record.approval_count = 2;
-        let err = open_planning_governance_from_records(
+        let err = open_planning_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals[..2], &gov_action(), &[first], ag(1), &[],
         )
         .expect_err("a non-unanimous approval set must refuse governance planning");
@@ -25261,7 +25831,7 @@ mod tests {
         // refuses on `ParentMismatch`, both before any replay.
         let (mut state, mut record, obs, approvals, first) = gov_planning_pair();
         state.sealed = false;
-        let err = open_planning_governance_from_records(
+        let err = open_planning_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals, &gov_action(), &[first], ag(1), &[],
         )
         .expect_err("an unsealed state must refuse governance planning");
@@ -25270,7 +25840,7 @@ mod tests {
 
         let (mut state, mut record, obs, approvals, first) = gov_planning_pair();
         state.head_index = 9;
-        let err = open_planning_governance_from_records(
+        let err = open_planning_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals, &gov_action(), &[first], ag(1), &[],
         )
         .expect_err("a record off the sealed head must refuse governance planning");
@@ -25285,7 +25855,7 @@ mod tests {
         // BLOCKED -> PLANNING, deadline reset to clock 200 +
         // window 100 = 300, replans 0 -> 1.
         let (state, mut record, obs, approvals, first) = gov_blocked_pair();
-        let life = open_planning_governance_from_records(
+        let life = open_planning_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals, &gov_action(), &[first], ag(1), &[],
         )
         .expect("a proposer re-plan must open governance planning");
@@ -25307,7 +25877,7 @@ mod tests {
         // seat-ground test keeps the proposer a seat and varies
         // the caller instead.
         let (state, mut record, obs, approvals, first) = gov_blocked_pair();
-        let life = open_planning_governance_from_records(
+        let life = open_planning_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals, &gov_action(), &[first], ag(2), &[],
         )
         .expect("a seat re-plan must open governance planning");
@@ -25321,7 +25891,7 @@ mod tests {
         // Neither proposer nor seat: ReplanRefused, and the record
         // stands exactly as it stood — stage, deadline, count.
         let (state, mut record, obs, approvals, first) = gov_blocked_pair();
-        let err = open_planning_governance_from_records(
+        let err = open_planning_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals, &gov_action(), &[first], [0x77; 32], &[],
         )
         .expect_err("a stranger re-plan must refuse");
@@ -25337,7 +25907,7 @@ mod tests {
         // and the count does not advance past the cap.
         let (state, mut record, obs, approvals, first) = gov_blocked_pair();
         record.replans = 3;
-        let err = open_planning_governance_from_records(
+        let err = open_planning_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals, &gov_action(), &[first], ag(1), &[],
         )
         .expect_err("a capped re-plan must refuse");
@@ -25351,7 +25921,7 @@ mod tests {
     fn gov_selected_open_leaves_replans_untouched() {
         // The Selected path is not a re-plan: replans stays 0.
         let (state, mut record, obs, approvals, first) = gov_planning_pair();
-        open_planning_governance_from_records(
+        open_planning_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals, &gov_action(), &[first], ag(1), &[],
         )
         .expect("a Selected governance open must succeed");
@@ -25371,7 +25941,7 @@ mod tests {
         // ordinary planned pair — the fixture every slice-44
         // test below builds from.
         let (state, mut record, obs, approvals, first) = gov_planning_pair();
-        open_planning_governance_from_records(
+        open_planning_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals, &gov_action(), &[first], ag(1), &[],
         )
         .expect("governance planning must open before a plan");
@@ -25387,7 +25957,7 @@ mod tests {
         // the deadline: the record stays PLANNING, the deadline
         // stands, and plan_count moves 0 -> 1 on success only.
         let (state, mut record, obs, approvals, first) = gov_planned_pair();
-        let plan = submit_plan_governance_from_records(
+        let plan = submit_plan_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals, &gov_action(), &[first], &[], &two_claims(), 400, ag(2), 7,
             &[],
         )
@@ -25413,13 +25983,13 @@ mod tests {
         // the first plan's claims are what the kernel judged, not
         // a fresh single-plan kernel.
         let (state, mut record, obs, approvals, first) = gov_planned_pair();
-        let prior = submit_plan_governance_from_records(
+        let prior = submit_plan_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals, &gov_action(), &[first], &[], &two_claims(), 400, ag(2), 7,
             &[],
         )
         .expect("first governance plan must submit");
         assert_eq!(record.plan_count, 1);
-        let second = submit_plan_governance_from_records(
+        let second = submit_plan_governance_from_records(&test_registry(), 
             &state,
             &mut record,
             &obs,
@@ -25445,7 +26015,7 @@ mod tests {
         // Still ELIGIBLE, never planned: the stage gate refuses
         // before any replay, and plan_count stays 0.
         let (state, mut record, obs, approvals, first) = gov_selected_pair();
-        let err = submit_plan_governance_from_records(
+        let err = submit_plan_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals, &gov_action(), &[first], &[], &two_claims(), 400, ag(2), 7,
             &[],
         )
@@ -25460,7 +26030,7 @@ mod tests {
         // gate refuses, and the record is untouched.
         let (mut state, mut record, obs, approvals, first) = gov_planned_pair();
         advance_clock_on_state(&mut state, 300).expect("advance to the deadline must succeed");
-        let err = submit_plan_governance_from_records(
+        let err = submit_plan_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals, &gov_action(), &[first], &[], &two_claims(), 400, ag(2), 7,
             &[],
         )
@@ -25476,7 +26046,7 @@ mod tests {
         // kernel's BadWindow rule, judged against the stored
         // deadline, refuses before any plan is recorded.
         let (state, mut record, obs, approvals, first) = gov_planned_pair();
-        let err = submit_plan_governance_from_records(
+        let err = submit_plan_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals, &gov_action(), &[first], &[], &two_claims(), 300, ag(2), 7,
             &[],
         )
@@ -25491,7 +26061,7 @@ mod tests {
         // the kernel's agent gate: a fresh id that is no seeded
         // agent refuses through the kernel, not by a program guess.
         let (state, mut record, obs, approvals, first) = gov_planned_pair();
-        let err = submit_plan_governance_from_records(
+        let err = submit_plan_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals, &gov_action(), &[first], &[], &two_claims(), 400, [0x77; 32], 7,
             &[],
         )
@@ -25506,12 +26076,12 @@ mod tests {
         // with its own first plan supplied as the prior set,
         // refuses at the kernel's Duplicate arm.
         let (state, mut record, obs, approvals, first) = gov_planned_pair();
-        let prior = submit_plan_governance_from_records(
+        let prior = submit_plan_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals, &gov_action(), &[first], &[], &two_claims(), 400, ag(2), 7,
             &[],
         )
         .expect("first governance plan must submit");
-        let err = submit_plan_governance_from_records(
+        let err = submit_plan_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals, &gov_action(), &[first], &[prior], &two_claims(), 500, ag(2), 7,
             &[],
         )
@@ -25530,7 +26100,7 @@ mod tests {
             PlanClaimArg { resource: RES_TREASURY_TRANCHE, amount_raw: 10 * SCALE },
             PlanClaimArg { resource: RES_TREASURY_TRANCHE, amount_raw: 20 * SCALE },
         ];
-        let err = submit_plan_governance_from_records(
+        let err = submit_plan_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals, &gov_action(), &[first], &[], &dup, 400, ag(2), 7,
             &[],
         )
@@ -25545,7 +26115,7 @@ mod tests {
         // the slice-21 anchor refuses before any replay.
         let (state, mut record, obs, approvals, first) = gov_planned_pair();
         record.plan_count = 1;
-        let err = submit_plan_governance_from_records(
+        let err = submit_plan_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals, &gov_action(), &[first], &[], &two_claims(), 400, ag(2), 7,
             &[],
         )
@@ -25561,7 +26131,7 @@ mod tests {
         // exactly as in open_planning.
         let (state, mut record, obs, approvals, first) = gov_planned_pair();
         record.signal_count = 2;
-        let err = submit_plan_governance_from_records(
+        let err = submit_plan_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals, &gov_action(), &[first], &[], &two_claims(), 400, ag(2), 7,
             &[],
         )
@@ -25574,7 +26144,7 @@ mod tests {
     fn gov_submit_plan_refuses_unsealed() {
         let (mut state, mut record, obs, approvals, first) = gov_planned_pair();
         state.sealed = false;
-        let err = submit_plan_governance_from_records(
+        let err = submit_plan_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals, &gov_action(), &[first], &[], &two_claims(), 400, ag(2), 7,
             &[],
         )
@@ -25590,7 +26160,7 @@ mod tests {
         // ordinary helper, never here.
         let (state, mut record, obs, approvals, first) = gov_planned_pair();
         record.transition_type = TT;
-        let err = submit_plan_governance_from_records(
+        let err = submit_plan_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals, &gov_action(), &[first], &[], &two_claims(), 400, ag(2), 7,
             &[],
         )
@@ -25607,7 +26177,7 @@ mod tests {
         // PLANNING with plan_count 0.
         let (state, mut record, obs, approvals, first) = gov_planned_pair();
         record.approval_count = 2;
-        let err = submit_plan_governance_from_records(
+        let err = submit_plan_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals[..2], &gov_action(), &[first], &[], &two_claims(), 400, ag(2), 7,
             &[],
         )
@@ -25629,7 +26199,7 @@ mod tests {
         // plan_count stands at 1 and the deadline at 300 —
         // the fixture every slice-45 test below builds from.
         let (state, mut record, obs, approvals, first) = gov_planned_pair();
-        let plan = submit_plan_governance_from_records(
+        let plan = submit_plan_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals, &gov_action(), &[first], &[], &two_claims(), 400, ag(2), 7,
             &[],
         )
@@ -25646,7 +26216,7 @@ mod tests {
         // governance path exactly as on the ordinary one.
         let (mut state, mut record, obs, approvals, first, plan) = gov_one_plan_pair();
         advance_clock_on_state(&mut state, 300).expect("advance to the deadline must succeed");
-        let life = reconcile_plans_governance_from_records(
+        let life = reconcile_plans_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals, &gov_action(), &[first], &[plan], &[],
         )
         .expect("a kernel-proven governance plan set at the deadline must reconcile");
@@ -25666,7 +26236,7 @@ mod tests {
         // instead of the call failing to happen.
         let (mut state, mut record, obs, approvals, first) = gov_planned_pair();
         advance_clock_on_state(&mut state, 300).expect("advance to the deadline must succeed");
-        let life = reconcile_plans_governance_from_records(
+        let life = reconcile_plans_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals, &gov_action(), &[first], &[], &[],
         )
         .expect("an empty governance plan set must reconcile to incompatible, not refuse");
@@ -25685,19 +26255,19 @@ mod tests {
         // stage, exactly as the kernel's fits_capacity judges it.
         let (mut state, mut record, obs, approvals, first) = gov_planned_pair();
         let big = vec![PlanClaimArg { resource: RES_TREASURY_TRANCHE, amount_raw: 600 * SCALE }];
-        let first_plan = submit_plan_governance_from_records(
+        let first_plan = submit_plan_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals, &gov_action(), &[first], &[], &big, 400, ag(2), 7,
             &[],
         )
         .expect("first big governance plan must submit");
-        let second_plan = submit_plan_governance_from_records(
+        let second_plan = submit_plan_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals, &gov_action(), &[first], std::slice::from_ref(&first_plan), &big, 400, ag(3), 8,
             &[],
         )
         .expect("second big governance plan must submit");
         assert_eq!(record.plan_count, 2);
         advance_clock_on_state(&mut state, 300).expect("advance to the deadline must succeed");
-        let life = reconcile_plans_governance_from_records(
+        let life = reconcile_plans_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals, &gov_action(), &[first], &[first_plan, second_plan], &[],
         )
         .expect("an over-capacity governance set must reconcile to incompatible, not refuse");
@@ -25713,7 +26283,7 @@ mod tests {
         // stands PLANNING with compatible still false.
         let (mut state, mut record, obs, approvals, first, plan) = gov_one_plan_pair();
         advance_clock_on_state(&mut state, 299).expect("advance must succeed");
-        let err = reconcile_plans_governance_from_records(
+        let err = reconcile_plans_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals, &gov_action(), &[first], &[plan], &[],
         )
         .expect_err("an open window must refuse a governance reconcile");
@@ -25727,7 +26297,7 @@ mod tests {
         // Still SELECTED, never planned: the stage gate refuses
         // before any replay, and nothing on the record moves.
         let (state, mut record, obs, approvals, first) = gov_planning_pair();
-        let err = reconcile_plans_governance_from_records(
+        let err = reconcile_plans_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals, &gov_action(), &[first], &[], &[],
         )
         .expect_err("an unplanned governance record must refuse reconcile");
@@ -25740,11 +26310,11 @@ mod tests {
     fn gov_reconcile_is_once_only() {
         let (mut state, mut record, obs, approvals, first, plan) = gov_one_plan_pair();
         advance_clock_on_state(&mut state, 300).expect("advance to the deadline must succeed");
-        reconcile_plans_governance_from_records(
+        reconcile_plans_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals, &gov_action(), &[first], std::slice::from_ref(&plan), &[],
         )
         .expect("first governance reconcile must succeed");
-        let err = reconcile_plans_governance_from_records(
+        let err = reconcile_plans_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals, &gov_action(), &[first], &[plan], &[],
         )
         .expect_err("a second governance reconcile must refuse");
@@ -25760,7 +26330,7 @@ mod tests {
         let (mut state, mut record, obs, approvals, first, plan) = gov_one_plan_pair();
         record.plan_count = 2;
         advance_clock_on_state(&mut state, 300).expect("advance to the deadline must succeed");
-        let err = reconcile_plans_governance_from_records(
+        let err = reconcile_plans_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals, &gov_action(), &[first], &[plan], &[],
         )
         .expect_err("a short governance prior-plan set must refuse reconcile");
@@ -25777,7 +26347,7 @@ mod tests {
         let (mut state, mut record, obs, approvals, first, plan) = gov_one_plan_pair();
         record.transition_type = TT;
         advance_clock_on_state(&mut state, 300).expect("advance to the deadline must succeed");
-        let err = reconcile_plans_governance_from_records(
+        let err = reconcile_plans_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals, &gov_action(), &[first], &[plan], &[],
         )
         .expect_err("an ordinary-typed record must refuse the governance reconcile");
@@ -25795,7 +26365,7 @@ mod tests {
         let (mut state, mut record, obs, approvals, first, plan) = gov_one_plan_pair();
         record.approval_count = 2;
         advance_clock_on_state(&mut state, 300).expect("advance to the deadline must succeed");
-        let err = reconcile_plans_governance_from_records(
+        let err = reconcile_plans_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals[..2], &gov_action(), &[first], &[plan], &[],
         )
         .expect_err("a non-unanimous approval set must refuse a governance reconcile");
@@ -25812,7 +26382,7 @@ mod tests {
         let (mut state, mut record, obs, approvals, first, plan) = gov_one_plan_pair();
         advance_clock_on_state(&mut state, 300).expect("advance to the deadline must succeed");
         state.sealed = false;
-        let err = reconcile_plans_governance_from_records(
+        let err = reconcile_plans_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals, &gov_action(), &[first], &[plan], &[],
         )
         .expect_err("an unsealed state must refuse a governance reconcile");
@@ -25822,7 +26392,7 @@ mod tests {
         let (mut state, mut record, obs, approvals, first, plan) = gov_one_plan_pair();
         state.head_index = 9;
         advance_clock_on_state(&mut state, 300).expect("advance to the deadline must succeed");
-        let err = reconcile_plans_governance_from_records(
+        let err = reconcile_plans_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals, &gov_action(), &[first], &[plan], &[],
         )
         .expect_err("a record off the sealed head must refuse a governance reconcile");
@@ -25845,7 +26415,7 @@ mod tests {
         // from, exactly as the ordinary reconciling pair.
         let (mut state, mut record, obs, approvals, first, plan) = gov_one_plan_pair();
         advance_clock_on_state(&mut state, 300).expect("advance to the deadline must succeed");
-        let life = reconcile_plans_governance_from_records(
+        let life = reconcile_plans_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals, &gov_action(), &[first], std::slice::from_ref(&plan), &[],
         )
         .expect("a fitting governance plan set at the deadline must reconcile");
@@ -25866,7 +26436,7 @@ mod tests {
         // so validate blocks rather than validates.
         let (mut state, mut record, obs, approvals, first) = gov_planned_pair();
         advance_clock_on_state(&mut state, 300).expect("advance to the deadline must succeed");
-        let life = reconcile_plans_governance_from_records(
+        let life = reconcile_plans_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals, &gov_action(), &[first], &[], &[],
         )
         .expect("an empty governance plan set must reconcile to incompatible");
@@ -25884,7 +26454,7 @@ mod tests {
         // stands, on the governance path exactly as on the
         // ordinary one.
         let (state, mut record, obs, approvals, first, plan) = gov_reconciling_pair();
-        let life = validate_transition_governance_from_records(
+        let life = validate_transition_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals, &gov_action(), &[first], &[plan], &[],
         )
         .expect("a fitting reconciled governance chain must validate");
@@ -25901,7 +26471,7 @@ mod tests {
         // record says so, so the re-plan path opens from it
         // instead of the call failing to happen.
         let (state, mut record, obs, approvals, first) = gov_empty_reconciling_pair();
-        let life = validate_transition_governance_from_records(
+        let life = validate_transition_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals, &gov_action(), &[first], &[], &[],
         )
         .expect("an incompatible governance set must validate to Blocked, not refuse");
@@ -25918,22 +26488,22 @@ mod tests {
         // with the plan set untouched.
         let (mut state, mut record, obs, approvals, first) = gov_planned_pair();
         let big = vec![PlanClaimArg { resource: RES_TREASURY_TRANCHE, amount_raw: 600 * SCALE }];
-        let first_plan = submit_plan_governance_from_records(
+        let first_plan = submit_plan_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals, &gov_action(), &[first], &[], &big, 400, ag(2), 7,
             &[],
         )
         .expect("first big governance plan must submit");
-        let second_plan = submit_plan_governance_from_records(
+        let second_plan = submit_plan_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals, &gov_action(), &[first], std::slice::from_ref(&first_plan), &big, 400, ag(3), 8,
             &[],
         )
         .expect("second big governance plan must submit");
         advance_clock_on_state(&mut state, 300).expect("advance to the deadline must succeed");
         let plans = [first_plan, second_plan];
-        reconcile_plans_governance_from_records(&state, &mut record, &obs, &approvals, &gov_action(), &[first], &plans, &[])
+        reconcile_plans_governance_from_records(&test_registry(), &state, &mut record, &obs, &approvals, &gov_action(), &[first], &plans, &[])
             .expect("an over-capacity governance set must reconcile to incompatible");
         assert!(!record.compatible);
-        let life = validate_transition_governance_from_records(
+        let life = validate_transition_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals, &gov_action(), &[first], &plans, &[],
         )
         .expect("an incompatible governance set must validate to Blocked, not refuse");
@@ -25948,7 +26518,7 @@ mod tests {
         // Still PLANNING, never reconciled: the stage gate refuses
         // before any replay, and nothing on the record moves.
         let (state, mut record, obs, approvals, first, plan) = gov_one_plan_pair();
-        let err = validate_transition_governance_from_records(
+        let err = validate_transition_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals, &gov_action(), &[first], &[plan], &[],
         )
         .expect_err("an unreconciled governance record must refuse validate");
@@ -25963,12 +26533,12 @@ mod tests {
         // stage gate refuses a second call, and the VALIDATED
         // stage stands.
         let (state, mut record, obs, approvals, first, plan) = gov_reconciling_pair();
-        validate_transition_governance_from_records(
+        validate_transition_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals, &gov_action(), &[first], std::slice::from_ref(&plan), &[],
         )
         .expect("first governance validate must succeed");
         assert_eq!(record.stage, TransitionRecord::VALIDATED);
-        let err = validate_transition_governance_from_records(
+        let err = validate_transition_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals, &gov_action(), &[first], std::slice::from_ref(&plan), &[],
         )
         .expect_err("a second governance validate must refuse");
@@ -25985,12 +26555,12 @@ mod tests {
         // StillBlocked, the call refuses, and the record stands
         // BLOCKED.
         let (state, mut record, obs, approvals, first) = gov_empty_reconciling_pair();
-        validate_transition_governance_from_records(
+        validate_transition_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals, &gov_action(), &[first], &[], &[],
         )
         .expect("first governance validate must block");
         assert_eq!(record.stage, TransitionRecord::BLOCKED);
-        let err = validate_transition_governance_from_records(
+        let err = validate_transition_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals, &gov_action(), &[first], &[], &[],
         )
         .expect_err("a still-blocked governance record must refuse re-validate");
@@ -26009,7 +26579,7 @@ mod tests {
         // validated nor blocked on a lie.
         let (state, mut record, obs, approvals, first, plan) = gov_reconciling_pair();
         record.compatible = false;
-        let err = validate_transition_governance_from_records(
+        let err = validate_transition_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals, &gov_action(), &[first], &[plan], &[],
         )
         .expect_err("a mismatched stored governance verdict must refuse validate");
@@ -26026,7 +26596,7 @@ mod tests {
         // stands, so this is a verdict, not a refusal.
         let (mut state, mut record, obs, approvals, first, plan) = gov_reconciling_pair();
         advance_clock_on_state(&mut state, 9100).expect("advance to the observation expiry must succeed");
-        let life = validate_transition_governance_from_records(
+        let life = validate_transition_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals, &gov_action(), &[first], &[plan], &[],
         )
         .expect("a stale observation must validate a governance record to Blocked, not refuse");
@@ -26041,7 +26611,7 @@ mod tests {
         // the slice-21 anchor refuses before any replay.
         let (state, mut record, obs, approvals, first, plan) = gov_reconciling_pair();
         record.plan_count = 2;
-        let err = validate_transition_governance_from_records(
+        let err = validate_transition_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals, &gov_action(), &[first], &[plan], &[],
         )
         .expect_err("a short governance prior plan set must refuse validate");
@@ -26057,7 +26627,7 @@ mod tests {
         // supplied: the slice-16 anchor refuses before any replay.
         let (state, mut record, obs, approvals, first, plan) = gov_reconciling_pair();
         record.signal_count = 2;
-        let err = validate_transition_governance_from_records(
+        let err = validate_transition_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals, &gov_action(), &[first], &[plan], &[],
         )
         .expect_err("a short governance prior signal set must refuse validate");
@@ -26074,7 +26644,7 @@ mod tests {
         // record stands.
         let (state, mut record, obs, approvals, first, mut plan) = gov_reconciling_pair();
         plan.agent = Pubkey::new_from_array([0x77; 32]);
-        let err = validate_transition_governance_from_records(
+        let err = validate_transition_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals, &gov_action(), &[first], &[plan], &[],
         )
         .expect_err("an unreproducible governance plan must refuse validate");
@@ -26090,7 +26660,7 @@ mod tests {
         // helper, never here.
         let (state, mut record, obs, approvals, first, plan) = gov_reconciling_pair();
         record.transition_type = TT;
-        let err = validate_transition_governance_from_records(
+        let err = validate_transition_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals, &gov_action(), &[first], &[plan], &[],
         )
         .expect_err("an ordinary-typed record must refuse the governance validate");
@@ -26107,7 +26677,7 @@ mod tests {
         // RECONCILING with compatible still true.
         let (state, mut record, obs, approvals, first, plan) = gov_reconciling_pair();
         record.approval_count = 2;
-        let err = validate_transition_governance_from_records(
+        let err = validate_transition_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals[..2], &gov_action(), &[first], &[plan], &[],
         )
         .expect_err("a non-unanimous approval set must refuse a governance validate");
@@ -26123,7 +26693,7 @@ mod tests {
         // refuses on `ParentMismatch`, both before any replay.
         let (mut state, mut record, obs, approvals, first, plan) = gov_reconciling_pair();
         state.sealed = false;
-        let err = validate_transition_governance_from_records(
+        let err = validate_transition_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals, &gov_action(), &[first], &[plan], &[],
         )
         .expect_err("an unsealed state must refuse a governance validate");
@@ -26132,7 +26702,7 @@ mod tests {
 
         let (mut state, mut record, obs, approvals, first, plan) = gov_reconciling_pair();
         state.head_index = 9;
-        let err = validate_transition_governance_from_records(
+        let err = validate_transition_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals, &gov_action(), &[first], &[plan], &[],
         )
         .expect_err("a record off the sealed head must refuse a governance validate");
@@ -26154,7 +26724,7 @@ mod tests {
         // fixture every slice-47 test below builds from,
         // exactly as the ordinary validated pair.
         let (state, mut record, obs, approvals, first, plan) = gov_reconciling_pair();
-        let life = validate_transition_governance_from_records(
+        let life = validate_transition_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals, &gov_action(), &[first], std::slice::from_ref(&plan), &[],
         )
         .expect("a fitting reconciled governance chain must validate");
@@ -26176,7 +26746,7 @@ mod tests {
         let (state, mut record, obs, approvals, first, plan) = gov_validated_pair();
         let head_index = state.head_index;
         let head_hash = state.head_hash;
-        let life = declare_transition_governance_from_records(
+        let life = declare_transition_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals, &gov_action(), &[first], &[plan], &[],
         )
         .expect("a fitting validated governance chain must declare");
@@ -26194,12 +26764,12 @@ mod tests {
         // stage gate refuses a second call, and the DECLARED
         // stage stands.
         let (state, mut record, obs, approvals, first, plan) = gov_validated_pair();
-        declare_transition_governance_from_records(
+        declare_transition_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals, &gov_action(), &[first], std::slice::from_ref(&plan), &[],
         )
         .expect("first governance declare must succeed");
         assert_eq!(record.stage, TransitionRecord::DECLARED);
-        let err = declare_transition_governance_from_records(
+        let err = declare_transition_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals, &gov_action(), &[first], std::slice::from_ref(&plan), &[],
         )
         .expect_err("a second governance declare must refuse");
@@ -26214,7 +26784,7 @@ mod tests {
         // refuses before any replay, and nothing on the record
         // moves.
         let (state, mut record, obs, approvals, first, plan) = gov_reconciling_pair();
-        let err = declare_transition_governance_from_records(
+        let err = declare_transition_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals, &gov_action(), &[first], &[plan], &[],
         )
         .expect_err("an unvalidated governance record must refuse declare");
@@ -26230,12 +26800,12 @@ mod tests {
         // stands BLOCKED for the re-plan path — declare never
         // re-labels it.
         let (state, mut record, obs, approvals, first) = gov_empty_reconciling_pair();
-        validate_transition_governance_from_records(
+        validate_transition_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals, &gov_action(), &[first], &[], &[],
         )
         .expect("first governance validate must block");
         assert_eq!(record.stage, TransitionRecord::BLOCKED);
-        let err = declare_transition_governance_from_records(
+        let err = declare_transition_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals, &gov_action(), &[first], &[], &[],
         )
         .expect_err("a blocked governance record must refuse declare");
@@ -26256,7 +26826,7 @@ mod tests {
         // VALIDATED, not blocked, not declared.
         let (mut state, mut record, obs, approvals, first, plan) = gov_validated_pair();
         advance_clock_on_state(&mut state, 400).expect("advance to the plan expiry must succeed");
-        let err = declare_transition_governance_from_records(
+        let err = declare_transition_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals, &gov_action(), &[first], &[plan], &[],
         )
         .expect_err("an expired-plan predicate must refuse a governance declare");
@@ -26275,7 +26845,7 @@ mod tests {
         // declare or for the exception path to judge.
         let (mut state, mut record, obs, approvals, first, plan) = gov_validated_pair();
         advance_clock_on_state(&mut state, 9100).expect("advance to the observation expiry must succeed");
-        let err = declare_transition_governance_from_records(
+        let err = declare_transition_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals, &gov_action(), &[first], &[plan], &[],
         )
         .expect_err("a stale observation must refuse a governance declare");
@@ -26294,7 +26864,7 @@ mod tests {
         // VALIDATED, neither declared nor blocked on a lie.
         let (state, mut record, obs, approvals, first, plan) = gov_validated_pair();
         record.compatible = false;
-        let err = declare_transition_governance_from_records(
+        let err = declare_transition_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals, &gov_action(), &[first], &[plan], &[],
         )
         .expect_err("a mismatched stored governance verdict must refuse declare");
@@ -26310,7 +26880,7 @@ mod tests {
         // replay.
         let (state, mut record, obs, approvals, first, plan) = gov_validated_pair();
         record.plan_count = 2;
-        let err = declare_transition_governance_from_records(
+        let err = declare_transition_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals, &gov_action(), &[first], &[plan], &[],
         )
         .expect_err("a short governance prior plan set must refuse declare");
@@ -26327,7 +26897,7 @@ mod tests {
         // replay.
         let (state, mut record, obs, approvals, first, plan) = gov_validated_pair();
         record.signal_count = 2;
-        let err = declare_transition_governance_from_records(
+        let err = declare_transition_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals, &gov_action(), &[first], &[plan], &[],
         )
         .expect_err("a short governance prior signal set must refuse declare");
@@ -26344,7 +26914,7 @@ mod tests {
         // the record stands.
         let (state, mut record, obs, approvals, first, mut plan) = gov_validated_pair();
         plan.agent = Pubkey::new_from_array([0x77; 32]);
-        let err = declare_transition_governance_from_records(
+        let err = declare_transition_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals, &gov_action(), &[first], &[plan], &[],
         )
         .expect_err("an unreproducible governance plan must refuse declare");
@@ -26360,7 +26930,7 @@ mod tests {
         // helper, never here.
         let (state, mut record, obs, approvals, first, plan) = gov_validated_pair();
         record.transition_type = TT;
-        let err = declare_transition_governance_from_records(
+        let err = declare_transition_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals, &gov_action(), &[first], &[plan], &[],
         )
         .expect_err("an ordinary-typed record must refuse the governance declare");
@@ -26377,7 +26947,7 @@ mod tests {
         // VALIDATED with compatible still true.
         let (state, mut record, obs, approvals, first, plan) = gov_validated_pair();
         record.approval_count = 2;
-        let err = declare_transition_governance_from_records(
+        let err = declare_transition_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals[..2], &gov_action(), &[first], &[plan], &[],
         )
         .expect_err("a non-unanimous approval set must refuse a governance declare");
@@ -26393,7 +26963,7 @@ mod tests {
         // refuses on `ParentMismatch`, both before any replay.
         let (mut state, mut record, obs, approvals, first, plan) = gov_validated_pair();
         state.sealed = false;
-        let err = declare_transition_governance_from_records(
+        let err = declare_transition_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals, &gov_action(), &[first], &[plan], &[],
         )
         .expect_err("an unsealed state must refuse a governance declare");
@@ -26402,7 +26972,7 @@ mod tests {
 
         let (mut state, mut record, obs, approvals, first, plan) = gov_validated_pair();
         state.head_index = 9;
-        let err = declare_transition_governance_from_records(
+        let err = declare_transition_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals, &gov_action(), &[first], &[plan], &[],
         )
         .expect_err("a record off the sealed head must refuse a governance declare");
@@ -26788,7 +27358,7 @@ mod tests {
                 bump: 7,
             },
         ];
-        check_gov_action_for_commit(&account, &record, &approvals)
+        check_gov_action_for_commit(&test_registry(), &account, &record, &approvals)
             .expect("the approved action must pass the commit gate");
         let other = GovAction::SetCapacity {
             resource: RES_LENDING_BOOK,
@@ -26800,18 +27370,18 @@ mod tests {
             action_hash: gov_action_hash(&other).expect("hash must compute"),
             bump: 7,
         }];
-        let err = check_gov_action_for_commit(&account, &record, &other_approvals)
+        let err = check_gov_action_for_commit(&test_registry(), &account, &record, &other_approvals)
             .expect_err("a substituted action must refuse commit");
         assert!(format!("{:?}", err).contains("GovActionHashMismatch"));
         let bytes = sample_action_bytes();
         let mut half = gov_action_account(writer, solana_sha256_hasher::hash(&bytes).to_bytes());
         write_gov_action_chunk(&mut half, writer, 0, &bytes[..512])
             .expect("first chunk must append");
-        let err = check_gov_action_for_commit(&half, &record, &approvals)
+        let err = check_gov_action_for_commit(&test_registry(), &half, &record, &approvals)
             .expect_err("an unfinalized account must refuse commit");
         assert!(format!("{:?}", err).contains("GovActionNotFinalized"));
         let foreign_record = slice52_record(foreign);
-        let err = check_gov_action_for_commit(&account, &foreign_record, &approvals)
+        let err = check_gov_action_for_commit(&test_registry(), &account, &foreign_record, &approvals)
             .expect_err("a foreign writer must refuse commit");
         assert!(format!("{:?}", err).contains("RecordMismatch"));
     }
@@ -26852,54 +27422,54 @@ mod tests {
             Pubkey::new_from_array(ag(1)), 7,
         )
         .expect("a chain bundle record must build at the current head");
-        let obs = build_observation_record(
+        let obs = build_observation_record(&test_registry(), 
             state, obs_id, clock, 9500, 900_000, observer_pubkey(), 7,
         )
         .expect("a chain bundle observation must build at the current clock");
-        replay_transition_from_records(state, &mut record, &obs, priors)
+        replay_transition_from_records(&test_registry(), state, &mut record, &obs, priors)
             .expect("a chain bundle must replay");
         assert_eq!(record.stage, TransitionRecord::KERNEL_REGISTERED);
-        evaluate_transition_from_records(state, &mut record, &obs, priors)
+        evaluate_transition_from_records(&test_registry(), state, &mut record, &obs, priors)
             .expect("a chain bundle must evaluate");
         assert_eq!(record.stage, TransitionRecord::EVALUATED);
-        mark_eligible_from_records(&mut *state, &mut record, &obs, priors)
+        mark_eligible_from_records(&test_registry(), &mut *state, &mut record, &obs, priors)
             .expect("a chain bundle must mark eligible");
         assert_eq!(record.stage, TransitionRecord::ELIGIBLE);
         assert_eq!(record.eligible_at, clock);
         assert_eq!(record.consensus_deadline, clock + 100);
-        let (signal, _, _) = submit_signal_from_records(
+        let (signal, _, _) = submit_signal_from_records(&test_registry(), 
             state, &mut record, &obs, &[], Pubkey::new_from_array(ag(2)), 0, SCALE, SCALE, true,
             7, priors,
         )
         .expect("a chain bundle signal must submit");
         assert_eq!(record.signal_count, 1);
         advance_clock_on_state(&mut *state, clock + 100).expect("advance to the consensus deadline must succeed");
-        let life = select_candidate_from_records(state, &mut record, &obs, std::slice::from_ref(&signal), priors)
+        let life = select_candidate_from_records(&test_registry(), state, &mut record, &obs, std::slice::from_ref(&signal), priors)
             .expect("a chain bundle must select at the closed window");
         assert_eq!(life, Life::Selected);
         assert_eq!(record.stage, TransitionRecord::SELECTED);
-        let life = open_planning_from_records(state, &mut record, &obs, std::slice::from_ref(&signal), [0x77; 32], priors)
+        let life = open_planning_from_records(&test_registry(), state, &mut record, &obs, std::slice::from_ref(&signal), [0x77; 32], priors)
             .expect("a chain bundle must open planning");
         assert_eq!(life, Life::Planning);
         assert_eq!(record.stage, TransitionRecord::PLANNING);
         assert_eq!(record.planning_deadline, clock + 200);
-        let plan = submit_plan_from_records(
+        let plan = submit_plan_from_records(&test_registry(), 
             state, &mut record, &obs, std::slice::from_ref(&signal), &[], &two_claims(), clock + 300, ag(2), 7, priors,
         )
         .expect("a chain bundle plan must submit");
         assert_eq!(record.plan_count, 1);
         advance_clock_on_state(&mut *state, clock + 200).expect("advance to the planning deadline must succeed");
-        let life = reconcile_plans_from_records(state, &mut record, &obs, std::slice::from_ref(&signal), std::slice::from_ref(&plan), priors)
+        let life = reconcile_plans_from_records(&test_registry(), state, &mut record, &obs, std::slice::from_ref(&signal), std::slice::from_ref(&plan), priors)
             .expect("a chain bundle must reconcile");
         assert_eq!(life, Life::Reconciling);
         assert!(record.compatible);
-        let life = validate_transition_from_records(state, &mut record, &obs, std::slice::from_ref(&signal), std::slice::from_ref(&plan), priors)
+        let life = validate_transition_from_records(&test_registry(), state, &mut record, &obs, std::slice::from_ref(&signal), std::slice::from_ref(&plan), priors)
             .expect("a chain bundle must validate");
         assert_eq!(life, Life::Validated);
-        let life = declare_transition_from_records(state, &mut record, &obs, std::slice::from_ref(&signal), std::slice::from_ref(&plan), priors)
+        let life = declare_transition_from_records(&test_registry(), state, &mut record, &obs, std::slice::from_ref(&signal), std::slice::from_ref(&plan), priors)
             .expect("a chain bundle must declare");
         assert_eq!(life, Life::Committable);
-        let life = commit_transition_from_records(&mut *state, &mut record, &obs, std::slice::from_ref(&signal), std::slice::from_ref(&plan), priors)
+        let life = commit_transition_from_records(&test_registry(), &mut *state, &mut record, &obs, std::slice::from_ref(&signal), std::slice::from_ref(&plan), priors)
             .expect("a chain bundle must commit");
         assert_eq!(life, Life::Committed);
         assert_eq!(record.stage, TransitionRecord::COMMITTED);
@@ -26935,86 +27505,86 @@ mod tests {
         }
         let priors = prior_entries_of(&bundles);
         let clock = state.clock;
-        let mut record = build_governance_transition_record(
+        let mut record = build_governance_transition_record(&test_registry(), 
             &state, [0xD9; 32], T_GOV_ADJUSTABLE, state.head_index, state.head_hash, [0xF9; 32],
             [0xCF; 32], 10_400, Pubkey::new_from_array(ag(1)), 7,
         )
         .expect("the governance tail record must build at the current head");
-        let obs = build_observation_record(
+        let obs = build_observation_record(&test_registry(), 
             &state, [0xCF; 32], clock, 9500, 900_000, observer_pubkey(), 7,
         )
         .expect("the governance tail observation must build at the current clock");
         let action = gov_action();
         let approvals = [
-            build_governance_approval_record(&state, &record, Pubkey::new_from_array(ag(1)), &action, 1)
+            build_governance_approval_record(&test_registry(), &state, &record, Pubkey::new_from_array(ag(1)), &action, 1)
                 .expect("seat 1 approval must build"),
-            build_governance_approval_record(&state, &record, Pubkey::new_from_array(ag(2)), &action, 1)
+            build_governance_approval_record(&test_registry(), &state, &record, Pubkey::new_from_array(ag(2)), &action, 1)
                 .expect("seat 2 approval must build"),
-            build_governance_approval_record(&state, &record, Pubkey::new_from_array(ag(3)), &action, 1)
+            build_governance_approval_record(&test_registry(), &state, &record, Pubkey::new_from_array(ag(3)), &action, 1)
                 .expect("seat 3 approval must build"),
         ];
         record.approval_count = approvals.len() as u64;
-        replay_governance_from_records(&state, &mut record, &obs, &approvals, &action, &priors)
+        replay_governance_from_records(&test_registry(), &state, &mut record, &obs, &approvals, &action, &priors)
             .expect("the governance tail must replay");
         assert_eq!(record.stage, TransitionRecord::KERNEL_REGISTERED);
-        evaluate_governance_from_records(&state, &mut record, &obs, &approvals, &action, &priors)
+        evaluate_governance_from_records(&test_registry(), &state, &mut record, &obs, &approvals, &action, &priors)
             .expect("the governance tail must evaluate");
         assert_eq!(record.stage, TransitionRecord::EVALUATED);
-        mark_eligible_governance_from_records(&mut state, &mut record, &obs, &approvals, &action, &priors)
+        mark_eligible_governance_from_records(&test_registry(), &mut state, &mut record, &obs, &approvals, &action, &priors)
             .expect("the governance tail must mark eligible");
         assert_eq!(record.stage, TransitionRecord::ELIGIBLE);
         assert_eq!(record.eligible_at, clock);
         assert_eq!(record.consensus_deadline, clock + 100);
-        let (signal, _, _) = submit_signal_governance_from_records(
+        let (signal, _, _) = submit_signal_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals, &action, &[], Pubkey::new_from_array(ag(2)), 0,
             SCALE, SCALE, true, 7, &priors,
         )
         .expect("the governance tail signal must submit");
         assert_eq!(record.signal_count, 1);
         advance_clock_on_state(&mut state, clock + 100).expect("advance to the tail consensus deadline must succeed");
-        let life = select_candidate_governance_from_records(
+        let life = select_candidate_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals, &action, std::slice::from_ref(&signal), &priors,
         )
         .expect("the governance tail must select at the closed window");
         assert_eq!(life, Life::Selected);
-        let life = open_planning_governance_from_records(
+        let life = open_planning_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals, &action, std::slice::from_ref(&signal), ag(1), &priors,
         )
         .expect("the governance tail must open planning");
         assert_eq!(life, Life::Planning);
         assert_eq!(record.planning_deadline, clock + 200);
-        let plan = submit_plan_governance_from_records(
+        let plan = submit_plan_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals, &action, std::slice::from_ref(&signal), &[], &two_claims(),
             clock + 300, ag(2), 7, &priors,
         )
         .expect("the governance tail plan must submit");
         assert_eq!(record.plan_count, 1);
         advance_clock_on_state(&mut state, clock + 200).expect("advance to the tail planning deadline must succeed");
-        let life = reconcile_plans_governance_from_records(
+        let life = reconcile_plans_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals, &action, std::slice::from_ref(&signal), std::slice::from_ref(&plan), &priors,
         )
         .expect("the governance tail must reconcile");
         assert_eq!(life, Life::Reconciling);
         assert!(record.compatible);
-        let life = validate_transition_governance_from_records(
+        let life = validate_transition_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals, &action, std::slice::from_ref(&signal), std::slice::from_ref(&plan), &priors,
         )
         .expect("the governance tail must validate");
         assert_eq!(life, Life::Validated);
-        let life = declare_transition_governance_from_records(
+        let life = declare_transition_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, &approvals, &action, std::slice::from_ref(&signal), std::slice::from_ref(&plan), &priors,
         )
         .expect("the governance tail must declare");
         assert_eq!(life, Life::Committable);
         let seats = gov_approvals();
-        let life = commit_governance_from_records(
+        let life = commit_governance_from_records(&test_registry(), 
             &mut state, &mut record, &obs, std::slice::from_ref(&signal), std::slice::from_ref(&plan), &action, &seats, &priors,
         )
         .expect("the governance tail must commit");
         assert_eq!(life, Life::Committed);
         assert_eq!(record.stage, TransitionRecord::COMMITTED);
         let realized = record.declared_next_hash;
-        let life = settle_governance_transition_from_records(
+        let life = settle_governance_transition_from_records(&test_registry(), 
             &state, &mut record, &obs, std::slice::from_ref(&signal), std::slice::from_ref(&plan), &action, &seats, &priors, realized,
         )
         .expect("the governance tail must settle");
@@ -27024,7 +27594,7 @@ mod tests {
         let head_hash = state.head_hash;
         let ledger = state.committed_claims;
         alloc_meter::start();
-        let (life, exact) = record_outcome_governance_from_records(
+        let (life, exact) = record_outcome_governance_from_records(&test_registry(), 
             &state, &mut record, &obs, std::slice::from_ref(&signal), std::slice::from_ref(&plan), &approvals, &action, &priors, realized,
             Pubkey::new_from_array(RECORDER), &[(plan.agent, 10)],
         )
