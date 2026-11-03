@@ -623,6 +623,7 @@ the brief outline flash marks the landing panel without touching its copy.*/
 <button class="ghostbtn" id="btDeploy" type="button" style="margin-top:8px" title="Track this configuration against new daily bars. Simulated — no real funds.">Deploy to paper-tracked</button>
 <div class="sub" id="btStatus" style="margin-top:8px;text-align:center">Idle — no backtest run yet.</div>
 <div id="btResults" style="margin-top:10px"></div>
+<div style="margin-top:8px"><button id="btCopySummary" type="button" class="action" disabled title="Copy a plain-text summary of the latest backtest run">Copy summary</button></div>
 <div class="bthead">Saved configurations <span class="sub" style="text-transform:none;letter-spacing:0">· on this device</span></div>
 <div class="searchrow"><input id="btCfgName" placeholder="Name this configuration" maxlength="60"><button id="btSaveCfg" type="button">Save</button></div>
 <div id="btCfgList" style="margin-top:10px"></div>
@@ -5463,6 +5464,7 @@ async function btRun(){
  qs.set('fee_bps',String(c.fee_bps));qs.set('deploy_pct',String(c.deploy_pct));
  if(c.from)qs.set('from',String(c.from));
  if(c.to)qs.set('to',String(c.to));
+ btLastSummary=null;btPaintSummaryBtn(); /* N3.122: a run in flight has no summary */
  $('btStatus').textContent='Running backtest…';$('btResults').innerHTML='<div class="empty">Running…</div>';
  const controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),30000);
  try{
@@ -5475,8 +5477,9 @@ async function btRun(){
   btSaveReenable(); /* N7.10: a completed run re-enables Save */
   btPaintDeployBtn(); /* N7.11: a completed run repaints Deploy state */
   await btRenderResults(j);
+  btLastSummary=btSummaryText(j);btPaintSummaryBtn(); /* N3.122: summary from this run only */
   $('btStatus').textContent='Done · '+(j.cached?'cached result':'fresh result');
- }catch(e){console.error('backtest failed',e);const raw=e.message||String(e);const gt=btGtFailureCopy(raw,c.pair);if(gt){if(btIsGtPair(c.pair))btSetGtFeedDown(true);$('btResults').innerHTML='<div class="empty">'+esc(gt.headline)+'</div><div class="sub">Raw error: '+esc(gt.detail)+'</div>';}else{$('btResults').innerHTML='<div class="empty">Backtest failed: '+esc(raw)+'</div>';}$('btStatus').textContent='Failed';}
+ }catch(e){console.error('backtest failed',e);const raw=e.message||String(e);const gt=btGtFailureCopy(raw,c.pair);if(gt){if(btIsGtPair(c.pair))btSetGtFeedDown(true);$('btResults').innerHTML='<div class="empty">'+esc(gt.headline)+'</div><div class="sub">Raw error: '+esc(gt.detail)+'</div>';}else{$('btResults').innerHTML='<div class="empty">Backtest failed: '+esc(raw)+'</div>';}$('btStatus').textContent='Failed';btLastSummary=null;btPaintSummaryBtn(); /* N3.122: a failed run has no summary */}
  finally{clearTimeout(timeout);btRunning=false;}
 }
 /*__BT_DIRTY_CHECK_START__*/
@@ -5566,6 +5569,49 @@ function btWireRunIdCopy(runId,runAt){
   if(navigator.clipboard&&navigator.clipboard.writeText)navigator.clipboard.writeText(txt).then(()=>toast('Run ID copied.'),()=>toast('Copy failed — select the run ID manually.'));else toast('Copy not available in this browser.');};
 }
 /*__N75_RUNID_END__*/
+/*__N3122_SUMMARY_START__*/
+/* N3.122 (A264): "Copy summary" for the latest backtest run. The button
+   lives in the result block above Save (the tour's "beside Load & save"
+   names the result's save neighbourhood; a deployment card's Load & save
+   restores a stored config and carries no run figures, so it cannot be
+   the source — the acceptance's "no result shows the button disabled"
+   only holds for the current run). btSummaryText is pure: it builds the
+   plain-text summary ONLY from the run's own payload figures (scheme
+   name, pair, data window, trades, total return, fee per side, deploy
+   %) and returns null when any of them is missing or non-finite, so a
+   partial payload yields no summary rather than an invented one.
+   btPaintSummaryBtn keeps the static button disabled whenever there is
+   no stored summary (no run yet, a run in flight, a failed run). */
+let btLastSummary=null;
+function btSummaryText(j){
+ if(!j||!j.result||!j.scheme||!j.data||!j.fee)return null;
+ const r=j.result,f=j.fee;
+ if(!Number.isFinite(r.trades)||!Number.isFinite(r.total_return_pct))return null;
+ if(!Number.isFinite(f.fee_bps_per_side)||!Number.isFinite(f.deploy_pct))return null;
+ if(!Number.isFinite(j.data.from)||!Number.isFinite(j.data.to))return null;
+ const name=String(j.scheme.name||'').trim(),pair=String(j.pair||'').trim();
+ if(!name||!pair)return null;
+ return [
+  'Backtest summary — '+name,
+  'Pair: '+pair,
+  'Window: '+btDate(j.data.from)+' → '+btDate(j.data.to),
+  'Trades: '+r.trades,
+  'Total return: '+btSgn(r.total_return_pct)+'%',
+  'Fee: '+f.fee_bps_per_side+' bps/side · Deploy: '+f.deploy_pct+'%'
+ ].join('\n');
+}
+function btPaintSummaryBtn(){
+ const b=$('btCopySummary');if(!b)return;
+ b.disabled=!btLastSummary;
+}
+function btWireSummaryCopy(){
+ const b=$('btCopySummary');if(!b)return;
+ b.onclick=()=>{
+  if(!btLastSummary)return;
+  if(navigator.clipboard&&navigator.clipboard.writeText)navigator.clipboard.writeText(btLastSummary).then(()=>toast('Backtest summary copied.'),()=>toast('Copy failed — select the summary manually.'));else toast('Copy not available in this browser.');
+ };
+}
+/*__N3122_SUMMARY_END__*/
 function btDrawCurves(j,oj){
  const svg=$('btCurve');if(!svg)return;
  const curve=j.result.equity_curve;
@@ -5930,6 +5976,7 @@ function btInit(){
  if($('btSchemePin'))$('btSchemePin').onclick=btToggleSchemePin;
  document.querySelectorAll('[data-btrange]').forEach(b=>b.onclick=()=>{document.querySelectorAll('[data-btrange]').forEach(x=>{x.classList.remove('on');x.setAttribute('aria-pressed','false');});b.classList.add('on');b.setAttribute('aria-pressed','true');btRange=b.dataset.btrange;$('btCustomRange').style.display=btRange==='custom'?'grid':'none';});
  $('btRun').onclick=btRun;
+ btWireSummaryCopy();btPaintSummaryBtn(); /* N3.122: disabled until a run completes */
  $('btSaveCfg').onclick=btSaveConfig;
  if($('btCfgName'))$('btCfgName').addEventListener('input',btSaveNameChanged); /* N7.10: a name change re-enables Save and lapses the overwrite arm */
  $('btDeploy').onclick=plDeployCurrent; /* N7.4 */
