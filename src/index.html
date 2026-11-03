@@ -647,6 +647,14 @@ const WSOL_MINT='So11111111111111111111111111111111111111112';
    handler and the dashboard's total-P&L both read (pack §1.4: never hardcoded). */
 const PAPER_START_CASH=10000;
 let price=0,change=0,cash=PAPER_START_CASH,holdings={},ticketPair={baseMint:WSOL_MINT,baseSymbol:'SOL',quoteSymbol:'USDC',price:0,change24h:null},orders=[],side='buy',marketPairs=[],chartRange='1H';
+/* N3.111 (2026-11-03, A253): ticketMode declared HERE, not in the wallet
+   section below. It was declared at line ~6297 while boot-time ticket
+   paints (refreshTicket -> paintPaperPreview, N3.96) read it earlier, so
+   the script died on a TDZ ReferenceError before cmdWirePalette() ran
+   and the palette button + Ctrl/Cmd+K were dead (btn.onclick stayed
+   null; real-browser repro proved it). Same 'paper' default, same
+   writers; only the declaration site moves. */
+let ticketMode='paper'; // N4.3: 'live' unlocks only via LIVE_TRADING_ENABLED (human-flipped after N4.2 acceptance + §8.4)
 let feedFailures=0,lastMarketAt=0;
 /* N1.6: stale→offline escalation copy + backoff schedule. Pure — unit-tested. */
 function feedFailureCopy(n){const off=n>=3;return{badge:off?'FEED OFFLINE':'STALE DATA',color:off?'var(--red)':'var(--amber)',tag:off?'OFFLINE':'STALE',sub:off?'Feed offline · showing last good data — Retry feed':'Refresh failed · showing last good data'}}
@@ -6294,7 +6302,7 @@ const WSTANDARD_CDN='https://esm.sh/@wallet-standard/app@1.1.1'; // N4.9: same v
 const WALLET_USDC_MINT='EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'; // frontend/src/solana/tokens.ts
 const WALLET_USDT_MINT='Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB'; // frontend/src/solana/tokens.ts
 const wallet={connected:false,publicKey:null,name:null,icon:null,adapter:null,balances:{sol:null,usdc:null,usdt:null},balErr:{},balLoading:false,_adapters:null,_connecting:false,roster:[]};
-let ticketMode='paper'; // N4.3: 'live' unlocks only via LIVE_TRADING_ENABLED (human-flipped after N4.2 acceptance + §8.4)
+/* N3.111: ticketMode now declared with the top ticket state (TDZ fix) — see there. */
 window.__walletState={connected:false,publicKey:null,balances:null,balErr:{}}; // read-only exposure for the ticket
 function truncateAddr(a){if(!a||a.length<8)return a||'—';return a.slice(0,4)+'…'+a.slice(-4);}
 function classifyWallets(adapters){const installed=[],installable=[];(adapters||[]).forEach(a=>{if(!a||!a.name)return;((a.readyState==='Installed')?installed:installable).push(a);});return{installed,installable};}
