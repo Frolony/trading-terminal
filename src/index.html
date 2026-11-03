@@ -3851,7 +3851,7 @@ function selectTicketPair(p){ // p: DexScreener-shaped pair row
   const lp=$('limitPrice');if(lp)lp.value=''; // N4.5: re-prefill the limit price for the new pair
   fillDefaultSizeInput(); // N7.6: unit-aware default size fills on pair change
   refreshTicket();updatePortfolio();scheduleLiveQuote();saveState(); // N4.5/A17: persist the selection
-  toast(ticketPair.baseSymbol+'/'+ticketPair.quoteSymbol+' selected for paper trading.');
+  toast(ticketPair.baseSymbol+'/'+ticketPair.quoteSymbol+' selected for the order ticket.'); /* N3.48-REWORK (2026-11-02, A155): the old toast claimed 'paper trading' even when the ticket that changed was the Live one (18:21 tour toast-mislabel leg) — the selection record is shared across both ticket instances, so the toast names the order ticket and claims no mode. */
   const amt=$('orderAmount');if(amt)amt.focus();
 }
 function syncPricesFromPairs(){ // keep the selected pair + holding valuations on the latest feed rows
