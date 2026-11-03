@@ -4319,6 +4319,16 @@ function stableSupplyParse(j){
   const num=k=>{const v=j.supplies[k];return (typeof v==='number'&&Number.isFinite(v))?v:null;};
   return{ok:true,usdc:num('usdc'),usdt:num('usdt'),errors:j.errors||null};
 }
+/* N3.88 (2026-11-02, A230): the panel's total is the sum of the two
+   component rows shown directly above it — never a partial sum, never
+   a figure from another source. Both components must be finite numbers;
+   a missing component renders the total as '—' with the single
+   unavailable note below it, so a total on screen always reconciles
+   to its visible parts. A genuine zero component still counts (only
+   null/non-finite voids the total), per the N4.15 unknown-is-not-zero
+   rule. No second supply total is rendered in this panel, and no BTC
+   dominance metric is rendered anywhere in this file, so no metric
+   can appear twice with contradictory values here. */
 function stableSupplyHtml(st){
   if(!st||st.status==='loading')return '<div class="empty">Loading stablecoin supply…</div>';
   if(st.status==='error'){
@@ -4332,7 +4342,10 @@ function stableSupplyHtml(st){
     const note=v==null?'<div class="sub">read failed'+(err?' — '+esc(String(err)):'')+' · <button type="button" class="action" data-stable-retry>Retry</button></div>':'';
     return '<div class="stablesupply-row"><span><b>'+esc(t.sym)+'</b> · current supply<br><span class="mint">'+esc(t.name)+' · mint '+esc(t.mint)+'</span></span><span class="supply">'+esc(val)+'</span></div>'+note;
   }).join('');
-  return rows+'<div class="sub" style="margin-top:8px">Read '+(st.stampText||'—')+' via /api/balances?supply=1 (server-side proxy, getTokenSupply) · figures are total minted supply on Solana.</div>';
+  const both=st.usdc!=null&&Number.isFinite(Number(st.usdc))&&st.usdt!=null&&Number.isFinite(Number(st.usdt));
+  const totalRow='<div class="stablesupply-row"><span><b>Total</b> · USDC + USDT on Solana</span><span class="supply">'+(both?esc(stableSupplyFmt(Number(st.usdc)+Number(st.usdt))):'—')+'</span></div>';
+  const totalNote=both?'':'<div class="sub">Supply data unavailable — a component read failed, so no total is shown rather than a partial sum.</div>';
+  return rows+totalRow+totalNote+'<div class="sub" style="margin-top:8px">Read '+(st.stampText||'—')+' via /api/balances?supply=1 (server-side proxy, getTokenSupply) · figures are total minted supply on Solana.</div>';
 }
 let stableSupplyState={status:'loading',usdc:null,usdt:null,errors:null,stampText:null};
 let stableSupplyInflight=false,stableSupplyAt=0;
