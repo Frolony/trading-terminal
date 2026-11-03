@@ -423,6 +423,14 @@ the brief outline flash marks the landing panel without touching its copy.*/
    dismiss as a quiet borderless ×; the form wraps so narrow widths never
    overflow. No layout, copy, or sign-in-flow change. */
 .acctbanner{display:flex;flex-wrap:wrap;align-items:center;gap:12px;padding:10px 16px;background:var(--panel);border-bottom:1px solid var(--line);font-size:12px;color:var(--text)}
+/* N3.93 (2026-11-02, A235): ROOT CAUSE of the dead dismiss — author
+   display:flex beats the UA [hidden]{display:none} rule, so
+   acctPaintHeader()'s bn.hidden=true never painted anything away; the
+   dismiss handler and sessionStorage were working all along. The
+   explicit [hidden] rule below is the same pattern .wmodal/.review/
+   .drawer/.lpop already carry; without it the strip can never hide,
+   signed-in or dismissed. */
+.acctbanner[hidden]{display:none}
 .acctbanner-text{flex:1 1 260px}
 .acctbanner-text strong{color:var(--lime)}
 .acctbanner-never{color:var(--muted)}
@@ -872,6 +880,7 @@ document.addEventListener('walletchange',e=>{try{const d=(e&&e.detail)||{};if(d.
 const ACCT_NS_LIST=['settings','slippage','layout','paperlive','btConfigs','paper'];
 const ACCT_SHARED_NS=['settings','slippage','layout','paperlive','btConfigs'];
 const ACCT_BANNER_KEY='gecko-terminal:acct-banner-dismissed:v1';
+let acctBannerDismissedMem=false;/* N3.93 (A235): in-memory dismissal — the first click hides the strip even if sessionStorage throws (blocked storage); page-lifetime only, so session-only semantics are unchanged, and the sessionStorage write in the handler still covers same-tab reloads. */
 let acctState={token:null,userId:null,email:null,timer:0,pushing:false,applying:false,preSignin:null};
 let acctLocalTs={}; // ns -> last applied/pushed updatedAt (ms)
 let acctPushedJson={}; // ns -> JSON of the last pushed local data
@@ -891,12 +900,12 @@ function acctRestoreSnapshot(snap){if(!snap)return;try{syncState.applying=true;t
    same-tab reload stays hidden but a new session reshows the banner. The
    legacy persistent localStorage key is deliberately never read here: a
    pre-change dismisser must see the banner again, not stay hidden forever. */
-function acctBannerDismissed(){try{return sessionStorage.getItem(ACCT_BANNER_KEY)==='1';}catch(_){return false;}}
+function acctBannerDismissed(){if(acctBannerDismissedMem)return true;try{return sessionStorage.getItem(ACCT_BANNER_KEY)==='1';}catch(_){return false;}}
 function acctPaintHeader(){try{const b=$('acctBtn'),em=$('acctEmail'),bn=$('acctBanner');const signed=!!(acctState.token&&acctState.email);/* N2.7 amendment 2026-10-24: the header carries NO sign-in control while signed out — Log out lives in the header only in the signed-in state; sign-in lives on the banner. */if(b){b.textContent='Log out';b.title=signed?('Signed in as '+acctState.email):'Email account — optional sign-in';b.style.display=signed?'':'none';}if(em){em.style.display=signed?'inline':'none';em.textContent=signed?acctState.email:'';}if(bn)bn.hidden=signed||acctBannerDismissed();}catch(_){}}
 async function acctRequestLink(email){if(!acctValidEmail(email)){toast('That email address does not look valid.');return;}const j=await acctPost({action:'request-link',email:email.trim()});if(j&&j.ok){toast('Check your email for the sign-in link.');}else if(j&&j.error==='account_not_configured'){toast('Email sign-in is not set up yet — check back once the sign-in provider is connected. Paper trading stays open here.');}else if(j&&j.error==='invalid_email'){toast('That email address does not look valid.');}else{toast('Email sign-in is unavailable right now. Paper trading stays open here.');}}
 async function acctAuthFromToken(providerToken){const au=await acctPost({action:'auth',providerToken:providerToken});if(!au||!au.ok||!au.token||!au.userId){if(au&&au.error==='account_not_configured')toast('Email sign-in is not set up yet — the sign-in link cannot be completed.');else toast('That sign-in link is expired or invalid. Request a new one from the banner.');return;}acctState.preSignin=acctSnapshotLocal();acctState.token=au.token;acctState.userId=au.userId;acctState.email=au.email||'';acctLocalTs={};acctPushedJson={};const pull=await acctGetPull();if(pull&&pull.ok){const ns=pull.namespaces||{};const empty=!Object.keys(ns).length;if(empty){acctPushNow();/* first sign-in: device-local state becomes the account's initial state */}else{acctApplyNamespaces(ns);}}acctPaintHeader();toast('Signed in as '+acctState.email+' — your paper trading now follows this account.');}
 function acctSignOut(silent){const snap=acctState.preSignin;try{clearTimeout(acctState.timer);}catch(_){}acctState.token=null;acctState.userId=null;acctState.email=null;acctState.preSignin=null;acctLocalTs={};acctPushedJson={};if(snap)acctRestoreSnapshot(snap);acctPaintHeader();if(!silent)toast('Signed out — back to this device\'s paper trading.');}
-function acctInit(){try{const sub=$('acctBannerSubmit'),sin=$('acctBannerSignin'),dis=$('acctBannerDismiss'),btn=$('acctBtn');if(sub)sub.onclick=()=>{const el=$('acctBannerEmail');acctRequestLink(el?el.value:'');};if(sin)sin.onclick=()=>{const el=$('acctBannerEmail');acctRequestLink(el?el.value:'');};/* Banner Sign in uses the same magic-link flow as Create — returning users need no separate path. */const emEl=$('acctBannerEmail');if(emEl)emEl.onkeydown=e=>{if(e.key==='Enter')acctRequestLink(emEl.value);};if(dis)dis.onclick=()=>{try{sessionStorage.setItem(ACCT_BANNER_KEY,'1');}catch(_){}acctPaintHeader();}; /* N2.9: session-only dismissal */if(btn)btn.onclick=()=>{if(acctState.token){acctSignOut(false);return;}/* Signed-out header carries no sign-in control (N2.7 amendment): the button is hidden then, so there is nothing to reopen. */};/* Provider redirect returns its session token in the URL hash
+function acctInit(){try{const sub=$('acctBannerSubmit'),sin=$('acctBannerSignin'),dis=$('acctBannerDismiss'),btn=$('acctBtn');if(sub)sub.onclick=()=>{const el=$('acctBannerEmail');acctRequestLink(el?el.value:'');};if(sin)sin.onclick=()=>{const el=$('acctBannerEmail');acctRequestLink(el?el.value:'');};/* Banner Sign in uses the same magic-link flow as Create — returning users need no separate path. */const emEl=$('acctBannerEmail');if(emEl)emEl.onkeydown=e=>{if(e.key==='Enter')acctRequestLink(emEl.value);};if(dis)dis.onclick=()=>{acctBannerDismissedMem=true;try{sessionStorage.setItem(ACCT_BANNER_KEY,'1');}catch(_){}acctPaintHeader();}; /* N3.93 (A235): flag first, so the click hides the strip even when sessionStorage throws; N2.9 session-only dismissal otherwise unchanged. The visible response is the strip vanishing on the first click, on every page (Terminal/Dashboard/Lab share this one banner element; setPage never touches it). */if(btn)btn.onclick=()=>{if(acctState.token){acctSignOut(false);return;}/* Signed-out header carries no sign-in control (N2.7 amendment): the button is hidden then, so there is nothing to reopen. */};/* Provider redirect returns its session token in the URL hash
      (#access_token=...). Claim it once, clear it from the URL, and
      never leave a session token sitting in the address bar. */
 try{const h=window.location.hash||'';const m=h.match(/access_token=([^&]+)/);if(m){history.replaceState(null,'',window.location.pathname+window.location.search);acctAuthFromToken(decodeURIComponent(m[1]));}}catch(_){}acctPaintHeader();}catch(_){}}
