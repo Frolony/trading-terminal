@@ -1,9 +1,9 @@
 {
   "fresh_keys": {
-    "ag1": "FtcPXJuWXixpWmdxdGnAkwVdx6V8mSmc9oMLo9vYageh",
-    "non_authority": "GdvRkdepDhUMem1qqGzp94uT3tZ6zmBtC9wPAkCPbxU6",
-    "observer": "D7V59tSj3835cYA6QbAmJ3qcKGRUdYW9v43E8QWP4Pcr",
-    "stranger_unenrolled": "G8bysK9i6SH6eqoxRpyheGjh4PKk7BfZ3ZYXNJzf8MFj"
+    "ag1": "9DkC2GjBADvFKDP2VKgZhR4Wx87VATWj45xhKogKCqpW",
+    "non_authority": "EbAonaB8NmUndCErcLz9rt3np5HKh9rN88yjv42BtryS",
+    "observer": "DPcMP7LX5yg34L8UWYotyatkFm1MBDT34cfNnZzeeJqG",
+    "stranger_unenrolled": "DxetrMwg4YPsJpyLbFoTUAUmyZkL9TYGcBDE8hELveXs"
   },
   "mollusk_svm": "0.16.4",
   "program": "program_v04",

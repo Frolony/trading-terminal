@@ -1169,3 +1169,58 @@ enroll refused 6047; enrolled OBSERVER ingests the golden life
 observation; enrolled ag(1) registers + replays the golden life
 transition; an unenrolled fresh key still refuses ingest 6009 —
 plus occupied-slot re-enroll refused 6049.
+
+## Attempt-2 FREEZE (Phase 2, 2026-11-03)
+
+FROZEN — attempt-2 program_v04 `.so` sha256
+`70f8fdb1bcfd52e8cd9edd0e204683f8c06cdc1db2502e3ff27e1fee9cc527b7`
+(1,924,664 bytes), the enrollment/mapping-slice binary (45
+instructions / 10 accounts / 51 errors / 27 events / 40 types;
+attempt 1 stays frozen separately at `359c603e…`, untouched).
+
+- Reproduction: forced rebuild (deploy artifacts removed,
+  source touched for mtime only, v04 pins Anchor 1.2.2 /
+  Agave 4.3.2 / platform-tools v1.57) reproduces the sha
+  exactly; `cu-golden-mollusk-attempt2.json` re-runs
+  BYTE-IDENTICAL (63 steps, both refusals, blocked []);
+  host tests 465/465. Enroll scenario verdicts all reproduce
+  (6047 / enrolled ingest / enrolled register+replay /
+  unenrolled 6009 / occupied 6049); its fresh keys are
+  per-run by design, and the one key-dependent CU
+  (ingest_unenrolled, 26,291–26,333 across runs) tracks the
+  fresh key's PDA bump search.
+- Runner fix found by this pass: `run-mollusk-attempt2.sh`
+  (and the attempt-2 guard variants) now pass
+  `--bin cu-golden-mollusk-v04` — since the enroll binary
+  landed, a bare `cargo run` refuses as ambiguous.
+- Frame tripwire: threshold build (`--sbf-stack-size 2048`,
+  complete >2,048 list) — largest frame 3,648 bytes
+  (`InitGovAction::try_accounts`), identical to the
+  attempt-1 baseline max: +0% vs the +5% cap (3,830), and
+  under the 3,840 ceiling. Largest `__global` wrapper:
+  `append_gov_action_chunk`, 3,584. Log:
+  `frame-attempt2-threshold2048.log`.
+- Heap tripwire (196,608-byte cap, `run-tripwire-attempt2.sh`):
+  NOT tripped — full 63-step chain succeeds, all CU identical
+  to the attempt-2 golden. Logs `tripwire-attempt2-*.log`,
+  output `cu-golden-tripwire-attempt2.json`.
+- Smallframe (`run-smallframe-attempt2.sh`): cap mode fails
+  deterministically at `replay_governance_gov2` (allocation
+  error, 44,083 CU, both runs identical); frame mode (32 KiB
+  requested frame on the shipped binary) faults on the FIRST
+  instruction (`probe_kernel`, 1,400,000 CU, both runs) —
+  the F6 256 KiB heap-frame contract holds.
+- Chain length (`run-chainlen-attempt2.sh`, fixture wired for
+  the registry in this pass): `record_outcome_governance` CU
+  at 0/1/2/3/5/9 priors = 92,134 / 114,524 / 137,278 /
+  160,814 / 210,217 / 318,410 (reproduced byte-identical on
+  re-run; the 1-prior row reproduces the golden's
+  `record_outcome_governance_gov2` exactly). Host heap leg
+  rows are IDENTICAL to attempt 1 (39,797 / 46,721 / 54,413 /
+  61,337 / 75,761 at 0/1/2/3/5), so the derivation stands:
+  heap Nmax 19 binds (CU Nmax ≈49–58, frame unbounded),
+  `MAX_PRIOR_BUNDLES = 9` remains ~half of 19. SBF proof:
+  9 priors pass; 10 priors refuse `ChainTooLong` 6046
+  (73,416 CU, record still REGISTERED). Recorded in
+  `chainlen-cu-attempt2.json`; attempt-1 `chainlen-cu.json`
+  untouched.

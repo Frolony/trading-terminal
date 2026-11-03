@@ -228,6 +228,10 @@ fn drive_bundle(
         signal,
         plan,
     };
+    // Attempt-2 (enrollment slice): initialize also creates the
+    // AgentRegistry PDA; every wired instruction takes it read-only
+    // right after kernel_state (mirrors the cu-golden harness).
+    let (agent_registry, _) = pda(&[b"agent-registry"], program_id);
     let mut accounts = accounts;
     // Fresh accounts for this bundle (mollusk keeps unknown keys empty,
     // but threading explicitly keeps the set complete).
@@ -266,6 +270,7 @@ fn drive_bundle(
             } else {
                 AccountMeta::new_readonly(*kernel_state, false)
             },
+            AccountMeta::new_readonly(agent_registry, false),
             AccountMeta::new(record, false),
             AccountMeta::new_readonly(obs, false),
             AccountMeta::new_readonly(*payer, true),
@@ -308,6 +313,7 @@ fn drive_bundle(
         &data,
         vec![
             AccountMeta::new_readonly(*kernel_state, false),
+            AccountMeta::new_readonly(agent_registry, false),
             AccountMeta::new(obs, false),
             AccountMeta::new(*observer, true),
             AccountMeta::new_readonly(*system_id, false),
@@ -322,6 +328,7 @@ fn drive_bundle(
         &stage_ix("replay_transition"),
         vec![
             AccountMeta::new_readonly(*kernel_state, false),
+            AccountMeta::new_readonly(agent_registry, false),
             AccountMeta::new(record, false),
             AccountMeta::new_readonly(obs, false),
             AccountMeta::new(*seat1, true),
@@ -364,6 +371,7 @@ fn drive_bundle(
         &data,
         vec![
             AccountMeta::new_readonly(*kernel_state, false),
+            AccountMeta::new_readonly(agent_registry, false),
             AccountMeta::new(record, false),
             AccountMeta::new_readonly(obs, false),
             AccountMeta::new(signal, false),
@@ -398,6 +406,7 @@ fn drive_bundle(
     assert_eq!(find(&accounts, &record).data[216], 4, "bundle {i} must advance to SELECTED");
     let mut metas = vec![
         AccountMeta::new_readonly(*kernel_state, false),
+        AccountMeta::new_readonly(agent_registry, false),
         AccountMeta::new(record, false),
         AccountMeta::new_readonly(obs, false),
         AccountMeta::new_readonly(*seat1, true),
@@ -425,6 +434,7 @@ fn drive_bundle(
         &data,
         vec![
             AccountMeta::new_readonly(*kernel_state, false),
+            AccountMeta::new_readonly(agent_registry, false),
             AccountMeta::new(record, false),
             AccountMeta::new_readonly(obs, false),
             AccountMeta::new(plan, false),
@@ -520,6 +530,7 @@ fn drive_tail_outcome_cu(
     let (plan, _) = pda(&[b"plan", TAIL_TID.as_ref(), signaler.as_ref()], program_id);
     let (evidence, _) = pda(&[b"evidence", TAIL_TID.as_ref()], program_id);
     let (rep, _) = pda(&[b"reputation", signaler.as_ref()], program_id);
+    let (agent_registry, _) = pda(&[b"agent-registry"], program_id);
     let empty = Account {
         lamports: 0,
         data: vec![],
@@ -622,6 +633,7 @@ fn drive_tail_outcome_cu(
         &data,
         vec![
             AccountMeta::new_readonly(*kernel_state, false),
+            AccountMeta::new_readonly(agent_registry, false),
             AccountMeta::new(record, false),
             AccountMeta::new_readonly(action_account, false),
             AccountMeta::new(*seat1, true),
@@ -645,6 +657,7 @@ fn drive_tail_outcome_cu(
             &data,
             vec![
                 AccountMeta::new_readonly(*kernel_state, false),
+                AccountMeta::new_readonly(agent_registry, false),
                 AccountMeta::new(record, false),
                 AccountMeta::new_readonly(*seat1, false),
                 AccountMeta::new_readonly(action_account, false),
@@ -673,6 +686,7 @@ fn drive_tail_outcome_cu(
         &data,
         vec![
             AccountMeta::new_readonly(*kernel_state, false),
+            AccountMeta::new_readonly(agent_registry, false),
             AccountMeta::new(obs, false),
             AccountMeta::new(*observer, true),
             AccountMeta::new_readonly(*system_id, false),
@@ -692,6 +706,7 @@ fn drive_tail_outcome_cu(
         &tail_stage_ix("replay_governance"),
         vec![
             AccountMeta::new_readonly(*kernel_state, false),
+            AccountMeta::new_readonly(agent_registry, false),
             AccountMeta::new(record, false),
             AccountMeta::new_readonly(obs, false),
             AccountMeta::new(*seat1, true),
@@ -709,6 +724,7 @@ fn drive_tail_outcome_cu(
         &tail_stage_ix("evaluate_governance"),
         vec![
             AccountMeta::new_readonly(*kernel_state, false),
+            AccountMeta::new_readonly(agent_registry, false),
             AccountMeta::new(record, false),
             AccountMeta::new_readonly(obs, false),
             AccountMeta::new_readonly(*payer, true),
@@ -726,6 +742,7 @@ fn drive_tail_outcome_cu(
         &tail_stage_ix("mark_eligible_governance"),
         vec![
             AccountMeta::new(*kernel_state, false),
+            AccountMeta::new_readonly(agent_registry, false),
             AccountMeta::new(record, false),
             AccountMeta::new_readonly(obs, false),
             AccountMeta::new_readonly(*payer, true),
@@ -753,6 +770,7 @@ fn drive_tail_outcome_cu(
         &data,
         vec![
             AccountMeta::new_readonly(*kernel_state, false),
+            AccountMeta::new_readonly(agent_registry, false),
             AccountMeta::new(record, false),
             AccountMeta::new_readonly(obs, false),
             AccountMeta::new(signal, false),
@@ -785,6 +803,7 @@ fn drive_tail_outcome_cu(
         &tail_stage_ix("select_candidate_governance"),
         vec![
             AccountMeta::new_readonly(*kernel_state, false),
+            AccountMeta::new_readonly(agent_registry, false),
             AccountMeta::new(record, false),
             AccountMeta::new_readonly(obs, false),
             AccountMeta::new_readonly(*payer, true),
@@ -806,6 +825,7 @@ fn drive_tail_outcome_cu(
         &tail_stage_ix("open_planning_governance"),
         vec![
             AccountMeta::new_readonly(*kernel_state, false),
+            AccountMeta::new_readonly(agent_registry, false),
             AccountMeta::new(record, false),
             AccountMeta::new_readonly(obs, false),
             AccountMeta::new_readonly(*seat1, true),
@@ -835,6 +855,7 @@ fn drive_tail_outcome_cu(
         &data,
         vec![
             AccountMeta::new_readonly(*kernel_state, false),
+            AccountMeta::new_readonly(agent_registry, false),
             AccountMeta::new(record, false),
             AccountMeta::new_readonly(obs, false),
             AccountMeta::new(plan, false),
@@ -876,6 +897,7 @@ fn drive_tail_outcome_cu(
             &tail_stage_ix(name),
             vec![
                 AccountMeta::new_readonly(*kernel_state, false),
+                AccountMeta::new_readonly(agent_registry, false),
                 AccountMeta::new(record, false),
                 AccountMeta::new_readonly(obs, false),
                 AccountMeta::new_readonly(*payer, true),
@@ -900,6 +922,7 @@ fn drive_tail_outcome_cu(
         &tail_stage_ix("commit_governance"),
         vec![
             AccountMeta::new(*kernel_state, false),
+            AccountMeta::new_readonly(agent_registry, false),
             AccountMeta::new(record, false),
             AccountMeta::new_readonly(obs, false),
             AccountMeta::new_readonly(*seat1, false),
@@ -961,6 +984,7 @@ fn drive_tail_outcome_cu(
         &tail_stage_ix("settle_governance_transition"),
         vec![
             AccountMeta::new(*kernel_state, false),
+            AccountMeta::new_readonly(agent_registry, false),
             AccountMeta::new(record, false),
             AccountMeta::new_readonly(obs, false),
             AccountMeta::new_readonly(*seat1, false),
@@ -995,6 +1019,7 @@ fn drive_tail_outcome_cu(
         &data,
         vec![
             AccountMeta::new(*kernel_state, false),
+            AccountMeta::new_readonly(agent_registry, false),
             AccountMeta::new(record, false),
             AccountMeta::new_readonly(obs, false),
             AccountMeta::new_readonly(*seat1, false),
@@ -1039,6 +1064,7 @@ fn measure_at_priors(n: usize, so_path: &str, so_sha256: &str) -> u64 {
     let recorder = Pubkey::new_from_array(RECORDER);
 
     let (kernel_state, _) = pda(&[b"kernel-state"], &program_id);
+    let (agent_registry, _) = pda(&[b"agent-registry"], &program_id);
     let empty = Account {
         lamports: 0,
         data: vec![],
@@ -1057,6 +1083,7 @@ fn measure_at_priors(n: usize, so_path: &str, so_sha256: &str) -> u64 {
         keyed_account_for_system_program(),
         mollusk.sysvars.keyed_account_for_clock_sysvar(),
         (kernel_state, empty.clone()),
+        (agent_registry, empty.clone()),
         (payer, funded.clone()),
         (seat1, funded.clone()),
         (observer, funded.clone()),
@@ -1071,6 +1098,7 @@ fn measure_at_priors(n: usize, so_path: &str, so_sha256: &str) -> u64 {
         &disc("initialize_kernel"),
         vec![
             AccountMeta::new(kernel_state, false),
+            AccountMeta::new(agent_registry, false),
             AccountMeta::new(payer, true),
             AccountMeta::new_readonly(system_id, false),
         ],
@@ -1166,6 +1194,7 @@ fn prove_chain_limit() -> serde_json::Value {
     let signaler = Pubkey::new_from_array([2; 32]);
 
     let (kernel_state, _) = pda(&[b"kernel-state"], &program_id);
+    let (agent_registry, _) = pda(&[b"agent-registry"], &program_id);
     let empty = Account {
         lamports: 0,
         data: vec![],
@@ -1184,6 +1213,7 @@ fn prove_chain_limit() -> serde_json::Value {
         keyed_account_for_system_program(),
         mollusk.sysvars.keyed_account_for_clock_sysvar(),
         (kernel_state, empty.clone()),
+        (agent_registry, empty.clone()),
         (payer, funded.clone()),
         (seat1, funded.clone()),
         (observer, funded.clone()),
@@ -1196,6 +1226,7 @@ fn prove_chain_limit() -> serde_json::Value {
         &disc("initialize_kernel"),
         vec![
             AccountMeta::new(kernel_state, false),
+            AccountMeta::new(agent_registry, false),
             AccountMeta::new(payer, true),
             AccountMeta::new_readonly(system_id, false),
         ],
@@ -1293,6 +1324,7 @@ fn prove_chain_limit() -> serde_json::Value {
         &data,
         vec![
             AccountMeta::new_readonly(kernel_state, false),
+            AccountMeta::new_readonly(agent_registry, false),
             AccountMeta::new(obs, false),
             AccountMeta::new(observer, true),
             AccountMeta::new_readonly(system_id, false),
@@ -1312,6 +1344,7 @@ fn prove_chain_limit() -> serde_json::Value {
         &data,
         vec![
             AccountMeta::new_readonly(kernel_state, false),
+            AccountMeta::new_readonly(agent_registry, false),
             AccountMeta::new(record, false),
             AccountMeta::new_readonly(obs, false),
             AccountMeta::new_readonly(seat1, true),

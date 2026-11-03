@@ -1,0 +1,10 @@
+    Finished `release` profile [optimized] target(s) in 0.28s
+     Running `cu-golden/mollusk/target/release/cu-golden-mollusk-v04 /home/hatch/workspace/goals/gecko-solana-terminal-vercel-fix-build-out/hidden_files/v04-intake/program-v04/cu-golden/smallframe-attempt2-frame-out1.json`
+[2026-11-03T18:00:07.568428299Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr invoke [1]
+[2026-11-03T18:00:07.571334260Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr consumed 199 of 1400000 compute units
+[2026-11-03T18:00:07.571389313Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr failed: Access violation writing 8 bytes at address 0x30003ffc8 (in unallocated region)
+probe_kernel: program_result=UnknownError(ProgramFailedToComplete) cu=1400000
+
+thread 'main' (11293) panicked at src/main.rs:386:5:
+probe_kernel failed: UnknownError(ProgramFailedToComplete)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
