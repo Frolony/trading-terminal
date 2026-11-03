@@ -51,6 +51,18 @@ function tokenSymbolForMint(mint: string): string {
   }
   return shortId(mint);
 }
+// N3.126 (2026-11-03, A268): previous-quote line for an auto-refreshed
+// /raydium/ quote. Pure: formats the displaced quote's own output amount
+// and its first route leg's pool id (shortened); a quote whose payload
+// names no pool says so instead of inventing one. Returns null for no
+// predecessor, so a first quote renders no previous line.
+function previousQuoteText(prev: QuoteResult | null): string | null {
+  if (!prev) return null;
+  const amount = formatBaseUnits(prev.outputAmount, prev.outputDecimals);
+  const pool = Array.isArray(prev.route) && prev.route.length > 0 ? prev.route[0].poolId : null;
+  if (pool) return 'Previous: ' + amount + ' ' + prev.outputSymbol + ' · pool ' + shortId(pool);
+  return 'Previous: ' + amount + ' ' + prev.outputSymbol + ' · pool not reported';
+}
 // N3.115 (2026-11-03, A257): Raydium quote-freshness countdown ring. The swap page's
 // static "Quote age Ns · auto-refreshes every 25s" sentence becomes a ring that drains
 // over the 25 s refresh interval and refills when a fresh quote lands (quoteAge resets
@@ -79,8 +91,9 @@ function QuoteFreshRing({ageSec}: {ageSec: number}) {
 //   a sign-different-bytes path, i.e. a simulate-then-sign hole. executeQuote remains
 //   exported by useRaydiumSwap for API completeness but is unwired here.
 export function SwapPanel(){const [pairId,setPairId]=useState(PAIRS[0].id),[reverse,setReverse]=useState(false),[amount,setAmount]=useState('0.1'),[slippageBps,setSlippageBps]=useState(()=>String(readSharedSlippage())),[quote,setQuote]=useState<QuoteResult|null>(null),[busy,setBusy]=useState(false),[message,setMessage]=useState('Connect your wallet to begin.'),[error,setError]=useState<string|null>(null);const {getQuote,connected}=useRaydiumSwap();const pair=useMemo(()=>PAIRS.find(p=>p.id===pairId)??PAIRS[0],[pairId]);const input=TOKENS[reverse?pair.quoteSymbol:pair.baseSymbol],output=TOKENS[reverse?pair.baseSymbol:pair.quoteSymbol];
-function reset(){setQuote(null);setError(null);setMessage('Request and review a fresh quote before signing.')}
-async function onQuote(){setBusy(true);setError(null);setMessage('Fetching Raydium route…');setQuote(null);try{const slipParsed=parseSlippageInput(slippageBps);if(!slipParsed.ok)throw Error(slipParsed.error);const raw=parseAmountToBaseUnits(amount,input.decimals),slip=slipParsed.bps;const q=await getQuote({inputMint:input.mint,outputMint:output.mint,amountRaw:raw,slippageBps:slip,outputSymbol:output.symbol});setQuote(q);setMessage('Quote ready. Check expected and minimum received before signing.');return q;}catch(err){setError(err instanceof Error?err.message:'Quote failed.');setMessage('Quote failed. Request a fresh quote and try again.');return null;}finally{setBusy(false);}}
+const [prevQuote,setPrevQuote]=useState<QuoteResult|null>(null);
+function reset(){setQuote(null);setPrevQuote(null);setError(null);setMessage('Request and review a fresh quote before signing.')}
+async function onQuote(autoRefresh?: boolean){const outgoing=quote;setBusy(true);setError(null);setMessage('Fetching Raydium route…');if(!autoRefresh)setPrevQuote(null);setQuote(null);try{const slipParsed=parseSlippageInput(slippageBps);if(!slipParsed.ok)throw Error(slipParsed.error);const raw=parseAmountToBaseUnits(amount,input.decimals),slip=slipParsed.bps;const q=await getQuote({inputMint:input.mint,outputMint:output.mint,amountRaw:raw,slippageBps:slip,outputSymbol:output.symbol});setQuote(q);if(autoRefresh&&outgoing)setPrevQuote(outgoing);setMessage('Quote ready. Check expected and minimum received before signing.');return q;}catch(err){setError(err instanceof Error?err.message:'Quote failed.');setMessage('Quote failed. Request a fresh quote and try again.');return null;}finally{setBusy(false);}}
 // N4.2 (2026-10-22) — review-sign-confirm flow. "Review & swap" opens a review sheet showing the
 // quote's OWN numbers (byte-match requirement); signing is reachable ONLY from the sheet's
 // "Confirm swap" button. A quote at/past the 25 s freshness window is never signed: the panel
@@ -216,7 +229,7 @@ async function onConfirmSwap(){
     const onChainErr=await swapHelpers.confirmSwap(sig);
     if(onChainErr===null){
       recordTradeEvent(buildSwapFillEvent(Object.assign({},histInput,{status:'filled' as const})));
-      setPhase('confirmed');setQuote(null);
+      setPhase('confirmed');setQuote(null);setPrevQuote(null);
       setMessage(SWAP_COPY.confirmed+' — details and post-swap balances below.');
       try{setPostBalances(await swapHelpers.fetchPostSwapBalances(toSign.outputMint));}
       catch{setPostBalances({sol:null,token:null,solBusy:false,tokenBusy:false});}
@@ -242,7 +255,7 @@ const [quoteAge,setQuoteAge]=useState(0);
 const {publicKey}=useWallet();
 useEffect(()=>{setQuoteAge(0);},[quote]);
 useEffect(()=>{if(!quote){return;}const t=setInterval(()=>{setQuoteAge(a=>a+1);},1000);return()=>{clearInterval(t);};},[quote]);
-useEffect(()=>{if(quote&&quoteAge>=25&&!busy&&phase==='idle'&&!reviewQuote){void onQuote();}},[quote,quoteAge,busy,phase,reviewQuote]);
+useEffect(()=>{if(quote&&quoteAge>=25&&!busy&&phase==='idle'&&!reviewQuote){void onQuote(true);}},[quote,quoteAge,busy,phase,reviewQuote]);
 // N4.4: derived review-sheet model (pack §3.6) — plain function calls, recomputed every render.
 const rvBand:ImpactBand=reviewQuote?impactBand(reviewQuote.priceImpactPct):'unknown';
 const rvNotice=reviewQuote?impactNotice(rvBand,reviewQuote.priceImpactPct):null;
@@ -280,7 +293,7 @@ return(<div className="shell">
 <input id="slippage" value={slippageBps} onChange={e=>onSlippageChange(e.target.value)} inputMode="numeric" disabled={busy} aria-label="Custom slippage in basis points" style={{width:'90px'}}/>
 </div>
 <p className="slippage-hint">{slippageHint}</p>
-{quote?(<div className="quote-details"><div className="quote-row"><span>Estimated output</span><strong title={`Raydium quote · ${quoteAge}s old · via /api/raydium/quote`}>{formatBaseUnits(quote.outputAmount,quote.outputDecimals)} {quote.outputSymbol}</strong></div><div className="quote-row"><span>Minimum after slippage</span><strong title={`Raydium quote · ${quoteAge}s old · via /api/raydium/quote`}>{formatBaseUnits(quote.minimumOut,quote.outputDecimals)} {quote.outputSymbol}</strong></div><div className="quote-row"><span>Route</span><strong>{quoteRouteText(quote.route,tokenSymbolForMint)}</strong></div><div className="quote-row"><span>Price impact</span><strong>{quote.priceImpactPct===null?'—':quote.priceImpactPct+'%'}</strong></div><div className="quote-row"><span>Quote age</span><strong><QuoteFreshRing ageSec={quoteAge}/> · auto-refreshes every 25s</strong></div><div className="quote-row"><span>Source</span><strong title="Raydium quote via /api/raydium/quote">Raydium quote</strong></div></div>):null}
+{quote?(<div className="quote-details"><div className="quote-row"><span>Estimated output</span><strong title={`Raydium quote · ${quoteAge}s old · via /api/raydium/quote`}>{formatBaseUnits(quote.outputAmount,quote.outputDecimals)} {quote.outputSymbol}</strong></div>{prevQuote?(<p className="quote-prev">{previousQuoteText(prevQuote)}</p>):null}<div className="quote-row"><span>Minimum after slippage</span><strong title={`Raydium quote · ${quoteAge}s old · via /api/raydium/quote`}>{formatBaseUnits(quote.minimumOut,quote.outputDecimals)} {quote.outputSymbol}</strong></div><div className="quote-row"><span>Route</span><strong>{quoteRouteText(quote.route,tokenSymbolForMint)}</strong></div><div className="quote-row"><span>Price impact</span><strong>{quote.priceImpactPct===null?'—':quote.priceImpactPct+'%'}</strong></div><div className="quote-row"><span>Quote age</span><strong><QuoteFreshRing ageSec={quoteAge}/> · auto-refreshes every 25s</strong></div><div className="quote-row"><span>Source</span><strong title="Raydium quote via /api/raydium/quote">Raydium quote</strong></div></div>):null}
 {/* N4.8 (2026-10-23) — pre-wallet fee transparency. The network fee cannot be computed before a
     transaction exists, so the panel states honestly WHEN the estimate appears (at review, before
     signing) instead of inventing a number. The pool-fee note reuses the N4.4 tolerant reader
