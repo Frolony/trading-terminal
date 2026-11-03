@@ -401,6 +401,18 @@ tr.dashmover{cursor:pointer}
 .lpop-sec{font-size:10px;letter-spacing:1.2px;text-transform:uppercase;color:var(--muted);margin:12px 0 4px}
 .lwsrow{display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--rowline);font-size:12px}
 .lwsrow:last-child{border-bottom:0}
+/* N3.127 workspace schematic thumbnails (2026-11-03, A269): one miniature per
+   workspace row — stats strip on top, main + side columns below, one block
+   per VISIBLE panel in workspace order. Hidden panels get no block, so the
+   thumbnail sketches what the workspace actually shows. */
+.ws-thumb{display:inline-flex;flex-direction:column;gap:2px;width:56px;height:58px;flex:none;padding:3px;border:1px solid var(--line);border-radius:5px;background:var(--btnbg)}
+.ws-thumb-stats{display:flex;gap:1px;height:6px;flex:none}
+.ws-thumb-cols{display:flex;gap:2px;flex:1;min-height:0}
+.ws-thumb-main{flex:3;display:flex;flex-direction:column;gap:1px;min-width:0}
+.ws-thumb-side{flex:2;display:flex;flex-direction:column;gap:1px;min-width:0}
+.ws-thumb-block{display:block;flex:1 1 0;min-height:2px;background:var(--lime);opacity:.45;border-radius:1px}
+.ws-thumb-side .ws-thumb-block{opacity:.3}
+.ws-thumb-stats .ws-thumb-block{opacity:.6}
 .lwsname{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .lwsname.active{font-weight:700;color:var(--lime)}
 .lwsbadge{font-size:9px;letter-spacing:1px;color:var(--muted);border:1px solid var(--line);border-radius:5px;padding:2px 6px;white-space:nowrap}
@@ -3015,6 +3027,32 @@ function deleteWorkspace(id){
   toast('Layout deleted.');
   return true;
 }
+/* N3.127 (2026-11-03, A269): schematic thumbnail for one workspace in the
+   Layout dialog. Pure render from the workspace's own order/hidden/place —
+   it never writes workspace data, and it invents no panels: visible panels
+   only (a hidden panel is not on the page, so it gets no block), stacked in
+   workspace order inside their own column (stats strip on top, main +
+   side columns below). That is what makes the two "Trader" rows tellable
+   apart before Apply: Watcher has no ticket block and pairs above chart,
+   and a custom Trader copy differs wherever its owner edited it. A copy
+   whose arrangement is identical to another's honestly renders an
+   identical thumbnail — the name still differs. */
+function wsThumbHtml(w){
+  w=w||{};
+  const hidden=new Set(Array.isArray(w.hidden)?w.hidden:[]);
+  const ordered=[...(Array.isArray(w.order)?w.order:[])];
+  PANEL_IDS.forEach(id=>{if(!ordered.includes(id))ordered.push(id);});
+  const visible=ordered.filter(id=>PANEL_IDS.includes(id)&&!hidden.has(id));
+  const placeOf=id=>((w.place&&typeof w.place==='object'&&ROOT_KEYS.includes(w.place[id]))?w.place[id]:PANEL_HOME[id]);
+  const blocks=ids=>ids.map(id=>'<span class="ws-thumb-block" title="'+esc(PANEL_LABELS[id]||id)+'"></span>').join('');
+  const stats=visible.filter(id=>placeOf(id)==='stats');
+  const main=visible.filter(id=>placeOf(id)==='maincol');
+  const side=visible.filter(id=>placeOf(id)==='sidecol');
+  const summary='Schematic: '+stats.length+' stat, '+main.length+' main-column, '+side.length+' side-column panels shown';
+  return '<span class="ws-thumb" role="img" aria-label="'+esc(summary)+'">'+
+    '<span class="ws-thumb-stats">'+blocks(stats)+'</span>'+
+    '<span class="ws-thumb-cols"><span class="ws-thumb-main">'+blocks(main)+'</span><span class="ws-thumb-side">'+blocks(side)+'</span></span></span>';
+}
 function paintLayoutPop(){
   const ws=activeWorkspace();
   const pl=$('layoutPanelList');if(!pl)return;
@@ -3048,7 +3086,7 @@ function paintLayoutPop(){
   if(wl){
     wl.innerHTML=layout.workspaces.map(w=>{
       const active=w.id===ws.id;
-      let inner='<span class="lwsname'+(active?' active':'')+'">'+(active?'✓ ':'')+esc(w.name)+'</span>';
+      let inner='<span class="lwsname'+(active?' active':'')+'">'+(active?'✓ ':'')+esc(w.name)+'</span>';inner+=wsThumbHtml(w);
       if(!active)inner+='<button type="button" class="lwsact" data-lwsapply="'+esc(w.id)+'">Apply</button>';
       if(w.builtIn)inner+='<span class="lwsbadge">BUILT-IN</span>';
       else inner+='<button type="button" class="lwsact" data-lwsrename="'+esc(w.id)+'" aria-label="Rename layout '+esc(w.name)+'">Rename</button>'+
