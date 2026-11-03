@@ -367,6 +367,9 @@ tr.dashmover{cursor:pointer}
 .setrow>label,.setrow>span.lbl{display:block;font-size:11px;color:var(--muted);margin-bottom:7px}
 .setseg{margin-top:2px}
 .sethint{font-size:10px;color:var(--muted);margin-top:6px;line-height:1.5}
+/* N3.123 (A265): Settings live-preview strip — reuses the app table/button classes so Theme variables and the compact td rule restyle it for free. */
+.setpreview{border:1px solid var(--line);border-radius:10px;background:var(--panel2);padding:12px 14px}
+.setpreview-title{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px}
 .ghostbtn{width:100%;padding:10px;border:1px solid var(--line);border-radius:8px;background:transparent;color:var(--muted);font-weight:650;margin-top:6px}
 .ghostbtn:hover{color:var(--text);border-color:var(--hoverline)}
 /* Light-theme chip overrides: dark self-contained control chips become light-surfaced. */
@@ -2545,12 +2548,18 @@ function segHtml(key,options,label){
   return '<span class="lbl" id="setLbl-'+key+'">'+esc(label)+'</span><div class="switchrow setseg" role="group" aria-labelledby="setLbl-'+key+'">'+
     options.map(o=>'<button type="button" data-setkey="'+key+'" data-setval="'+o.val+'" class="'+(settings[key]===o.val?'active buy':'')+'">'+esc(o.label)+'</button>').join('')+'</div>';
 }
+function setPreviewHtml(theme,density){ // N3.123 (A265): live preview strip inside Settings — sample chrome only, never live data.
+  const th=(theme==='light')?'light':'dark';
+  const dn=(density==='compact')?'compact':'comfortable';
+  return '<div class="setpreview" data-setpreview-theme="'+th+'" data-setpreview-density="'+dn+'"><div class="setpreview-title">Preview \u2014 sample only</div><table><tbody><tr><td>SOL/USDC</td><td>$100.00 (sample)</td><td>+1.00% (sample)</td></tr></tbody></table><button type="button" class="action" disabled>Buy \u2014 sample</button><div class="sethint">Sample row and button only \u2014 not live data. Re-renders when Theme or Density changes.</div></div>';
+}
 function paintSettingsDrawer(){
   const body=$('settingsBody');if(!body)return;
   const dsd=defaultSizeDisplay(); // N7.6: stored default rendered in the current quote-currency unit
   body.innerHTML='<div class="setsection"><div class="settitle">Terminal</div>'+
     '<div class="setrow">'+segHtml('theme',[{val:'dark',label:'Dark'},{val:'light',label:'Light'}],'Theme')+'<div class="sethint">Applies instantly, including the chart.</div></div>'+
     '<div class="setrow">'+segHtml('density',[{val:'comfortable',label:'Comfortable'},{val:'compact',label:'Compact'}],'Density')+'<div class="sethint">Compact tightens rows, panels and the ticket.</div></div>'+
+    '<div class="setrow">'+setPreviewHtml(settings.theme,settings.density)+'</div>'+
     '<div class="setrow"><label for="setPair">Default pair</label><div class="inputwrap"><input id="setPair" maxlength="20" autocomplete="off" spellcheck="false" value="'+esc(settings.defaultPair)+'"></div><div class="sethint">Ticket starts on this pair when you have no saved selection. Your last-viewed pair always wins.</div></div>'+
     '<div class="setrow"><label for="setSize">Default order size</label><div class="inputwrap"><input id="setSize" inputmode="decimal" value="'+esc(dsd.val)+'"><span>'+esc(dsd.unit)+'</span></div><div class="sethint">Fills the ticket size on load and on pair change. Converted automatically when you switch quote currency.</div></div>'+
     '<div class="setrow"><label for="setSlip">Default slippage</label><div class="inputwrap"><input id="setSlip" inputmode="numeric" value="'+esc(String(settings.defaultSlippageBps))+'"><span>bps</span></div><div class="sethint">Seeds the ticket and /raydium/ slippage (1–1000 bps). Per-quote edits stay per-quote.</div></div>'+
