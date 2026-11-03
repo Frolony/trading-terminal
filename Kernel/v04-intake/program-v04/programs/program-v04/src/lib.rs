@@ -1356,7 +1356,7 @@ pub mod alloc_meter {
 #[global_allocator]
 static ALLOC_METER: alloc_meter::Meter = alloc_meter::Meter;
 
-declare_id!("2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr");
+declare_id!("CesWhN1MyhEqYT2wu6m7NgPz4SigBqz7oz2BGrKRHNdj");
 
 #[program]
 pub mod program_v04 {
