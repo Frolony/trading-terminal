@@ -36,3 +36,17 @@
 .back-link{display:inline-block;margin-top:18px;color:#76d9c2;font-size:.86rem;text-decoration:none;font-weight:600}
 .back-link:hover{text-decoration:underline}
 @media (max-width:640px){.topbar{flex-direction:column;align-items:flex-start}.wallet-col{align-items:flex-start;max-width:none}.wallet-hint{text-align:left}.wallet-row{flex-direction:column}.btn{flex:1 1 auto}}
+/* N4.2 (2026-10-22): review-sign-confirm flow */
+.review-sheet{margin-top:22px;border:1px solid #2f7a6c;border-radius:16px;background:#0e1a20;padding:18px}
+.review-sheet h3{margin:0 0 6px;font-size:1.05rem}
+.review-note{margin:0 0 12px;color:#8fa3b0;font-size:.8rem;line-height:1.5}
+.pending-box,.confirmed-box,.failed-box{margin-top:16px;border-radius:14px;padding:14px;border:1px solid #314452;background:#0d161d}
+.pending-box .message{margin-top:0}
+.confirmed-box{border-color:#2f7a6c}
+.failed-box{border-color:#7a2f2f}
+.sig-line{margin:10px 0 0;font-size:.78rem;color:#b2c1cc;overflow-wrap:anywhere;line-height:1.6}
+.sig-line a{color:#76d9c2}
+.success{margin:0;color:#9fd8c9;font-weight:700}
+/* N3.115 (2026-11-03, A257): quote-freshness countdown ring on /raydium/ */
+.quote-ring{position:relative;display:inline-flex;width:44px;height:44px;vertical-align:middle}
+.quote-ring-age{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;color:#e9f0f7}

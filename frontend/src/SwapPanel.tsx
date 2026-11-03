@@ -41,6 +41,28 @@ import {buildSwapFillEvent,recordTradeEvent} from './solana/tradeHistory';
 //   The slippage UI gained presets (0.1/0.5/1.0%) + custom input. The byte-faithful claim above
 //   covers the reconstruction era; post-seed evolution is documented here per amendment.
 import {useMemo,useState} from 'react';import {WalletMultiButton} from '@solana/wallet-adapter-react-ui';import {formatBaseUnits,PAIRS,parseAmountToBaseUnits,TOKENS} from './solana/tokens';import {useRaydiumSwap} from './solana/useRaydiumSwap';import type {QuoteResult} from './solana/raydiumApi';
+// N3.115 (2026-11-03, A257): Raydium quote-freshness countdown ring. The swap page's
+// static "Quote age Ns · auto-refreshes every 25s" sentence becomes a ring that drains
+// over the 25 s refresh interval and refills when a fresh quote lands (quoteAge resets
+// to 0 on every new quote, and the 25 s auto-refresh re-quotes), with the age in its
+// centre. Pure helpers, so the drain math is testable without rendering.
+const QUOTE_FRESHNESS_INTERVAL_S = 25;
+const QUOTE_RING_RADIUS = 18;
+const QUOTE_RING_CIRCUMFERENCE = 2 * Math.PI * QUOTE_RING_RADIUS;
+function quoteRingRemaining(ageSec: number, intervalSec: number): number {
+  if (!Number.isFinite(ageSec) || ageSec < 0) return 1;
+  if (!Number.isFinite(intervalSec) || intervalSec <= 0) return 1;
+  if (ageSec >= intervalSec) return 0;
+  return 1 - ageSec / intervalSec;
+}
+function quoteRingOffset(ageSec: number, intervalSec: number, circumference: number): number {
+  if (!Number.isFinite(circumference) || circumference <= 0) return 0;
+  return circumference * (1 - quoteRingRemaining(ageSec, intervalSec));
+}
+function QuoteFreshRing({ageSec}: {ageSec: number}) {
+  const offset = quoteRingOffset(ageSec, QUOTE_FRESHNESS_INTERVAL_S, QUOTE_RING_CIRCUMFERENCE);
+  return (<span className="quote-ring" data-quote-ring="freshness" role="img" aria-label={`Quote age ${ageSec} seconds, auto-refreshes every ${QUOTE_FRESHNESS_INTERVAL_S} seconds`} title={`Raydium quote · ${ageSec}s old · auto-refreshes every ${QUOTE_FRESHNESS_INTERVAL_S}s`}><svg width="44" height="44" viewBox="0 0 44 44" aria-hidden="true"><circle cx="22" cy="22" r={QUOTE_RING_RADIUS} fill="none" stroke="#263643" strokeWidth="4"/><circle cx="22" cy="22" r={QUOTE_RING_RADIUS} fill="none" stroke="#76d9c2" strokeWidth="4" strokeLinecap="round" strokeDasharray={QUOTE_RING_CIRCUMFERENCE} strokeDashoffset={offset} transform="rotate(-90 22 22)"/></svg><span className="quote-ring-age">{ageSec}s</span></span>);
+}
 // N4.4 AMENDMENT (2026-10-22): `executeQuote` (build+sign in one step) is no longer used —
 //   onConfirmSwap signs the PREPARED bytes via swapHelpers.signAndSendPrepared, so the
 //   destructure drops it (tsc TS6133). Keeping the one-step signer wired would reintroduce
@@ -248,7 +270,7 @@ return(<div className="shell">
 <input id="slippage" value={slippageBps} onChange={e=>onSlippageChange(e.target.value)} inputMode="numeric" disabled={busy} aria-label="Custom slippage in basis points" style={{width:'90px'}}/>
 </div>
 <p className="slippage-hint">{slippageHint}</p>
-{quote?(<div className="quote-details"><div className="quote-row"><span>Estimated output</span><strong title={`Raydium quote · ${quoteAge}s old · via /api/raydium/quote`}>{formatBaseUnits(quote.outputAmount,quote.outputDecimals)} {quote.outputSymbol}</strong></div><div className="quote-row"><span>Minimum after slippage</span><strong title={`Raydium quote · ${quoteAge}s old · via /api/raydium/quote`}>{formatBaseUnits(quote.minimumOut,quote.outputDecimals)} {quote.outputSymbol}</strong></div><div className="quote-row"><span>Route legs</span><strong>{quote.routeLegs}</strong></div><div className="quote-row"><span>Price impact</span><strong>{quote.priceImpactPct===null?'—':quote.priceImpactPct+'%'}</strong></div><div className="quote-row"><span>Quote age</span><strong>{quoteAge}s · auto-refreshes every 25s</strong></div><div className="quote-row"><span>Source</span><strong title="Raydium quote via /api/raydium/quote">Raydium quote</strong></div></div>):null}
+{quote?(<div className="quote-details"><div className="quote-row"><span>Estimated output</span><strong title={`Raydium quote · ${quoteAge}s old · via /api/raydium/quote`}>{formatBaseUnits(quote.outputAmount,quote.outputDecimals)} {quote.outputSymbol}</strong></div><div className="quote-row"><span>Minimum after slippage</span><strong title={`Raydium quote · ${quoteAge}s old · via /api/raydium/quote`}>{formatBaseUnits(quote.minimumOut,quote.outputDecimals)} {quote.outputSymbol}</strong></div><div className="quote-row"><span>Route legs</span><strong>{quote.routeLegs}</strong></div><div className="quote-row"><span>Price impact</span><strong>{quote.priceImpactPct===null?'—':quote.priceImpactPct+'%'}</strong></div><div className="quote-row"><span>Quote age</span><strong><QuoteFreshRing ageSec={quoteAge}/> · auto-refreshes every 25s</strong></div><div className="quote-row"><span>Source</span><strong title="Raydium quote via /api/raydium/quote">Raydium quote</strong></div></div>):null}
 {/* N4.8 (2026-10-23) — pre-wallet fee transparency. The network fee cannot be computed before a
     transaction exists, so the panel states honestly WHEN the estimate appears (at review, before
     signing) instead of inventing a number. The pool-fee note reuses the N4.4 tolerant reader
@@ -270,7 +292,7 @@ return(<div className="shell">
 <div className="quote-row"><span>Total cost</span><strong>{rvFeeSol!==null?formatBaseUnits(reviewQuote.inputAmount,input.decimals)+' '+input.symbol+' + '+rvFeeSol+' SOL network fee':'—'}</strong></div>
 <div className="quote-row"><span>Route</span><strong>Raydium · {reviewQuote.routeLegs} leg{reviewQuote.routeLegs===1?'':'s'}</strong></div>
 <div className="quote-row"><span>Slippage tolerance</span><strong>{slippageBps} bps ({(Number(slippageBps)/100).toFixed(2)}%)</strong></div>
-<div className="quote-row"><span>Quote age</span><strong>{quoteAge}s · auto-refreshes every 25s</strong></div>
+<div className="quote-row"><span>Quote age</span><strong><QuoteFreshRing ageSec={quoteAge}/> · auto-refreshes every 25s</strong></div>
 <div className="quote-row"><span>Pre-flight simulation</span><strong style={{color:simStatus==='ok'?'#4ade80':simStatus?'#ff7b7b':'inherit'}}>{prepareState==='preparing'?'Running…':simStatus==='ok'?'Passed — expected to succeed on-chain':simStatus==='failed'?'Failed — see below':simStatus==='unavailable'?'Unavailable — confirm disabled':'—'}</strong></div>
 <div className="quote-row"><span>Confirmation commitment</span><strong>confirmed</strong></div>
 </div>
