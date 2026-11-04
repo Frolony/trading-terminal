@@ -63,6 +63,56 @@ function previousQuoteText(prev: QuoteResult | null): string | null {
   if (pool) return 'Previous: ' + amount + ' ' + prev.outputSymbol + ' · pool ' + shortId(pool);
   return 'Previous: ' + amount + ' ' + prev.outputSymbol + ' · pool not reported';
 }
+// N3.131 (2026-11-03, A273): quote-change diff banner for an auto-refreshed
+// /raydium/ quote. Pure: compares the displaced quote with the new one and
+// names what changed — the amount delta (with percent when computable) and
+// any first-leg route-pool change — so a silent auto-refresh swap is visible
+// without cross-checking two pools. Returns null when nothing changed
+// (same amount, same first-leg pool, same symbol) and for no predecessor,
+// so a first quote and an unchanged refresh render no banner. Payload data
+// only: pools are the payload's first-leg pool ids (shortened), "not
+// reported" when the payload names none; no pool is ever invented. A change
+// in minimumOut or price impact alone does not raise a banner — those fields
+// already render in the quote details below; this banner covers the amount
+// and the route pool, the two things the filing names.
+function quoteChangeBanner(prev: QuoteResult | null, curr: QuoteResult | null): string | null {
+  if (!prev || !curr) return null;
+  const prevPool = Array.isArray(prev.route) && prev.route.length > 0 ? prev.route[0].poolId : null;
+  const currPool = Array.isArray(curr.route) && curr.route.length > 0 ? curr.route[0].poolId : null;
+  let amountChanged = prev.outputAmount !== curr.outputAmount;
+  try { amountChanged = BigInt(prev.outputAmount) !== BigInt(curr.outputAmount); } catch { /* keep the raw-string comparison */ }
+  const poolChanged = prevPool !== currPool;
+  const symbolChanged = prev.outputSymbol !== curr.outputSymbol;
+  if (!amountChanged && !poolChanged && !symbolChanged) return null;
+  const parts: string[] = [];
+  if (amountChanged) {
+    const prevAmt = formatBaseUnits(prev.outputAmount, prev.outputDecimals);
+    const currAmt = formatBaseUnits(curr.outputAmount, curr.outputDecimals);
+    if (symbolChanged) {
+      parts.push(prevAmt + ' ' + prev.outputSymbol + ' → ' + currAmt + ' ' + curr.outputSymbol);
+    } else {
+      let pct = '';
+      try {
+        const p = BigInt(prev.outputAmount);
+        const c = BigInt(curr.outputAmount);
+        if (p !== 0n) {
+          const delta = Number(c - p) / Number(p) * 100;
+          const sign = delta > 0 ? '+' : '-';
+          const abs = Math.abs(delta);
+          pct = ' (' + sign + (abs < 0.001 ? '<0.001' : abs.toFixed(3)) + '%)';
+        }
+      } catch { pct = ''; }
+      parts.push(prevAmt + ' → ' + currAmt + ' ' + curr.outputSymbol + pct);
+    }
+  }
+  if (poolChanged) {
+    parts.push('Route pool changed: ' + (prevPool ? shortId(prevPool) : 'not reported') + ' → ' + (currPool ? shortId(currPool) : 'not reported'));
+  }
+  if (symbolChanged && !amountChanged) {
+    parts.push('Output changed: ' + prev.outputSymbol + ' → ' + curr.outputSymbol);
+  }
+  return 'Quote updated: ' + parts.join(' · ');
+}
 // N3.115 (2026-11-03, A257): Raydium quote-freshness countdown ring. The swap page's
 // static "Quote age Ns · auto-refreshes every 25s" sentence becomes a ring that drains
 // over the 25 s refresh interval and refills when a fresh quote lands (quoteAge resets
@@ -277,6 +327,11 @@ if(reviewQuote){
   if(rvBand==='high'&&!impactAck)rvBlockers.push('Acknowledge the very-high price impact below to continue.');
 }
 const rvConfirmArmed=reviewQuote!==null&&prepareState==='ready'&&rvBlockers.length===0;
+// N3.131 (2026-11-03, A273): derived diff banner. prevQuote is set ONLY by an
+// auto-refresh (manual quotes clear it, pair/amount/slippage changes reset it),
+// so this banner can only ever describe an auto-refresh displacement —
+// never a first quote, never a manual re-quote.
+const quoteDiffBanner=quote&&prevQuote?quoteChangeBanner(prevQuote,quote):null;
 return(<div className="shell">
 <header className="topbar"><div><p className="eyebrow">NON-CUSTODIAL SOLANA SWAPS</p><h1>Raydium Swap</h1><p className="tagline">Turnpool · Raydium Trade API</p></div><div className="wallet-col"><WalletMultiButton/><p className="wallet-hint">Connect Phantom, Backpack, or another Wallet Standard-compatible wallet to sign.</p></div></header>
 <section className="panel"><div className="panel-heading"><div><p className="eyebrow">TRADE ROUTE</p><h2>Swap tokens</h2></div><span className="network">Solana Mainnet</span></div>
@@ -285,6 +340,7 @@ return(<div className="shell">
 <div className="amount-heading"><label className="field-label" htmlFor="amount">You pay</label><span className="token-symbol">{input.symbol}</span></div>
 <div className="amount-row"><input id="amount" value={amount} onChange={e=>onAmountChange(e.target.value)} inputMode="decimal" placeholder="0.0" disabled={busy}/><button type="button" className="reverse-btn" onClick={onToggleReverse} disabled={busy} title="Reverse direction" aria-label="Reverse swap direction">⇄</button></div>
 <div className="amount-heading"><span className="field-label">You receive (estimate)</span><span className="token-symbol">{output.symbol}</span></div>
+{quoteDiffBanner?(<p className="quote-diff">{quoteDiffBanner}</p>):null}
 <div className="receive-box">{quote?formatBaseUnits(quote.outputAmount,quote.outputDecimals):'—'}</div>
 <p className="slippage-hint">Minimum after slippage: {quote?formatBaseUnits(quote.minimumOut,quote.outputDecimals):'—'} {output.symbol}</p>
 <label className="field-label" htmlFor="slippage">Slippage tolerance</label>

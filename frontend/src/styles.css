@@ -25,6 +25,8 @@
 .quote-row+.quote-row{border-top:1px solid #1b2833}
 .quote-row strong{color:#e9f0f7;font-weight:600;text-align:right}
 .quote-prev{margin:0;padding:9px 14px;border-top:1px solid #1b2833;font-size:.82rem;color:#8fa3b0;opacity:.6}
+/* N3.131 (2026-11-03, A273): quote-change diff banner on /raydium/ */
+.quote-diff{margin:10px 0 0;padding:9px 14px;border:1px solid #2f7a6c;border-radius:12px;background:#0e1a20;color:#9fd8c9;font-size:.82rem;line-height:1.5}
 .message{margin:16px 0 0;color:#9fd8c9;font-size:.88rem;line-height:1.5}
 .error{margin:12px 0 0;color:#ff9a9a;font-size:.88rem;line-height:1.5}
 .wallet-row{display:flex;gap:12px;margin-top:20px;flex-wrap:wrap}
