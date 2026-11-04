@@ -140,7 +140,13 @@ function QuoteFreshRing({ageSec}: {ageSec: number}) {
 //   destructure drops it (tsc TS6133). Keeping the one-step signer wired would reintroduce
 //   a sign-different-bytes path, i.e. a simulate-then-sign hole. executeQuote remains
 //   exported by useRaydiumSwap for API completeness but is unwired here.
-export function SwapPanel(){const [pairId,setPairId]=useState(PAIRS[0].id),[reverse,setReverse]=useState(false),[amount,setAmount]=useState('0.1'),[slippageBps,setSlippageBps]=useState(()=>String(readSharedSlippage())),[quote,setQuote]=useState<QuoteResult|null>(null),[busy,setBusy]=useState(false),[message,setMessage]=useState('Connect your wallet to begin.'),[error,setError]=useState<string|null>(null);const {getQuote,connected}=useRaydiumSwap();const pair=useMemo(()=>PAIRS.find(p=>p.id===pairId)??PAIRS[0],[pairId]);const input=TOKENS[reverse?pair.quoteSymbol:pair.baseSymbol],output=TOKENS[reverse?pair.baseSymbol:pair.quoteSymbol];
+// N4.23 (2026-11-03, A156): quote-without-wallet mode strip. The old initial
+// message ('Connect your wallet to begin.') contradicted the working Get quote:
+// quoting needs no wallet, only review-and-swap does. The initial message now
+// says so, and the strip below renders persistently while !connected, above
+// the quote output, so the mode is visible before and after a quote lands.
+// Review & swap stays disabled via its existing !connected guard — unchanged.
+export function SwapPanel(){const [pairId,setPairId]=useState(PAIRS[0].id),[reverse,setReverse]=useState(false),[amount,setAmount]=useState('0.1'),[slippageBps,setSlippageBps]=useState(()=>String(readSharedSlippage())),[quote,setQuote]=useState<QuoteResult|null>(null),[busy,setBusy]=useState(false),[message,setMessage]=useState('Get a quote to begin — no wallet needed for a quote. Connect a wallet to review and swap.'),[error,setError]=useState<string|null>(null);const {getQuote,connected}=useRaydiumSwap();const pair=useMemo(()=>PAIRS.find(p=>p.id===pairId)??PAIRS[0],[pairId]);const input=TOKENS[reverse?pair.quoteSymbol:pair.baseSymbol],output=TOKENS[reverse?pair.baseSymbol:pair.quoteSymbol];
 const [prevQuote,setPrevQuote]=useState<QuoteResult|null>(null);
 // N3.134 (2026-11-03, A276): elapsed-time quote-fetch indicator + Cancel.
 // fetchActive is deliberately SEPARATE from busy: busy is also set by the
@@ -365,6 +371,7 @@ return(<div className="shell">
 <select id="pair" value={pairId} onChange={e=>onPairChange(e.target.value)} disabled={busy}>{PAIRS.map(p=><option key={p.id} value={p.id}>{p.baseSymbol} / {p.quoteSymbol}</option>)}</select>
 <div className="amount-heading"><label className="field-label" htmlFor="amount">You pay</label><span className="token-symbol">{input.symbol}</span></div>
 <div className="amount-row"><input id="amount" value={amount} onChange={e=>onAmountChange(e.target.value)} inputMode="decimal" placeholder="0.0" disabled={busy}/><button type="button" className="reverse-btn" onClick={onToggleReverse} disabled={busy} title="Reverse direction" aria-label="Reverse swap direction">⇄</button></div>
+{!connected?(<p className="quote-only-strip" role="status">Quote only — no wallet connected. Get quote works without a wallet; connect a wallet to review and swap.</p>):null}
 <div className="amount-heading"><span className="field-label">You receive (estimate)</span><span className="token-symbol">{output.symbol}</span></div>
 {quoteDiffBanner?(<p className="quote-diff">{quoteDiffBanner}</p>):null}
 <div className="receive-box">{quote?formatBaseUnits(quote.outputAmount,quote.outputDecimals):'—'}</div>
