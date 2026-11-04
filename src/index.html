@@ -816,7 +816,7 @@ function recentPairEntry(p){
   var key=recentPairKey(p);
   if(!key) return null;
   var bt=(p&&p.baseToken)||{};
-  return {key:key,label:recentPairLabel(p),baseMint:bt.address||p.baseMint||null,pairAddress:p.pairAddress||null,chainId:recentPairChain(p),dexId:p.dexId||null,baseSymbol:bt.symbol||p.baseSymbol||null,quoteSymbol:((p.quoteToken||{}).symbol)||p.quoteSymbol||'USDC'};
+  return {key:key,label:recentPairLabel(p),baseMint:bt.address||p.baseMint||null,pairAddress:p.pairAddress||null,chainId:recentPairChain(p),dexId:p.dexId||null,dexLabel:(typeof p.dexLabel==='string'&&p.dexLabel?p.dexLabel:null),baseSymbol:bt.symbol||p.baseSymbol||null,quoteSymbol:((p.quoteToken||{}).symbol)||p.quoteSymbol||'USDC'};
 }
 function recentPairsPush(list, entry){
   if(!entry||!entry.key) return list||[];
@@ -833,7 +833,7 @@ try{
   if(Array.isArray(rpSaved)) recentPairs=rpSaved.filter(function(e){return e&&e.key&&e.label;}).slice(0,5);
 }catch(_){}
 function recentPairsSave(){
-  try{localStorage.setItem('turnpool_recent_pairs_v1',JSON.stringify(recentPairs.map(function(e){return {key:e.key,label:e.label,baseMint:e.baseMint,pairAddress:e.pairAddress,chainId:e.chainId,dexId:e.dexId,baseSymbol:e.baseSymbol,quoteSymbol:e.quoteSymbol};})));}catch(_){}
+  try{localStorage.setItem('turnpool_recent_pairs_v1',JSON.stringify(recentPairs.map(function(e){return {key:e.key,label:e.label,baseMint:e.baseMint,pairAddress:e.pairAddress,chainId:e.chainId,dexId:e.dexId,dexLabel:e.dexLabel,baseSymbol:e.baseSymbol,quoteSymbol:e.quoteSymbol};})));}catch(_){}
 }
 function recentPairsPaint(){
   var rail=$('recentPairsRail');
@@ -841,7 +841,35 @@ function recentPairsPaint(){
   if(!recentPairs.length){rail.hidden=true;rail.innerHTML='';return;}
   rail.hidden=false;
   var html='<span class="recentrail-label">Recent pairs</span>';
-  recentPairs.forEach(function(e){html+='<button type="button" class="recentrail-chip" data-recent="'+esc(e.key)+'">'+esc(e.label)+'</button>';});
+  /* N3.130 (2026-11-03, A272): pool-venue tag on duplicate recent pairs. Two
+   buttons can carry the same pair label for different pools (e.g. CAPY/SOL on
+   Raydium vs PumpSwap) with different prices, and a bare label is a guess.
+   When a label appears more than once in the rail, each button that carries
+   a payload venue appends it ("CAPY/SOL \u00b7 Raydium"); a pair appearing
+   once keeps its plain label. Venue source is payload only: the entry's
+   dexLabel when the source row carried one (discovery rows carry dex.name),
+   else the verbatim dexId. The 'DEX' placeholder (chartNormalizePair's
+   fallback, and the discovery adapter's fallback) is NOT a venue and yields
+   no suffix, so no venue is ever invented. Honest limits, stated plainly:
+   a duplicate whose entry carries no venue keeps its plain label, and two
+   pools on the SAME venue still share a suffixed label — the tag removes
+   the cross-venue guess, it does not identify a pool. No click, tap,
+   restore, or persistence behaviour changes: only the chip's text. */
+function recentPairVenueLabel(e){
+  if(!e) return null;
+  if(typeof e.dexLabel==='string'&&e.dexLabel.trim()&&e.dexLabel!=='DEX') return e.dexLabel.trim();
+  if(typeof e.dexId==='string'&&e.dexId.trim()&&e.dexId!=='DEX') return e.dexId.trim();
+  return null;
+}
+function recentPairDisplayLabel(e,list){
+  if(!e||!e.label) return '';
+  var count=0;
+  (list||[]).forEach(function(x){if(x&&x.label===e.label) count++;});
+  if(count<2) return e.label;
+  var v=recentPairVenueLabel(e);
+  return v?e.label+' \u00b7 '+v:e.label;
+}
+recentPairs.forEach(function(e){html+='<button type="button" class="recentrail-chip" data-recent="'+esc(e.key)+'">'+esc(recentPairDisplayLabel(e,recentPairs))+'</button>';});
   rail.innerHTML=html;
   rail.querySelectorAll('[data-recent]').forEach(function(b){b.onclick=function(){recentPairTap(b.dataset.recent);};});
 }
