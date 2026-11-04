@@ -129,7 +129,9 @@ export function useRaydiumSwap() {
   const { connection } = useConnection();
   const { publicKey, connected, signTransaction } = useWallet();
 
-  const quote = useCallback((req: QuoteRequest): Promise<QuoteResult> => getQuote(req), []);
+  // N3.134: optional AbortSignal passthrough so the panel's Cancel truly
+  // aborts the in-flight quote fetch instead of merely ignoring its result.
+  const quote = useCallback((req: QuoteRequest, signal?: AbortSignal): Promise<QuoteResult> => getQuote(req, signal), []);
 
   /**
    * N4.4: build the unsigned transaction for a quote and deserialize it.

@@ -101,15 +101,20 @@ interface ApiEnvelope {
   error?: { code?: string; message?: string };
 }
 
-async function postJson(path: string, body: unknown): Promise<unknown> {
+async function postJson(path: string, body: unknown, signal?: AbortSignal): Promise<unknown> {
   let response: Response;
   try {
     response = await fetch(path, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
+      signal,
     });
-  } catch {
+  } catch (err) {
+    // N3.134: an aborted fetch is a user Cancel, not a backend failure —
+    // rethrow it unchanged so the caller can swallow it silently instead
+    // of surfacing a bogus "could not reach the backend" error.
+    if (err instanceof DOMException && err.name === 'AbortError') throw err;
     throw new Error('Could not reach the swap backend. Check your connection and try again.');
   }
   let envelope: ApiEnvelope;
@@ -145,13 +150,13 @@ export async function getQuote(req: {
   amountRaw: string;
   slippageBps: number;
   outputSymbol: string;
-}): Promise<QuoteResult> {
+}, signal?: AbortSignal): Promise<QuoteResult> {
   const data = await postJson('/api/raydium/quote', {
     input_mint: req.inputMint,
     output_mint: req.outputMint,
     amount: req.amountRaw,
     slippage_bps: req.slippageBps,
-  });
+  }, signal);
   const payload = asRecord(data);
   // The backend must return the raw Raydium quote JSON (build validates it). Accept it wrapped
   // as {quote: ...} or as the bare Raydium response object.

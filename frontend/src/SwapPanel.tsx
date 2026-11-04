@@ -26,7 +26,7 @@
 //   not by this file; exact JSX structure and the '⇄' reverse glyph; the quote-age countdown plus
 //   auto-refresh at 25 s (behavior evidenced, exact presentation invented); every CSS class name used here
 //   beyond the evidenced set.
-import {useEffect} from 'react';
+import {useEffect,useRef} from 'react';
 import {useWallet} from '@solana/wallet-adapter-react';
 import type {VersionedTransaction} from '@solana/web3.js';
 import {COPY as SWAP_COPY,SAFETY_COPY,DEFAULT_SLIPPAGE_BPS,explorerUrl,impactBand,impactNotice,isQuoteFresh,isRejectionError,lamportsToSol,MAX_SLIPPAGE_BPS,MIN_SLIPPAGE_BPS,parseSlippageInput,poolFeeNote,PREWALLET_FEES_COPY,readSharedSlippage,SLIPPAGE_PRESETS_BPS,solPriceUsdFromQuote,writeSharedSlippage} from './solana/swapFlow';
@@ -142,8 +142,27 @@ function QuoteFreshRing({ageSec}: {ageSec: number}) {
 //   exported by useRaydiumSwap for API completeness but is unwired here.
 export function SwapPanel(){const [pairId,setPairId]=useState(PAIRS[0].id),[reverse,setReverse]=useState(false),[amount,setAmount]=useState('0.1'),[slippageBps,setSlippageBps]=useState(()=>String(readSharedSlippage())),[quote,setQuote]=useState<QuoteResult|null>(null),[busy,setBusy]=useState(false),[message,setMessage]=useState('Connect your wallet to begin.'),[error,setError]=useState<string|null>(null);const {getQuote,connected}=useRaydiumSwap();const pair=useMemo(()=>PAIRS.find(p=>p.id===pairId)??PAIRS[0],[pairId]);const input=TOKENS[reverse?pair.quoteSymbol:pair.baseSymbol],output=TOKENS[reverse?pair.baseSymbol:pair.quoteSymbol];
 const [prevQuote,setPrevQuote]=useState<QuoteResult|null>(null);
+// N3.134 (2026-11-03, A276): elapsed-time quote-fetch indicator + Cancel.
+// fetchActive is deliberately SEPARATE from busy: busy is also set by the
+// signing flow, so a busy-keyed timer would tick while signing. The refs
+// carry one fetch generation: the controller truly aborts the network
+// fetch (AbortSignal plumbed through useRaydiumSwap into raydiumApi),
+// the sequence discards a late resolution even if abort races it, and the
+// outgoing snapshot restores the panel exactly on Cancel. Honest limits:
+// Cancel aborts the browser fetch; it cannot recall a backend request
+// already answered, and the restored quote keeps its true age (see the
+// fetchedAt-based age effect below), so a stale restored quote is never
+// shown as fresh.
+const [fetchActive,setFetchActive]=useState(false);
+const [fetchElapsed,setFetchElapsed]=useState(0);
+const fetchCtrlRef=useRef<AbortController|null>(null);
+const fetchSeqRef=useRef(0);
+const fetchStartRef=useRef(0);
+const fetchOutgoingRef=useRef<{quote:QuoteResult|null;prev:QuoteResult|null}|null>(null);
+const autoRefreshHoldRef=useRef(0);
 function reset(){setQuote(null);setPrevQuote(null);setError(null);setMessage('Request and review a fresh quote before signing.')}
-async function onQuote(autoRefresh?: boolean){const outgoing=quote;setBusy(true);setError(null);setMessage('Fetching Raydium route…');if(!autoRefresh)setPrevQuote(null);setQuote(null);try{const slipParsed=parseSlippageInput(slippageBps);if(!slipParsed.ok)throw Error(slipParsed.error);const raw=parseAmountToBaseUnits(amount,input.decimals),slip=slipParsed.bps;const q=await getQuote({inputMint:input.mint,outputMint:output.mint,amountRaw:raw,slippageBps:slip,outputSymbol:output.symbol});setQuote(q);if(autoRefresh&&outgoing)setPrevQuote(outgoing);setMessage('Quote ready. Check expected and minimum received before signing.');return q;}catch(err){setError(err instanceof Error?err.message:'Quote failed.');setMessage('Quote failed. Request a fresh quote and try again.');return null;}finally{setBusy(false);}}
+async function onQuote(autoRefresh?: boolean){const outgoing=quote;const outgoingPrev=prevQuote;const ctrl=new AbortController();fetchCtrlRef.current=ctrl;const seq=++fetchSeqRef.current;fetchOutgoingRef.current={quote:outgoing,prev:outgoingPrev};fetchStartRef.current=Date.now();setFetchElapsed(0);setFetchActive(true);if(!autoRefresh)autoRefreshHoldRef.current=0;setBusy(true);setError(null);setMessage('Fetching Raydium route…');if(!autoRefresh)setPrevQuote(null);setQuote(null);try{const slipParsed=parseSlippageInput(slippageBps);if(!slipParsed.ok)throw Error(slipParsed.error);const raw=parseAmountToBaseUnits(amount,input.decimals),slip=slipParsed.bps;const q=await getQuote({inputMint:input.mint,outputMint:output.mint,amountRaw:raw,slippageBps:slip,outputSymbol:output.symbol},ctrl.signal);if(fetchSeqRef.current!==seq)return null;setQuote(q);if(autoRefresh&&outgoing)setPrevQuote(outgoing);setMessage('Quote ready. Check expected and minimum received before signing.');return q;}catch(err){if(ctrl.signal.aborted||(err instanceof DOMException&&err.name==='AbortError'))return null;setError(err instanceof Error?err.message:'Quote failed.');setMessage('Quote failed. Request a fresh quote and try again.');return null;}finally{if(fetchSeqRef.current===seq)setFetchActive(false);setBusy(false);}}
+function onCancelQuote(){const ctrl=fetchCtrlRef.current;if(!ctrl||!fetchActive)return;fetchSeqRef.current+=1;autoRefreshHoldRef.current=Date.now();ctrl.abort();const out=fetchOutgoingRef.current;if(out){setQuote(out.quote);setPrevQuote(out.prev);}fetchCtrlRef.current=null;setFetchActive(false);setFetchElapsed(0);setError(null);setMessage('Quote request cancelled — your form is unchanged and nothing has swapped.');}
 // N4.2 (2026-10-22) — review-sign-confirm flow. "Review & swap" opens a review sheet showing the
 // quote's OWN numbers (byte-match requirement); signing is reachable ONLY from the sheet's
 // "Confirm swap" button. A quote at/past the 25 s freshness window is never signed: the panel
@@ -303,9 +322,16 @@ async function onConfirmSwap(){
 }
 const [quoteAge,setQuoteAge]=useState(0);
 const {publicKey}=useWallet();
-useEffect(()=>{setQuoteAge(0);},[quote]);
+useEffect(()=>{setQuoteAge(quote?Math.max(0,Math.floor((Date.now()-quote.fetchedAt)/1000)):0);},[quote]);
 useEffect(()=>{if(!quote){return;}const t=setInterval(()=>{setQuoteAge(a=>a+1);},1000);return()=>{clearInterval(t);};},[quote]);
-useEffect(()=>{if(quote&&quoteAge>=25&&!busy&&phase==='idle'&&!reviewQuote){void onQuote(true);}},[quote,quoteAge,busy,phase,reviewQuote]);
+// N3.134: elapsed counter ticks only while a quote fetch is active
+// (fetchActive — NOT busy, which the signing flow also sets); the
+// interval is cleaned on fetch end, so a fast fetch leaves no indicator.
+useEffect(()=>{if(!fetchActive){return;}const t=setInterval(()=>{setFetchElapsed(Math.floor((Date.now()-fetchStartRef.current)/1000));},1000);return()=>{clearInterval(t);};},[fetchActive]);
+// N3.134: a Cancel holds auto-refresh for one 25 s interval, so a
+// Cancel-restored stale quote does not immediately re-trigger the refresh
+// the user just cancelled; a manual Get quote clears the hold.
+useEffect(()=>{if(quote&&quoteAge>=25&&!busy&&phase==='idle'&&!reviewQuote&&Date.now()-autoRefreshHoldRef.current>=25000){void onQuote(true);}},[quote,quoteAge,busy,phase,reviewQuote]);
 // N4.4: derived review-sheet model (pack §3.6) — plain function calls, recomputed every render.
 const rvBand:ImpactBand=reviewQuote?impactBand(reviewQuote.priceImpactPct):'unknown';
 const rvNotice=reviewQuote?impactNotice(rvBand,reviewQuote.priceImpactPct):null;
@@ -416,6 +442,7 @@ return(<div className="shell">
 {reviewQuote?(<button type="button" className="btn" onClick={()=>{setPhase('idle');setError(null);setMessage('Back at the review sheet — no signature was created in this attempt.');}}>Back to review</button>):null}
 </div>
 </div>):null}
+{fetchActive?(<div className="quote-fetch-progress" role="status"><p className="message">Fetching route… {fetchElapsed}s</p><p className="message">Route search can take a while — your form is unchanged and nothing has swapped.</p><button type="button" className="btn" onClick={onCancelQuote}>Cancel</button></div>):null}
 {message?(<p className="message">{message}</p>):null}
 {error?(<p className="error">{error}</p>):null}
 <div className="wallet-row"><button type="button" className="btn btn-primary" onClick={()=>{clearSwapState();void onQuote();}} disabled={busy}>{busy?'Working…':'Get quote'}</button><button type="button" className="btn" onClick={()=>{void onReview();}} disabled={!connected||!quote||busy||phase==='signing'||phase==='pending'}>Review &amp; swap</button></div>
