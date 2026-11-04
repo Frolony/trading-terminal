@@ -655,7 +655,7 @@ the brief outline flash marks the landing panel without touching its copy.*/
 <section class="panel" data-panel="discovery"><div class="panelhead" data-drag-handle><h2>Token discovery</h2><span class="eyebrow">LIVE DISCOVERY</span></div><div class="panelbody"><div class="searchrow"><input id="tokenSearch" placeholder="Search token, ticker or mint address" value="SOL"><button id="searchBtn">Search</button></div><div id="searchResults" class="results" data-testid="search-results"><div class="empty">Search live Solana pairs and add candidates to your watchlist.</div></div></div></section>
 <section class="panel" data-panel="discoveryLab"><div class="panelhead" data-drag-handle><h2>Token discovery</h2><span class="eyebrow">LIVE DISCOVERY · STRATEGY LAB</span></div><div class="panelbody"><div class="searchrow"><input id="tokenSearchLab" placeholder="Search token, ticker or mint address" value="SOL"><button id="searchBtnLab">Search</button></div><div id="searchResultsLab" class="results"><div class="empty">Search live Solana pairs and add candidates to your watchlist.</div></div></div></section>
 </main><aside class="sidecol" data-layout-root data-root-key="sidecol">
-<section class="panel tradepanel" data-panel="ticket"><div class="panelhead" data-drag-handle><h2>Order ticket</h2><span class="pill pill-simulated">SIMULATED</span></div><div class="panelbody"><form class="tradeform" id="tradeForm"><div class="moderow"><div class="modelabel">Execution mode</div><div class="switchrow"><button type="button" id="paperModeBtn" class="active mode">Paper</button><button type="button" id="liveModeBtn">Live</button></div></div><div class="switchrow"><button type="button" id="buyBtn" class="active buy">Buy / Long</button><button type="button" id="sellBtn" class="sell">Sell</button></div><div class="field"><label>Trading pair</label><button type="button" class="pairbox pairbox-btn" id="ticketPairBox" aria-haspopup="true" aria-expanded="false" aria-label="Choose trading pair"><strong id="ticketPairName">SOL / USDC</strong><span class="pairselchev">▾</span><small id="ticketPairMeta">Waiting for market data…</small></button><div class="pairsel" id="ticketPairSel" hidden></div><div class="ticketident" id="ticketPairIdent" style="font-size:11px;color:var(--muted);margin-top:6px;display:flex;gap:6px;align-items:center;flex-wrap:wrap">Loading pair identity…</div></div><div class="field"><label>Order type</label><div class="switchrow"><button type="button" id="mktBtn" class="active buy">Market</button><button type="button" id="limBtn" class="sell">Limit</button><button type="button" id="dcaBtn">DCA</button></div><div class="expiryrow" id="expiryRow" hidden><span class="expirylabel">Expires</span><div class="amounts" id="expiryPresets"><button type="button" data-exp="1h">1 h</button><button type="button" data-exp="24h" class="on">24 h</button><button type="button" data-exp="7d">7 d</button><button type="button" data-exp="never">No expiry</button></div></div></div><div class="note" id="dcaPreview" style="text-align:left;margin-top:6px" hidden></div><div id="limitFields" hidden><div class="field"><label>Limit price (per <span id="limitBaseSym">SOL</span>, in <span id="limitQuoteSym">USDC</span>)</label><div class="inputwrap"><input id="limitPrice" inputmode="decimal" aria-label="Limit price" placeholder="Waiting for live price…"><span id="limitSpotRef">spot</span></div><div class="amounts" id="limitPresets" style="margin-top:6px"><button type="button" data-lp="-10">−10%</button><button type="button" data-lp="-5">−5%</button><button type="button" data-lp="-1">−1%</button><button type="button" data-lp="1">+1%</button><button type="button" data-lp="5">+5%</button><button type="button" data-lp="10">+10%</button></div><div class="note" id="limitNote" style="text-align:left;margin-top:6px"></div></div><label id="expiryAckWrap" hidden style="display:none;margin-top:8px;font-size:11px;color:var(--muted);align-items:center;gap:8px"><input type="checkbox" id="expiryAck" style="width:auto"> I understand this order stays open until filled or cancelled.</label><div class="note" style="text-align:left">Simulated fills at spot — not instant, not guaranteed. Paper only; nothing touches the chain.</div></div><div id="dcaFields" hidden><div class="field"><label>Total to sell (in <span id="dcaTotalSym">USDC</span>)</label><div class="inputwrap"><input id="dcaTotal" inputmode="decimal" aria-label="DCA total amount" value="100"><span id="dcaTotalUnit">USDC</span></div><div class="note" style="text-align:left;margin-top:6px">The token you sell: the quote currency when buying, the base token when selling. Split evenly across all orders.</div></div><div class="field"><label>Orders</label><div class="inputwrap"><input id="dcaCount" inputmode="numeric" aria-label="DCA order count" value="10"><span>orders</span></div></div><div class="field"><label>Interval</label><select id="dcaInterval" aria-label="DCA interval"><option value="1m">Every minute</option><option value="1h" selected>Hourly</option><option value="1d">Daily</option><option value="1w">Weekly</option></select></div><div class="field"><label>Price range (optional)</label><div style="display:flex;gap:8px"><div class="inputwrap"><input id="dcaMinPrice" inputmode="decimal" aria-label="DCA minimum price" placeholder="Min (blank = none)"></div><div class="inputwrap"><input id="dcaMaxPrice" inputmode="decimal" aria-label="DCA maximum price" placeholder="Max (blank = none)"></div></div><div class="note" style="text-align:left;margin-top:6px">An order due while spot is outside the range is skipped, not filled later at another price.</div></div><div class="note" id="dcaSummary" style="text-align:left"></div><div class="note" style="text-align:left">Paper only. A schedule advances only while this tab is open — a closed tab advances nothing, and orders that fell due while it was closed are marked missed, never retro-filled. No background execution, no server scheduler. Fills simulate at the live spot price.</div></div><div class="field"><label>Order size</label><div class="inputwrap"><input id="orderAmount" data-testid="order-size-input" type="number" min="0.0001" step="any" value="100" required><span id="amountUnit">USD</span></div></div><div class="note" id="dualSize" style="text-align:left">—</div><div class="amounts"><button type="button" data-amt="25">$25</button><button type="button" data-amt="100">$100</button><button type="button" data-amt="250">$250</button><button type="button" data-amt="max" data-testid="max-btn">MAX</button></div><div class="field"><label>Slippage tolerance</label><div class="slipcontrol"><div class="amounts" id="slipPresets"><button type="button" data-slip="10">0.1%</button><button type="button" data-slip="50">0.5%</button><button type="button" data-slip="100">1.0%</button></div><div class="inputwrap"><input id="slippageInput" inputmode="numeric" aria-label="Custom slippage in basis points" placeholder="Custom (bps)"><span>bps</span></div></div><div class="note" style="text-align:left;margin-top:6px">In basis points (50 bps = 0.50%); 1&ndash;1000 bps. Shared with the /raydium/ page.</div></div><div class="ticketsum"><span>Execution price<strong id="execPrice" class="provprice" data-prov="Source unknown">$—</strong></span><span id="ticketQuoteAgeChip" style="border:1px solid var(--line);border-radius:6px;padding:2px 7px;white-space:nowrap"><span id="ticketQuoteAgeText">No quote yet</span> <button type="button" id="ticketQuoteAgeRefreshBtn" style="background:transparent;border:0;color:var(--lime);padding:0 2px;font-weight:650">Refresh</button></span><span>Estimated quantity<strong id="estQty">— SOL</strong></span><span>Available USD<strong id="cashAvail">$10,000.00</strong></span></div><div class="note" id="ticketFreshLine" style="text-align:left">Last quote: <span id="ticketFreshAge">—</span> <button type="button" id="ticketFreshBtn" class="ghost" style="margin-left:6px">Get fresh quote</button></div><div class="note" id="paperPreviewStrip" style="text-align:left">Paper preview unavailable — no quote for this pair.</div><div id="reviewSheet" class="review" hidden></div><button class="primary" id="submitTrade" type="submit">Buy SOL · Paper</button><button type="button" id="refreshPaperQuoteBtn" class="ghost" hidden>Refresh quote</button><div class="note" id="paperQuoteNote" hidden style="text-align:left"></div><div class="note" id="ticketNote">No wallet connected · no real orders or funds</div><div id="dcaSchedulesWrap" style="margin-top:12px;border-top:1px solid var(--rowline);padding-top:12px"><div class="sectiontitle"><h3>DCA schedules</h3><span class="eyebrow" id="dcaSchedCount">0 SCHEDULES</span></div><div id="dcaSchedules"><div class="empty">No DCA schedules yet. Use the DCA tab to schedule metered buys.</div></div></div></form></div></section>
+<section class="panel tradepanel" data-panel="ticket"><div class="panelhead" data-drag-handle><h2>Order ticket</h2><span class="pill pill-simulated">SIMULATED</span></div><div class="panelbody"><form class="tradeform" id="tradeForm"><div class="moderow"><div class="modelabel">Execution mode</div><div class="switchrow"><button type="button" id="paperModeBtn" class="active mode">Paper</button><button type="button" id="liveModeBtn">Live</button></div></div><div class="switchrow"><button type="button" id="buyBtn" class="active buy">Buy / Long</button><button type="button" id="sellBtn" class="sell">Sell</button></div><div class="field"><label>Trading pair</label><button type="button" class="pairbox pairbox-btn" id="ticketPairBox" aria-haspopup="true" aria-expanded="false" aria-label="Choose trading pair"><strong id="ticketPairName">SOL / USDC</strong><span class="pairselchev">▾</span><small id="ticketPairMeta">Waiting for market data…</small></button><div class="pairsel" id="ticketPairSel" hidden></div><div class="ticketident" id="ticketPairIdent" style="font-size:11px;color:var(--muted);margin-top:6px;display:flex;gap:6px;align-items:center;flex-wrap:wrap">Loading pair identity…</div></div><div class="field"><label>Order type</label><div class="switchrow"><button type="button" id="mktBtn" class="active buy">Market</button><button type="button" id="limBtn" class="sell">Limit</button><button type="button" id="dcaBtn">DCA</button></div><div class="expiryrow" id="expiryRow" hidden><span class="expirylabel">Expires</span><div class="amounts" id="expiryPresets"><button type="button" data-exp="1h">1 h</button><button type="button" data-exp="24h" class="on">24 h</button><button type="button" data-exp="7d">7 d</button><button type="button" data-exp="never">No expiry</button></div></div></div><div class="note" id="dcaPreview" style="text-align:left;margin-top:6px" hidden></div><div id="limitFields" hidden><div class="field"><label>Limit price (per <span id="limitBaseSym">SOL</span>, in <span id="limitQuoteSym">USDC</span>)</label><div class="inputwrap"><input id="limitPrice" inputmode="decimal" aria-label="Limit price" placeholder="Waiting for live price…"><span id="limitSpotRef">spot</span></div><div class="amounts" id="limitPresets" style="margin-top:6px"><button type="button" data-lp="-10">−10%</button><button type="button" data-lp="-5">−5%</button><button type="button" data-lp="-1">−1%</button><button type="button" data-lp="1">+1%</button><button type="button" data-lp="5">+5%</button><button type="button" data-lp="10">+10%</button></div><div class="note" id="limitNote" style="text-align:left;margin-top:6px"></div></div><label id="expiryAckWrap" hidden style="display:none;margin-top:8px;font-size:11px;color:var(--muted);align-items:center;gap:8px"><input type="checkbox" id="expiryAck" style="width:auto"> I understand this order stays open until filled or cancelled.</label><div class="note" style="text-align:left">Simulated fills at spot — not instant, not guaranteed. Paper only; nothing touches the chain.</div></div><div id="dcaFields" hidden><div class="field"><label>Total to <span id="dcaTotalVerb">sell</span> (in <span id="dcaTotalSym">USDC</span>)</label><div class="inputwrap"><input id="dcaTotal" inputmode="decimal" aria-label="DCA total amount" value="100"><span id="dcaTotalUnit">USDC</span></div><div class="note" style="text-align:left;margin-top:6px">The token you sell: the quote currency when buying, the base token when selling. Split evenly across all orders.</div></div><div class="field"><label>Orders</label><div class="inputwrap"><input id="dcaCount" inputmode="numeric" aria-label="DCA order count" value="10"><span>orders</span></div></div><div class="field"><label>Interval</label><select id="dcaInterval" aria-label="DCA interval"><option value="1m">Every minute</option><option value="1h" selected>Hourly</option><option value="1d">Daily</option><option value="1w">Weekly</option></select></div><div class="field"><label>Price range (optional)</label><div style="display:flex;gap:8px"><div class="inputwrap"><input id="dcaMinPrice" inputmode="decimal" aria-label="DCA minimum price" placeholder="Min (blank = none)"></div><div class="inputwrap"><input id="dcaMaxPrice" inputmode="decimal" aria-label="DCA maximum price" placeholder="Max (blank = none)"></div></div><div class="note" style="text-align:left;margin-top:6px">An order due while spot is outside the range is skipped, not filled later at another price.</div></div><div class="note" id="dcaSummary" style="text-align:left"></div><div class="note" style="text-align:left">Paper only. A schedule advances only while this tab is open — a closed tab advances nothing, and orders that fell due while it was closed are marked missed, never retro-filled. No background execution, no server scheduler. Fills simulate at the live spot price.</div></div><div class="field"><label>Order size</label><div class="inputwrap"><input id="orderAmount" data-testid="order-size-input" type="number" min="0.0001" step="any" value="100" required><span id="amountUnit">USD</span></div></div><div class="note" id="dualSize" style="text-align:left">—</div><div class="amounts"><button type="button" data-amt="25">$25</button><button type="button" data-amt="100">$100</button><button type="button" data-amt="250">$250</button><button type="button" data-amt="max" data-testid="max-btn">MAX</button></div><div class="field"><label>Slippage tolerance</label><div class="slipcontrol"><div class="amounts" id="slipPresets"><button type="button" data-slip="10">0.1%</button><button type="button" data-slip="50">0.5%</button><button type="button" data-slip="100">1.0%</button></div><div class="inputwrap"><input id="slippageInput" inputmode="numeric" aria-label="Custom slippage in basis points" placeholder="Custom (bps)"><span>bps</span></div></div><div class="note" style="text-align:left;margin-top:6px">In basis points (50 bps = 0.50%); 1&ndash;1000 bps. Shared with the /raydium/ page.</div></div><div class="ticketsum"><span>Execution price<strong id="execPrice" class="provprice" data-prov="Source unknown">$—</strong></span><span id="ticketQuoteAgeChip" style="border:1px solid var(--line);border-radius:6px;padding:2px 7px;white-space:nowrap"><span id="ticketQuoteAgeText">No quote yet</span> <button type="button" id="ticketQuoteAgeRefreshBtn" style="background:transparent;border:0;color:var(--lime);padding:0 2px;font-weight:650">Refresh</button></span><span>Estimated quantity<strong id="estQty">— SOL</strong></span><span>Available USD<strong id="cashAvail">$10,000.00</strong></span></div><div class="note" id="ticketFreshLine" style="text-align:left">Last quote: <span id="ticketFreshAge">—</span> <button type="button" id="ticketFreshBtn" class="ghost" style="margin-left:6px">Get fresh quote</button></div><div class="note" id="paperPreviewStrip" style="text-align:left">Paper preview unavailable — no quote for this pair.</div><div id="reviewSheet" class="review" hidden></div><button class="primary" id="submitTrade" type="submit">Buy SOL · Paper</button><button type="button" id="refreshPaperQuoteBtn" class="ghost" hidden>Refresh quote</button><div class="note" id="paperQuoteNote" hidden style="text-align:left"></div><div class="note" id="ticketNote">No wallet connected · no real orders or funds</div><div id="dcaSchedulesWrap" style="margin-top:12px;border-top:1px solid var(--rowline);padding-top:12px"><div class="sectiontitle"><h3>DCA schedules</h3><span class="eyebrow" id="dcaSchedCount">0 SCHEDULES</span></div><div id="dcaSchedules"><div class="empty">No DCA schedules yet. Use the DCA tab to schedule metered buys.</div></div></div></form></div></section>
 <section class="panel tradepanel" data-panel="ticketLive"><div class="panelhead" data-drag-handle><h2>Order ticket — Live</h2><span class="pill">LIVE · LOCKED</span></div><div class="panelbody"><form class="tradeform" id="tradeFormLive"><div class="moderow"><div class="modelabel">Execution mode</div><div class="switchrow"><span class="pill">LIVE</span></div></div><div class="note" style="text-align:left">Live instance — prices from real Raydium quotes, never the pairs-feed spot. Execution stays locked until the N4.4 pre-trade safety gate is cleared by a human; nothing here sends a transaction.</div><div class="switchrow"><button type="button" id="buyBtnLive" class="active buy">Buy / Long</button><button type="button" id="sellBtnLive" class="sell">Sell</button></div><div class="field"><label>Trading pair</label><button type="button" class="pairbox pairbox-btn" id="ticketPairBoxLive" aria-haspopup="true" aria-expanded="false" aria-label="Choose trading pair"><strong id="ticketPairNameLive">SOL / USDC</strong><span class="pairselchev">▾</span><small id="ticketPairMetaLive">Waiting for market data…</small></button><div class="pairsel" id="ticketPairSelLive" hidden></div><div class="ticketident" id="ticketPairIdentLive" style="font-size:11px;color:var(--muted);margin-top:6px;display:flex;gap:6px;align-items:center;flex-wrap:wrap">Loading pair identity…</div></div><div class="field"><label>Order type</label><div class="switchrow"><button type="button" id="mktBtnLive" class="active buy">Market</button><button type="button" id="limBtnLive" class="sell">Limit</button><button type="button" id="dcaBtnLive">DCA</button></div><div class="expiryrow" id="expiryRowLive" hidden><span class="expirylabel">Expires</span><div class="amounts" id="expiryPresetsLive"><button type="button" data-exp="1h">1 h</button><button type="button" data-exp="24h" class="on">24 h</button><button type="button" data-exp="7d">7 d</button><button type="button" data-exp="never">No expiry</button></div></div></div><div id="limitFieldsLive" hidden><div class="field"><label>Limit price (per <span id="limitBaseSymLive">SOL</span>, in <span id="limitQuoteSymLive">USDC</span>)</label><div class="inputwrap"><input id="limitPriceLive" inputmode="decimal" aria-label="Limit price" placeholder="Waiting for live price…"><span id="limitSpotRefLive">spot</span></div><div class="amounts" id="limitPresetsLive" style="margin-top:6px"><button type="button" data-lp="-10">−10%</button><button type="button" data-lp="-5">−5%</button><button type="button" data-lp="-1">−1%</button><button type="button" data-lp="1">+1%</button><button type="button" data-lp="5">+5%</button><button type="button" data-lp="10">+10%</button></div><div class="note" id="limitNoteLive" style="text-align:left;margin-top:6px"></div></div><label id="expiryAckWrapLive" hidden style="display:none;margin-top:8px;font-size:11px;color:var(--muted);align-items:center;gap:8px"><input type="checkbox" id="expiryAckLive" style="width:auto"> I understand this order stays open until filled or cancelled.</label><div class="note" style="text-align:left">Live limit orders do not execute while live trading is locked (N4.4 gate).</div></div><div id="dcaNoteLive" hidden><div class="note" style="text-align:left">DCA schedules are paper-only — they run on the paper ticket (Strategy Lab page) and never arm a live schedule. Execution stays locked until the N4.4 gate is cleared.</div></div><div class="field"><label>Order size</label><div class="inputwrap"><input id="orderAmountLive" data-testid="order-size-input-live" type="number" min="0.0001" step="any" value="100" required><span id="amountUnitLive">USD</span></div></div><div class="note" id="dualSizeLive" style="text-align:left">—</div><div class="amounts"><button type="button" data-amt="25">$25</button><button type="button" data-amt="100">$100</button><button type="button" data-amt="250">$250</button><button type="button" data-amt="max" data-testid="max-btn-live">MAX</button></div><div class="field"><label>Slippage tolerance</label><div class="slipcontrol"><div class="amounts" id="slipPresetsLive"><button type="button" data-slip="10">0.1%</button><button type="button" data-slip="50">0.5%</button><button type="button" data-slip="100">1.0%</button></div><div class="inputwrap"><input id="slippageInputLive" inputmode="numeric" aria-label="Custom slippage in basis points" placeholder="Custom (bps)"><span>bps</span></div></div><div class="note" style="text-align:left;margin-top:6px">In basis points (50 bps = 0.50%); 1&ndash;1000 bps. Shared with the /raydium/ page.</div></div><div class="ticketsum"><span>Execution price<strong id="execPriceLive" class="provprice" data-prov="Source unknown">$—</strong></span><span>Estimated quantity<strong id="estQtyLive">— SOL</strong></span><span>Wallet balance<strong id="cashAvailLive">$10,000.00</strong></span></div><div class="note" id="ticketFreshLineLive" style="text-align:left">Last quote: <span id="ticketFreshAgeLive">—</span> <button type="button" id="ticketFreshBtnLive" class="ghost" style="margin-left:6px">Get fresh quote</button></div><button type="button" id="refreshLiveQuoteBtn" class="ghost">Refresh real quote</button><div class="note" id="liveQuoteCompareLive" style="text-align:left">Jupiter comparison — press Refresh real quote.</div><div id="reviewSheetLive" class="review" hidden></div><button class="primary locked-live" id="submitTradeLive" type="submit">Buy SOL · Live (locked)</button><div class="note" id="ticketNoteLive">Real Raydium quote · execution locked</div></form></div></section>
 <section class="panel" data-panel="portfolio"><div class="panelhead" data-drag-handle><h2>Paper portfolio</h2><span class="eyebrow">LOCAL SESSION</span></div><div class="panelbody"><div class="walletrow"><span>Cash balance</span><strong id="cashBal" data-testid="paper-cash">$10,000.00</strong></div><div id="holdingsList" data-testid="holdings-list"><div class="empty">No paper positions yet.</div></div><div class="walletrow"><span>Position value</span><strong id="posValue">$0.00</strong></div><div class="walletrow"><span>Unrealized P/L</span><strong id="unrealized">$0.00</strong></div><button id="resetPaper" data-testid="reset-btn" style="margin-top:13px;width:100%;padding:8px;background:var(--panel);border:1px solid var(--line);color:var(--btntext);border-radius:7px;font-size:11px">Reset paper account</button></div></section>
 <section class="panel" data-panel="orders"><div class="panelhead" data-drag-handle><h2>Recent orders</h2><span class="eyebrow" id="orderCount">0 ORDERS</span></div><div id="orders" data-testid="orders-list"><div class="empty">Your simulated paper orders will appear here.</div></div></section>
@@ -1013,6 +1013,8 @@ const usd=n=>'$'+fmt(n,2);
 const usdCompact=n=>{const v=Number(n);if(n==null||!Number.isFinite(v))return '—';const a=Math.abs(v),s=v<0?'-':'';if(a>=1e9)return s+'$'+fmt(a/1e9,2)+'B';if(a>=1e6)return s+'$'+fmt(a/1e6,2)+'M';if(a>=1e3)return s+'$'+fmt(a/1e3,2)+'K';return usd(v);};
 const compact=n=>n>=1e9?(n/1e9).toFixed(2)+'B':n>=1e6?(n/1e6).toFixed(2)+'M':n>=1e3?(n/1e3).toFixed(1)+'K':fmt(n,0);
 function formatPriceUsd(value){const n=Number(value);if(!Number.isFinite(n)||n<=0)return '—';if(n>=0.01)return usd(n);return '$'+n.toPrecision(4)}
+/* N4.24 (2026-11-03, A159): quote-denominated price formatting. ticketPair.price is a USD price, but a limit field is labelled in the pair quote — so a SOL-quoted limit/spot must render in SOL, never as a USD figure wearing a SOL label. USD-stable quotes keep formatPriceUsd output exactly. */
+function formatQuotePrice(v,qs){const s=String(qs||'').toUpperCase();if(s==='USDC'||s==='USDT'||s==='USD')return formatPriceUsd(v);const n=Number(v);if(!Number.isFinite(n)||n<=0)return '—';return (n>=0.01?fmt(n,4):n.toPrecision(4))+' '+s;}
 /*__N22_SYNC_START__*/
 /* N2.2 server-side sync (2026-10-24, wallet-as-identity): cross-device
    persistence for the five syncable namespaces ONLY — settings, slippage,
@@ -2342,7 +2344,7 @@ function paperBuyFill(st,fill){ // st:{cash,holdings}; fill:{baseMint,baseSymbol
   if(!Number.isFinite(fill.amount)||fill.amount<=0)return{error:'Enter a valid order size.'};
   const usdCost=fill.amount*fill.quoteUsd;
   if(usdCost>st.cash+1e-9)return{error:'Insufficient paper USD balance.'};
-  const qty=fill.amount/fill.price;
+  const qty=fill.amount*(fill.quoteUsd||1)/fill.price; /* N4.24: price is USD, amount is quote units */
   const h=Object.assign({symbol:fill.baseSymbol,quoteSymbol:fill.quoteSymbol,qty:0,avgCost:0,lastPrice:fill.price},st.holdings[fill.baseMint]||{});
   h.avgCost=(h.avgCost*h.qty+usdCost)/(h.qty+qty);h.qty+=qty;h.lastPrice=fill.price;h.symbol=fill.baseSymbol;h.quoteSymbol=fill.quoteSymbol;
   const holdings=Object.assign({},st.holdings,{[fill.baseMint]:h});
@@ -2352,7 +2354,7 @@ function paperBuyFill(st,fill){ // st:{cash,holdings}; fill:{baseMint,baseSymbol
 function paperSellFill(st,fill){
   if(!(fill.price>0))return{error:'Waiting for a valid market price.'};
   if(!Number.isFinite(fill.amount)||fill.amount<=0)return{error:'Enter a valid order size.'};
-  const qty=fill.amount/fill.price,h=st.holdings[fill.baseMint];
+  const qty=fill.amount*(fill.quoteUsd||1)/fill.price,h=st.holdings[fill.baseMint]; /* N4.24: price is USD, amount is quote units */
   if(!h||qty>h.qty+1e-9)return{error:'Not enough '+fill.baseSymbol+' in your paper portfolio.'};
   const usdProceeds=fill.amount*fill.quoteUsd;
   const nh=Object.assign({},h);nh.qty-=qty;nh.lastPrice=fill.price;
@@ -3559,7 +3561,7 @@ function slipImpactNotice(band,pct){
 }
 function paperAgeTxt(ms){const s=Math.max(0,Math.round(ms/1000));return s<2?'just now':s+'s ago';}
 function paperReviewModel(a){ // a:{side,baseSymbol,quoteSymbol,price,quoteUsd,amountQuote,slippageBps,priceAgeMs,feedStale}
-  const slipFrac=a.slippageBps/10000,usdCost=a.amountQuote*a.quoteUsd,estQty=a.amountQuote/a.price,minQty=estQty*(1-slipFrac);
+  const slipFrac=a.slippageBps/10000,usdCost=a.amountQuote*a.quoteUsd,estQty=a.amountQuote*(a.quoteUsd||1)/a.price,minQty=estQty*(1-slipFrac); /* N4.24: price is USD, amountQuote is quote units */
   const band=slipImpactBand(0); // paper fills execute at the feed reference price: no routing, no market impact
   const blockers=[];
   if(band==='blocked')blockers.push('Impact above 15% — blocked');
@@ -3613,9 +3615,10 @@ function limitValidate(inp){ // {side,limitPrice,amountQuote,spot,quoteUsd,cash,
   if(!Number.isFinite(lp)||lp<=0)return{ok:false,error:'Enter a limit price — a number above zero.'};
   if(!Number.isFinite(inp.amountQuote)||inp.amountQuote<=0)return{ok:false,error:'Enter a valid order size.'};
   let note=null;
-  if(Math.abs(lp-inp.spot)/inp.spot<0.001)note='Limit is within 0.1% of spot — a Market order may be cheaper after the keeper fee.';
-  else if(inp.side==='buy'&&lp>inp.spot)note='Buy limit is above the spot price — it executes only if the market reaches your price.';
-  else if(inp.side==='sell'&&lp<inp.spot)note='Sell limit is below the spot price — it executes only if the market reaches your price.';
+  const spotQ=inp.spot/((inp.quoteUsd||1)>0?inp.quoteUsd:1); /* N4.24: limitPrice is quote-denominated, spot is USD — compare in quote units */
+  if(spotQ>0&&Math.abs(lp-spotQ)/spotQ<0.001)note='Limit is within 0.1% of spot — a Market order may be cheaper after the keeper fee.';
+  else if(inp.side==='buy'&&lp>spotQ)note='Buy limit is above the spot price — it executes only if the market reaches your price.';
+  else if(inp.side==='sell'&&lp<spotQ)note='Sell limit is below the spot price — it executes only if the market reaches your price.';
   if(inp.side==='buy'){if(inp.amountQuote*inp.quoteUsd>inp.cash+1e-9)return{ok:false,error:'Insufficient paper USD balance for this limit order.'};}
   else{const qty=inp.amountQuote/lp;if(qty>inp.holdQty+1e-9)return{ok:false,error:'Not enough '+inp.baseSymbol+' in your paper portfolio for this limit order.'};}
   return{ok:true,limitPrice:lp,note};
@@ -3633,13 +3636,14 @@ function evaluatePaperLimits(list,getSpot,now){ // pure: marks statuses, returns
 }
 function limitReviewModel(inp){ // inp:{side,baseSymbol,quoteSymbol,quoteUsd,amountQuote,limitPrice,expiresAt,noExpiryAck,spot,priceAgeMs,feedStale}
   const usdCost=inp.amountQuote*inp.quoteUsd,estQty=inp.amountQuote/inp.limitPrice;
-  const vsSpot=(inp.limitPrice-inp.spot)/inp.spot*100;
+  const spotQ=inp.spot/((inp.quoteUsd||1)>0?inp.quoteUsd:1); /* N4.24: limitPrice is quote-denominated, spot is USD */
+  const vsSpot=spotQ>0?(inp.limitPrice-spotQ)/spotQ*100:0;
   const vsTxt=Math.abs(vsSpot)<0.001?'at spot':(vsSpot>0?'+':'')+vsSpot.toFixed(2)+'% '+(vsSpot>0?'above':'below')+' spot';
   const lines=[
     {label:'Order',value:'Limit '+inp.side.toUpperCase()+' · '+fmt(inp.amountQuote,2)+' '+inp.quoteSymbol},
-    {label:'Limit price',value:formatPriceUsd(inp.limitPrice)+' per '+inp.baseSymbol},
-    {label:'You receive (est.)',value:fmtQty(estQty)+' '+inp.baseSymbol+' (≈ '+usd(usdCost)+') when the price reaches '+formatPriceUsd(inp.limitPrice)},
-    {label:'Price vs spot',value:vsTxt+' (spot '+formatPriceUsd(inp.spot)+')'},
+    {label:'Limit price',value:formatQuotePrice(inp.limitPrice,inp.quoteSymbol)+' per '+inp.baseSymbol},
+    {label:'You receive (est.)',value:fmtQty(estQty)+' '+inp.baseSymbol+' (≈ '+usd(usdCost)+') when the price reaches '+formatQuotePrice(inp.limitPrice,inp.quoteSymbol)},
+    {label:'Price vs spot',value:vsTxt+' (spot '+formatQuotePrice(spotQ,inp.quoteSymbol)+')'},
     {label:'Expires',value:inp.expiresAt?('in '+limitExpLeft({expiresAt:inp.expiresAt},Date.now())+' ('+new Date(inp.expiresAt).toLocaleString()+')'):'No expiry — acknowledged: stays open until filled or cancelled'},
     {label:'Keeper fee',value:'— (simulated: no on-chain keeper fee)'},
     {label:'Price freshness',value:inp.feedStale?'STALE — last good price '+paperAgeTxt(inp.priceAgeMs):'Live spot · '+paperAgeTxt(inp.priceAgeMs),cls:inp.feedStale?'negative':''}
@@ -3706,8 +3710,8 @@ function dcaValidate(inp){ // {side,totalSell,count,intervalId,minPrice,maxPrice
   if((min!=null&&inp.spot<min)||(max!=null&&inp.spot>max))note='Spot is outside the price range — the first order will be skipped unless the price returns inside it.';
   return{ok:true,perOrder:perOrder,sellSymbol:sellSymbol,intervalMs:intervalMs,minPrice:min,maxPrice:max,note:note};
 }
-function dcaOrderAmounts(s,price){ // one order's amounts at a fill price: buy spends perOrder quote units; sell sells perOrder base units
-  if(s.side==='buy')return{qty:s.perOrder/price,amountQuote:s.perOrder};
+function dcaOrderAmounts(s,price){ // one order's amounts at a fill price (USD spot): buy spends perOrder quote units; sell sells perOrder base units
+  if(s.side==='buy')return{qty:s.perOrder*(s.quoteUsd||1)/price,amountQuote:s.perOrder}; /* N4.24: quote units / USD price, via quoteUsd */
   return{qty:s.perOrder,amountQuote:s.perOrder*price};
 }
 function dcaCleanSchedule(raw){
@@ -4005,10 +4009,10 @@ function histEventFromLimitCancel(lo,expired){
 /** N4.16 event builders (plain data in, plain data out; same shape as the limit builders). */
 function histEventFromDcaCreate(s,spot){
   const px=spot>0?spot:0;
-  const qty=s.side==='sell'?s.totalSell:(px>0?s.totalSell/px:0);
+  const qty=s.side==='sell'?s.totalSell:(px>0?s.totalSell*(s.quoteUsd||1)/px:0); /* N4.24 */
   return{mode:'paper',kind:'dca-create',wallet:null,
     pair:{baseMint:s.baseMint,quoteMint:histQuoteMint(s.quoteSymbol),baseSymbol:s.baseSymbol,quoteSymbol:s.quoteSymbol},
-    side:s.side,sizeBase:qty,execPrice:px,notionalQuote:qty*px*(s.quoteUsd||1),
+    side:s.side,sizeBase:qty,execPrice:px,notionalQuote:qty*px,
     fees:{networkLamports:0,protocolQuote:0,label:'— (simulated: no chain fee)'},
     status:'open',txSig:null,note:'DCA schedule created — orders fill on app ticks while this tab is open. '+HIST_PAPER_NOTE};
 }
@@ -4406,7 +4410,7 @@ function paintPaperPreview(){
   if(orderType==='dca'||ticketMode==='live'){el.hidden=true;return;}
   el.hidden=false;
   const tp=ticketPair;if(!tp){el.textContent='Paper preview unavailable — no quote for this pair.';return;}
-  let pr=ticketPrice();
+  let pr=ticketPrice()/((quoteUsd(tp.quoteSymbol)||1)>0?quoteUsd(tp.quoteSymbol):1); /* N4.24: paperPreviewText takes a quote price */
   if(orderType==='limit'){
     const lp=$('limitPrice')?Number($('limitPrice').value):0;
     if(!(lp>0)){el.textContent='Paper preview unavailable — enter a limit price.';return;}
@@ -4425,7 +4429,7 @@ function refreshTicket(){
   if(!$('ticketPairName'))return;
   $('ticketPairName').textContent=tp?tp.baseSymbol+' / '+tp.quoteSymbol:'—';
   $('ticketPairMeta').textContent=tp&&pr>0?(formatPrice(pr)+(tp.change24h===null?'':' · '+(tp.change24h>=0?'+':'')+fmt(tp.change24h,2)+'% 24h')):'Waiting for market data…';paintTicketPairIdent(); // N3.108 (A250): identity line repaints with the pair name on every ticket repaint
-  $('execPrice').textContent=pr>0?formatPrice(pr):'—';const _ep=$('execPrice');if(_ep)_ep.setAttribute('data-prov',provText(ticketProv()));paintTicketQuoteAgeChip();paintTicketFreshLine(); // N3.107 (A249): chip repaints with every ticket repaint, incl. each feed poll via updatePortfolio; N3.116 fresh line repaints alongside it
+  $('execPrice').textContent=pr>0?formatQuotePrice(pr/((quoteUsd(tp.quoteSymbol)||1)>0?quoteUsd(tp.quoteSymbol):1),tp.quoteSymbol):'—'; /* N4.24: execution price agrees with the limit field's unit */const _ep=$('execPrice');if(_ep)_ep.setAttribute('data-prov',provText(ticketProv()));paintTicketQuoteAgeChip();paintTicketFreshLine(); // N3.107 (A249): chip repaints with every ticket repaint, incl. each feed poll via updatePortfolio; N3.116 fresh line repaints alongside it
   const paperNoQ=!(pr>0);
   const paperRq=$('refreshPaperQuoteBtn');if(paperRq)paperRq.hidden=!paperNoQ;
   const paperQn=$('paperQuoteNote');if(paperQn){paperQn.hidden=!paperNoQ;if(paperNoQ)paperQn.textContent=paperQuoteNoteText();}
@@ -4436,8 +4440,8 @@ function refreshTicket(){
     const lp=$('limitPrice')?Number($('limitPrice').value):0;
     const lbs=$('limitBaseSym');if(lbs)lbs.textContent=tp.baseSymbol;
     const lqs=$('limitQuoteSym');if(lqs)lqs.textContent=tp.quoteSymbol;
-    const sr=$('limitSpotRef');if(sr)sr.textContent=pr>0?('spot '+formatPriceUsd(pr)):'spot';
-    $('estQty').textContent=lp>0&&amount>0?('≈ '+fmtQty(amount/lp)+' '+tp.baseSymbol+' when the price reaches '+formatPriceUsd(lp)):'— '+(tp?tp.baseSymbol:'');
+    const sr=$('limitSpotRef');if(sr)sr.textContent=pr>0?('spot '+formatQuotePrice(pr/((quoteUsd(tp.quoteSymbol)||1)>0?quoteUsd(tp.quoteSymbol):1),tp.quoteSymbol)):'spot'; /* N4.24 */
+    $('estQty').textContent=lp>0&&amount>0?('≈ '+fmtQty(amount/lp)+' '+tp.baseSymbol+' when the price reaches '+formatQuotePrice(lp,tp.quoteSymbol)):'— '+(tp?tp.baseSymbol:'');
     const _dl=$('dualSize');if(_dl)_dl.textContent=dualSizeText(ticketSizeUsd(),(lp>0&&amount>0)?amount/lp:null,tp?tp.baseSymbol:'','at your limit'); // N3.119
     const sb=$('submitTrade');
     if(sb){sb.textContent='Create limit order · Paper';sb.disabled=!limitFeedLive();}
@@ -4448,8 +4452,8 @@ function refreshTicket(){
     const sb=$('submitTrade');
     if(sb){sb.textContent='Activate DCA schedule · Paper';sb.disabled=!limitFeedLive();}
   }else{
-    $('estQty').textContent=pr>0&&amount>0?fmtQty(amount/pr)+' '+tp.baseSymbol:'— '+(tp?tp.baseSymbol:'');
-    const _dlM=$('dualSize');if(_dlM)_dlM.textContent=dualSizeText(ticketSizeUsd(),(pr>0&&amount>0)?amount/pr:null,tp?tp.baseSymbol:''); // N3.119
+    $('estQty').textContent=pr>0&&amount>0?fmtQty(amount*((quoteUsd(tp.quoteSymbol)||1)>0?quoteUsd(tp.quoteSymbol):1)/pr)+' '+tp.baseSymbol:'— '+(tp?tp.baseSymbol:''); /* N4.24 */
+    const _dlM=$('dualSize');if(_dlM)_dlM.textContent=dualSizeText(ticketSizeUsd(),(pr>0&&amount>0)?amount*((quoteUsd(tp.quoteSymbol)||1)>0?quoteUsd(tp.quoteSymbol):1)/pr:null,tp?tp.baseSymbol:''); // N3.119
     const sb=$('submitTrade');
     if(sb&&(!$('reviewSheet')||$('reviewSheet').hidden)){const st=paperNoQuoteSubmit(side,tp?tp.baseSymbol:'',paperNoQ);sb.textContent=st.text;sb.disabled=st.disabled;}
   }
@@ -5260,13 +5264,13 @@ function limitSpotFor(o){ // spot price for a limit order's pair (0 when unknown
 function runLimitEngine(){ // called from setPrice on every spot tick (pack §3.5.2)
   if(!limitOrders.some(o=>o.status==='open'))return;
   const now=Date.now();
-  const res=evaluatePaperLimits(limitOrders,limitSpotFor,now);
+  const res=evaluatePaperLimits(limitOrders,function(o){const s=limitSpotFor(o),q=quoteUsd(o.quoteSymbol);return q>0?s/q:0;},now); /* N4.24: limitPrice is quote-denominated */
   res.filled.forEach(applyLimitFill);
   res.expired.forEach(applyLimitExpire);
   if(res.filled.length||res.expired.length){renderLimitOrders();saveState();}
 }
 function applyLimitFill(o){
-  const fill={baseMint:o.baseMint,baseSymbol:o.baseSymbol,quoteSymbol:o.quoteSymbol,price:o.limitPrice,quoteUsd:o.quoteUsd,amount:o.amountQuote};
+  const fill={baseMint:o.baseMint,baseSymbol:o.baseSymbol,quoteSymbol:o.quoteSymbol,price:o.limitPrice*(o.quoteUsd||1),quoteUsd:o.quoteUsd,amount:o.amountQuote}; /* N4.24 */
   const r=o.side==='buy'?paperBuyFill({cash,holdings},fill):paperSellFill({cash,holdings},fill);
   if(r.error){o.status='open';return;} // funds moved meanwhile — stays open, retried on the next tick
   cash=r.cash;holdings=r.holdings;
@@ -5274,10 +5278,10 @@ function applyLimitFill(o){
   orders.unshift(filledOrder);
   histRecord(histEventFromLimitFill(filledOrder,o)); // N4.6: durable paper history
   renderOrders();renderHistory();updatePortfolio();
-  toast('Paper limit '+o.side+' filled at '+formatPriceUsd(o.limitPrice)+' (limit price). No blockchain transaction sent.');
+  toast('Paper limit '+o.side+' filled at '+formatQuotePrice(o.limitPrice,o.quoteSymbol)+' (limit price). No blockchain transaction sent.');
 }
 function applyLimitExpire(o){
-  orders.unshift({side:o.side,type:'limit',mode:'paper',baseMint:o.baseMint,baseSymbol:o.baseSymbol,quoteSymbol:o.quoteSymbol,amount:o.amountQuote,qty:o.amountQuote/o.limitPrice,price:o.limitPrice,limitPrice:o.limitPrice,status:'expired',time:new Date()});
+  orders.unshift({side:o.side,type:'limit',mode:'paper',baseMint:o.baseMint,baseSymbol:o.baseSymbol,quoteSymbol:o.quoteSymbol,amount:o.amountQuote,qty:o.amountQuote/o.limitPrice,price:o.limitPrice*(o.quoteUsd||1),limitPrice:o.limitPrice,status:'expired',time:new Date()});
   histRecord(histEventFromLimitCancel(o,true)); // N4.6
   renderOrders();renderHistory();
   toast('Paper limit order expired unfilled.');
@@ -5286,7 +5290,7 @@ function cancelLimitOrder(id){
   const o=limitOrders.find(x=>x.id===id&&x.status==='open');
   if(!o)return;
   o.status='cancelled';
-  orders.unshift({side:o.side,type:'limit',mode:'paper',baseMint:o.baseMint,baseSymbol:o.baseSymbol,quoteSymbol:o.quoteSymbol,amount:o.amountQuote,qty:o.amountQuote/o.limitPrice,price:o.limitPrice,limitPrice:o.limitPrice,status:'cancelled',time:new Date()});
+  orders.unshift({side:o.side,type:'limit',mode:'paper',baseMint:o.baseMint,baseSymbol:o.baseSymbol,quoteSymbol:o.quoteSymbol,amount:o.amountQuote,qty:o.amountQuote/o.limitPrice,price:o.limitPrice*(o.quoteUsd||1),limitPrice:o.limitPrice,status:'cancelled',time:new Date()});
   histRecord(histEventFromLimitCancel(o,false)); // N4.6
   renderOrders();renderLimitOrders();renderHistory();saveState();
   toast('Paper limit order cancelled.');
@@ -5297,7 +5301,7 @@ function renderLimitOrders(){
   const box=$('limitOpen');if(!box)return;
   if(!open.length){box.innerHTML='<div class="empty">No open limit orders. Create one from the Limit tab on the ticket.</div>';return;}
   const now=Date.now();
-  box.innerHTML=open.map(o=>'<div style="padding:12px 16px;border-bottom:1px solid var(--rowline)"><div style="display:flex;justify-content:space-between;gap:8px;align-items:center"><div><strong class="'+(o.side==='buy'?'positive':'negative')+'">'+o.side.toUpperCase()+' '+esc(o.baseSymbol)+'/'+esc(o.quoteSymbol)+'</strong> <span class="pill" style="font-size:10px;padding:2px 7px">LIMIT</span> <span class="pill" style="font-size:10px;padding:2px 7px">PAPER</span><div class="sub">@ '+formatPriceUsd(o.limitPrice)+' · '+fmt(o.amountQuote,2)+' '+esc(o.quoteSymbol)+' · '+esc(limitExpLeft(o,now))+'</div></div><button type="button" class="action sell" data-limit-cancel="'+esc(o.id)+'">Cancel</button></div></div>').join('');
+  box.innerHTML=open.map(o=>'<div style="padding:12px 16px;border-bottom:1px solid var(--rowline)"><div style="display:flex;justify-content:space-between;gap:8px;align-items:center"><div><strong class="'+(o.side==='buy'?'positive':'negative')+'">'+o.side.toUpperCase()+' '+esc(o.baseSymbol)+'/'+esc(o.quoteSymbol)+'</strong> <span class="pill" style="font-size:10px;padding:2px 7px">LIMIT</span> <span class="pill" style="font-size:10px;padding:2px 7px">PAPER</span><div class="sub">@ '+formatQuotePrice(o.limitPrice,o.quoteSymbol)+' · '+fmt(o.amountQuote,2)+' '+esc(o.quoteSymbol)+' · '+esc(limitExpLeft(o,now))+'</div></div><button type="button" class="action sell" data-limit-cancel="'+esc(o.id)+'">Cancel</button></div></div>').join('');
   box.querySelectorAll('[data-limit-cancel]').forEach(b=>b.onclick=()=>cancelLimitOrder(b.dataset.limitCancel));
 }
 function paintOrderType(){
@@ -5319,7 +5323,8 @@ function limitPrefill(force){
   const el=$('limitPrice');if(!el)return;
   if(!limitFeedLive()){el.placeholder='Waiting for live price…';el.disabled=true;return;}
   el.disabled=false;el.placeholder='Limit price';
-  if(force||!el.value)el.value=String(parseFloat(ticketPrice().toPrecision(10)));
+  const spotQ=ticketPrice()/((quoteUsd(ticketPair&&ticketPair.quoteSymbol)||1)>0?quoteUsd(ticketPair&&ticketPair.quoteSymbol):1); /* N4.24: field is labelled in the pair quote */
+  if(force||!el.value)el.value=String(parseFloat(spotQ.toPrecision(10)));
 }
 function limitTicketInputs(){
   const tp=ticketPair;
@@ -5358,7 +5363,7 @@ function confirmLimitReview(){
   limitOrders.unshift(lo);
   histRecord(histEventFromLimitCreate(lo)); // N4.6: the birth record lands in history; the order works in the Open panel
   renderLimitOrders();renderHistory();hideReview();saveState();
-  toast('Paper limit '+inp.side+' order created — fills if the spot price reaches '+formatPriceUsd(v.limitPrice)+'.');
+  toast('Paper limit '+inp.side+' order created — fills if the spot price reaches '+formatQuotePrice(v.limitPrice,inp.quoteSymbol)+'.');
 }
 /* N4.5 init wiring (runs once; refreshTicket paints the rest on every tick). */
 (function initLimitTicket(){
@@ -5368,7 +5373,7 @@ function confirmLimitReview(){
   if(lp)lp.oninput=()=>{hideReview();updateLimitNote();refreshTicket();};
   document.querySelectorAll('#limitPresets button').forEach(b=>b.onclick=()=>{
     hideReview();
-    const p=Number(b.dataset.lp),spot=ticketPrice();
+    const p=Number(b.dataset.lp),spot=ticketPrice()/((quoteUsd(ticketPair&&ticketPair.quoteSymbol)||1)>0?quoteUsd(ticketPair&&ticketPair.quoteSymbol):1); /* N4.24 */
     if(!(spot>0))return toast('Waiting for a live price.');
     $('limitPrice').disabled=false;
     $('limitPrice').value=String(parseFloat((spot*(1+p/100)).toPrecision(10)));
@@ -5404,13 +5409,14 @@ function updateDcaSummary(){
   const tp=ticketPair;if(!tp){n.textContent='';return;}
   const sellSym=side==='sell'?tp.baseSymbol:tp.quoteSymbol;
   const ls=$('dcaTotalSym');if(ls)ls.textContent=sellSym;
+  const vb=$('dcaTotalVerb');if(vb)vb.textContent=side==='buy'?'spend':'sell'; /* N4.24: Buy ticket spends, it does not sell */
   const lu=$('dcaTotalUnit');if(lu)lu.textContent=sellSym;
   const v=dcaValidate(dcaTicketInputs());
   const eq=$('estQty');
-  if(!v.ok){n.innerHTML='<span style="color:var(--red)">'+esc(v.error)+'</span>';if(eq)eq.textContent='— '+(tp?tp.baseSymbol:'');return;}
+  if(!v.ok){n.innerHTML='<span style="color:var(--red)">'+esc(v.error)+'</span>';if(eq)eq.textContent='— '+(tp?tp.baseSymbol:'')+' per order';return;} /* N4.24: stale framing keeps the token-per-order unit, no quantity invented */
   if(v.note)n.innerHTML='<span style="color:var(--amber)">'+esc(v.note)+'</span>';
   else n.textContent=dcaSummaryText(v.perOrder,v.sellSymbol,Math.floor(Number($('dcaCount').value)),dcaEndsAt(Date.now(),Math.floor(Number($('dcaCount').value)),v.intervalMs));
-  if(eq)eq.textContent='≈ '+fmtQty(v.perOrder)+' '+v.sellSymbol+' per order';
+  if(eq)eq.textContent=side==='buy'&&ticketPrice()>0?('≈ '+fmtQty(v.perOrder*((quoteUsd(tp.quoteSymbol)||1)>0?quoteUsd(tp.quoteSymbol):1)/ticketPrice())+' '+tp.baseSymbol+' per order'):('≈ '+fmtQty(v.perOrder)+' '+v.sellSymbol+' per order'); /* N4.24: Buy receives base tokens per order, not quote currency */
 }
 /* N3.129 (2026-11-03, A271): DCA preview line under the order-type buttons (paper ticket only — the Live ticket never arms a DCA schedule, so it gets no preview). Input-driven only: hidden whenever DCA is not selected, no ticket pair is loaded, or dcaPreviewText returns null (no complete schedule entered). No data writes, no quote, no execution path change. */
 function paintDcaPreview(){
@@ -6500,7 +6506,7 @@ function histRowHtml(e,allEvents){
     +'<div style="display:flex;justify-content:space-between;gap:8px;align-items:flex-start">'
     +'<div><strong class="'+sideCls+'">'+e.side.toUpperCase()+' '+esc(e.pair.baseSymbol)+'/'+esc(e.pair.quoteSymbol)+'</strong> '+histChip(e.mode==='live'?'LIVE':'PAPER')+limitTag+statusTag
     +'<div class="sub">'+esc(histRelTime(e.ts))+' · '+fmtQty(e.sizeBase)+' '+esc(e.pair.baseSymbol)+'</div></div>'
-    +'<div style="text-align:right"><strong title="Execution price at fill time — not a current quote">'+formatPriceUsd(e.execPrice)+'</strong><div class="sub">'+usd(e.notionalQuote)+'</div></div>'
+    +'<div style="text-align:right"><strong title="Execution price at fill time — not a current quote">'+(String(e.kind||'').indexOf('limit')>=0?formatQuotePrice(e.execPrice,e.pair&&e.pair.quoteSymbol):formatPriceUsd(e.execPrice))+'</strong><div class="sub">'+usd(e.notionalQuote)+'</div></div>'
     +'</div>'+det+'</div>';
 }
 function renderHistory(){
@@ -7902,7 +7908,7 @@ function hideLiveReview(){
   live.querySelectorAll('#limitPresetsLive button').forEach(function(btn){
     btn.onclick=function(){
       hideReview();hideLiveReview();
-      var p=Number(btn.dataset.lp),spot=ticketPrice();
+      var p=Number(btn.dataset.lp),spot=ticketPrice()/((quoteUsd(ticketPair&&ticketPair.quoteSymbol)||1)>0?quoteUsd(ticketPair&&ticketPair.quoteSymbol):1); /* N4.24 */
       if(!(spot>0))return toast('Waiting for a live price.');
       var orig=$('limitPrice');if(orig){orig.disabled=false;orig.value=String(parseFloat((spot*(1+p/100)).toPrecision(10)));}
       updateLimitNote();refreshTicket();
