@@ -39,7 +39,8 @@ contract CoordinationKernel is KernelStorage {
         uint256 registryDelay_,
         uint256 epochLength_,
         uint256 councilSeats_,
-        Modules memory m
+        Modules memory m,
+        bool reputationWeighs_
     ) {
         if (genesisAdmin_ == address(0)) revert ZeroGovernance();
         if (epochLength_ == 0) revert BadEpochLength();
@@ -54,6 +55,7 @@ contract CoordinationKernel is KernelStorage {
         epochZero = block.timestamp;
         epochLength = epochLength_;
         councilSeats = councilSeats_;
+        reputationWeighs = reputationWeighs_;
         maxInfluenceShare = (WAD + 5) / 6; // the treasury note's whale ratio L/T = 1/6 (rounded up so six equal agents fit), reused as the weight bound
         declaredState = State(genesisStateId, 0, genesisStateHash);
 

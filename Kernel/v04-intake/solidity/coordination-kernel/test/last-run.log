@@ -1,3 +1,13 @@
+This version of µWS is not compatible with your Node.js build:
+
+Error: Cannot find module '../binaries/uws_linux_x64_127.node'
+Require stack:
+- /tmp/claude-0/-home-claude/5d215505-3eb6-57cc-8a43-09d51bb63aa3/scratchpad/sol/node_modules/ganache/node_modules/@trufflesuite/uws-js-unofficial/src/uws.js
+- /tmp/claude-0/-home-claude/5d215505-3eb6-57cc-8a43-09d51bb63aa3/scratchpad/sol/node_modules/ganache/dist/node/core.js
+- /tmp/claude-0/-home-claude/5d215505-3eb6-57cc-8a43-09d51bb63aa3/scratchpad/sol/test/amalgam.js
+Falling back to a NodeJS implementation; performance may be degraded.
+
+
 
 genesis: bootstrap authority exists only until sealed
   ok   a stranger cannot grant roles
@@ -165,4 +175,10 @@ weight bound is enforced at seal (fresh deployment)
   ok   seal refused while one agent holds more than 1/6 of base influence
   ok   the cap cannot be tightened under an existing holder
 
-124 passed, 0 failed
+reputationWeighs: the launch-profile switch (mirrors the Rust crate)
+  ok   the switch is recorded at deployment
+  ok   reputation weighs: a fresh agent at reputation 0 has half its base influence
+  ok   reputation does not weigh: influence is the base influence
+  ok   and it does not depend on the time asked about
+
+128 passed, 0 failed

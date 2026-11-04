@@ -245,12 +245,23 @@ module.exports = async (c) => {
   const mods2 = {};
   for (const n of ['GovernanceModule', 'OutcomeModule', 'ConsensusModule', 'PlanningModule', 'DialectModule', 'CouncilModule']) mods2[n] = await dep(n, c.admin);
   const addr = async n => mods2[n].getAddress();
-  const k2 = await dep('CoordinationKernel', c.admin, c.admin.address, b32('g'), H('h'), 0, DAY, 3, { governance: await addr('GovernanceModule'), outcome: await addr('OutcomeModule'), consensus: await addr('ConsensusModule'), planning: await addr('PlanningModule'), dialect: await addr('DialectModule'), council: await addr('CouncilModule') });
+  const k2 = await dep('CoordinationKernel', c.admin, c.admin.address, b32('g'), H('h'), 0, DAY, 3, { governance: await addr('GovernanceModule'), outcome: await addr('OutcomeModule'), consensus: await addr('ConsensusModule'), planning: await addr('PlanningModule'), dialect: await addr('DialectModule'), council: await addr('CouncilModule') }, true);
   const K2 = new (require('ethers').Contract)(k2.target, abi, c.admin);
   for (const t of [GA, GC, GCO, GR]) await tx(K2.setPolicy(t, pol()));
   await tx(K2.registerAgent(a1.address, [G], 100n * WAD)); await tx(K2.registerAgent(a2.address, [G], WAD)); await tx(K2.registerAgent(a3.address, [G], WAD));
   await tx(K2.installCouncil([a1.address, a2.address, a3.address]));
   ok(await rn(K2, 'sealGenesis') === 'GenesisNotReady', 'seal refused while one agent holds more than 1/6 of base influence');
   ok(await rn(K2, 'setMaxInfluenceShare', WAD / 100n) === 'InfluenceShareExceeded', 'the cap cannot be tightened under an existing holder');
+
+  // ---------------------------------------------------------------- launch profile: reputation weighs nothing
+  sec('reputationWeighs: the launch-profile switch (mirrors the Rust crate)');
+  const k3 = await dep('CoordinationKernel', c.admin, c.admin.address, b32('g'), H('h'), 0, DAY, 3, { governance: await addr('GovernanceModule'), outcome: await addr('OutcomeModule'), consensus: await addr('ConsensusModule'), planning: await addr('PlanningModule'), dialect: await addr('DialectModule'), council: await addr('CouncilModule') }, false);
+  const K3 = new (require('ethers').Contract)(k3.target, abi, c.admin);
+  ok(await K2.reputationWeighs() === true && await K3.reputationWeighs() === false, 'the switch is recorded at deployment');
+  await tx(K2.registerAgent(a5.address, [G], 5n * WAD)); await tx(K3.registerAgent(a5.address, [G], 5n * WAD));
+  const tnow = await now();
+  ok(await K2.influenceAt(a5.address, tnow) === 5n * WAD / 2n, 'reputation weighs: a fresh agent at reputation 0 has half its base influence');
+  ok(await K3.influenceAt(a5.address, tnow) === 5n * WAD, 'reputation does not weigh: influence is the base influence');
+  ok(await K3.influenceAt(a5.address, 0) === 5n * WAD, 'and it does not depend on the time asked about');
 };
 function ethers_zero() { return '0x0000000000000000000000000000000000000000'; }

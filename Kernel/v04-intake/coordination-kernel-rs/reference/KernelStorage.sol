@@ -569,6 +569,7 @@ abstract contract KernelStorage {
     uint256 public totalBaseInfluence;
     uint256 public largestBaseInfluence;
     uint256 public maxInfluenceShare;                  // WAD
+    bool public reputationWeighs;                      // launch profile switch: false = influence is the base influence, reputation weighs nothing
     address public positionSource;                     // ILockedHolding
     mapping(address => uint256) public positionStreak;       // consecutive epochs the locked holding was verified
     mapping(address => uint256) public lastPositionEpoch1;   // epoch + 1 of the last verification; 0 = never
@@ -726,7 +727,10 @@ abstract contract KernelStorage {
     }
 
     /// I(a) = baseInfluence * (rep - REP_MIN)/(REP_MAX - REP_MIN): monotone, non-negative.
+    /// With the launch-profile switch off (`reputationWeighs == false`) reputation is still recorded but weighs
+    /// nothing: I(a) = baseInfluence. This mirrors the Rust crate's `reputation_weighs`.
     function influenceAt(address agent, uint256 ts) public view returns (uint256) {
+        if (!reputationWeighs) return agents[agent].baseInfluence;
         (bool f, int256 rep) = _repAt(agent, ts);
         if (!f) return 0;
         return agents[agent].baseInfluence * uint256(rep - REP_MIN) / uint256(REP_MAX - REP_MIN);

@@ -15,7 +15,7 @@ const sec = t => console.log('\n' + t);
   const genesis = b32('genesis'), DAY = 86400;
   const k0 = await dep('CoordinationKernel', admin, admin.address, genesis, H('gh'), 0, DAY, 3, {
     governance: await mods.GovernanceModule.getAddress(), outcome: await mods.OutcomeModule.getAddress(), consensus: await mods.ConsensusModule.getAddress(),
-    planning: await mods.PlanningModule.getAddress(), dialect: await mods.DialectModule.getAddress(), council: await mods.CouncilModule.getAddress() });
+    planning: await mods.PlanningModule.getAddress(), dialect: await mods.DialectModule.getAddress(), council: await mods.CouncilModule.getAddress() }, true);
   const seen = new Set(), abi = [];
   for (const n of ['CoordinationKernel', 'GovernanceModule', 'OutcomeModule', 'ConsensusModule', 'PlanningModule', 'DialectModule', 'CouncilModule'])
     for (const e of art[n].abi) { const key = e.type + e.name + JSON.stringify((e.inputs || []).map(i => i.type)); if (!seen.has(key)) { seen.add(key); abi.push(e); } }
