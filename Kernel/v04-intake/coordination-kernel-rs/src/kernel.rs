@@ -1,5 +1,7 @@
 use crate::classify::{base_weight_of, classify_stance, sector_of, Contribution, Sector, SECTORS};
 use crate::num::{Amount, Delta};
+use alloc::borrow::Cow;
+use alloc::boxed::Box;
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -268,7 +270,7 @@ pub struct NotationChange {
     pub new_kind: SymbolKind,
     pub definition_hash: Hash32,
     pub prev_change: Option<ChangeId>,
-    pub reason: String,
+    pub reason: Cow<'static, str>,
     pub proposer: AgentId,
     pub committed_epoch: u64,
     pub status: NotationStatus,
@@ -435,7 +437,7 @@ pub struct Kernel<E: Env = NoEnv> {
     discard_votes: BTreeMap<(TransitionId, u32), BTreeSet<AgentId>>,
     // world
     observations: BTreeMap<Hash32, Observation>,
-    transitions: BTreeMap<TransitionId, Rec>,
+    transitions: BTreeMap<TransitionId, Box<Rec>>,
     siblings: BTreeMap<(u64, Hash32), Vec<TransitionId>>,
     selected_for: BTreeMap<(u64, Hash32), TransitionId>,
     declared: SystemState,
@@ -552,10 +554,10 @@ impl<E: Env> Kernel<E> {
         match self.agents.get(who) { Some(p) if p.active => Ok(p), _ => Err(KernelError::InactiveAgent) }
     }
     fn rec(&self, id: &TransitionId) -> Result<&Rec, KernelError> {
-        self.transitions.get(id).ok_or(KernelError::UnknownTransition)
+        self.transitions.get(id).map(|b| &**b).ok_or(KernelError::UnknownTransition)
     }
     fn rec_mut(&mut self, id: &TransitionId) -> Result<&mut Rec, KernelError> {
-        self.transitions.get_mut(id).ok_or(KernelError::UnknownTransition)
+        self.transitions.get_mut(id).map(|b| &mut **b).ok_or(KernelError::UnknownTransition)
     }
     fn want(&self, id: &TransitionId, l: Life) -> Result<(), KernelError> {
         let c = self.rec(id)?.life;
@@ -826,7 +828,7 @@ impl<E: Env> Kernel<E> {
         let mut cs: BTreeSet<ConstraintId> = self.req_constraints.get(&m.transition_type).cloned().unwrap_or_default();
         cs.extend(extra);
         let os: Vec<ObjectiveId> = self.req_objectives.get(&m.transition_type).map(|s| s.iter().copied().collect()).unwrap_or_default();
-        self.transitions.insert(id, Rec {
+        self.transitions.insert(id, Box::new(Rec {
             proposer: *caller, m, pol, life: Life::Proposed,
             constraint_ids: cs.into_iter().collect(), objective_ids: os, constraints_ok: false, objectives_ok: false,
             eligible_at: 0, consensus_deadline: 0, round_sigs: BTreeMap::new(), last_round: BTreeMap::new(),
@@ -834,7 +836,7 @@ impl<E: Env> Kernel<E> {
             plans: BTreeMap::new(), planning_deadline: 0, min_plan_expiry: None, compatible: false, replans: 0, block_episode: 0,
             exceptions: Vec::new(), unresolved_blocking: 0, blocking_by: BTreeMap::new(), dialect_deps: Vec::new(),
             action, committed_index: 0, execution_deadline: 0, attested: BTreeSet::new(), votes: BTreeMap::new(), realized: None,
-        });
+        }));
         self.events.push(Event::Registered(id));
         Ok(())
     }
@@ -1202,7 +1204,7 @@ impl<E: Env> Kernel<E> {
 
     // ================================================================ dialect
     fn record_genesis_notations(&mut self, by: AgentId) {
-        let k = |a: &str, b: &str, ka, kb, r: &str| (tag(a.as_bytes()), tag(b.as_bytes()), ka, kb, String::from(r));
+        let k = |a: &str, b: &'static str, ka, kb, r: &'static str| (tag(a.as_bytes()), tag(b.as_bytes()), ka, kb, Cow::Borrowed(r));
         use SymbolKind::*;
         let list = [
             k("F_DEADLINE", "F_PLANNING_OPEN", Constant, Constant, "bit tests whether the planning window is still open, not whether a deadline was missed; logic unchanged"),
@@ -1215,6 +1217,7 @@ impl<E: Env> Kernel<E> {
             k("selectCandidate", "selectCandidate", Function, Function, "same name, new meaning: permissionless after the consensus window closes; highest-confidence qualifying sibling wins, earlier eligibility breaks ties"),
             k("GPolicy", "GPolicy", Function, Function, "same name, pinned meaning: the highest-matching group multiplier, not the sum of matching groups"),
         ];
+        self.changes.reserve_exact(list.len());
         for (o, n, ko, kn, reason) in list {
             let id = self.changes.len() as ChangeId;
             self.dialect_epoch += 1;
@@ -1245,7 +1248,7 @@ impl<E: Env> Kernel<E> {
         let id = self.changes.len() as ChangeId;
         self.changes.push(NotationChange {
             old_symbol: p.old_symbol, new_symbol: p.new_symbol, old_kind: p.old_kind, new_kind: p.new_kind,
-            definition_hash: p.definition_hash, prev_change: p.prev_change, reason: p.reason, proposer: *caller,
+            definition_hash: p.definition_hash, prev_change: p.prev_change, reason: Cow::Owned(p.reason), proposer: *caller,
             committed_epoch: 0, status: NotationStatus::Proposed,
         });
         Ok(id)

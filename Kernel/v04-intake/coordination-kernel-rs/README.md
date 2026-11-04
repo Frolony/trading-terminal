@@ -1,4 +1,4 @@
-# coordination-kernel (Rust reference, v0.4)
+# coordination-kernel (Rust reference, v0.4.3)
 
 The Rust mirror of the amalgamated Solidity kernel (`contracts/` in the Solidity folder; copies of the files that matter are in `reference/`). `no_std + alloc`, no dependencies.
 
@@ -34,4 +34,21 @@ The Rust mirror of the amalgamated Solidity kernel (`contracts/` in the Solidity
 
 ## Tests
 
-`cargo test` runs the unit tests, 30 behavioural tests and the 7 parity tests. `cargo build --no-default-features` builds the `no_std` kernel.
+`cargo test` runs the unit tests, 30 behavioural tests, the 8 parity tests and an allocation-profile test (`tests/alloc_profile.rs`, a counting allocator with regression ceilings). `cargo build --no-default-features` builds the `no_std` kernel.
+
+## v0.4.2: allocation changes (no behaviour change)
+
+Transition records are boxed in the transitions map, and the nine genesis notations are static data (`NotationChange.reason` is now `Cow<'static, str>`, with the notation list reserved in one allocation). The predicate, the Solidity line and every behavioural and parity test are unchanged. Measured on the host with `tests/alloc_profile.rs` (bytes requested):
+
+| stage | v0.4.1 | v0.4.2 |
+|---|---|---|
+| genesis build (`Kernel::new`) | 7,557 | 3,120 |
+| `register_transition` | 10,448 | 1,736 |
+| full sealed world (head build) | 15,051 | 10,614 |
+
+The one place a public type changed: `NotationChange.reason` is `Cow<'static, str>` instead of `String`.
+
+## v0.4.3: parity and measurement only (no change to `src/`)
+
+* The Solidity kernel now has the launch-profile switch (`reputationWeighs`, a constructor argument stored in storage so the delegatecalled modules read it). `reference/KernelStorage.sol` and `reference/CoordinationKernel.sol` carry it, and `reputation_switch_matches` pins both sides.
+* `tests/alloc_profile.rs` gains `chain_replay_is_linear_in_priors`: it replays chains of 0 to 32 priors in one metered window. Measured here (bytes requested, whole sealed world plus k committed priors): 10,614 at 0; 18,976 at 1; 53,558 at 8; 99,894 at 16; 186,846 at 32. The marginal cost per prior settles near 5.5 KB (5,792 / 5,133 / 5,736 over 8-16 / 16-24 / 24-32) with no upward trend, so replay grows linearly in this crate, not quadratically. The test asserts the trend.

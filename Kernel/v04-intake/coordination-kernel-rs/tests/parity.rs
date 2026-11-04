@@ -159,3 +159,17 @@ fn discard_rule_matches() {
     let rb = rs.split("pub fn discard_blocked").nth(1).unwrap();
     assert!(rb.contains("Life::Blocked") && rb.contains("voters.len() * 2 <= self.council.len()") && rb.contains("block_episode") && rb.contains("Life::Discarded"));
 }
+
+/// The launch-profile switch: with it off, influence is the base influence and reputation weighs nothing.
+#[test]
+fn reputation_switch_matches() {
+    let storage = read("KernelStorage.sol");
+    assert!(storage.contains("bool public reputationWeighs;"), "the switch is storage, so every delegatecalled module reads it");
+    let infl = storage.split("function influenceAt").nth(1).expect("influenceAt exists in Solidity");
+    let first = infl.lines().nth(1).unwrap().trim();
+    assert_eq!(first, "if (!reputationWeighs) return agents[agent].baseInfluence;", "the switch is the first thing influenceAt checks");
+    let kernel = read("CoordinationKernel.sol");
+    assert!(kernel.contains("bool reputationWeighs_") && kernel.contains("reputationWeighs = reputationWeighs_;"), "set once, at deployment");
+    let rs = std::fs::read_to_string(format!("{}/src/kernel.rs", env!("CARGO_MANIFEST_DIR"))).unwrap();
+    assert!(rs.contains("if !self.cfg.reputation_weighs { return Ok(p.base_influence); }"), "Rust returns the base influence when the switch is off");
+}
