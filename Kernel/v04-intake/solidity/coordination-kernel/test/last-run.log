@@ -1,14 +1,3 @@
-This version of µWS is not compatible with your Node.js build:
-
-Error: Cannot find module '../binaries/uws_linux_x64_127.node'
-Require stack:
-- /tmp/claude-0/-home-claude/5d215505-3eb6-57cc-8a43-09d51bb63aa3/scratchpad/sol/node_modules/ganache/node_modules/@trufflesuite/uws-js-unofficial/src/uws.js
-- /tmp/claude-0/-home-claude/5d215505-3eb6-57cc-8a43-09d51bb63aa3/scratchpad/sol/node_modules/ganache/dist/node/core.js
-- /tmp/claude-0/-home-claude/5d215505-3eb6-57cc-8a43-09d51bb63aa3/scratchpad/sol/test/amalgam.js
-Falling back to a NodeJS implementation; performance may be degraded.
-
-
-
 genesis: bootstrap authority exists only until sealed
   ok   a stranger cannot grant roles
   ok   a stranger cannot set policy

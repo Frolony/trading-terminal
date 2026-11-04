@@ -1,0 +1,62 @@
+This version of µWS is not compatible with your Node.js build:
+
+Error: Cannot find module '../binaries/uws_linux_x64_127.node'
+Require stack:
+- /tmp/claude-0/-home-claude/5d215505-3eb6-57cc-8a43-09d51bb63aa3/scratchpad/verify_sol/node_modules/ganache/node_modules/@trufflesuite/uws-js-unofficial/src/uws.js
+- /tmp/claude-0/-home-claude/5d215505-3eb6-57cc-8a43-09d51bb63aa3/scratchpad/verify_sol/node_modules/ganache/dist/node/core.js
+- /tmp/claude-0/-home-claude/5d215505-3eb6-57cc-8a43-09d51bb63aa3/scratchpad/verify_sol/test/transfer.js
+Falling back to a NodeJS implementation; performance may be degraded.
+
+
+
+setup: kernel, vault, constraint, a 6-decimal USDC mock
+  ok   the kernel still fits EIP-170 (23877 bytes)
+  ok   the vault binds to a kernel exactly once
+  ok   a non-contract cannot be the vault
+  ok   the kernel pays from the bound vault
+
+a transfer cannot be registered or committed without being the exact payment
+  ok   the transfer type cannot enter as an ordinary transition (no payment attached)
+  ok   registerTransferTransition takes only the transfer type
+  ok   the payload hash binds token, destination and amount
+  ok   the resulting state hash must be the derived transfer hash, so settlement is exact
+  ok   only an active agent proposes
+  ok   nobody but the kernel can make the vault pay
+  ok   not even the deployer
+  ok   after the seal the cap changes only through a governance transition
+
+constraint: a bad payment fails the predicate before anyone votes
+  ok   badZero: a zero destination, the vault itself, a zero amount, an amount over the epoch cap, or an unlisted token is REJECTED
+  ok   badVault: a zero destination, the vault itself, a zero amount, an amount over the epoch cap, or an unlisted token is REJECTED
+  ok   badAmt: a zero destination, the vault itself, a zero amount, an amount over the epoch cap, or an unlisted token is REJECTED
+  ok   badCap: a zero destination, the vault itself, a zero amount, an amount over the epoch cap, or an unlisted token is REJECTED
+  ok   badTok: a zero destination, the vault itself, a zero amount, an amount over the epoch cap, or an unlisted token is REJECTED
+
+commitTransfer: the payment and the commit are one atomic step
+  ok   COMMITTABLE: the predicate mask is zero and nothing has been paid yet
+  ok   declaring the commit moves no funds
+  ok   commit() refuses a transfer: a transfer cannot commit without paying
+  ok   SETTLED in the same transaction as the commit
+  ok   the vault was debited and the payee credited by exactly 100 USDC (6-decimal units)
+  ok   the realized hash is derived from the payment and equals the declared one: exact, no drift
+  ok   the declared state advanced
+  ok   a paid transfer cannot be paid again
+  ok   settlement is not attested by anyone: there is nothing left to assert
+  ok   the vault counted 100 against this epoch's 1000 cap
+
+atomicity: if the payment fails, nothing commits
+  ok   a blocklisted recipient makes the payment revert
+  ok   and the transfer is still COMMITTABLE: nothing committed, the state did not move
+  ok   once the block is lifted the same transfer commits and pays
+  ok   a fee-on-transfer token (short credit) reverts: settlement is never inexact
+  ok   and nothing committed
+  ok   exact payment commits
+
+the epoch cap is enforced by the constraint and again by the vault; the council changes it only by a governed transition
+  ok   three payments have used 200 of the 1000 cap
+  ok   a payment over what is left is REJECTED by the constraint
+  ok   lowering the cap needs every seat
+  ok   the governed transition lowered the vault cap to 10 USDC
+  ok   a payment that was fine a moment ago is now REJECTED
+
+38 passed, 0 failed

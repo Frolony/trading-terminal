@@ -1,0 +1,21 @@
+{
+  "name": "coordination-kernel-solidity",
+  "version": "0.4.5",
+  "private": true,
+  "description": "Modular Solidity coordination kernel: contracts, build and test harness (local EVM)",
+  "license": "MIT OR Apache-2.0",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "node test/build.js",
+    "test": "npm run build && node test/amalgam.js && node test/transfer.js",
+    "test:core": "npm run build && node test/amalgam.js",
+    "test:transfer": "npm run build && node test/transfer.js"
+  },
+  "dependencies": {
+    "ethers": "6.13.4",
+    "ganache": "7.9.2",
+    "solc": "0.8.28"
+  }
+}

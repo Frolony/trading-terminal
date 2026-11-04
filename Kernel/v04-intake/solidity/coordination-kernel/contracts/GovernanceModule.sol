@@ -2,6 +2,7 @@
 pragma solidity ^0.8.24;
 
 import "./KernelStorage.sol";
+import "./ITransferVault.sol";
 
 /// Delegatecalled by the kernel: every function that changes a RULE.
 ///
@@ -214,5 +215,33 @@ contract GovernanceModule is KernelStorage {
         if (systemState != SystemState.COLLAPSED_FROZEN) revert NotFrozen();
         systemState = SystemState.OPERATIONAL;
         emit SystemStateChanged(SystemState.COLLAPSED_FROZEN, SystemState.OPERATIONAL);
+    }
+
+    // ---------------------------------------------------------------- treasury transfers (Arc)
+    /// The vault the kernel pays from. It must already be bound to this kernel.
+    function setTransferVault(address v) external onlyGovernance {
+        if (v.code.length == 0 || ITransferVault(v).kernel() != address(this)) revert BadTransferVault();
+        transferVault = v;
+    }
+
+    function vaultAllow(address token, bool ok) external onlyGovernance {
+        if (transferVault == address(0)) revert NoTransferVault();
+        ITransferVault(transferVault).allow(token, ok);
+    }
+
+    function vaultSetEpochCap(address token, uint256 cap) external onlyGovernance {
+        if (transferVault == address(0)) revert NoTransferVault();
+        ITransferVault(transferVault).setEpochCap(token, cap);
+    }
+
+    function transferOf(bytes32 id) external view returns (address token, address to, uint256 amount) {
+        TransferAction storage a = _transferAction[id];
+        return (a.token, a.to, a.amount);
+    }
+
+    /// The hash a transfer settles to: derived from the payment itself (and this chain and kernel), so there is
+    /// nothing for a settler to assert.
+    function transferHash(bytes32 id, address token, address to, uint256 amount) external view returns (bytes32) {
+        return keccak256(abi.encode(block.chainid, address(this), id, token, to, amount));
     }
 }

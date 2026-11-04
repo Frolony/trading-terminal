@@ -1,4 +1,4 @@
-const ganache = require('ganache'), { ethers } = require('ethers'), art = require('../art.json');
+const ganache = require('ganache'), { ethers } = require('ethers'), art = require('./art.json');
 const H = s => ethers.id(s), b32 = s => ethers.encodeBytes32String(s), Z = ethers.ZeroHash, WAD = 10n ** 18n;
 const UNC = (1n << 256n) - 1n;
 let pass = 0, fail = 0;

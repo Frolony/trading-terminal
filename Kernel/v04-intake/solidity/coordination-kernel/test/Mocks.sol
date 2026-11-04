@@ -13,3 +13,15 @@ contract MockPosition {
   mapping(address=>uint256) public amt; mapping(address=>uint256) public until;
   function set(address a,uint256 amount,uint256 lockedUntil) external { amt[a]=amount; until[a]=lockedUntil; }
   function lockedHolding(address a) external view returns (uint256,uint256){ return (amt[a],until[a]); } }
+/// A 6-decimal ERC-20 like Arc's USDC interface, with the two failure modes a payment must survive:
+/// a blocklisted address (the transfer reverts) and a fee-on-transfer token (the credit is short).
+contract MockUSDC6 {
+  uint8 public constant decimals = 6;
+  mapping(address=>uint256) public balanceOf; mapping(address=>bool) public blocked; uint256 public feeBps;
+  function mint(address a, uint256 n) external { balanceOf[a] += n; }
+  function setBlocked(address a, bool b) external { blocked[a] = b; }
+  function setFee(uint256 bps) external { feeBps = bps; }
+  function transfer(address to, uint256 n) external returns (bool) {
+    require(!blocked[to] && !blocked[msg.sender], "blocklisted"); require(balanceOf[msg.sender] >= n, "balance");
+    balanceOf[msg.sender] -= n; uint256 got = n - n * feeBps / 10000; balanceOf[to] += got; return true; }
+}
