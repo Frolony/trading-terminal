@@ -239,7 +239,7 @@ use solana_instruction::{AccountMeta, Instruction};
 use solana_pubkey::Pubkey;
 use std::str::FromStr;
 
-const PROGRAM_ID: &str = "2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr";
+const PROGRAM_ID: &str = "CesWhN1MyhEqYT2wu6m7NgPz4SigBqz7oz2BGrKRHNdj";
 const SYSTEM_ID: &str = "11111111111111111111111111111111";
 const MOLLUSK_SVM_VERSION: &str = "0.16.4";
 const TOOLCHAIN: &str = "Anchor 1.2.2 / Solana 4.3.2 / platform-tools v1.57";
