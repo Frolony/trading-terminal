@@ -8,6 +8,7 @@ import "./ConsensusModule.sol";
 import "./PlanningModule.sol";
 import "./DialectModule.sol";
 import "./CouncilModule.sol";
+import "./ITransferVault.sol";
 
 /**
  * CoordinationKernel: the amalgam of the TransitionKernel line (hardened lifecycle,
@@ -119,6 +120,11 @@ contract CoordinationKernel is KernelStorage {
         moduleOf[GovernanceModule.setTrustMerkleRoot.selector] = g;
         moduleOf[GovernanceModule.verifyTrustProof.selector] = g;
         moduleOf[GovernanceModule.rebootstrapSystem.selector] = g;
+        moduleOf[GovernanceModule.setTransferVault.selector] = g;
+        moduleOf[GovernanceModule.vaultAllow.selector] = g;
+        moduleOf[GovernanceModule.vaultSetEpochCap.selector] = g;
+        moduleOf[GovernanceModule.transferOf.selector] = g;
+        moduleOf[GovernanceModule.transferHash.selector] = g;
 
         address o = m.outcome;
         moduleOf[OutcomeModule.recordOutcome.selector] = o;
@@ -180,6 +186,9 @@ contract CoordinationKernel is KernelStorage {
         govCategory[GovernanceModule.invalidateObservation.selector] = a;
         govCategory[GovernanceModule.setTrustMerkleRoot.selector] = a;
         govCategory[CouncilModule.setPositionSource.selector] = T_GOV_CONSTITUTION;
+        govCategory[GovernanceModule.setTransferVault.selector] = T_GOV_CONSTITUTION; // where the treasury pays from
+        govCategory[GovernanceModule.vaultAllow.selector] = a;
+        govCategory[GovernanceModule.vaultSetEpochCap.selector] = a;
         govCategory[CouncilModule.setCouncilSeats.selector] = T_GOV_CONSTITUTION;
         govCategory[CouncilModule.installCouncil.selector] = T_GOV_COUNCIL;
         govCategory[GovernanceModule.rebootstrapSystem.selector] = T_GOV_REBOOT;
@@ -273,8 +282,29 @@ contract CoordinationKernel is KernelStorage {
 
     function registerTransition(bytes32 id, bytes32 proposedStateId, ManifestInput calldata m) external whenNotPaused {
         if (_isGovType(m.transitionType)) revert GovernanceTypeOnly();
+        if (m.transitionType == T_TRANSFER) revert TransferTypeOnly();
         _register(id, proposedStateId, m);
     }
+
+    /// The hash a transfer settles to. It is derived from the payment itself (and this chain and kernel), so
+    /// there is nothing for a settler to assert: the realized hash is what the vault measured, or nothing commits.
+    function _transferHash(bytes32 id, address token, address to, uint256 amount) private view returns (bytes32) {
+        return keccak256(abi.encode(block.chainid, address(this), id, token, to, amount));
+    }
+
+    /// Any active agent may propose a payment. The payment is bound twice: the payload hash is the hash of the
+    /// exact (token, to, amount), and the resulting state hash is the transfer's derived hash.
+    function registerTransferTransition(
+        bytes32 id, bytes32 proposedStateId, ManifestInput calldata m, address token, address to, uint256 amount
+    ) external whenNotPaused {
+        if (m.transitionType != T_TRANSFER) revert NotTransferTransition();
+        if (m.transitionPayloadHash != keccak256(abi.encode(token, to, amount))) revert TransferActionMismatch();
+        if (m.resultingStateHash != _transferHash(id, token, to, amount)) revert TransferStateMismatch();
+        _register(id, proposedStateId, m);
+        _transferAction[id] = TransferAction(token, to, amount);
+        emit TransferProposed(id, token, to, amount);
+    }
+
 
     /// Only a council seat may propose a change to the rules, and the payload is the
     /// exact call to make: its hash is the manifest's payload hash, and the bytes are
@@ -464,7 +494,27 @@ contract CoordinationKernel is KernelStorage {
 
     function commit(bytes32 id) external whenOperational(id) {
         if (_isGovType(transitions[id].manifest.transitionType)) revert UseGovernanceCommit();
+        if (transitions[id].manifest.transitionType == T_TRANSFER) revert UseTransferCommit();
         _commitCore(id);
+    }
+
+    /// Commits a transfer and pays it in the same transaction. The vault verifies the debit and the credit to the
+    /// unit, so the payment is exact or this reverts and nothing commits. A committed transfer therefore means a
+    /// paid one, and its settlement is derived from the payment, not attested.
+    function commitTransfer(bytes32 id) external whenOperational(id) {
+        if (transitions[id].manifest.transitionType != T_TRANSFER) revert NotTransferTransition();
+        if (transferVault == address(0)) revert NoTransferVault();
+        if (_transferLock) revert TransferReentered();
+        _transferLock = true;
+        _commitCore(id);
+        TransferAction memory a = _transferAction[id];
+        _set(id, TransitionLifecycle.EXECUTING);
+        ITransferVault(transferVault).release(a.token, a.to, a.amount);
+        bytes32 h = _transferHash(id, a.token, a.to, a.amount);
+        realizedStates[id] = State(transitions[id].proposedStateId, committedIndex[id], h);
+        _set(id, TransitionLifecycle.SETTLED);
+        _transferLock = false;
+        emit TransferExecuted(id, a.token, a.to, a.amount, h);
     }
 
     /// Commits a governance transition and applies its action in the same transaction.

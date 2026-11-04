@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "coordination-kernel"
-version = "0.4.3"
+version = "0.4.5"
 
 [[package]]
 name = "kernel-contention-v04"

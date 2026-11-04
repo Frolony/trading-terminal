@@ -1,6 +1,6 @@
 [package]
 name = "coordination-kernel"
-version = "0.4.3"
+version = "0.4.5"
 edition = "2021"
 description = "Closed-loop state-machine coordination kernel — deterministic, memory-safe Rust for Substrate / Solana / WASM"
 license = "MIT OR Apache-2.0"

@@ -135,13 +135,13 @@ unsafe impl GlobalAlloc for Meter {
         System.alloc(l)
     }
     unsafe fn dealloc(&self, p: *mut u8, l: Layout) {
-        if ARMED.load(SeqCst) { let _ = LIVE.fetch_update(SeqCst, SeqCst, |v| Some(v.saturating_sub(l.size()))); }
+        if ARMED.load(SeqCst) { let _ = LIVE.try_update(SeqCst, SeqCst, |v| Some(v.saturating_sub(l.size()))); }
         System.dealloc(p, l)
     }
     unsafe fn realloc(&self, p: *mut u8, l: Layout, n: usize) -> *mut u8 {
         if ARMED.load(SeqCst) {
             // accounted as free(old) + alloc(new), as in the program-side meter
-            let _ = LIVE.fetch_update(SeqCst, SeqCst, |v| Some(v.saturating_sub(l.size())));
+            let _ = LIVE.try_update(SeqCst, SeqCst, |v| Some(v.saturating_sub(l.size())));
             CUM.fetch_add(n, SeqCst); COUNT.fetch_add(1, SeqCst);
             BIGGEST.fetch_max(n, SeqCst);
             let now = LIVE.fetch_add(n, SeqCst) + n;

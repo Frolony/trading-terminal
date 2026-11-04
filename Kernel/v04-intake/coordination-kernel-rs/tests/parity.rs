@@ -173,3 +173,18 @@ fn reputation_switch_matches() {
     let rs = std::fs::read_to_string(format!("{}/src/kernel.rs", env!("CARGO_MANIFEST_DIR"))).unwrap();
     assert!(rs.contains("if !self.cfg.reputation_weighs { return Ok(p.base_influence); }"), "Rust returns the base influence when the switch is off");
 }
+
+/// The Arc treasury-transfer extension is Solidity-only (the Rust kernel moves no assets; a deployment does that
+/// through `Env`). What must hold on both sides is that it does not touch the predicate: a transfer commits through
+/// the same core as every other transition, and only after that does the vault pay.
+#[test]
+fn the_transfer_extension_goes_through_the_same_commit_core() {
+    let sol = read("CoordinationKernel.sol");
+    let body = sol.split("function commitTransfer").nth(1).expect("commitTransfer exists").split("function ").next().unwrap();
+    let core = body.find("_commitCore(id)").expect("a transfer commits through _commitCore");
+    let pay = body.find(".release(").expect("and then the vault pays");
+    assert!(core < pay, "the commit comes first, the payment second, and a failed payment reverts both");
+    let commit = sol.split("function commit(bytes32 id)").nth(1).unwrap().split("function ").next().unwrap();
+    assert!(commit.contains("T_TRANSFER") && commit.contains("UseTransferCommit"), "commit() refuses a transfer, so none can commit unpaid");
+    assert!(sol.contains("revert TransferTypeOnly()"), "a transfer cannot register without its payment");
+}

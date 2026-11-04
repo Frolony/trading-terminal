@@ -69,6 +69,8 @@ abstract contract KernelStorage {
     bytes32 public constant T_GOV_CONSTITUTION = keccak256("GOV_CONSTITUTION");
     bytes32 public constant T_GOV_COUNCIL = keccak256("GOV_COUNCIL");
     bytes32 public constant T_GOV_REBOOT = keccak256("GOV_REBOOT");
+    /// An ordinary transition type that MOVES a token out of the vault when (and only when) it commits.
+    bytes32 public constant T_TRANSFER = keccak256("TRANSFER");
 
     // ------------------------------------------------------------------------
     // Errors
@@ -165,6 +167,14 @@ abstract contract KernelStorage {
     error NotGovernanceTransition();
     error GovActionMismatch();
     error GovActionFailed(bytes reason);
+    error TransferTypeOnly();         // a transfer type cannot be registered without its payment
+    error UseTransferCommit();        // transfer transitions commit only through commitTransfer
+    error NotTransferTransition();
+    error TransferActionMismatch();
+    error TransferStateMismatch();    // resultingStateHash must be the transfer's own derived hash, so settlement is exact
+    error NoTransferVault();
+    error BadTransferVault();
+    error TransferReentered();
     error BadSeats();
     error SittingTooShort(uint256 sittingSince, uint256 epoch);
     error NotCandidate(address agent);
@@ -569,6 +579,12 @@ abstract contract KernelStorage {
     uint256 public totalBaseInfluence;
     uint256 public largestBaseInfluence;
     uint256 public maxInfluenceShare;                  // WAD
+    /// Treasury transfers: the exact payment a transfer transition makes, stored at registration so constraint
+    /// evaluators can judge it before any vote. A committed transfer is always a paid transfer.
+    struct TransferAction { address token; address to; uint256 amount; }
+    address public transferVault;
+    mapping(bytes32 => TransferAction) internal _transferAction;
+    bool internal _transferLock;
     bool public reputationWeighs;                      // launch profile switch: false = influence is the base influence, reputation weighs nothing
     address public positionSource;                     // ILockedHolding
     mapping(address => uint256) public positionStreak;       // consecutive epochs the locked holding was verified
@@ -592,6 +608,8 @@ abstract contract KernelStorage {
     event GovernanceActionProposed(bytes32 indexed id, bytes32 indexed category, bytes action);
     event GovernanceApproved(bytes32 indexed transitionId, bytes32 indexed actionHash, address indexed seat);
     event GovernanceApplied(bytes32 indexed id, bytes4 indexed selector);
+    event TransferProposed(bytes32 indexed id, address token, address to, uint256 amount);
+    event TransferExecuted(bytes32 indexed id, address token, address to, uint256 amount, bytes32 realizedHash);
     event TransitionEvaluated(bytes32 indexed id, bool constraintsSatisfied, bool objectivesSatisfied);
     event TransitionSelected(bytes32 indexed id);
     event PlanningOpened(bytes32 indexed id, uint256 deadline);
