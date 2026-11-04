@@ -1,0 +1,900 @@
+[2026-11-03T18:00:17.384126305Z WARN  cargo_build_sbf] Package 'program-v04' has two crate types defined: cdylib and lib. This setting precludes link-time optimizations (LTO). Use cdylib for programs to be deployed and rlib for packages to be imported by other programs as libraries.
+   Compiling serde_core v1.0.229
+   Compiling serde v1.0.229
+   Compiling borsh v1.8.1
+   Compiling five8_core v1.0.0
+   Compiling bytemuck v1.25.2
+   Compiling five8 v1.0.0
+   Compiling solana-define-syscall v4.0.1
+   Compiling sha2-const-stable v0.1.0
+   Compiling solana-define-syscall v5.3.0
+   Compiling five8_const v1.0.0
+   Compiling solana-sanitize v3.0.1
+   Compiling solana-atomic-u64 v3.0.1
+   Compiling num-traits v0.2.19
+   Compiling solana-program-memory v3.1.0
+   Compiling solana-msg v3.1.0
+   Compiling bv v0.11.1
+   Compiling solana-program-error v3.0.1
+   Compiling generic-array v0.14.7
+   Compiling typenum v1.20.1
+   Compiling log v0.4.34
+   Compiling solana-instruction-error v2.5.0
+   Compiling winnow v1.0.4
+   Compiling lazy_static v1.5.1
+   Compiling equivalent v1.0.3
+   Compiling hashbrown v0.15.5
+   Compiling toml_parser v1.1.5+spec-1.1.0
+   Compiling block-buffer v0.10.4
+   Compiling crypto-common v0.1.7
+   Compiling indexmap v2.9.0
+   Compiling serde_bytes v0.11.19
+   Compiling thiserror v1.0.69
+   Compiling toml_datetime v0.7.5+spec-1.1.0
+   Compiling solana-hash v4.7.0
+   Compiling bincode v1.3.3
+   Compiling solana-sha256-hasher v3.1.0
+   Compiling solana-address v2.9.0
+   Compiling solana-fee-calculator v3.4.0
+   Compiling solana-sdk-ids v3.1.0
+   Compiling solana-pubkey v4.4.0
+   Compiling solana-sysvar-id v3.1.0
+   Compiling solana-instruction v4.0.0
+   Compiling solana-get-sysvar v1.0.0
+   Compiling solana-account-info v3.1.1
+   Compiling solana-instruction v3.5.1
+   Compiling solana-address v1.1.0
+   Compiling solana-program-entrypoint v3.1.1
+   Compiling solana-pubkey v3.0.0
+   Compiling solana-stable-layout v3.0.1
+   Compiling solana-clock v4.0.0
+   Compiling solana-last-restart-slot v3.2.0
+   Compiling solana-slot-hashes v3.2.0
+   Compiling solana-clock v3.2.1
+   Compiling solana-epoch-rewards v3.2.0
+   Compiling solana-epoch-schedule v3.4.0
+   Compiling solana-rent v3.1.0
+Error: Function _RINvNtNtNtCskXIvWxbO49l_4core5slice4sort6stable14driftsort_mainTyNtCs9PJ3RO01e24_11solana_hash4HashENCINvMNtCs2NnmRzMYaIN_5alloc5sliceSBZ_7sort_byNCNvMCs2a1Ivq1cfpp_18solana_slot_hashesNtB2p_10SlotHashes3new0E0INtNtB1I_3vec3VecBZ_EEB2p_ overflows the maximum allowed frame space by accessing an offset 64 bytes greater than the maximum of 2048. Please, minimize large stack variables. Estimated function frame size: 2112 bytes. Exceeding the maximum stack offset may cause undefined behavior during execution.
+
+   Compiling solana-cpi v3.1.0
+   Compiling solana-system-interface v2.0.0
+   Compiling solana-slot-history v3.2.0
+   Compiling solana-system-interface v3.3.0
+   Compiling solana-sysvar v3.1.1
+   Compiling solana-serialize-utils v3.1.2
+   Compiling winnow v0.7.15
+   Compiling keccak-const v0.2.0
+   Compiling cfg-if v1.0.5
+   Compiling solana-define-syscall v3.0.0
+   Compiling const-crypto v0.3.0
+   Compiling solana-loader-v3-interface v6.1.1
+   Compiling solana-invoke v0.5.1
+   Compiling solana-stake-interface v2.0.2
+   Compiling solana-instructions-sysvar v3.0.1
+   Compiling anchor-lang-error v1.2.2
+   Compiling solana-feature-gate-interface v3.1.0
+   Compiling blake3 v1.5.4
+   Compiling digest v0.10.7
+   Compiling solana-program-pack v3.1.0
+   Compiling solana-program-option v3.1.0
+   Compiling arrayvec v0.7.8
+   Compiling base64 v0.21.7
+   Compiling constant_time_eq v0.3.1
+   Compiling arrayref v0.3.9
+   Compiling sha2 v0.10.8
+   Compiling anchor-lang v1.2.2
+   Compiling zeroize v1.8.1
+   Compiling toml_edit v0.23.5
+   Compiling coordination-kernel v0.4.2 (/home/hatch/workspace/goals/gecko-solana-terminal-vercel-fix-build-out/hidden_files/v04-intake/coordination-kernel-rs)
+   Compiling cpufeatures v0.2.17 (/home/hatch/workspace/goals/gecko-solana-terminal-vercel-fix-build-out/hidden_files/v04-intake/program-v04/patches/cpufeatures)
+   Compiling unicode-segmentation v1.12.0
+   Compiling proc-macro-crate v3.4.0
+Error: Function _RNvNtCs2dnxB10DRwX_9toml_edit6parser14parse_document overflows the maximum allowed frame space by accessing an offset 256 bytes greater than the maximum of 2048. Please, minimize large stack variables. Estimated function frame size: 2304 bytes. Exceeding the maximum stack offset may cause undefined behavior during execution.
+
+   Compiling program-v04 v0.1.0 (/home/hatch/workspace/goals/gecko-solana-terminal-vercel-fix-build-out/hidden_files/v04-intake/program-v04/programs/program-v04)
+warning: unexpected `cfg` condition value: `custom-panic`
+    --> programs/program-v04/src/lib.rs:1361:1
+     |
+1361 | #[program]
+     | ^^^^^^^^^^
+     |
+     = note: expected values for `feature` are: `cpi`, `custom-heap`, `default`, `idl-build`, `no-entrypoint`, `no-idl`, `no-log-ix-name`, `small-heap`, and `tripwire-heap`
+     = note: using a cfg inside a macro will use the cfgs from the destination crate and not the ones from the defining crate
+     = help: try referring to `$crate::custom_panic_default` crate for guidance on how handle this unexpected cfg
+     = help: the macro `$crate::custom_panic_default` may come from an old version of the `solana_program_entrypoint` crate, try updating your dependency with `cargo update -p solana_program_entrypoint`
+     = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+     = note: `#[warn(unexpected_cfgs)]` on by default
+     = note: this warning originates in the macro `$crate::custom_panic_default` which comes from the expansion of the attribute macro `program` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unexpected `cfg` condition value: `anchor-debug`
+    --> programs/program-v04/src/lib.rs:1361:1
+     |
+1361 | #[program]
+     | ^^^^^^^^^^
+     |
+     = note: expected values for `feature` are: `cpi`, `custom-heap`, `default`, `idl-build`, `no-entrypoint`, `no-idl`, `no-log-ix-name`, `small-heap`, and `tripwire-heap`
+     = note: using a cfg inside a attribute macro will use the cfgs from the destination crate and not the ones from the defining crate
+     = help: try referring to `program` crate for guidance on how handle this unexpected cfg
+     = help: the attribute macro `program` may come from an old version of the `anchor_attribute_program` crate, try updating your dependency with `cargo update -p anchor_attribute_program`
+     = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+     = note: this warning originates in the attribute macro `program` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unexpected `cfg` condition value: `anchor-debug`
+    --> programs/program-v04/src/lib.rs:4022:10
+     |
+4022 | #[derive(Accounts)]
+     |          ^^^^^^^^
+     |
+     = note: expected values for `feature` are: `cpi`, `custom-heap`, `default`, `idl-build`, `no-entrypoint`, `no-idl`, `no-log-ix-name`, `small-heap`, and `tripwire-heap`
+     = note: using a cfg inside a derive macro will use the cfgs from the destination crate and not the ones from the defining crate
+     = help: try referring to `Accounts` crate for guidance on how handle this unexpected cfg
+     = help: the derive macro `Accounts` may come from an old version of the `anchor_derive_accounts` crate, try updating your dependency with `cargo update -p anchor_derive_accounts`
+     = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+     = note: this warning originates in the derive macro `Accounts` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unexpected `cfg` condition value: `anchor-debug`
+    --> programs/program-v04/src/lib.rs:4049:10
+     |
+4049 | #[derive(Accounts)]
+     |          ^^^^^^^^
+     |
+     = note: expected values for `feature` are: `cpi`, `custom-heap`, `default`, `idl-build`, `no-entrypoint`, `no-idl`, `no-log-ix-name`, `small-heap`, and `tripwire-heap`
+     = note: using a cfg inside a derive macro will use the cfgs from the destination crate and not the ones from the defining crate
+     = help: try referring to `Accounts` crate for guidance on how handle this unexpected cfg
+     = help: the derive macro `Accounts` may come from an old version of the `anchor_derive_accounts` crate, try updating your dependency with `cargo update -p anchor_derive_accounts`
+     = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+     = note: this warning originates in the derive macro `Accounts` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unexpected `cfg` condition value: `anchor-debug`
+    --> programs/program-v04/src/lib.rs:4086:10
+     |
+4086 | #[derive(Accounts)]
+     |          ^^^^^^^^
+     |
+     = note: expected values for `feature` are: `cpi`, `custom-heap`, `default`, `idl-build`, `no-entrypoint`, `no-idl`, `no-log-ix-name`, `small-heap`, and `tripwire-heap`
+     = note: using a cfg inside a derive macro will use the cfgs from the destination crate and not the ones from the defining crate
+     = help: try referring to `Accounts` crate for guidance on how handle this unexpected cfg
+     = help: the derive macro `Accounts` may come from an old version of the `anchor_derive_accounts` crate, try updating your dependency with `cargo update -p anchor_derive_accounts`
+     = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+     = note: this warning originates in the derive macro `Accounts` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unexpected `cfg` condition value: `anchor-debug`
+    --> programs/program-v04/src/lib.rs:4113:10
+     |
+4113 | #[derive(Accounts)]
+     |          ^^^^^^^^
+     |
+     = note: expected values for `feature` are: `cpi`, `custom-heap`, `default`, `idl-build`, `no-entrypoint`, `no-idl`, `no-log-ix-name`, `small-heap`, and `tripwire-heap`
+     = note: using a cfg inside a derive macro will use the cfgs from the destination crate and not the ones from the defining crate
+     = help: try referring to `Accounts` crate for guidance on how handle this unexpected cfg
+     = help: the derive macro `Accounts` may come from an old version of the `anchor_derive_accounts` crate, try updating your dependency with `cargo update -p anchor_derive_accounts`
+     = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+     = note: this warning originates in the derive macro `Accounts` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unexpected `cfg` condition value: `anchor-debug`
+    --> programs/program-v04/src/lib.rs:4140:10
+     |
+4140 | #[derive(Accounts)]
+     |          ^^^^^^^^
+     |
+     = note: expected values for `feature` are: `cpi`, `custom-heap`, `default`, `idl-build`, `no-entrypoint`, `no-idl`, `no-log-ix-name`, `small-heap`, and `tripwire-heap`
+     = note: using a cfg inside a derive macro will use the cfgs from the destination crate and not the ones from the defining crate
+     = help: try referring to `Accounts` crate for guidance on how handle this unexpected cfg
+     = help: the derive macro `Accounts` may come from an old version of the `anchor_derive_accounts` crate, try updating your dependency with `cargo update -p anchor_derive_accounts`
+     = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+     = note: this warning originates in the derive macro `Accounts` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unexpected `cfg` condition value: `anchor-debug`
+    --> programs/program-v04/src/lib.rs:4168:10
+     |
+4168 | #[derive(Accounts)]
+     |          ^^^^^^^^
+     |
+     = note: expected values for `feature` are: `cpi`, `custom-heap`, `default`, `idl-build`, `no-entrypoint`, `no-idl`, `no-log-ix-name`, `small-heap`, and `tripwire-heap`
+     = note: using a cfg inside a derive macro will use the cfgs from the destination crate and not the ones from the defining crate
+     = help: try referring to `Accounts` crate for guidance on how handle this unexpected cfg
+     = help: the derive macro `Accounts` may come from an old version of the `anchor_derive_accounts` crate, try updating your dependency with `cargo update -p anchor_derive_accounts`
+     = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+     = note: this warning originates in the derive macro `Accounts` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unexpected `cfg` condition value: `anchor-debug`
+    --> programs/program-v04/src/lib.rs:4208:10
+     |
+4208 | #[derive(Accounts)]
+     |          ^^^^^^^^
+     |
+     = note: expected values for `feature` are: `cpi`, `custom-heap`, `default`, `idl-build`, `no-entrypoint`, `no-idl`, `no-log-ix-name`, `small-heap`, and `tripwire-heap`
+     = note: using a cfg inside a derive macro will use the cfgs from the destination crate and not the ones from the defining crate
+     = help: try referring to `Accounts` crate for guidance on how handle this unexpected cfg
+     = help: the derive macro `Accounts` may come from an old version of the `anchor_derive_accounts` crate, try updating your dependency with `cargo update -p anchor_derive_accounts`
+     = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+     = note: this warning originates in the derive macro `Accounts` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unexpected `cfg` condition value: `anchor-debug`
+    --> programs/program-v04/src/lib.rs:4239:10
+     |
+4239 | #[derive(Accounts)]
+     |          ^^^^^^^^
+     |
+     = note: expected values for `feature` are: `cpi`, `custom-heap`, `default`, `idl-build`, `no-entrypoint`, `no-idl`, `no-log-ix-name`, `small-heap`, and `tripwire-heap`
+     = note: using a cfg inside a derive macro will use the cfgs from the destination crate and not the ones from the defining crate
+     = help: try referring to `Accounts` crate for guidance on how handle this unexpected cfg
+     = help: the derive macro `Accounts` may come from an old version of the `anchor_derive_accounts` crate, try updating your dependency with `cargo update -p anchor_derive_accounts`
+     = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+     = note: this warning originates in the derive macro `Accounts` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unexpected `cfg` condition value: `anchor-debug`
+    --> programs/program-v04/src/lib.rs:4272:10
+     |
+4272 | #[derive(Accounts)]
+     |          ^^^^^^^^
+     |
+     = note: expected values for `feature` are: `cpi`, `custom-heap`, `default`, `idl-build`, `no-entrypoint`, `no-idl`, `no-log-ix-name`, `small-heap`, and `tripwire-heap`
+     = note: using a cfg inside a derive macro will use the cfgs from the destination crate and not the ones from the defining crate
+     = help: try referring to `Accounts` crate for guidance on how handle this unexpected cfg
+     = help: the derive macro `Accounts` may come from an old version of the `anchor_derive_accounts` crate, try updating your dependency with `cargo update -p anchor_derive_accounts`
+     = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+     = note: this warning originates in the derive macro `Accounts` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unexpected `cfg` condition value: `anchor-debug`
+    --> programs/program-v04/src/lib.rs:4315:10
+     |
+4315 | #[derive(Accounts)]
+     |          ^^^^^^^^
+     |
+     = note: expected values for `feature` are: `cpi`, `custom-heap`, `default`, `idl-build`, `no-entrypoint`, `no-idl`, `no-log-ix-name`, `small-heap`, and `tripwire-heap`
+     = note: using a cfg inside a derive macro will use the cfgs from the destination crate and not the ones from the defining crate
+     = help: try referring to `Accounts` crate for guidance on how handle this unexpected cfg
+     = help: the derive macro `Accounts` may come from an old version of the `anchor_derive_accounts` crate, try updating your dependency with `cargo update -p anchor_derive_accounts`
+     = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+     = note: this warning originates in the derive macro `Accounts` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unexpected `cfg` condition value: `anchor-debug`
+    --> programs/program-v04/src/lib.rs:4353:10
+     |
+4353 | #[derive(Accounts)]
+     |          ^^^^^^^^
+     |
+     = note: expected values for `feature` are: `cpi`, `custom-heap`, `default`, `idl-build`, `no-entrypoint`, `no-idl`, `no-log-ix-name`, `small-heap`, and `tripwire-heap`
+     = note: using a cfg inside a derive macro will use the cfgs from the destination crate and not the ones from the defining crate
+     = help: try referring to `Accounts` crate for guidance on how handle this unexpected cfg
+     = help: the derive macro `Accounts` may come from an old version of the `anchor_derive_accounts` crate, try updating your dependency with `cargo update -p anchor_derive_accounts`
+     = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+     = note: this warning originates in the derive macro `Accounts` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unexpected `cfg` condition value: `anchor-debug`
+    --> programs/program-v04/src/lib.rs:4400:10
+     |
+4400 | #[derive(Accounts)]
+     |          ^^^^^^^^
+     |
+     = note: expected values for `feature` are: `cpi`, `custom-heap`, `default`, `idl-build`, `no-entrypoint`, `no-idl`, `no-log-ix-name`, `small-heap`, and `tripwire-heap`
+     = note: using a cfg inside a derive macro will use the cfgs from the destination crate and not the ones from the defining crate
+     = help: try referring to `Accounts` crate for guidance on how handle this unexpected cfg
+     = help: the derive macro `Accounts` may come from an old version of the `anchor_derive_accounts` crate, try updating your dependency with `cargo update -p anchor_derive_accounts`
+     = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+     = note: this warning originates in the derive macro `Accounts` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unexpected `cfg` condition value: `anchor-debug`
+    --> programs/program-v04/src/lib.rs:4422:10
+     |
+4422 | #[derive(Accounts)]
+     |          ^^^^^^^^
+     |
+     = note: expected values for `feature` are: `cpi`, `custom-heap`, `default`, `idl-build`, `no-entrypoint`, `no-idl`, `no-log-ix-name`, `small-heap`, and `tripwire-heap`
+     = note: using a cfg inside a derive macro will use the cfgs from the destination crate and not the ones from the defining crate
+     = help: try referring to `Accounts` crate for guidance on how handle this unexpected cfg
+     = help: the derive macro `Accounts` may come from an old version of the `anchor_derive_accounts` crate, try updating your dependency with `cargo update -p anchor_derive_accounts`
+     = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+     = note: this warning originates in the derive macro `Accounts` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unexpected `cfg` condition value: `anchor-debug`
+    --> programs/program-v04/src/lib.rs:4449:10
+     |
+4449 | #[derive(Accounts)]
+     |          ^^^^^^^^
+     |
+     = note: expected values for `feature` are: `cpi`, `custom-heap`, `default`, `idl-build`, `no-entrypoint`, `no-idl`, `no-log-ix-name`, `small-heap`, and `tripwire-heap`
+     = note: using a cfg inside a derive macro will use the cfgs from the destination crate and not the ones from the defining crate
+     = help: try referring to `Accounts` crate for guidance on how handle this unexpected cfg
+     = help: the derive macro `Accounts` may come from an old version of the `anchor_derive_accounts` crate, try updating your dependency with `cargo update -p anchor_derive_accounts`
+     = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+     = note: this warning originates in the derive macro `Accounts` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unexpected `cfg` condition value: `anchor-debug`
+    --> programs/program-v04/src/lib.rs:4476:10
+     |
+4476 | #[derive(Accounts)]
+     |          ^^^^^^^^
+     |
+     = note: expected values for `feature` are: `cpi`, `custom-heap`, `default`, `idl-build`, `no-entrypoint`, `no-idl`, `no-log-ix-name`, `small-heap`, and `tripwire-heap`
+     = note: using a cfg inside a derive macro will use the cfgs from the destination crate and not the ones from the defining crate
+     = help: try referring to `Accounts` crate for guidance on how handle this unexpected cfg
+     = help: the derive macro `Accounts` may come from an old version of the `anchor_derive_accounts` crate, try updating your dependency with `cargo update -p anchor_derive_accounts`
+     = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+     = note: this warning originates in the derive macro `Accounts` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unexpected `cfg` condition value: `anchor-debug`
+    --> programs/program-v04/src/lib.rs:4504:10
+     |
+4504 | #[derive(Accounts)]
+     |          ^^^^^^^^
+     |
+     = note: expected values for `feature` are: `cpi`, `custom-heap`, `default`, `idl-build`, `no-entrypoint`, `no-idl`, `no-log-ix-name`, `small-heap`, and `tripwire-heap`
+     = note: using a cfg inside a derive macro will use the cfgs from the destination crate and not the ones from the defining crate
+     = help: try referring to `Accounts` crate for guidance on how handle this unexpected cfg
+     = help: the derive macro `Accounts` may come from an old version of the `anchor_derive_accounts` crate, try updating your dependency with `cargo update -p anchor_derive_accounts`
+     = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+     = note: this warning originates in the derive macro `Accounts` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unexpected `cfg` condition value: `anchor-debug`
+    --> programs/program-v04/src/lib.rs:4531:10
+     |
+4531 | #[derive(Accounts)]
+     |          ^^^^^^^^
+     |
+     = note: expected values for `feature` are: `cpi`, `custom-heap`, `default`, `idl-build`, `no-entrypoint`, `no-idl`, `no-log-ix-name`, `small-heap`, and `tripwire-heap`
+     = note: using a cfg inside a derive macro will use the cfgs from the destination crate and not the ones from the defining crate
+     = help: try referring to `Accounts` crate for guidance on how handle this unexpected cfg
+     = help: the derive macro `Accounts` may come from an old version of the `anchor_derive_accounts` crate, try updating your dependency with `cargo update -p anchor_derive_accounts`
+     = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+     = note: this warning originates in the derive macro `Accounts` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unexpected `cfg` condition value: `anchor-debug`
+    --> programs/program-v04/src/lib.rs:4558:10
+     |
+4558 | #[derive(Accounts)]
+     |          ^^^^^^^^
+     |
+     = note: expected values for `feature` are: `cpi`, `custom-heap`, `default`, `idl-build`, `no-entrypoint`, `no-idl`, `no-log-ix-name`, `small-heap`, and `tripwire-heap`
+     = note: using a cfg inside a derive macro will use the cfgs from the destination crate and not the ones from the defining crate
+     = help: try referring to `Accounts` crate for guidance on how handle this unexpected cfg
+     = help: the derive macro `Accounts` may come from an old version of the `anchor_derive_accounts` crate, try updating your dependency with `cargo update -p anchor_derive_accounts`
+     = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+     = note: this warning originates in the derive macro `Accounts` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unexpected `cfg` condition value: `anchor-debug`
+    --> programs/program-v04/src/lib.rs:4585:10
+     |
+4585 | #[derive(Accounts)]
+     |          ^^^^^^^^
+     |
+     = note: expected values for `feature` are: `cpi`, `custom-heap`, `default`, `idl-build`, `no-entrypoint`, `no-idl`, `no-log-ix-name`, `small-heap`, and `tripwire-heap`
+     = note: using a cfg inside a derive macro will use the cfgs from the destination crate and not the ones from the defining crate
+     = help: try referring to `Accounts` crate for guidance on how handle this unexpected cfg
+     = help: the derive macro `Accounts` may come from an old version of the `anchor_derive_accounts` crate, try updating your dependency with `cargo update -p anchor_derive_accounts`
+     = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+     = note: this warning originates in the derive macro `Accounts` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unexpected `cfg` condition value: `anchor-debug`
+    --> programs/program-v04/src/lib.rs:4612:10
+     |
+4612 | #[derive(Accounts)]
+     |          ^^^^^^^^
+     |
+     = note: expected values for `feature` are: `cpi`, `custom-heap`, `default`, `idl-build`, `no-entrypoint`, `no-idl`, `no-log-ix-name`, `small-heap`, and `tripwire-heap`
+     = note: using a cfg inside a derive macro will use the cfgs from the destination crate and not the ones from the defining crate
+     = help: try referring to `Accounts` crate for guidance on how handle this unexpected cfg
+     = help: the derive macro `Accounts` may come from an old version of the `anchor_derive_accounts` crate, try updating your dependency with `cargo update -p anchor_derive_accounts`
+     = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+     = note: this warning originates in the derive macro `Accounts` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unexpected `cfg` condition value: `anchor-debug`
+    --> programs/program-v04/src/lib.rs:4639:10
+     |
+4639 | #[derive(Accounts)]
+     |          ^^^^^^^^
+     |
+     = note: expected values for `feature` are: `cpi`, `custom-heap`, `default`, `idl-build`, `no-entrypoint`, `no-idl`, `no-log-ix-name`, `small-heap`, and `tripwire-heap`
+     = note: using a cfg inside a derive macro will use the cfgs from the destination crate and not the ones from the defining crate
+     = help: try referring to `Accounts` crate for guidance on how handle this unexpected cfg
+     = help: the derive macro `Accounts` may come from an old version of the `anchor_derive_accounts` crate, try updating your dependency with `cargo update -p anchor_derive_accounts`
+     = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+     = note: this warning originates in the derive macro `Accounts` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unexpected `cfg` condition value: `anchor-debug`
+    --> programs/program-v04/src/lib.rs:4666:10
+     |
+4666 | #[derive(Accounts)]
+     |          ^^^^^^^^
+     |
+     = note: expected values for `feature` are: `cpi`, `custom-heap`, `default`, `idl-build`, `no-entrypoint`, `no-idl`, `no-log-ix-name`, `small-heap`, and `tripwire-heap`
+     = note: using a cfg inside a derive macro will use the cfgs from the destination crate and not the ones from the defining crate
+     = help: try referring to `Accounts` crate for guidance on how handle this unexpected cfg
+     = help: the derive macro `Accounts` may come from an old version of the `anchor_derive_accounts` crate, try updating your dependency with `cargo update -p anchor_derive_accounts`
+     = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+     = note: this warning originates in the derive macro `Accounts` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unexpected `cfg` condition value: `anchor-debug`
+    --> programs/program-v04/src/lib.rs:4693:10
+     |
+4693 | #[derive(Accounts)]
+     |          ^^^^^^^^
+     |
+     = note: expected values for `feature` are: `cpi`, `custom-heap`, `default`, `idl-build`, `no-entrypoint`, `no-idl`, `no-log-ix-name`, `small-heap`, and `tripwire-heap`
+     = note: using a cfg inside a derive macro will use the cfgs from the destination crate and not the ones from the defining crate
+     = help: try referring to `Accounts` crate for guidance on how handle this unexpected cfg
+     = help: the derive macro `Accounts` may come from an old version of the `anchor_derive_accounts` crate, try updating your dependency with `cargo update -p anchor_derive_accounts`
+     = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+     = note: this warning originates in the derive macro `Accounts` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unexpected `cfg` condition value: `anchor-debug`
+    --> programs/program-v04/src/lib.rs:4720:10
+     |
+4720 | #[derive(Accounts)]
+     |          ^^^^^^^^
+     |
+     = note: expected values for `feature` are: `cpi`, `custom-heap`, `default`, `idl-build`, `no-entrypoint`, `no-idl`, `no-log-ix-name`, `small-heap`, and `tripwire-heap`
+     = note: using a cfg inside a derive macro will use the cfgs from the destination crate and not the ones from the defining crate
+     = help: try referring to `Accounts` crate for guidance on how handle this unexpected cfg
+     = help: the derive macro `Accounts` may come from an old version of the `anchor_derive_accounts` crate, try updating your dependency with `cargo update -p anchor_derive_accounts`
+     = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+     = note: this warning originates in the derive macro `Accounts` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unexpected `cfg` condition value: `anchor-debug`
+    --> programs/program-v04/src/lib.rs:4757:10
+     |
+4757 | #[derive(Accounts)]
+     |          ^^^^^^^^
+     |
+     = note: expected values for `feature` are: `cpi`, `custom-heap`, `default`, `idl-build`, `no-entrypoint`, `no-idl`, `no-log-ix-name`, `small-heap`, and `tripwire-heap`
+     = note: using a cfg inside a derive macro will use the cfgs from the destination crate and not the ones from the defining crate
+     = help: try referring to `Accounts` crate for guidance on how handle this unexpected cfg
+     = help: the derive macro `Accounts` may come from an old version of the `anchor_derive_accounts` crate, try updating your dependency with `cargo update -p anchor_derive_accounts`
+     = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+     = note: this warning originates in the derive macro `Accounts` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unexpected `cfg` condition value: `anchor-debug`
+    --> programs/program-v04/src/lib.rs:4784:10
+     |
+4784 | #[derive(Accounts)]
+     |          ^^^^^^^^
+     |
+     = note: expected values for `feature` are: `cpi`, `custom-heap`, `default`, `idl-build`, `no-entrypoint`, `no-idl`, `no-log-ix-name`, `small-heap`, and `tripwire-heap`
+     = note: using a cfg inside a derive macro will use the cfgs from the destination crate and not the ones from the defining crate
+     = help: try referring to `Accounts` crate for guidance on how handle this unexpected cfg
+     = help: the derive macro `Accounts` may come from an old version of the `anchor_derive_accounts` crate, try updating your dependency with `cargo update -p anchor_derive_accounts`
+     = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+     = note: this warning originates in the derive macro `Accounts` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unexpected `cfg` condition value: `anchor-debug`
+    --> programs/program-v04/src/lib.rs:4811:10
+     |
+4811 | #[derive(Accounts)]
+     |          ^^^^^^^^
+     |
+     = note: expected values for `feature` are: `cpi`, `custom-heap`, `default`, `idl-build`, `no-entrypoint`, `no-idl`, `no-log-ix-name`, `small-heap`, and `tripwire-heap`
+     = note: using a cfg inside a derive macro will use the cfgs from the destination crate and not the ones from the defining crate
+     = help: try referring to `Accounts` crate for guidance on how handle this unexpected cfg
+     = help: the derive macro `Accounts` may come from an old version of the `anchor_derive_accounts` crate, try updating your dependency with `cargo update -p anchor_derive_accounts`
+     = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+     = note: this warning originates in the derive macro `Accounts` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unexpected `cfg` condition value: `anchor-debug`
+    --> programs/program-v04/src/lib.rs:4838:10
+     |
+4838 | #[derive(Accounts)]
+     |          ^^^^^^^^
+     |
+     = note: expected values for `feature` are: `cpi`, `custom-heap`, `default`, `idl-build`, `no-entrypoint`, `no-idl`, `no-log-ix-name`, `small-heap`, and `tripwire-heap`
+     = note: using a cfg inside a derive macro will use the cfgs from the destination crate and not the ones from the defining crate
+     = help: try referring to `Accounts` crate for guidance on how handle this unexpected cfg
+     = help: the derive macro `Accounts` may come from an old version of the `anchor_derive_accounts` crate, try updating your dependency with `cargo update -p anchor_derive_accounts`
+     = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+     = note: this warning originates in the derive macro `Accounts` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unexpected `cfg` condition value: `anchor-debug`
+    --> programs/program-v04/src/lib.rs:4875:10
+     |
+4875 | #[derive(Accounts)]
+     |          ^^^^^^^^
+     |
+     = note: expected values for `feature` are: `cpi`, `custom-heap`, `default`, `idl-build`, `no-entrypoint`, `no-idl`, `no-log-ix-name`, `small-heap`, and `tripwire-heap`
+     = note: using a cfg inside a derive macro will use the cfgs from the destination crate and not the ones from the defining crate
+     = help: try referring to `Accounts` crate for guidance on how handle this unexpected cfg
+     = help: the derive macro `Accounts` may come from an old version of the `anchor_derive_accounts` crate, try updating your dependency with `cargo update -p anchor_derive_accounts`
+     = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+     = note: this warning originates in the derive macro `Accounts` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unexpected `cfg` condition value: `anchor-debug`
+    --> programs/program-v04/src/lib.rs:4912:10
+     |
+4912 | #[derive(Accounts)]
+     |          ^^^^^^^^
+     |
+     = note: expected values for `feature` are: `cpi`, `custom-heap`, `default`, `idl-build`, `no-entrypoint`, `no-idl`, `no-log-ix-name`, `small-heap`, and `tripwire-heap`
+     = note: using a cfg inside a derive macro will use the cfgs from the destination crate and not the ones from the defining crate
+     = help: try referring to `Accounts` crate for guidance on how handle this unexpected cfg
+     = help: the derive macro `Accounts` may come from an old version of the `anchor_derive_accounts` crate, try updating your dependency with `cargo update -p anchor_derive_accounts`
+     = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+     = note: this warning originates in the derive macro `Accounts` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unexpected `cfg` condition value: `anchor-debug`
+    --> programs/program-v04/src/lib.rs:4940:10
+     |
+4940 | #[derive(Accounts)]
+     |          ^^^^^^^^
+     |
+     = note: expected values for `feature` are: `cpi`, `custom-heap`, `default`, `idl-build`, `no-entrypoint`, `no-idl`, `no-log-ix-name`, `small-heap`, and `tripwire-heap`
+     = note: using a cfg inside a derive macro will use the cfgs from the destination crate and not the ones from the defining crate
+     = help: try referring to `Accounts` crate for guidance on how handle this unexpected cfg
+     = help: the derive macro `Accounts` may come from an old version of the `anchor_derive_accounts` crate, try updating your dependency with `cargo update -p anchor_derive_accounts`
+     = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+     = note: this warning originates in the derive macro `Accounts` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unexpected `cfg` condition value: `anchor-debug`
+    --> programs/program-v04/src/lib.rs:4951:10
+     |
+4951 | #[derive(Accounts)]
+     |          ^^^^^^^^
+     |
+     = note: expected values for `feature` are: `cpi`, `custom-heap`, `default`, `idl-build`, `no-entrypoint`, `no-idl`, `no-log-ix-name`, `small-heap`, and `tripwire-heap`
+     = note: using a cfg inside a derive macro will use the cfgs from the destination crate and not the ones from the defining crate
+     = help: try referring to `Accounts` crate for guidance on how handle this unexpected cfg
+     = help: the derive macro `Accounts` may come from an old version of the `anchor_derive_accounts` crate, try updating your dependency with `cargo update -p anchor_derive_accounts`
+     = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+     = note: this warning originates in the derive macro `Accounts` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unexpected `cfg` condition value: `anchor-debug`
+    --> programs/program-v04/src/lib.rs:4978:10
+     |
+4978 | #[derive(Accounts)]
+     |          ^^^^^^^^
+     |
+     = note: expected values for `feature` are: `cpi`, `custom-heap`, `default`, `idl-build`, `no-entrypoint`, `no-idl`, `no-log-ix-name`, `small-heap`, and `tripwire-heap`
+     = note: using a cfg inside a derive macro will use the cfgs from the destination crate and not the ones from the defining crate
+     = help: try referring to `Accounts` crate for guidance on how handle this unexpected cfg
+     = help: the derive macro `Accounts` may come from an old version of the `anchor_derive_accounts` crate, try updating your dependency with `cargo update -p anchor_derive_accounts`
+     = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+     = note: this warning originates in the derive macro `Accounts` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unexpected `cfg` condition value: `anchor-debug`
+    --> programs/program-v04/src/lib.rs:5004:10
+     |
+5004 | #[derive(Accounts)]
+     |          ^^^^^^^^
+     |
+     = note: expected values for `feature` are: `cpi`, `custom-heap`, `default`, `idl-build`, `no-entrypoint`, `no-idl`, `no-log-ix-name`, `small-heap`, and `tripwire-heap`
+     = note: using a cfg inside a derive macro will use the cfgs from the destination crate and not the ones from the defining crate
+     = help: try referring to `Accounts` crate for guidance on how handle this unexpected cfg
+     = help: the derive macro `Accounts` may come from an old version of the `anchor_derive_accounts` crate, try updating your dependency with `cargo update -p anchor_derive_accounts`
+     = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+     = note: this warning originates in the derive macro `Accounts` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unexpected `cfg` condition value: `anchor-debug`
+    --> programs/program-v04/src/lib.rs:5025:10
+     |
+5025 | #[derive(Accounts)]
+     |          ^^^^^^^^
+     |
+     = note: expected values for `feature` are: `cpi`, `custom-heap`, `default`, `idl-build`, `no-entrypoint`, `no-idl`, `no-log-ix-name`, `small-heap`, and `tripwire-heap`
+     = note: using a cfg inside a derive macro will use the cfgs from the destination crate and not the ones from the defining crate
+     = help: try referring to `Accounts` crate for guidance on how handle this unexpected cfg
+     = help: the derive macro `Accounts` may come from an old version of the `anchor_derive_accounts` crate, try updating your dependency with `cargo update -p anchor_derive_accounts`
+     = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+     = note: this warning originates in the derive macro `Accounts` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unexpected `cfg` condition value: `anchor-debug`
+    --> programs/program-v04/src/lib.rs:5060:10
+     |
+5060 | #[derive(Accounts)]
+     |          ^^^^^^^^
+     |
+     = note: expected values for `feature` are: `cpi`, `custom-heap`, `default`, `idl-build`, `no-entrypoint`, `no-idl`, `no-log-ix-name`, `small-heap`, and `tripwire-heap`
+     = note: using a cfg inside a derive macro will use the cfgs from the destination crate and not the ones from the defining crate
+     = help: try referring to `Accounts` crate for guidance on how handle this unexpected cfg
+     = help: the derive macro `Accounts` may come from an old version of the `anchor_derive_accounts` crate, try updating your dependency with `cargo update -p anchor_derive_accounts`
+     = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+     = note: this warning originates in the derive macro `Accounts` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unexpected `cfg` condition value: `anchor-debug`
+    --> programs/program-v04/src/lib.rs:5109:10
+     |
+5109 | #[derive(Accounts)]
+     |          ^^^^^^^^
+     |
+     = note: expected values for `feature` are: `cpi`, `custom-heap`, `default`, `idl-build`, `no-entrypoint`, `no-idl`, `no-log-ix-name`, `small-heap`, and `tripwire-heap`
+     = note: using a cfg inside a derive macro will use the cfgs from the destination crate and not the ones from the defining crate
+     = help: try referring to `Accounts` crate for guidance on how handle this unexpected cfg
+     = help: the derive macro `Accounts` may come from an old version of the `anchor_derive_accounts` crate, try updating your dependency with `cargo update -p anchor_derive_accounts`
+     = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+     = note: this warning originates in the derive macro `Accounts` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unexpected `cfg` condition value: `anchor-debug`
+    --> programs/program-v04/src/lib.rs:5148:10
+     |
+5148 | #[derive(Accounts)]
+     |          ^^^^^^^^
+     |
+     = note: expected values for `feature` are: `cpi`, `custom-heap`, `default`, `idl-build`, `no-entrypoint`, `no-idl`, `no-log-ix-name`, `small-heap`, and `tripwire-heap`
+     = note: using a cfg inside a derive macro will use the cfgs from the destination crate and not the ones from the defining crate
+     = help: try referring to `Accounts` crate for guidance on how handle this unexpected cfg
+     = help: the derive macro `Accounts` may come from an old version of the `anchor_derive_accounts` crate, try updating your dependency with `cargo update -p anchor_derive_accounts`
+     = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+     = note: this warning originates in the derive macro `Accounts` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unexpected `cfg` condition value: `anchor-debug`
+    --> programs/program-v04/src/lib.rs:5164:10
+     |
+5164 | #[derive(Accounts)]
+     |          ^^^^^^^^
+     |
+     = note: expected values for `feature` are: `cpi`, `custom-heap`, `default`, `idl-build`, `no-entrypoint`, `no-idl`, `no-log-ix-name`, `small-heap`, and `tripwire-heap`
+     = note: using a cfg inside a derive macro will use the cfgs from the destination crate and not the ones from the defining crate
+     = help: try referring to `Accounts` crate for guidance on how handle this unexpected cfg
+     = help: the derive macro `Accounts` may come from an old version of the `anchor_derive_accounts` crate, try updating your dependency with `cargo update -p anchor_derive_accounts`
+     = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+     = note: this warning originates in the derive macro `Accounts` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unexpected `cfg` condition value: `anchor-debug`
+    --> programs/program-v04/src/lib.rs:5176:10
+     |
+5176 | #[derive(Accounts)]
+     |          ^^^^^^^^
+     |
+     = note: expected values for `feature` are: `cpi`, `custom-heap`, `default`, `idl-build`, `no-entrypoint`, `no-idl`, `no-log-ix-name`, `small-heap`, and `tripwire-heap`
+     = note: using a cfg inside a derive macro will use the cfgs from the destination crate and not the ones from the defining crate
+     = help: try referring to `Accounts` crate for guidance on how handle this unexpected cfg
+     = help: the derive macro `Accounts` may come from an old version of the `anchor_derive_accounts` crate, try updating your dependency with `cargo update -p anchor_derive_accounts`
+     = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+     = note: this warning originates in the derive macro `Accounts` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unexpected `cfg` condition value: `anchor-debug`
+    --> programs/program-v04/src/lib.rs:5188:10
+     |
+5188 | #[derive(Accounts)]
+     |          ^^^^^^^^
+     |
+     = note: expected values for `feature` are: `cpi`, `custom-heap`, `default`, `idl-build`, `no-entrypoint`, `no-idl`, `no-log-ix-name`, `small-heap`, and `tripwire-heap`
+     = note: using a cfg inside a derive macro will use the cfgs from the destination crate and not the ones from the defining crate
+     = help: try referring to `Accounts` crate for guidance on how handle this unexpected cfg
+     = help: the derive macro `Accounts` may come from an old version of the `anchor_derive_accounts` crate, try updating your dependency with `cargo update -p anchor_derive_accounts`
+     = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+     = note: this warning originates in the derive macro `Accounts` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unexpected `cfg` condition value: `anchor-debug`
+    --> programs/program-v04/src/lib.rs:5202:10
+     |
+5202 | #[derive(Accounts)]
+     |          ^^^^^^^^
+     |
+     = note: expected values for `feature` are: `cpi`, `custom-heap`, `default`, `idl-build`, `no-entrypoint`, `no-idl`, `no-log-ix-name`, `small-heap`, and `tripwire-heap`
+     = note: using a cfg inside a derive macro will use the cfgs from the destination crate and not the ones from the defining crate
+     = help: try referring to `Accounts` crate for guidance on how handle this unexpected cfg
+     = help: the derive macro `Accounts` may come from an old version of the `anchor_derive_accounts` crate, try updating your dependency with `cargo update -p anchor_derive_accounts`
+     = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+     = note: this warning originates in the derive macro `Accounts` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unexpected `cfg` condition value: `anchor-debug`
+    --> programs/program-v04/src/lib.rs:5213:10
+     |
+5213 | #[derive(Accounts)]
+     |          ^^^^^^^^
+     |
+     = note: expected values for `feature` are: `cpi`, `custom-heap`, `default`, `idl-build`, `no-entrypoint`, `no-idl`, `no-log-ix-name`, `small-heap`, and `tripwire-heap`
+     = note: using a cfg inside a derive macro will use the cfgs from the destination crate and not the ones from the defining crate
+     = help: try referring to `Accounts` crate for guidance on how handle this unexpected cfg
+     = help: the derive macro `Accounts` may come from an old version of the `anchor_derive_accounts` crate, try updating your dependency with `cargo update -p anchor_derive_accounts`
+     = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+     = note: this warning originates in the derive macro `Accounts` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unexpected `cfg` condition value: `anchor-debug`
+    --> programs/program-v04/src/lib.rs:5218:10
+     |
+5218 | #[derive(Accounts)]
+     |          ^^^^^^^^
+     |
+     = note: expected values for `feature` are: `cpi`, `custom-heap`, `default`, `idl-build`, `no-entrypoint`, `no-idl`, `no-log-ix-name`, `small-heap`, and `tripwire-heap`
+     = note: using a cfg inside a derive macro will use the cfgs from the destination crate and not the ones from the defining crate
+     = help: try referring to `Accounts` crate for guidance on how handle this unexpected cfg
+     = help: the derive macro `Accounts` may come from an old version of the `anchor_derive_accounts` crate, try updating your dependency with `cargo update -p anchor_derive_accounts`
+     = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+     = note: this warning originates in the derive macro `Accounts` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: unexpected `cfg` condition value: `anchor-debug`
+    --> programs/program-v04/src/lib.rs:5241:10
+     |
+5241 | #[derive(Accounts)]
+     |          ^^^^^^^^
+     |
+     = note: expected values for `feature` are: `cpi`, `custom-heap`, `default`, `idl-build`, `no-entrypoint`, `no-idl`, `no-log-ix-name`, `small-heap`, and `tripwire-heap`
+     = note: using a cfg inside a derive macro will use the cfgs from the destination crate and not the ones from the defining crate
+     = help: try referring to `Accounts` crate for guidance on how handle this unexpected cfg
+     = help: the derive macro `Accounts` may come from an old version of the `anchor_derive_accounts` crate, try updating your dependency with `cargo update -p anchor_derive_accounts`
+     = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+     = note: this warning originates in the derive macro `Accounts` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+Error: Function _RINvNtNtNtCskXIvWxbO49l_4core5slice4sort6stable14driftsort_mainAhj20_NvYBZ_NtNtB8_3cmp10PartialOrd2ltINtNtCs2NnmRzMYaIN_5alloc3vec3VecBZ_EECsfclKWdlT3af_11program_v04 overflows the maximum allowed frame space by accessing an offset 64 bytes greater than the maximum of 2048. Please, minimize large stack variables. Estimated function frame size: 2112 bytes. Exceeding the maximum stack offset may cause undefined behavior during execution.
+
+Error: Function _RINvNtNtNtCskXIvWxbO49l_4core5slice4sort6stable14driftsort_mainTAhj20_NtNtCsgribS4kxsG1_19coordination_kernel6kernel4LifeENCINvMNtCs2NnmRzMYaIN_5alloc5sliceSBZ_7sort_byNCINvXs1o_NtNtNtB24_11collections5btree3mapINtB2Q_8BTreeMapB10_B16_EINtNtNtNtB8_4iter6traits7collect12FromIteratorBZ_E9from_iterINtNtNtB3T_8adapters10filter_map9FilterMapINtNtB6_4iter4IterB10_ENCNCNvMs2_B18_INtB18_6KernelNtCsfclKWdlT3af_11program_v0410ProgramEnvE13mark_eligible00EE0E0INtNtB24_3vec3VecBZ_EEB6h_ overflows the maximum allowed frame space by accessing an offset 64 bytes greater than the maximum of 2048. Please, minimize large stack variables. Estimated function frame size: 2112 bytes. Exceeding the maximum stack offset may cause undefined behavior during execution.
+
+Error: Function _RINvNtNtNtCskXIvWxbO49l_4core5slice4sort6stable14driftsort_maintNvYtNtNtB8_3cmp10PartialOrd2ltINtNtCs2NnmRzMYaIN_5alloc3vec3VectEECsfclKWdlT3af_11program_v04 overflows the maximum allowed frame space by accessing an offset 64 bytes greater than the maximum of 2048. Please, minimize large stack variables. Estimated function frame size: 2112 bytes. Exceeding the maximum stack offset may cause undefined behavior during execution.
+
+Error: Function _RNvCsfclKWdlT3af_11program_v0415gov_action_hash overflows the maximum allowed frame space by accessing an offset 1088 bytes greater than the maximum of 2048. Please, minimize large stack variables. Estimated function frame size: 3136 bytes. Exceeding the maximum stack offset may cause undefined behavior during execution.
+
+Error: Function _RNvCsfclKWdlT3af_11program_v0423build_reputation_record overflows the maximum allowed frame space by accessing an offset 64 bytes greater than the maximum of 2048. Please, minimize large stack variables. Estimated function frame size: 2112 bytes. Exceeding the maximum stack offset may cause undefined behavior during execution.
+
+Error: Function _RNvCsfclKWdlT3af_11program_v0423gov_action_from_account overflows the maximum allowed frame space by accessing an offset 1088 bytes greater than the maximum of 2048. Please, minimize large stack variables. Estimated function frame size: 3136 bytes. Exceeding the maximum stack offset may cause undefined behavior during execution.
+
+Error: Function _RNvCsfclKWdlT3af_11program_v0424build_observation_record overflows the maximum allowed frame space by accessing an offset 128 bytes greater than the maximum of 2048. Please, minimize large stack variables. Estimated function frame size: 2176 bytes. Exceeding the maximum stack offset may cause undefined behavior during execution.
+
+Error: Function _RNvCsfclKWdlT3af_11program_v0424sealed_launch_kernel_env overflows the maximum allowed frame space by accessing an offset 1472 bytes greater than the maximum of 2048. Please, minimize large stack variables. Estimated function frame size: 3520 bytes. Exceeding the maximum stack offset may cause undefined behavior during execution.
+
+Error: Function _RNvCsfclKWdlT3af_11program_v0424submit_plan_from_records overflows the maximum allowed frame space by accessing an offset 1152 bytes greater than the maximum of 2048. Please, minimize large stack variables. Estimated function frame size: 3200 bytes. Exceeding the maximum stack offset may cause undefined behavior during execution.
+
+Error: Function _RNvCsfclKWdlT3af_11program_v0426mark_eligible_from_records overflows the maximum allowed frame space by accessing an offset 448 bytes greater than the maximum of 2048. Please, minimize large stack variables. Estimated function frame size: 2496 bytes. Exceeding the maximum stack offset may cause undefined behavior during execution.
+
+Error: Function _RNvCsfclKWdlT3af_11program_v0426open_planning_from_records overflows the maximum allowed frame space by accessing an offset 768 bytes greater than the maximum of 2048. Please, minimize large stack variables. Estimated function frame size: 2816 bytes. Exceeding the maximum stack offset may cause undefined behavior during execution.
+
+Error: Function _RNvCsfclKWdlT3af_11program_v0426submit_signal_from_records overflows the maximum allowed frame space by accessing an offset 896 bytes greater than the maximum of 2048. Please, minimize large stack variables. Estimated function frame size: 2944 bytes. Exceeding the maximum stack offset may cause undefined behavior during execution.
+
+Error: Function _RNvCsfclKWdlT3af_11program_v0427kernel_at_head_from_commits overflows the maximum allowed frame space by accessing an offset 64 bytes greater than the maximum of 2048. Please, minimize large stack variables. Estimated function frame size: 2112 bytes. Exceeding the maximum stack offset may cause undefined behavior during execution.
+
+Error: Function _RNvCsfclKWdlT3af_11program_v0427kernel_at_head_from_entries overflows the maximum allowed frame space by accessing an offset 1088 bytes greater than the maximum of 2048. Please, minimize large stack variables. Estimated function frame size: 3136 bytes. Exceeding the maximum stack offset may cause undefined behavior during execution.
+
+Error: Function _RNvCsfclKWdlT3af_11program_v0427record_outcome_from_records overflows the maximum allowed frame space by accessing an offset 384 bytes greater than the maximum of 2048. Please, minimize large stack variables. Estimated function frame size: 2432 bytes. Exceeding the maximum stack offset may cause undefined behavior during execution.
+
+Error: Function _RNvCsfclKWdlT3af_11program_v0428reconcile_plans_from_records overflows the maximum allowed frame space by accessing an offset 960 bytes greater than the maximum of 2048. Please, minimize large stack variables. Estimated function frame size: 3008 bytes. Exceeding the maximum stack offset may cause undefined behavior during execution.
+
+Error: Function _RNvCsfclKWdlT3af_11program_v0429select_candidate_from_records overflows the maximum allowed frame space by accessing an offset 704 bytes greater than the maximum of 2048. Please, minimize large stack variables. Estimated function frame size: 2752 bytes. Exceeding the maximum stack offset may cause undefined behavior during execution.
+
+Error: Function _RNvCsfclKWdlT3af_11program_v0430commit_governance_from_records overflows the maximum allowed frame space by accessing an offset 1216 bytes greater than the maximum of 2048. Please, minimize large stack variables. Estimated function frame size: 3264 bytes. Exceeding the maximum stack offset may cause undefined behavior during execution.
+
+Error: Function _RNvCsfclKWdlT3af_11program_v0430commit_transition_from_records overflows the maximum allowed frame space by accessing an offset 1152 bytes greater than the maximum of 2048. Please, minimize large stack variables. Estimated function frame size: 3200 bytes. Exceeding the maximum stack offset may cause undefined behavior during execution.
+
+Error: Function _RNvCsfclKWdlT3af_11program_v0430replay_governance_from_records overflows the maximum allowed frame space by accessing an offset 448 bytes greater than the maximum of 2048. Please, minimize large stack variables. Estimated function frame size: 2496 bytes. Exceeding the maximum stack offset may cause undefined behavior during execution.
+
+Error: Function _RNvCsfclKWdlT3af_11program_v0430replay_transition_from_records overflows the maximum allowed frame space by accessing an offset 320 bytes greater than the maximum of 2048. Please, minimize large stack variables. Estimated function frame size: 2368 bytes. Exceeding the maximum stack offset may cause undefined behavior during execution.
+
+Error: Function _RNvCsfclKWdlT3af_11program_v0430settle_transition_from_records overflows the maximum allowed frame space by accessing an offset 1280 bytes greater than the maximum of 2048. Please, minimize large stack variables. Estimated function frame size: 3328 bytes. Exceeding the maximum stack offset may cause undefined behavior during execution.
+
+Error: Function _RNvCsfclKWdlT3af_11program_v0431declare_transition_from_records overflows the maximum allowed frame space by accessing an offset 1024 bytes greater than the maximum of 2048. Please, minimize large stack variables. Estimated function frame size: 3072 bytes. Exceeding the maximum stack offset may cause undefined behavior during execution.
+
+Error: Function _RNvCsfclKWdlT3af_11program_v0432build_governance_approval_record overflows the maximum allowed frame space by accessing an offset 128 bytes greater than the maximum of 2048. Please, minimize large stack variables. Estimated function frame size: 2176 bytes. Exceeding the maximum stack offset may cause undefined behavior during execution.
+
+Error: Function _RNvCsfclKWdlT3af_11program_v0432evaluate_governance_from_records overflows the maximum allowed frame space by accessing an offset 512 bytes greater than the maximum of 2048. Please, minimize large stack variables. Estimated function frame size: 2560 bytes. Exceeding the maximum stack offset may cause undefined behavior during execution.
+
+Error: Function _RNvCsfclKWdlT3af_11program_v0432evaluate_transition_from_records overflows the maximum allowed frame space by accessing an offset 384 bytes greater than the maximum of 2048. Please, minimize large stack variables. Estimated function frame size: 2432 bytes. Exceeding the maximum stack offset may cause undefined behavior during execution.
+
+Error: Function _RNvCsfclKWdlT3af_11program_v0432validate_transition_from_records overflows the maximum allowed frame space by accessing an offset 1024 bytes greater than the maximum of 2048. Please, minimize large stack variables. Estimated function frame size: 3072 bytes. Exceeding the maximum stack offset may cause undefined behavior during execution.
+
+Error: Function _RNvCsfclKWdlT3af_11program_v0435submit_plan_governance_from_records overflows the maximum allowed frame space by accessing an offset 1216 bytes greater than the maximum of 2048. Please, minimize large stack variables. Estimated function frame size: 3264 bytes. Exceeding the maximum stack offset may cause undefined behavior during execution.
+
+Error: Function _RNvCsfclKWdlT3af_11program_v0437mark_eligible_governance_from_records overflows the maximum allowed frame space by accessing an offset 512 bytes greater than the maximum of 2048. Please, minimize large stack variables. Estimated function frame size: 2560 bytes. Exceeding the maximum stack offset may cause undefined behavior during execution.
+
+Error: Function _RNvCsfclKWdlT3af_11program_v0437open_planning_governance_from_records overflows the maximum allowed frame space by accessing an offset 896 bytes greater than the maximum of 2048. Please, minimize large stack variables. Estimated function frame size: 2944 bytes. Exceeding the maximum stack offset may cause undefined behavior during execution.
+
+Error: Function _RNvCsfclKWdlT3af_11program_v0437submit_signal_governance_from_records overflows the maximum allowed frame space by accessing an offset 1024 bytes greater than the maximum of 2048. Please, minimize large stack variables. Estimated function frame size: 3072 bytes. Exceeding the maximum stack offset may cause undefined behavior during execution.
+
+Error: Function _RNvCsfclKWdlT3af_11program_v0438record_outcome_governance_from_records overflows the maximum allowed frame space by accessing an offset 448 bytes greater than the maximum of 2048. Please, minimize large stack variables. Estimated function frame size: 2496 bytes. Exceeding the maximum stack offset may cause undefined behavior during execution.
+
+Error: Function _RNvCsfclKWdlT3af_11program_v0439reconcile_plans_governance_from_records overflows the maximum allowed frame space by accessing an offset 1088 bytes greater than the maximum of 2048. Please, minimize large stack variables. Estimated function frame size: 3136 bytes. Exceeding the maximum stack offset may cause undefined behavior during execution.
+
+Error: Function _RNvCsfclKWdlT3af_11program_v0440select_candidate_governance_from_records overflows the maximum allowed frame space by accessing an offset 832 bytes greater than the maximum of 2048. Please, minimize large stack variables. Estimated function frame size: 2880 bytes. Exceeding the maximum stack offset may cause undefined behavior during execution.
+
+Error: Function _RNvCsfclKWdlT3af_11program_v0441settle_governance_transition_from_records overflows the maximum allowed frame space by accessing an offset 1408 bytes greater than the maximum of 2048. Please, minimize large stack variables. Estimated function frame size: 3456 bytes. Exceeding the maximum stack offset may cause undefined behavior during execution.
+
+Error: Function _RNvCsfclKWdlT3af_11program_v0442declare_transition_governance_from_records overflows the maximum allowed frame space by accessing an offset 1152 bytes greater than the maximum of 2048. Please, minimize large stack variables. Estimated function frame size: 3200 bytes. Exceeding the maximum stack offset may cause undefined behavior during execution.
+
+Error: Function _RNvCsfclKWdlT3af_11program_v0443select_candidate_from_records_with_siblings overflows the maximum allowed frame space by accessing an offset 320 bytes greater than the maximum of 2048. Please, minimize large stack variables. Estimated function frame size: 2368 bytes. Exceeding the maximum stack offset may cause undefined behavior during execution.
+
+Error: Function _RNvCsfclKWdlT3af_11program_v0443validate_transition_governance_from_records overflows the maximum allowed frame space by accessing an offset 1088 bytes greater than the maximum of 2048. Please, minimize large stack variables. Estimated function frame size: 3136 bytes. Exceeding the maximum stack offset may cause undefined behavior during execution.
+
+Error: Function _RNvCsfclKWdlT3af_11program_v0449select_candidate_mixed_from_records_with_siblings overflows the maximum allowed frame space by accessing an offset 320 bytes greater than the maximum of 2048. Please, minimize large stack variables. Estimated function frame size: 2368 bytes. Exceeding the maximum stack offset may cause undefined behavior during execution.
+
+Error: Function _RNvCsfclKWdlT3af_11program_v0454select_candidate_governance_from_records_with_siblings overflows the maximum allowed frame space by accessing an offset 320 bytes greater than the maximum of 2048. Please, minimize large stack variables. Estimated function frame size: 2368 bytes. Exceeding the maximum stack offset may cause undefined behavior during execution.
+
+Error: Function _RNvMs2_NtCsgribS4kxsG1_19coordination_kernel6kernelNtB5_6Kernel3newCsfclKWdlT3af_11program_v04 overflows the maximum allowed frame space by accessing an offset 512 bytes greater than the maximum of 2048. Please, minimize large stack variables. Estimated function frame size: 2560 bytes. Exceeding the maximum stack offset may cause undefined behavior during execution.
+
+Error: Function _RNvNtNtCsfclKWdlT3af_11program_v049___private8___global11submit_plan overflows the maximum allowed frame space by accessing an offset 1088 bytes greater than the maximum of 2048. Please, minimize large stack variables. Estimated function frame size: 3136 bytes. Exceeding the maximum stack offset may cause undefined behavior during execution.
+
+Error: Function _RNvNtNtCsfclKWdlT3af_11program_v049___private8___global13mark_eligible overflows the maximum allowed frame space by accessing an offset 704 bytes greater than the maximum of 2048. Please, minimize large stack variables. Estimated function frame size: 2752 bytes. Exceeding the maximum stack offset may cause undefined behavior during execution.
+
+Error: Function _RNvNtNtCsfclKWdlT3af_11program_v049___private8___global13open_planning overflows the maximum allowed frame space by accessing an offset 704 bytes greater than the maximum of 2048. Please, minimize large stack variables. Estimated function frame size: 2752 bytes. Exceeding the maximum stack offset may cause undefined behavior during execution.
+
+Error: Function _RNvNtNtCsfclKWdlT3af_11program_v049___private8___global13submit_signal overflows the maximum allowed frame space by accessing an offset 960 bytes greater than the maximum of 2048. Please, minimize large stack variables. Estimated function frame size: 3008 bytes. Exceeding the maximum stack offset may cause undefined behavior during execution.
+
+Error: Function _RNvNtNtCsfclKWdlT3af_11program_v049___private8___global14record_outcome overflows the maximum allowed frame space by accessing an offset 960 bytes greater than the maximum of 2048. Please, minimize large stack variables. Estimated function frame size: 3008 bytes. Exceeding the maximum stack offset may cause undefined behavior during execution.
+
+Error: Function _RNvNtNtCsfclKWdlT3af_11program_v049___private8___global15init_gov_action overflows the maximum allowed frame space by accessing an offset 1472 bytes greater than the maximum of 2048. Please, minimize large stack variables. Estimated function frame size: 3520 bytes. Exceeding the maximum stack offset may cause undefined behavior during execution.
+
+Error: Function _RNvNtNtCsfclKWdlT3af_11program_v049___private8___global15reconcile_plans overflows the maximum allowed frame space by accessing an offset 704 bytes greater than the maximum of 2048. Please, minimize large stack variables. Estimated function frame size: 2752 bytes. Exceeding the maximum stack offset may cause undefined behavior during execution.
+
+Error: Function _RNvNtNtCsfclKWdlT3af_11program_v049___private8___global16close_gov_action overflows the maximum allowed frame space by accessing an offset 1408 bytes greater than the maximum of 2048. Please, minimize large stack variables. Estimated function frame size: 3456 bytes. Exceeding the maximum stack offset may cause undefined behavior during execution.
+
+Error: Function _RNvNtNtCsfclKWdlT3af_11program_v049___private8___global16select_candidate overflows the maximum allowed frame space by accessing an offset 704 bytes greater than the maximum of 2048. Please, minimize large stack variables. Estimated function frame size: 2752 bytes. Exceeding the maximum stack offset may cause undefined behavior during execution.
+
+Error: Function _RNvNtNtCsfclKWdlT3af_11program_v049___private8___global17commit_governance overflows the maximum allowed frame space by accessing an offset 768 bytes greater than the maximum of 2048. Please, minimize large stack variables. Estimated function frame size: 2816 bytes. Exceeding the maximum stack offset may cause undefined behavior during execution.
+
+Error: Function _RNvNtNtCsfclKWdlT3af_11program_v049___private8___global17commit_transition overflows the maximum allowed frame space by accessing an offset 704 bytes greater than the maximum of 2048. Please, minimize large stack variables. Estimated function frame size: 2752 bytes. Exceeding the maximum stack offset may cause undefined behavior during execution.
+
+Error: Function _RNvNtNtCsfclKWdlT3af_11program_v049___private8___global17replay_governance overflows the maximum allowed frame space by accessing an offset 704 bytes greater than the maximum of 2048. Please, minimize large stack variables. Estimated function frame size: 2752 bytes. Exceeding the maximum stack offset may cause undefined behavior during execution.
+
+Error: Function _RNvNtNtCsfclKWdlT3af_11program_v049___private8___global17replay_transition overflows the maximum allowed frame space by accessing an offset 704 bytes greater than the maximum of 2048. Please, minimize large stack variables. Estimated function frame size: 2752 bytes. Exceeding the maximum stack offset may cause undefined behavior during execution.
+
+Error: Function _RNvNtNtCsfclKWdlT3af_11program_v049___private8___global17settle_transition overflows the maximum allowed frame space by accessing an offset 960 bytes greater than the maximum of 2048. Please, minimize large stack variables. Estimated function frame size: 3008 bytes. Exceeding the maximum stack offset may cause undefined behavior during execution.
+
+Error: Function _RNvNtNtCsfclKWdlT3af_11program_v049___private8___global18approve_governance overflows the maximum allowed frame space by accessing an offset 512 bytes greater than the maximum of 2048. Please, minimize large stack variables. Estimated function frame size: 2560 bytes. Exceeding the maximum stack offset may cause undefined behavior during execution.
+
+Error: Function _RNvNtNtCsfclKWdlT3af_11program_v049___private8___global18declare_transition overflows the maximum allowed frame space by accessing an offset 704 bytes greater than the maximum of 2048. Please, minimize large stack variables. Estimated function frame size: 2752 bytes. Exceeding the maximum stack offset may cause undefined behavior during execution.
+
+Error: Function _RNvNtNtCsfclKWdlT3af_11program_v049___private8___global18ingest_observation overflows the maximum allowed frame space by accessing an offset 128 bytes greater than the maximum of 2048. Please, minimize large stack variables. Estimated function frame size: 2176 bytes. Exceeding the maximum stack offset may cause undefined behavior during execution.
+
+Error: Function _RNvNtNtCsfclKWdlT3af_11program_v049___private8___global19evaluate_governance overflows the maximum allowed frame space by accessing an offset 704 bytes greater than the maximum of 2048. Please, minimize large stack variables. Estimated function frame size: 2752 bytes. Exceeding the maximum stack offset may cause undefined behavior during execution.
+
+Error: Function _RNvNtNtCsfclKWdlT3af_11program_v049___private8___global19evaluate_transition overflows the maximum allowed frame space by accessing an offset 704 bytes greater than the maximum of 2048. Please, minimize large stack variables. Estimated function frame size: 2752 bytes. Exceeding the maximum stack offset may cause undefined behavior during execution.
+
+Error: Function _RNvNtNtCsfclKWdlT3af_11program_v049___private8___global19finalize_gov_action overflows the maximum allowed frame space by accessing an offset 1408 bytes greater than the maximum of 2048. Please, minimize large stack variables. Estimated function frame size: 3456 bytes. Exceeding the maximum stack offset may cause undefined behavior during execution.
+
+Error: Function _RNvNtNtCsfclKWdlT3af_11program_v049___private8___global19validate_transition overflows the maximum allowed frame space by accessing an offset 704 bytes greater than the maximum of 2048. Please, minimize large stack variables. Estimated function frame size: 2752 bytes. Exceeding the maximum stack offset may cause undefined behavior during execution.
+
+Error: Function _RNvNtNtCsfclKWdlT3af_11program_v049___private8___global22submit_plan_governance overflows the maximum allowed frame space by accessing an offset 1088 bytes greater than the maximum of 2048. Please, minimize large stack variables. Estimated function frame size: 3136 bytes. Exceeding the maximum stack offset may cause undefined behavior during execution.
+
+Error: Function _RNvNtNtCsfclKWdlT3af_11program_v049___private8___global23append_gov_action_chunk overflows the maximum allowed frame space by accessing an offset 1536 bytes greater than the maximum of 2048. Please, minimize large stack variables. Estimated function frame size: 3584 bytes. Exceeding the maximum stack offset may cause undefined behavior during execution.
+
+Error: Function _RNvNtNtCsfclKWdlT3af_11program_v049___private8___global24mark_eligible_governance overflows the maximum allowed frame space by accessing an offset 704 bytes greater than the maximum of 2048. Please, minimize large stack variables. Estimated function frame size: 2752 bytes. Exceeding the maximum stack offset may cause undefined behavior during execution.
+
+Error: Function _RNvNtNtCsfclKWdlT3af_11program_v049___private8___global24open_planning_governance overflows the maximum allowed frame space by accessing an offset 704 bytes greater than the maximum of 2048. Please, minimize large stack variables. Estimated function frame size: 2752 bytes. Exceeding the maximum stack offset may cause undefined behavior during execution.
+
+Error: Function _RNvNtNtCsfclKWdlT3af_11program_v049___private8___global24submit_signal_governance overflows the maximum allowed frame space by accessing an offset 960 bytes greater than the maximum of 2048. Please, minimize large stack variables. Estimated function frame size: 3008 bytes. Exceeding the maximum stack offset may cause undefined behavior during execution.
+
+Error: Function _RNvNtNtCsfclKWdlT3af_11program_v049___private8___global25record_outcome_governance overflows the maximum allowed frame space by accessing an offset 1024 bytes greater than the maximum of 2048. Please, minimize large stack variables. Estimated function frame size: 3072 bytes. Exceeding the maximum stack offset may cause undefined behavior during execution.
+
+Error: Function _RNvNtNtCsfclKWdlT3af_11program_v049___private8___global26reconcile_plans_governance overflows the maximum allowed frame space by accessing an offset 704 bytes greater than the maximum of 2048. Please, minimize large stack variables. Estimated function frame size: 2752 bytes. Exceeding the maximum stack offset may cause undefined behavior during execution.
+
+Error: Function _RNvNtNtCsfclKWdlT3af_11program_v049___private8___global26revise_governance_approval overflows the maximum allowed frame space by accessing an offset 448 bytes greater than the maximum of 2048. Please, minimize large stack variables. Estimated function frame size: 2496 bytes. Exceeding the maximum stack offset may cause undefined behavior during execution.
+
+Error: Function _RNvNtNtCsfclKWdlT3af_11program_v049___private8___global27select_candidate_governance overflows the maximum allowed frame space by accessing an offset 704 bytes greater than the maximum of 2048. Please, minimize large stack variables. Estimated function frame size: 2752 bytes. Exceeding the maximum stack offset may cause undefined behavior during execution.
+
+Error: Function _RNvNtNtCsfclKWdlT3af_11program_v049___private8___global28settle_governance_transition overflows the maximum allowed frame space by accessing an offset 960 bytes greater than the maximum of 2048. Please, minimize large stack variables. Estimated function frame size: 3008 bytes. Exceeding the maximum stack offset may cause undefined behavior during execution.
+
+Error: Function _RNvNtNtCsfclKWdlT3af_11program_v049___private8___global29declare_transition_governance overflows the maximum allowed frame space by accessing an offset 704 bytes greater than the maximum of 2048. Please, minimize large stack variables. Estimated function frame size: 2752 bytes. Exceeding the maximum stack offset may cause undefined behavior during execution.
+
+Error: Function _RNvNtNtCsfclKWdlT3af_11program_v049___private8___global30register_governance_transition overflows the maximum allowed frame space by accessing an offset 704 bytes greater than the maximum of 2048. Please, minimize large stack variables. Estimated function frame size: 2752 bytes. Exceeding the maximum stack offset may cause undefined behavior during execution.
+
+Error: Function _RNvNtNtCsfclKWdlT3af_11program_v049___private8___global30select_candidate_with_siblings overflows the maximum allowed frame space by accessing an offset 704 bytes greater than the maximum of 2048. Please, minimize large stack variables. Estimated function frame size: 2752 bytes. Exceeding the maximum stack offset may cause undefined behavior during execution.
+
+Error: Function _RNvNtNtCsfclKWdlT3af_11program_v049___private8___global30validate_transition_governance overflows the maximum allowed frame space by accessing an offset 704 bytes greater than the maximum of 2048. Please, minimize large stack variables. Estimated function frame size: 2752 bytes. Exceeding the maximum stack offset may cause undefined behavior during execution.
+
+Error: Function _RNvNtNtCsfclKWdlT3af_11program_v049___private8___global36select_candidate_mixed_with_siblings overflows the maximum allowed frame space by accessing an offset 704 bytes greater than the maximum of 2048. Please, minimize large stack variables. Estimated function frame size: 2752 bytes. Exceeding the maximum stack offset may cause undefined behavior during execution.
+
+Error: Function _RNvNtNtCsfclKWdlT3af_11program_v049___private8___global41select_candidate_governance_with_siblings overflows the maximum allowed frame space by accessing an offset 704 bytes greater than the maximum of 2048. Please, minimize large stack variables. Estimated function frame size: 2752 bytes. Exceeding the maximum stack offset may cause undefined behavior during execution.
+
+Error: Function _RNvXs11_CsfclKWdlT3af_11program_v04NtB6_16CommitTransitionINtCsgkuCNQhRPYg_11anchor_lang8AccountsNtB6_21CommitTransitionBumpsE12try_accounts overflows the maximum allowed frame space by accessing an offset 960 bytes greater than the maximum of 2048. Please, minimize large stack variables. Estimated function frame size: 3008 bytes. Exceeding the maximum stack offset may cause undefined behavior during execution.
+
+Error: Function _RNvXs1E_CsfclKWdlT3af_11program_v04NtB6_16SettleTransitionINtCsgkuCNQhRPYg_11anchor_lang8AccountsNtB6_21SettleTransitionBumpsE12try_accounts overflows the maximum allowed frame space by accessing an offset 1280 bytes greater than the maximum of 2048. Please, minimize large stack variables. Estimated function frame size: 3328 bytes. Exceeding the maximum stack offset may cause undefined behavior during execution.
+
+Error: Function _RNvXs1R_CsfclKWdlT3af_11program_v04NtB6_16SettleGovernanceINtCsgkuCNQhRPYg_11anchor_lang8AccountsNtB6_21SettleGovernanceBumpsE12try_accounts overflows the maximum allowed frame space by accessing an offset 1344 bytes greater than the maximum of 2048. Please, minimize large stack variables. Estimated function frame size: 3392 bytes. Exceeding the maximum stack offset may cause undefined behavior during execution.
+
+Error: Function _RNvXs1e_CsfclKWdlT3af_11program_v04NtB6_16CommitGovernanceINtCsgkuCNQhRPYg_11anchor_lang8AccountsNtB6_21CommitGovernanceBumpsE12try_accounts overflows the maximum allowed frame space by accessing an offset 1088 bytes greater than the maximum of 2048. Please, minimize large stack variables. Estimated function frame size: 3136 bytes. Exceeding the maximum stack offset may cause undefined behavior during execution.
+
+Error: Function _RNvXs24_CsfclKWdlT3af_11program_v04NtB6_13RecordOutcomeINtCsgkuCNQhRPYg_11anchor_lang8AccountsNtB6_18RecordOutcomeBumpsE12try_accounts overflows the maximum allowed frame space by accessing an offset 1280 bytes greater than the maximum of 2048. Please, minimize large stack variables. Estimated function frame size: 3328 bytes. Exceeding the maximum stack offset may cause undefined behavior during execution.
+
+Error: Function _RNvXs2H_CsfclKWdlT3af_11program_v04NtB6_16ReplayGovernanceINtCsgkuCNQhRPYg_11anchor_lang8AccountsNtB6_21ReplayGovernanceBumpsE12try_accounts overflows the maximum allowed frame space by accessing an offset 960 bytes greater than the maximum of 2048. Please, minimize large stack variables. Estimated function frame size: 3008 bytes. Exceeding the maximum stack offset may cause undefined behavior during execution.
+
+Error: Function _RNvXs2h_CsfclKWdlT3af_11program_v04NtB6_23RecordOutcomeGovernanceINtCsgkuCNQhRPYg_11anchor_lang8AccountsNtB6_28RecordOutcomeGovernanceBumpsE12try_accounts overflows the maximum allowed frame space by accessing an offset 1344 bytes greater than the maximum of 2048. Please, minimize large stack variables. Estimated function frame size: 3392 bytes. Exceeding the maximum stack offset may cause undefined behavior during execution.
+
+Error: Function _RNvXs50_CsfclKWdlT3af_11program_v04NtB6_20SubmitPlanGovernanceINtCsgkuCNQhRPYg_11anchor_lang8AccountsNtB6_25SubmitPlanGovernanceBumpsE12try_accounts overflows the maximum allowed frame space by accessing an offset 1408 bytes greater than the maximum of 2048. Please, minimize large stack variables. Estimated function frame size: 3456 bytes. Exceeding the maximum stack offset may cause undefined behavior during execution.
+
+Error: Function _RNvXs5Q_CsfclKWdlT3af_11program_v04NtB6_12SubmitSignalINtCsgkuCNQhRPYg_11anchor_lang8AccountsNtB6_17SubmitSignalBumpsE12try_accounts overflows the maximum allowed frame space by accessing an offset 1344 bytes greater than the maximum of 2048. Please, minimize large stack variables. Estimated function frame size: 3392 bytes. Exceeding the maximum stack offset may cause undefined behavior during execution.
+
+Error: Function _RNvXs63_CsfclKWdlT3af_11program_v04NtB6_22SubmitSignalGovernanceINtCsgkuCNQhRPYg_11anchor_lang8AccountsNtB6_27SubmitSignalGovernanceBumpsE12try_accounts overflows the maximum allowed frame space by accessing an offset 1344 bytes greater than the maximum of 2048. Please, minimize large stack variables. Estimated function frame size: 3392 bytes. Exceeding the maximum stack offset may cause undefined behavior during execution.
+
+Error: Function _RNvXs6T_CsfclKWdlT3af_11program_v04NtB6_17IngestObservationINtCsgkuCNQhRPYg_11anchor_lang8AccountsNtB6_22IngestObservationBumpsE12try_accounts overflows the maximum allowed frame space by accessing an offset 320 bytes greater than the maximum of 2048. Please, minimize large stack variables. Estimated function frame size: 2368 bytes. Exceeding the maximum stack offset may cause undefined behavior during execution.
+
+Error: Function _RNvXs7J_CsfclKWdlT3af_11program_v04NtB6_24ReviseGovernanceApprovalINtCsgkuCNQhRPYg_11anchor_lang8AccountsNtB6_29ReviseGovernanceApprovalBumpsE12try_accounts overflows the maximum allowed frame space by accessing an offset 896 bytes greater than the maximum of 2048. Please, minimize large stack variables. Estimated function frame size: 2944 bytes. Exceeding the maximum stack offset may cause undefined behavior during execution.
+
+Error: Function _RNvXs7W_CsfclKWdlT3af_11program_v04NtB6_13InitGovActionINtCsgkuCNQhRPYg_11anchor_lang8AccountsNtB6_18InitGovActionBumpsE12try_accounts overflows the maximum allowed frame space by accessing an offset 1600 bytes greater than the maximum of 2048. Please, minimize large stack variables. Estimated function frame size: 3648 bytes. Exceeding the maximum stack offset may cause undefined behavior during execution.
+
+Error: Function _RNvXs7j_CsfclKWdlT3af_11program_v04NtB6_28RegisterGovernanceTransitionINtCsgkuCNQhRPYg_11anchor_lang8AccountsNtB6_33RegisterGovernanceTransitionBumpsE12try_accounts overflows the maximum allowed frame space by accessing an offset 768 bytes greater than the maximum of 2048. Please, minimize large stack variables. Estimated function frame size: 2816 bytes. Exceeding the maximum stack offset may cause undefined behavior during execution.
+
+Error: Function _RNvXs7w_CsfclKWdlT3af_11program_v04NtB6_17ApproveGovernanceINtCsgkuCNQhRPYg_11anchor_lang8AccountsNtB6_22ApproveGovernanceBumpsE12try_accounts overflows the maximum allowed frame space by accessing an offset 960 bytes greater than the maximum of 2048. Please, minimize large stack variables. Estimated function frame size: 3008 bytes. Exceeding the maximum stack offset may cause undefined behavior during execution.
+
+Error: Function _RNvXsb_CsfclKWdlT3af_11program_v04NtB5_12OpenPlanningINtCsgkuCNQhRPYg_11anchor_lang8AccountsNtB5_17OpenPlanningBumpsE12try_accounts overflows the maximum allowed frame space by accessing an offset 960 bytes greater than the maximum of 2048. Please, minimize large stack variables. Estimated function frame size: 3008 bytes. Exceeding the maximum stack offset may cause undefined behavior during execution.
+
+Error: Function _RNvXso_CsfclKWdlT3af_11program_v04NtB5_10SubmitPlanINtCsgkuCNQhRPYg_11anchor_lang8AccountsNtB5_15SubmitPlanBumpsE12try_accounts overflows the maximum allowed frame space by accessing an offset 1408 bytes greater than the maximum of 2048. Please, minimize large stack variables. Estimated function frame size: 3456 bytes. Exceeding the maximum stack offset may cause undefined behavior during execution.
+
+Error: Function _RNvYNtCsfclKWdlT3af_11program_v0415StoredGovActionNtNtCsfRxzamH2Plr_5borsh2de16BorshDeserialize14try_from_sliceB4_ overflows the maximum allowed frame space by accessing an offset 1088 bytes greater than the maximum of 2048. Please, minimize large stack variables. Estimated function frame size: 3136 bytes. Exceeding the maximum stack offset may cause undefined behavior during execution.
+
+warning: `program-v04` (lib) generated 47 warnings
+    Finished `release` profile [optimized] target(s) in 1m 40s

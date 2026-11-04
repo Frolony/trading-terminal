@@ -1,0 +1,14 @@
+[package]
+name = "engine-adapter-v04"
+version = "0.1.0"
+edition = "2021"
+description = "Migration step 4 (increment 1): the engine-sim governance adapter rewritten over the v0.4 kernel lifecycle — authorize, evidence-bound settle, and K-1 adapter carry. Consumes the delivered v0.4 crate and the step-2 launch profile by path; modifies neither."
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+coordination-kernel = { path = "../coordination-kernel-rs" }
+kernel-launch-v04 = { path = "../kernel-launch-v04" }
+
+[dev-dependencies]
+coordination-kernel = { path = "../coordination-kernel-rs" }
+kernel-launch-v04 = { path = "../kernel-launch-v04" }

@@ -1,0 +1,123 @@
+{
+  "blocked": [],
+  "design_finding_resolved": "Slice-49/50 findings CLOSED by the account-carried action (program slices 51-53, Carlos's 2026-10-29 ruling): approve/revise no longer carry the 1524-byte StoredGovAction by value (the 1564-byte instruction-data / tx-size finding is gone — the largest new instruction is a 512-byte chunk), and the rewired wrappers frame-measure fitting 2048 bytes (slice 53). This run proves both instructions execute in-process against the real .so: approve stores the finalized action hash and increments the approval count to 1; revise re-binds the same finalized action with count and hash unchanged.",
+  "measured": [
+    {
+      "cu": 7705,
+      "instruction": "probe_kernel",
+      "note": "slice-1 baseline (no design estimate exists for the v0.4 program)",
+      "result": "Success"
+    },
+    {
+      "cu": 17772,
+      "instruction": "initialize_kernel",
+      "note": "slice-1 baseline (no design estimate exists for the v0.4 program)",
+      "result": "Success"
+    },
+    {
+      "cu": 18047,
+      "instruction": "seal_kernel",
+      "note": "slice-1 baseline (no design estimate exists for the v0.4 program)",
+      "result": "Success"
+    },
+    {
+      "cu": 4175,
+      "instruction": "advance_clock",
+      "note": "slice-1 baseline (no design estimate exists for the v0.4 program)",
+      "result": "Success"
+    },
+    {
+      "cu": 11415,
+      "instruction": "register_transition",
+      "note": "slice-1 baseline (no design estimate exists for the v0.4 program)",
+      "result": "Success"
+    },
+    {
+      "cu": 24403,
+      "instruction": "ingest_observation",
+      "note": "slice-1 baseline (no design estimate exists for the v0.4 program)",
+      "result": "Success"
+    },
+    {
+      "cu": 8449,
+      "instruction": "init_gov_action",
+      "note": "slice-1 baseline (no design estimate exists for the v0.4 program)",
+      "result": "Success"
+    },
+    {
+      "cu": 4684,
+      "instruction": "append_gov_action_chunk@0",
+      "note": "slice-2 account-carried chain (program slices 51-53)",
+      "result": "Success"
+    },
+    {
+      "cu": 4684,
+      "instruction": "append_gov_action_chunk@512",
+      "note": "slice-2 account-carried chain (program slices 51-53)",
+      "result": "Success"
+    },
+    {
+      "cu": 4684,
+      "instruction": "append_gov_action_chunk@1024",
+      "note": "slice-2 account-carried chain (program slices 51-53)",
+      "result": "Success"
+    },
+    {
+      "cu": 7308,
+      "instruction": "finalize_gov_action",
+      "note": "slice-1 baseline (no design estimate exists for the v0.4 program)",
+      "result": "Success"
+    },
+    {
+      "cu": 26118,
+      "instruction": "register_governance_transition",
+      "note": "slice-1 baseline (no design estimate exists for the v0.4 program)",
+      "result": "Success"
+    },
+    {
+      "cu": 37633,
+      "instruction": "approve_governance",
+      "note": "slice-1 baseline (no design estimate exists for the v0.4 program)",
+      "result": "Success"
+    },
+    {
+      "cu": 32973,
+      "instruction": "revise_governance_approval",
+      "note": "slice-1 baseline (no design estimate exists for the v0.4 program)",
+      "result": "Success"
+    },
+    {
+      "cu": 14449,
+      "instruction": "init_gov_action_abandoned",
+      "note": "slice-1 baseline (no design estimate exists for the v0.4 program)",
+      "result": "Success"
+    },
+    {
+      "cu": 4684,
+      "instruction": "append_gov_action_chunk_abandoned",
+      "note": "slice-1 baseline (no design estimate exists for the v0.4 program)",
+      "result": "Success"
+    },
+    {
+      "cu": 3915,
+      "instruction": "close_gov_action",
+      "note": "slice-1 baseline (no design estimate exists for the v0.4 program)",
+      "result": "Success"
+    }
+  ],
+  "mollusk_svm": "0.16.4",
+  "program": "program_v04",
+  "program_id": "FzxnCtig4asxnCxGhjcbCDY5zkfcpfTb5GcXNL9UaGg6",
+  "refusals": [
+    {
+      "cu": 5335,
+      "error": "GovActionAlreadyFinalized (6034)",
+      "instruction": "close_gov_action_finalized",
+      "note": "slice-3 lifetime gate: a finalized account never closes (Rule A, Carlos 2026-10-29)",
+      "result": "Refused"
+    }
+  ],
+  "slice": "cu-golden slice 3: genesis + governance registration + account-carried approval chain (program slices 51-53) + close_gov_action rent-reclaim and finalized-refusal gate",
+  "so_sha256": "1518d41e154ac52d3b919901112c55812d800276b6d710b5f857f0661b5a802d",
+  "toolchain": "Anchor 1.2.2 / Solana 4.3.2 / platform-tools v1.57"
+}

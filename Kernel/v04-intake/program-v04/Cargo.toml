@@ -1,0 +1,12 @@
+[workspace]
+resolver = "2"
+members = ["programs/*"]
+
+[profile.release]
+overflow-checks = true
+
+# Same SBF pin set as the v0.2 treasury program (proven 2026-10-23):
+# the vendored cpufeatures predates the sbf target; the relative path
+# keeps this project self-contained.
+[patch.crates-io]
+cpufeatures = { path = "patches/cpufeatures" }

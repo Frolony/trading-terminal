@@ -1,0 +1,328 @@
+    Finished `release` profile [optimized] target(s) in 2.71s
+     Running `cu-golden/mollusk/target/release/cu-golden-mollusk-v04 /home/hatch/workspace/goals/gecko-solana-terminal-vercel-fix-build-out/hidden_files/v04-intake/program-v04/cu-golden/smallframe-attempt2-cap-out1.json`
+[2026-11-03T18:00:06.582889062Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr invoke [1]
+[2026-11-03T18:00:06.585881193Z DEBUG solana_runtime::message_processor::stable_log] Program log: Instruction: ProbeKernel
+[2026-11-03T18:00:06.586078088Z DEBUG solana_runtime::message_processor::stable_log] Program log: program-v04 probe: sealed=false now=0 genesis_index=0
+[2026-11-03T18:00:06.586454964Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr consumed 6968 of 1400000 compute units
+[2026-11-03T18:00:06.586505309Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr success
+probe_kernel: program_result=Success cu=7024
+[2026-11-03T18:00:06.586681814Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr invoke [1]
+[2026-11-03T18:00:06.586734834Z DEBUG solana_runtime::message_processor::stable_log] Program log: Instruction: InitializeKernel
+[2026-11-03T18:00:06.586846852Z DEBUG solana_runtime::message_processor::stable_log] Program 11111111111111111111111111111111 invoke [2]
+[2026-11-03T18:00:06.586895124Z DEBUG solana_runtime::message_processor::stable_log] Program 11111111111111111111111111111111 success
+[2026-11-03T18:00:06.587021794Z DEBUG solana_runtime::message_processor::stable_log] Program 11111111111111111111111111111111 invoke [2]
+[2026-11-03T18:00:06.587056126Z DEBUG solana_runtime::message_processor::stable_log] Program 11111111111111111111111111111111 success
+[2026-11-03T18:00:06.587198740Z DEBUG solana_runtime::message_processor::stable_log] Program data: /ba1syGhJGEAAAAAAAAAAAA=
+[2026-11-03T18:00:06.587303637Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr consumed 23100 of 1400000 compute units
+[2026-11-03T18:00:06.587339381Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr success
+initialize_kernel: program_result=Success cu=23156
+[2026-11-03T18:00:06.587492270Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr invoke [1]
+[2026-11-03T18:00:06.587541865Z DEBUG solana_runtime::message_processor::stable_log] Program log: Instruction: SealKernel
+[2026-11-03T18:00:06.587785961Z DEBUG solana_runtime::message_processor::stable_log] Program data: sdM1mRRfgdQAAAAAAAAAAGQAAAAAAAAA
+[2026-11-03T18:00:06.587840353Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr consumed 17310 of 1400000 compute units
+[2026-11-03T18:00:06.587869737Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr success
+seal_kernel: program_result=Success cu=17366
+[2026-11-03T18:00:06.588028065Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr invoke [1]
+[2026-11-03T18:00:06.588080834Z DEBUG solana_runtime::message_processor::stable_log] Program log: Instruction: InitReputation
+[2026-11-03T18:00:06.588198560Z DEBUG solana_runtime::message_processor::stable_log] Program 11111111111111111111111111111111 invoke [2]
+[2026-11-03T18:00:06.588251971Z DEBUG solana_runtime::message_processor::stable_log] Program 11111111111111111111111111111111 success
+[2026-11-03T18:00:06.588488275Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr consumed 25650 of 1400000 compute units
+[2026-11-03T18:00:06.588532902Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr success
+init_reputation: program_result=Success cu=25706
+[2026-11-03T18:00:06.588666002Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr invoke [1]
+[2026-11-03T18:00:06.588752432Z DEBUG solana_runtime::message_processor::stable_log] Program log: Instruction: InitReputation
+[2026-11-03T18:00:06.588887695Z DEBUG solana_runtime::message_processor::stable_log] Program 11111111111111111111111111111111 invoke [2]
+[2026-11-03T18:00:06.588941556Z DEBUG solana_runtime::message_processor::stable_log] Allocate: account Address { address: HxRER84mfq5no2Ma6yT3b6qsSZZpXgSEkXaZV4miQ2e3, base: None } already in use
+[2026-11-03T18:00:06.588980164Z DEBUG solana_runtime::message_processor::stable_log] Program 11111111111111111111111111111111 failed: custom program error: 0x0
+[2026-11-03T18:00:06.589023719Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr consumed 8580 of 1400000 compute units
+[2026-11-03T18:00:06.589049538Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr failed: custom program error: 0x0
+init_reputation_again: program_result=Failure(Custom(0)) cu=8636
+[2026-11-03T18:00:06.589168076Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr invoke [1]
+[2026-11-03T18:00:06.589230009Z DEBUG solana_runtime::message_processor::stable_log] Program log: Instruction: AdvanceClock
+[2026-11-03T18:00:06.589292683Z DEBUG solana_runtime::message_processor::stable_log] Program data: W1c+I6/zbOTIAAAAAAAAAA==
+[2026-11-03T18:00:06.589338632Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr consumed 4175 of 1400000 compute units
+[2026-11-03T18:00:06.589372012Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr success
+advance_clock: program_result=Success cu=4231
+[2026-11-03T18:00:06.589494586Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr invoke [1]
+[2026-11-03T18:00:06.589540414Z DEBUG solana_runtime::message_processor::stable_log] Program log: Instruction: RegisterTransition
+[2026-11-03T18:00:06.589617500Z DEBUG solana_runtime::message_processor::stable_log] Program 11111111111111111111111111111111 invoke [2]
+[2026-11-03T18:00:06.589641116Z DEBUG solana_runtime::message_processor::stable_log] Program 11111111111111111111111111111111 success
+[2026-11-03T18:00:06.589695738Z DEBUG solana_runtime::message_processor::stable_log] Program data: X0PM0iHKz9zS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0gAAAAAAAAAA
+[2026-11-03T18:00:06.589738111Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr consumed 9915 of 1400000 compute units
+[2026-11-03T18:00:06.589758141Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr success
+register_transition: program_result=Success cu=9971
+[2026-11-03T18:00:06.589877801Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr invoke [1]
+[2026-11-03T18:00:06.589913174Z DEBUG solana_runtime::message_processor::stable_log] Program log: Instruction: IngestObservation
+[2026-11-03T18:00:06.590022238Z DEBUG solana_runtime::message_processor::stable_log] Program 11111111111111111111111111111111 invoke [2]
+[2026-11-03T18:00:06.590044421Z DEBUG solana_runtime::message_processor::stable_log] Program 11111111111111111111111111111111 success
+[2026-11-03T18:00:06.590239514Z DEBUG solana_runtime::message_processor::stable_log] Program data: srN2h32Do+7BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwaGhoaGhoaGhoaGhoaGhoaGhoaGhoaGhoaGhoaGhoaGhZAAAAAAAAAA=
+[2026-11-03T18:00:06.590295197Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr consumed 26653 of 1400000 compute units
+[2026-11-03T18:00:06.590328407Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr success
+ingest_observation: program_result=Success cu=26709
+[2026-11-03T18:00:06.590471332Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr invoke [1]
+[2026-11-03T18:00:06.590506294Z DEBUG solana_runtime::message_processor::stable_log] Program log: Instruction: InitGovAction
+[2026-11-03T18:00:06.590606014Z DEBUG solana_runtime::message_processor::stable_log] Program 11111111111111111111111111111111 invoke [2]
+[2026-11-03T18:00:06.590628758Z DEBUG solana_runtime::message_processor::stable_log] Program 11111111111111111111111111111111 success
+[2026-11-03T18:00:06.590665263Z DEBUG solana_runtime::message_processor::stable_log] Program data: Gc0BO/Uqk3vR0dHR0dHR0dHR0dHR0dHR0dHR0dHR0dHR0dHR0dHR0QEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEB4cN7oEy5oDgzaSnDxcn7oq/o9+1d+TvYM5TRxGdokOM=
+[2026-11-03T18:00:06.590712483Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr consumed 12947 of 1400000 compute units
+[2026-11-03T18:00:06.590732243Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr success
+init_gov_action: program_result=Success cu=13003
+[2026-11-03T18:00:06.590818633Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr invoke [1]
+[2026-11-03T18:00:06.590847536Z DEBUG solana_runtime::message_processor::stable_log] Program log: Instruction: AppendGovActionChunk
+[2026-11-03T18:00:06.590909349Z DEBUG solana_runtime::message_processor::stable_log] Program data: T5uEtyhP8h7R0dHR0dHR0dHR0dHR0dHR0dHR0dHR0dHR0dHR0dHR0QEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAAAAAgAC
+[2026-11-03T18:00:06.590963640Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr consumed 4684 of 1400000 compute units
+[2026-11-03T18:00:06.590987126Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr success
+append_gov_action_chunk@0: program_result=Success cu=4740
+[2026-11-03T18:00:06.591094176Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr invoke [1]
+[2026-11-03T18:00:06.591140376Z DEBUG solana_runtime::message_processor::stable_log] Program log: Instruction: AppendGovActionChunk
+[2026-11-03T18:00:06.591205093Z DEBUG solana_runtime::message_processor::stable_log] Program data: T5uEtyhP8h7R0dHR0dHR0dHR0dHR0dHR0dHR0dHR0dHR0dHR0dHR0QEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAAIAAgAE
+[2026-11-03T18:00:06.591278753Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr consumed 4684 of 1400000 compute units
+[2026-11-03T18:00:06.591309980Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr success
+append_gov_action_chunk@512: program_result=Success cu=4740
+[2026-11-03T18:00:06.591426896Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr invoke [1]
+[2026-11-03T18:00:06.591477281Z DEBUG solana_runtime::message_processor::stable_log] Program log: Instruction: AppendGovActionChunk
+[2026-11-03T18:00:06.591542790Z DEBUG solana_runtime::message_processor::stable_log] Program data: T5uEtyhP8h7R0dHR0dHR0dHR0dHR0dHR0dHR0dHR0dHR0dHR0dHR0QEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAAT0AfQF
+[2026-11-03T18:00:06.591586565Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr consumed 4684 of 1400000 compute units
+[2026-11-03T18:00:06.591611272Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr success
+append_gov_action_chunk@1024: program_result=Success cu=4740
+[2026-11-03T18:00:06.591713646Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr invoke [1]
+[2026-11-03T18:00:06.591742479Z DEBUG solana_runtime::message_processor::stable_log] Program log: Instruction: FinalizeGovAction
+[2026-11-03T18:00:06.591827407Z DEBUG solana_runtime::message_processor::stable_log] Program data: fy79iMDcjmnR0dHR0dHR0dHR0dHR0dHR0dHR0dHR0dHR0dHR0dHR0QEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEB4cN7oEy5oDgzaSnDxcn7oq/o9+1d+TvYM5TRxGdokOM=
+[2026-11-03T18:00:06.591875249Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr consumed 7306 of 1400000 compute units
+[2026-11-03T18:00:06.591896671Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr success
+finalize_gov_action: program_result=Success cu=7362
+[2026-11-03T18:00:06.592012465Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr invoke [1]
+[2026-11-03T18:00:06.592047277Z DEBUG solana_runtime::message_processor::stable_log] Program log: Instruction: RegisterGovernanceTransition
+[2026-11-03T18:00:06.592142680Z DEBUG solana_runtime::message_processor::stable_log] Program 11111111111111111111111111111111 invoke [2]
+[2026-11-03T18:00:06.592166125Z DEBUG solana_runtime::message_processor::stable_log] Program 11111111111111111111111111111111 success
+[2026-11-03T18:00:06.592420026Z DEBUG solana_runtime::message_processor::stable_log] Program data: ppISySfuiA/R0dHR0dHR0dHR0dHR0dHR0dHR0dHR0dHR0dHR0dHR0QAAAAAAAAAAAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=
+[2026-11-03T18:00:06.592483421Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr consumed 28415 of 1400000 compute units
+[2026-11-03T18:00:06.592508970Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr success
+register_governance_transition: program_result=Success cu=28471
+[2026-11-03T18:00:06.592619896Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr invoke [1]
+[2026-11-03T18:00:06.592660277Z DEBUG solana_runtime::message_processor::stable_log] Program log: Instruction: ApproveGovernance
+[2026-11-03T18:00:06.592761659Z DEBUG solana_runtime::message_processor::stable_log] Program 11111111111111111111111111111111 invoke [2]
+[2026-11-03T18:00:06.592791033Z DEBUG solana_runtime::message_processor::stable_log] Program 11111111111111111111111111111111 success
+[2026-11-03T18:00:06.593065685Z DEBUG solana_runtime::message_processor::stable_log] Program data: Tth+hAsvYj/R0dHR0dHR0dHR0dHR0dHR0dHR0dHR0dHR0dHR0dHR0QEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAA==
+[2026-11-03T18:00:06.593130342Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr consumed 38387 of 1400000 compute units
+[2026-11-03T18:00:06.593154599Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr success
+approve_governance: program_result=Success cu=38443
+[2026-11-03T18:00:06.593309401Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr invoke [1]
+[2026-11-03T18:00:06.593359346Z DEBUG solana_runtime::message_processor::stable_log] Program log: Instruction: ReviseGovernanceApproval
+[2026-11-03T18:00:06.593655370Z DEBUG solana_runtime::message_processor::stable_log] Program data: 8U84TudaIfDR0dHR0dHR0dHR0dHR0dHR0dHR0dHR0dHR0dHR0dHR0QEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAA==
+[2026-11-03T18:00:06.593717954Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr consumed 35251 of 1400000 compute units
+[2026-11-03T18:00:06.593748280Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr success
+revise_governance_approval: program_result=Success cu=35307
+[2026-11-03T18:00:06.593877143Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr invoke [1]
+[2026-11-03T18:00:06.593942842Z DEBUG solana_runtime::message_processor::stable_log] Program log: Instruction: InitGovAction
+[2026-11-03T18:00:06.594041360Z DEBUG solana_runtime::message_processor::stable_log] Program 11111111111111111111111111111111 invoke [2]
+[2026-11-03T18:00:06.594085456Z DEBUG solana_runtime::message_processor::stable_log] Program 11111111111111111111111111111111 success
+[2026-11-03T18:00:06.594145386Z DEBUG solana_runtime::message_processor::stable_log] Program data: Gc0BO/Uqk3vT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT0wEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEB4cN7oEy5oDgzaSnDxcn7oq/o9+1d+TvYM5TRxGdokOM=
+[2026-11-03T18:00:06.594192747Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr consumed 8447 of 1400000 compute units
+[2026-11-03T18:00:06.594243463Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr success
+init_gov_action_abandoned: program_result=Success cu=8503
+[2026-11-03T18:00:06.594373398Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr invoke [1]
+[2026-11-03T18:00:06.594420418Z DEBUG solana_runtime::message_processor::stable_log] Program log: Instruction: AppendGovActionChunk
+[2026-11-03T18:00:06.594490704Z DEBUG solana_runtime::message_processor::stable_log] Program data: T5uEtyhP8h7T09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT0wEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAAAAAgAC
+[2026-11-03T18:00:06.594539036Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr consumed 4684 of 1400000 compute units
+[2026-11-03T18:00:06.594573949Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr success
+append_gov_action_chunk_abandoned: program_result=Success cu=4740
+[2026-11-03T18:00:06.594692807Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr invoke [1]
+[2026-11-03T18:00:06.594728311Z DEBUG solana_runtime::message_processor::stable_log] Program log: Instruction: CloseGovAction
+[2026-11-03T18:00:06.594794129Z DEBUG solana_runtime::message_processor::stable_log] Program data: vFszQDthf07T09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT0wEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEB
+[2026-11-03T18:00:06.594839437Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr consumed 3913 of 1400000 compute units
+[2026-11-03T18:00:06.594866157Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr success
+close_gov_action: program_result=Success cu=3969
+[2026-11-03T18:00:06.595010224Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr invoke [1]
+[2026-11-03T18:00:06.595046789Z DEBUG solana_runtime::message_processor::stable_log] Program log: Instruction: CloseGovAction
+[2026-11-03T18:00:06.595129182Z DEBUG solana_runtime::message_processor::stable_log] Program log: AnchorError thrown in programs/program-v04/src/lib.rs:6273. Error Code: GovActionAlreadyFinalized. Error Number: 6034. Error Message: program-v04 gov action account: account is finalized; writes, re-finalize, and close are refused.
+[2026-11-03T18:00:06.595173429Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr consumed 5334 of 1400000 compute units
+[2026-11-03T18:00:06.595227319Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr failed: custom program error: 0x1792
+close_gov_action_finalized: program_result=Failure(Custom(6034)) cu=5390
+[2026-11-03T18:00:06.595358186Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr invoke [1]
+[2026-11-03T18:00:06.595401531Z DEBUG solana_runtime::message_processor::stable_log] Program log: Instruction: RegisterTransition
+[2026-11-03T18:00:06.595509713Z DEBUG solana_runtime::message_processor::stable_log] Program 11111111111111111111111111111111 invoke [2]
+[2026-11-03T18:00:06.595540810Z DEBUG solana_runtime::message_processor::stable_log] Program 11111111111111111111111111111111 success
+[2026-11-03T18:00:06.595625247Z DEBUG solana_runtime::message_processor::stable_log] Program data: X0PM0iHKz9zU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1AAAAAAAAAAA
+[2026-11-03T18:00:06.595690465Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr consumed 11415 of 1400000 compute units
+[2026-11-03T18:00:06.595718386Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr success
+register_transition_life: program_result=Success cu=11471
+[2026-11-03T18:00:06.595829884Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr invoke [1]
+[2026-11-03T18:00:06.595866819Z DEBUG solana_runtime::message_processor::stable_log] Program log: Instruction: IngestObservation
+[2026-11-03T18:00:06.595971797Z DEBUG solana_runtime::message_processor::stable_log] Program 11111111111111111111111111111111 invoke [2]
+[2026-11-03T18:00:06.596000069Z DEBUG solana_runtime::message_processor::stable_log] Program 11111111111111111111111111111111 success
+[2026-11-03T18:00:06.596162283Z DEBUG solana_runtime::message_processor::stable_log] Program data: srN2h32Do+7CwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwqGhoaGhoaGhoaGhoaGhoaGhoaGhoaGhoaGhoaGhoaGhyAAAAAAAAAA=
+[2026-11-03T18:00:06.596234131Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr consumed 25153 of 1400000 compute units
+[2026-11-03T18:00:06.596263965Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr success
+ingest_observation_life: program_result=Success cu=25209
+[2026-11-03T18:00:06.596374842Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr invoke [1]
+[2026-11-03T18:00:06.596411677Z DEBUG solana_runtime::message_processor::stable_log] Program log: Instruction: ReplayTransition
+[2026-11-03T18:00:06.596675283Z DEBUG solana_runtime::message_processor::stable_log] Program data: 7WQv1jvHjW3U1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1AE=
+[2026-11-03T18:00:06.596726389Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr consumed 27728 of 1400000 compute units
+[2026-11-03T18:00:06.596747681Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr success
+replay_transition_life: program_result=Success cu=27784
+[2026-11-03T18:00:06.596839880Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr invoke [1]
+[2026-11-03T18:00:06.596872979Z DEBUG solana_runtime::message_processor::stable_log] Program log: Instruction: EvaluateTransition
+[2026-11-03T18:00:06.597122904Z DEBUG solana_runtime::message_processor::stable_log] Program data: xWmSrkv+3BzU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1AI=
+[2026-11-03T18:00:06.597174702Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr consumed 28204 of 1400000 compute units
+[2026-11-03T18:00:06.597196495Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr success
+evaluate_transition_life: program_result=Success cu=28260
+[2026-11-03T18:00:06.597340170Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr invoke [1]
+[2026-11-03T18:00:06.597377567Z DEBUG solana_runtime::message_processor::stable_log] Program log: Instruction: MarkEligible
+[2026-11-03T18:00:06.597642024Z DEBUG solana_runtime::message_processor::stable_log] Program data: FM7hMgByaDzU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1AM=
+[2026-11-03T18:00:06.597708734Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr consumed 30520 of 1400000 compute units
+[2026-11-03T18:00:06.597740081Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr success
+mark_eligible_life: program_result=Success cu=30576
+[2026-11-03T18:00:06.597896996Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr invoke [1]
+[2026-11-03T18:00:06.597982174Z DEBUG solana_runtime::message_processor::stable_log] Program log: Instruction: SubmitSignal
+[2026-11-03T18:00:06.598135724Z DEBUG solana_runtime::message_processor::stable_log] Program 11111111111111111111111111111111 invoke [2]
+[2026-11-03T18:00:06.598167652Z DEBUG solana_runtime::message_processor::stable_log] Program 11111111111111111111111111111111 success
+[2026-11-03T18:00:06.598494062Z DEBUG solana_runtime::message_processor::stable_log] Program data: cX8TL4zCaWPU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1AICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAAAAAAAAAACAhB4AAAAAAEBCDwAAAAAA
+[2026-11-03T18:00:06.598568484Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr consumed 40758 of 1400000 compute units
+[2026-11-03T18:00:06.598598759Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr success
+submit_signal_life: program_result=Success cu=40814
+[2026-11-03T18:00:06.598736666Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr invoke [1]
+[2026-11-03T18:00:06.598777668Z DEBUG solana_runtime::message_processor::stable_log] Program log: Instruction: AdvanceClock
+[2026-11-03T18:00:06.598823016Z DEBUG solana_runtime::message_processor::stable_log] Program data: W1c+I6/zbOQsAQAAAAAAAA==
+[2026-11-03T18:00:06.598870527Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr consumed 4175 of 1400000 compute units
+[2026-11-03T18:00:06.598898730Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr success
+advance_clock_300: program_result=Success cu=4231
+[2026-11-03T18:00:06.599043667Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr invoke [1]
+[2026-11-03T18:00:06.599091609Z DEBUG solana_runtime::message_processor::stable_log] Program log: Instruction: SelectCandidate
+[2026-11-03T18:00:06.599504689Z DEBUG solana_runtime::message_processor::stable_log] Program data: xzmlHZ+zxCrU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1AQ=
+[2026-11-03T18:00:06.599573582Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr consumed 34244 of 1400000 compute units
+[2026-11-03T18:00:06.599602746Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr success
+select_candidate_life: program_result=Success cu=34300
+[2026-11-03T18:00:06.599740884Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr invoke [1]
+[2026-11-03T18:00:06.599795496Z DEBUG solana_runtime::message_processor::stable_log] Program log: Instruction: OpenPlanning
+[2026-11-03T18:00:06.600171510Z DEBUG solana_runtime::message_processor::stable_log] Program data: EB/3fPw6HX3U1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1AWQAQAAAAAAAA==
+[2026-11-03T18:00:06.600271260Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr consumed 34899 of 1400000 compute units
+[2026-11-03T18:00:06.600304259Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr success
+open_planning_life: program_result=Success cu=34955
+[2026-11-03T18:00:06.600435977Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr invoke [1]
+[2026-11-03T18:00:06.600492812Z DEBUG solana_runtime::message_processor::stable_log] Program log: Instruction: SubmitPlan
+[2026-11-03T18:00:06.600668115Z DEBUG solana_runtime::message_processor::stable_log] Program 11111111111111111111111111111111 invoke [2]
+[2026-11-03T18:00:06.600703468Z DEBUG solana_runtime::message_processor::stable_log] Program 11111111111111111111111111111111 success
+[2026-11-03T18:00:06.601115767Z DEBUG solana_runtime::message_processor::stable_log] Program data: o6lma09R+xLU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1AICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIC9AEAAAAAAAABAAAAAAAAAA==
+[2026-11-03T18:00:06.601236568Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr consumed 47763 of 1400000 compute units
+[2026-11-03T18:00:06.601271060Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr success
+submit_plan_life: program_result=Success cu=47819
+[2026-11-03T18:00:06.601410129Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr invoke [1]
+[2026-11-03T18:00:06.601456078Z DEBUG solana_runtime::message_processor::stable_log] Program log: Instruction: AdvanceClock
+[2026-11-03T18:00:06.601511451Z DEBUG solana_runtime::message_processor::stable_log] Program data: W1c+I6/zbOSQAQAAAAAAAA==
+[2026-11-03T18:00:06.601558842Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr consumed 4175 of 1400000 compute units
+[2026-11-03T18:00:06.601586333Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr success
+advance_clock_400: program_result=Success cu=4231
+[2026-11-03T18:00:06.601707735Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr invoke [1]
+[2026-11-03T18:00:06.601757961Z DEBUG solana_runtime::message_processor::stable_log] Program log: Instruction: ReconcilePlans
+[2026-11-03T18:00:06.602246865Z DEBUG solana_runtime::message_processor::stable_log] Program data: 7hSMZvNSZaPU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1AcBAQAAAAAAAAA=
+[2026-11-03T18:00:06.602319884Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr consumed 40776 of 1400000 compute units
+[2026-11-03T18:00:06.602359864Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr success
+reconcile_plans_life: program_result=Success cu=40832
+[2026-11-03T18:00:06.602499964Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr invoke [1]
+[2026-11-03T18:00:06.602554807Z DEBUG solana_runtime::message_processor::stable_log] Program log: Instruction: ValidateTransition
+[2026-11-03T18:00:06.603052283Z DEBUG solana_runtime::message_processor::stable_log] Program data: Kj/uy/ef4EvU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1AgB
+[2026-11-03T18:00:06.603126986Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr consumed 41044 of 1400000 compute units
+[2026-11-03T18:00:06.603166184Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr success
+validate_transition_life: program_result=Success cu=41100
+[2026-11-03T18:00:06.603315278Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr invoke [1]
+[2026-11-03T18:00:06.603371482Z DEBUG solana_runtime::message_processor::stable_log] Program log: Instruction: DeclareTransition
+[2026-11-03T18:00:06.603857181Z DEBUG solana_runtime::message_processor::stable_log] Program data: 1a5OaW0Tt8HU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1Ak=
+[2026-11-03T18:00:06.603950562Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr consumed 42131 of 1400000 compute units
+[2026-11-03T18:00:06.603979505Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr success
+declare_transition_life: program_result=Success cu=42187
+[2026-11-03T18:00:06.604096631Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr invoke [1]
+[2026-11-03T18:00:06.604142139Z DEBUG solana_runtime::message_processor::stable_log] Program log: Instruction: CommitTransition
+[2026-11-03T18:00:06.604712325Z DEBUG solana_runtime::message_processor::stable_log] Program data: ox6h/00imonU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1AoBAAAAAAAAAOHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh
+[2026-11-03T18:00:06.604818554Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr consumed 47510 of 1400000 compute units
+[2026-11-03T18:00:06.604852555Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr success
+commit_transition_life: program_result=Success cu=47566
+[2026-11-03T18:00:06.605002220Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr invoke [1]
+[2026-11-03T18:00:06.605062681Z DEBUG solana_runtime::message_processor::stable_log] Program log: Instruction: InitReputation
+[2026-11-03T18:00:06.605182681Z DEBUG solana_runtime::message_processor::stable_log] Program 11111111111111111111111111111111 invoke [2]
+[2026-11-03T18:00:06.605242300Z DEBUG solana_runtime::message_processor::stable_log] Program 11111111111111111111111111111111 success
+[2026-11-03T18:00:06.605507218Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr consumed 24160 of 1400000 compute units
+[2026-11-03T18:00:06.605549682Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr success
+init_reputation_life: program_result=Success cu=24216
+[2026-11-03T18:00:06.605680067Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr invoke [1]
+[2026-11-03T18:00:06.605736732Z DEBUG solana_runtime::message_processor::stable_log] Program log: Instruction: InitGovAction
+[2026-11-03T18:00:06.605845445Z DEBUG solana_runtime::message_processor::stable_log] Program 11111111111111111111111111111111 invoke [2]
+[2026-11-03T18:00:06.605878775Z DEBUG solana_runtime::message_processor::stable_log] Program 11111111111111111111111111111111 success
+[2026-11-03T18:00:06.605947338Z DEBUG solana_runtime::message_processor::stable_log] Program data: Gc0BO/Uqk3vV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1QEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEB4cN7oEy5oDgzaSnDxcn7oq/o9+1d+TvYM5TRxGdokOM=
+[2026-11-03T18:00:06.606000979Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr consumed 9947 of 1400000 compute units
+[2026-11-03T18:00:06.606027869Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr success
+init_gov_action_gov2: program_result=Success cu=10003
+[2026-11-03T18:00:06.606160779Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr invoke [1]
+[2026-11-03T18:00:06.606231375Z DEBUG solana_runtime::message_processor::stable_log] Program log: Instruction: AppendGovActionChunk
+[2026-11-03T18:00:06.606309292Z DEBUG solana_runtime::message_processor::stable_log] Program data: T5uEtyhP8h7V1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1QEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAAAAAgAC
+[2026-11-03T18:00:06.606362151Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr consumed 4684 of 1400000 compute units
+[2026-11-03T18:00:06.606389202Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr success
+append_gov_action_chunk_gov2@0: program_result=Success cu=4740
+[2026-11-03T18:00:06.606512437Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr invoke [1]
+[2026-11-03T18:00:06.606544475Z DEBUG solana_runtime::message_processor::stable_log] Program log: Instruction: AppendGovActionChunk
+[2026-11-03T18:00:06.606593779Z DEBUG solana_runtime::message_processor::stable_log] Program data: T5uEtyhP8h7V1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1QEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAAIAAgAE
+[2026-11-03T18:00:06.606629823Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr consumed 4684 of 1400000 compute units
+[2026-11-03T18:00:06.606669833Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr success
+append_gov_action_chunk_gov2@512: program_result=Success cu=4740
+[2026-11-03T18:00:06.606775982Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr invoke [1]
+[2026-11-03T18:00:06.606803043Z DEBUG solana_runtime::message_processor::stable_log] Program log: Instruction: AppendGovActionChunk
+[2026-11-03T18:00:06.606849202Z DEBUG solana_runtime::message_processor::stable_log] Program data: T5uEtyhP8h7V1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1QEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAAT0AfQF
+[2026-11-03T18:00:06.606884465Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr consumed 4684 of 1400000 compute units
+[2026-11-03T18:00:06.606903283Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr success
+append_gov_action_chunk_gov2@1024: program_result=Success cu=4740
+[2026-11-03T18:00:06.607009863Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr invoke [1]
+[2026-11-03T18:00:06.607036323Z DEBUG solana_runtime::message_processor::stable_log] Program log: Instruction: FinalizeGovAction
+[2026-11-03T18:00:06.607108060Z DEBUG solana_runtime::message_processor::stable_log] Program data: fy79iMDcjmnV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1QEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEB4cN7oEy5oDgzaSnDxcn7oq/o9+1d+TvYM5TRxGdokOM=
+[2026-11-03T18:00:06.607143974Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr consumed 7306 of 1400000 compute units
+[2026-11-03T18:00:06.607162963Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr success
+finalize_gov_action_gov2: program_result=Success cu=7362
+[2026-11-03T18:00:06.607293238Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr invoke [1]
+[2026-11-03T18:00:06.607334831Z DEBUG solana_runtime::message_processor::stable_log] Program log: Instruction: RegisterGovernanceTransition
+[2026-11-03T18:00:06.607439167Z DEBUG solana_runtime::message_processor::stable_log] Program 11111111111111111111111111111111 invoke [2]
+[2026-11-03T18:00:06.607461881Z DEBUG solana_runtime::message_processor::stable_log] Program 11111111111111111111111111111111 success
+[2026-11-03T18:00:06.607658487Z DEBUG solana_runtime::message_processor::stable_log] Program data: ppISySfuiA/V1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1QEAAAAAAAAAAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=
+[2026-11-03T18:00:06.607703985Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr consumed 29915 of 1400000 compute units
+[2026-11-03T18:00:06.607724085Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr success
+register_governance_transition_gov2: program_result=Success cu=29971
+[2026-11-03T18:00:06.607829383Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr invoke [1]
+[2026-11-03T18:00:06.607867130Z DEBUG solana_runtime::message_processor::stable_log] Program log: Instruction: ApproveGovernance
+[2026-11-03T18:00:06.608000470Z DEBUG solana_runtime::message_processor::stable_log] Program 11111111111111111111111111111111 invoke [2]
+[2026-11-03T18:00:06.608023605Z DEBUG solana_runtime::message_processor::stable_log] Program 11111111111111111111111111111111 success
+[2026-11-03T18:00:06.608332318Z DEBUG solana_runtime::message_processor::stable_log] Program data: Tth+hAsvYj/V1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1QEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAA==
+[2026-11-03T18:00:06.608391617Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr consumed 38387 of 1400000 compute units
+[2026-11-03T18:00:06.608427611Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr success
+approve_governance_gov2_seat1: program_result=Success cu=38443
+[2026-11-03T18:00:06.608537906Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr invoke [1]
+[2026-11-03T18:00:06.608593420Z DEBUG solana_runtime::message_processor::stable_log] Program log: Instruction: ApproveGovernance
+[2026-11-03T18:00:06.608722564Z DEBUG solana_runtime::message_processor::stable_log] Program 11111111111111111111111111111111 invoke [2]
+[2026-11-03T18:00:06.608750195Z DEBUG solana_runtime::message_processor::stable_log] Program 11111111111111111111111111111111 success
+[2026-11-03T18:00:06.609099920Z DEBUG solana_runtime::message_processor::stable_log] Program data: Tth+hAsvYj/V1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1QICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAA==
+[2026-11-03T18:00:06.609178778Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr consumed 40098 of 1400000 compute units
+[2026-11-03T18:00:06.609229595Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr success
+approve_governance_gov2_seat2: program_result=Success cu=40154
+[2026-11-03T18:00:06.609366230Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr invoke [1]
+[2026-11-03T18:00:06.609422724Z DEBUG solana_runtime::message_processor::stable_log] Program log: Instruction: ApproveGovernance
+[2026-11-03T18:00:06.609544918Z DEBUG solana_runtime::message_processor::stable_log] Program 11111111111111111111111111111111 invoke [2]
+[2026-11-03T18:00:06.609589895Z DEBUG solana_runtime::message_processor::stable_log] Program 11111111111111111111111111111111 success
+[2026-11-03T18:00:06.609952079Z DEBUG solana_runtime::message_processor::stable_log] Program data: Tth+hAsvYj/V1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1QMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAA==
+[2026-11-03T18:00:06.610027412Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr consumed 38617 of 1400000 compute units
+[2026-11-03T18:00:06.610058428Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr success
+approve_governance_gov2_seat3: program_result=Success cu=38673
+[2026-11-03T18:00:06.610239390Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr invoke [1]
+[2026-11-03T18:00:06.610287953Z DEBUG solana_runtime::message_processor::stable_log] Program log: Instruction: IngestObservation
+[2026-11-03T18:00:06.610407362Z DEBUG solana_runtime::message_processor::stable_log] Program 11111111111111111111111111111111 invoke [2]
+[2026-11-03T18:00:06.610438469Z DEBUG solana_runtime::message_processor::stable_log] Program 11111111111111111111111111111111 success
+[2026-11-03T18:00:06.610604798Z DEBUG solana_runtime::message_processor::stable_log] Program data: srN2h32Do+7Dw8PDw8PDw8PDw8PDw8PDw8PDw8PDw8PDw8PDw8PDw6GhoaGhoaGhoaGhoaGhoaGhoaGhoaGhoaGhoaGhoaGhkAEAAAAAAAA=
+[2026-11-03T18:00:06.610656286Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr consumed 26653 of 1400000 compute units
+[2026-11-03T18:00:06.610686912Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr success
+ingest_observation_gov2: program_result=Success cu=26709
+[2026-11-03T18:00:06.610818529Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr invoke [1]
+[2026-11-03T18:00:06.610881674Z DEBUG solana_runtime::message_processor::stable_log] Program log: Instruction: ReplayGovernance
+[2026-11-03T18:00:06.611453222Z DEBUG solana_runtime::message_processor::stable_log] Program log: Error: memory allocation failed, out of memory
+[2026-11-03T18:00:06.611537638Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr consumed 44027 of 1400000 compute units
+[2026-11-03T18:00:06.611581064Z DEBUG solana_runtime::message_processor::stable_log] Program 2CQ58pLCb5AsaKxLudcbuiPHGphtyv9cKtDKK5mdxBvr failed: SBF program panicked
+replay_governance_gov2: program_result=UnknownError(ProgramFailedToComplete) cu=44083
+
+thread 'main' (11249) panicked at src/main.rs:386:5:
+replay_governance_gov2 failed: UnknownError(ProgramFailedToComplete)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace

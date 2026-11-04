@@ -1,0 +1,95 @@
+{
+  "fresh_keys": {
+    "ag1": "EuWXBvTtUFURVnzW9ksP2uqj5s8QwMsv5XwP1PPugpWp",
+    "non_authority": "4nVKQndiUVHewhcAZxGX6vNq2ZPcvioNe8fKXZqBcHEj",
+    "observer": "TRGbVyPbwn2jZNKE2iFdNENMS8NTNRVTuWTX4jvmuMi",
+    "stranger_unenrolled": "Eko8s5wYDKsgPPgL3ZzuxopJMGfobSVW8g8jr4NKEgXo"
+  },
+  "mollusk_svm": "0.16.4",
+  "program": "program_v04",
+  "program_id": "CesWhN1MyhEqYT2wu6m7NgPz4SigBqz7oz2BGrKRHNdj",
+  "properties_proven": [
+    "(a) registry authority + seeded slots",
+    "(b) non-authority enroll refused 6047",
+    "(c) enrolled OBSERVER ingests golden observation",
+    "(d) enrolled ag(1) registers + replays golden life transition",
+    "(e) unenrolled fresh key still refused 6009",
+    "bonus: occupied agent re-enroll refused 6049"
+  ],
+  "scenario": "enroll-attempt2",
+  "so_sha256": "f501467d06f15885d395e7b9f7daf2982a9d48b0c1f337e619eec0812ac2666d",
+  "steps": [
+    {
+      "cu": 23156,
+      "note": "setup",
+      "result": "Success",
+      "step": "initialize_kernel"
+    },
+    {
+      "cu": 0,
+      "note": "(a) registry exists with authority = initializing signer; 11 slots pre-seeded, none occupied",
+      "result": "Success",
+      "step": "assert_registry_after_initialize"
+    },
+    {
+      "cu": 17366,
+      "note": "setup",
+      "result": "Success",
+      "step": "seal_kernel"
+    },
+    {
+      "cu": 4231,
+      "note": "setup: golden life clock",
+      "result": "Success",
+      "step": "advance_clock_200"
+    },
+    {
+      "cu": 6122,
+      "note": "(b) non-authority enroll refuses NotEnrollmentAuthority: Failure(Custom(6047))",
+      "result": "Refused",
+      "step": "enroll_by_non_authority"
+    },
+    {
+      "cu": 6514,
+      "note": "authority enrolls the fresh key as OBSERVER",
+      "result": "Success",
+      "step": "enroll_observer"
+    },
+    {
+      "cu": 6505,
+      "note": "authority enrolls the fresh key as ag(1)",
+      "result": "Success",
+      "step": "enroll_ag1"
+    },
+    {
+      "cu": 6467,
+      "note": "bonus: occupied agent slot refuses AgentAlreadyEnrolled: Failure(Custom(6049))",
+      "result": "Refused",
+      "step": "enroll_occupied_agent"
+    },
+    {
+      "cu": 26333,
+      "note": "(e) unenrolled fresh key still refuses NotObserver: Failure(Custom(6009))",
+      "result": "Refused",
+      "step": "ingest_unenrolled"
+    },
+    {
+      "cu": 25222,
+      "note": "(c) enrolled fresh OBSERVER key ingests the golden observation (identity-only binary refused 6009)",
+      "result": "Success",
+      "step": "ingest_enrolled_observer"
+    },
+    {
+      "cu": 9971,
+      "note": "(d) enrolled fresh ag(1) key registers the golden life transition",
+      "result": "Success",
+      "step": "register_transition_enrolled_ag1"
+    },
+    {
+      "cu": 27795,
+      "note": "(d) replay succeeds for the enrolled proposer + observer (identity refused 6008/6009)",
+      "result": "Success",
+      "step": "replay_transition_enrolled"
+    }
+  ]
+}
