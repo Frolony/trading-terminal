@@ -657,7 +657,7 @@ the brief outline flash marks the landing panel without touching its copy.*/
 <section class="panel" data-panel="discoveryLab"><div class="panelhead" data-drag-handle><h2>Token discovery</h2><span class="eyebrow">LIVE DISCOVERY · STRATEGY LAB</span></div><div class="panelbody"><div class="searchrow"><input id="tokenSearchLab" placeholder="Search token, ticker or mint address" value="SOL"><button id="searchBtnLab">Search</button></div><div id="searchResultsLab" class="results"><div class="empty">Search live Solana pairs and add candidates to your watchlist.</div></div></div></section>
 </main><aside class="sidecol" data-layout-root data-root-key="sidecol">
 <section class="panel tradepanel" data-panel="ticket"><div class="panelhead" data-drag-handle><h2>Order ticket</h2><span class="pill pill-simulated">SIMULATED</span></div><div class="panelbody"><form class="tradeform" id="tradeForm"><div class="moderow"><div class="modelabel">Execution mode</div><div class="switchrow"><button type="button" id="paperModeBtn" class="active mode">Paper</button><button type="button" id="liveModeBtn">Live</button></div></div><div class="switchrow"><button type="button" id="buyBtn" class="active buy">Buy / Long</button><button type="button" id="sellBtn" class="sell">Sell</button></div><div class="field"><label>Trading pair</label><button type="button" class="pairbox pairbox-btn" id="ticketPairBox" aria-haspopup="true" aria-expanded="false" aria-label="Choose trading pair"><strong id="ticketPairName">SOL / USDC</strong><span class="pairselchev">▾</span><small id="ticketPairMeta">Waiting for market data…</small></button><div class="pairsel" id="ticketPairSel" hidden></div><div class="ticketident" id="ticketPairIdent" style="font-size:11px;color:var(--muted);margin-top:6px;display:flex;gap:6px;align-items:center;flex-wrap:wrap">Loading pair identity…</div></div><div class="field"><label>Order type</label><div class="switchrow"><button type="button" id="mktBtn" class="active buy">Market</button><button type="button" id="limBtn" class="sell">Limit</button><button type="button" id="dcaBtn">DCA</button></div><div class="expiryrow" id="expiryRow" hidden><span class="expirylabel">Expires</span><div class="amounts" id="expiryPresets"><button type="button" data-exp="1h">1 h</button><button type="button" data-exp="24h" class="on">24 h</button><button type="button" data-exp="7d">7 d</button><button type="button" data-exp="never">No expiry</button></div></div></div><div class="note" id="dcaPreview" style="text-align:left;margin-top:6px" hidden></div><div id="limitFields" hidden><div class="field"><label>Limit price (per <span id="limitBaseSym">SOL</span>, in <span id="limitQuoteSym">USDC</span>)</label><div class="inputwrap"><input id="limitPrice" inputmode="decimal" aria-label="Limit price" placeholder="Waiting for live price…"><span id="limitSpotRef">spot</span></div><div class="amounts" id="limitPresets" style="margin-top:6px"><button type="button" data-lp="-10">−10%</button><button type="button" data-lp="-5">−5%</button><button type="button" data-lp="-1">−1%</button><button type="button" data-lp="1">+1%</button><button type="button" data-lp="5">+5%</button><button type="button" data-lp="10">+10%</button></div><div class="note" id="limitNote" style="text-align:left;margin-top:6px"></div></div><label id="expiryAckWrap" hidden style="display:none;margin-top:8px;font-size:11px;color:var(--muted);align-items:center;gap:8px"><input type="checkbox" id="expiryAck" style="width:auto"> I understand this order stays open until filled or cancelled.</label><div class="note" style="text-align:left">Simulated fills at spot — not instant, not guaranteed. Paper only; nothing touches the chain.</div></div><div id="dcaFields" hidden><div class="field"><label>Total to <span id="dcaTotalVerb">sell</span> (in <span id="dcaTotalSym">USDC</span>)</label><div class="inputwrap"><input id="dcaTotal" inputmode="decimal" aria-label="DCA total amount" value="100"><span id="dcaTotalUnit">USDC</span></div><div class="note" style="text-align:left;margin-top:6px">The token you sell: the quote currency when buying, the base token when selling. Split evenly across all orders.</div></div><div class="field"><label>Orders</label><div class="inputwrap"><input id="dcaCount" inputmode="numeric" aria-label="DCA order count" value="10"><span>orders</span></div></div><div class="field"><label>Interval</label><select id="dcaInterval" aria-label="DCA interval"><option value="1m">Every minute</option><option value="1h" selected>Hourly</option><option value="1d">Daily</option><option value="1w">Weekly</option></select></div><div class="field"><label>Price range (optional)</label><div style="display:flex;gap:8px"><div class="inputwrap"><input id="dcaMinPrice" inputmode="decimal" aria-label="DCA minimum price" placeholder="Min (blank = none)"></div><div class="inputwrap"><input id="dcaMaxPrice" inputmode="decimal" aria-label="DCA maximum price" placeholder="Max (blank = none)"></div></div><div class="note" style="text-align:left;margin-top:6px">An order due while spot is outside the range is skipped, not filled later at another price.</div></div><div class="note" id="dcaSummary" style="text-align:left"></div><div class="note" style="text-align:left">Paper only. A schedule advances only while this tab is open — a closed tab advances nothing, and orders that fell due while it was closed are marked missed, never retro-filled. No background execution, no server scheduler. Fills simulate at the live spot price.</div></div><div class="field"><label>Order size</label><div class="inputwrap"><input id="orderAmount" data-testid="order-size-input" type="number" min="0.0001" step="any" value="100" required><span id="amountUnit">USD</span></div></div><div class="note" id="dualSize" style="text-align:left">—</div><div class="amounts"><button type="button" data-amt="25">$25</button><button type="button" data-amt="100">$100</button><button type="button" data-amt="250">$250</button><button type="button" data-amt="max" data-testid="max-btn">MAX</button></div><div class="field"><label>Slippage tolerance</label><div class="slipcontrol"><div class="amounts" id="slipPresets"><button type="button" data-slip="10">0.1%</button><button type="button" data-slip="50">0.5%</button><button type="button" data-slip="100">1.0%</button></div><div class="inputwrap"><input id="slippageInput" inputmode="numeric" aria-label="Custom slippage in basis points" placeholder="Custom (bps)"><span>bps</span></div></div><div class="note" style="text-align:left;margin-top:6px">In basis points (50 bps = 0.50%); 1&ndash;1000 bps. Shared with the /raydium/ page.</div></div><div class="ticketsum"><span>Execution price<strong id="execPrice" class="provprice" data-prov="Source unknown">$—</strong></span><span id="ticketQuoteAgeChip" style="border:1px solid var(--line);border-radius:6px;padding:2px 7px;white-space:nowrap"><span id="ticketQuoteAgeText">No quote yet</span> <button type="button" id="ticketQuoteAgeRefreshBtn" style="background:transparent;border:0;color:var(--lime);padding:0 2px;font-weight:650">Refresh</button></span><span>Estimated quantity<strong id="estQty">— SOL</strong></span><span>Available USD<strong id="cashAvail">$10,000.00</strong></span></div><div class="note" id="ticketFreshLine" style="text-align:left">Last quote: <span id="ticketFreshAge">—</span> <button type="button" id="ticketFreshBtn" class="ghost" style="margin-left:6px">Get fresh quote</button></div><div class="note" id="paperPreviewStrip" style="text-align:left">Paper preview unavailable — no quote for this pair.</div><div id="reviewSheet" class="review" hidden></div><button class="primary" id="submitTrade" type="submit">Buy SOL · Paper</button><button type="button" id="refreshPaperQuoteBtn" class="ghost" hidden>Refresh quote</button><div class="note" id="paperQuoteNote" hidden style="text-align:left"></div><div class="note" id="ticketNote">No wallet connected · no real orders or funds</div><div id="dcaSchedulesWrap" style="margin-top:12px;border-top:1px solid var(--rowline);padding-top:12px"><div class="sectiontitle"><h3>DCA schedules</h3><span class="eyebrow" id="dcaSchedCount">0 SCHEDULES</span></div><div id="dcaSchedules"><div class="empty">No DCA schedules yet. Use the DCA tab to schedule metered buys.</div></div></div></form></div></section>
-<section class="panel tradepanel" data-panel="ticketLive"><div class="panelhead" data-drag-handle><h2>Order ticket — Live</h2><span class="pill">LIVE · LOCKED</span></div><div class="panelbody"><form class="tradeform" id="tradeFormLive"><div class="moderow"><div class="modelabel">Execution mode</div><div class="switchrow"><span class="pill">LIVE</span></div></div><div class="note" style="text-align:left">Live instance — prices from real Raydium quotes, never the pairs-feed spot. Execution stays locked until the N4.4 pre-trade safety gate is cleared by a human; nothing here sends a transaction.</div><div class="switchrow"><button type="button" id="buyBtnLive" class="active buy">Buy / Long</button><button type="button" id="sellBtnLive" class="sell">Sell</button></div><div class="field"><label>Trading pair</label><button type="button" class="pairbox pairbox-btn" id="ticketPairBoxLive" aria-haspopup="true" aria-expanded="false" aria-label="Choose trading pair"><strong id="ticketPairNameLive">SOL / USDC</strong><span class="pairselchev">▾</span><small id="ticketPairMetaLive">Waiting for market data…</small></button><div class="pairsel" id="ticketPairSelLive" hidden></div><div class="ticketident" id="ticketPairIdentLive" style="font-size:11px;color:var(--muted);margin-top:6px;display:flex;gap:6px;align-items:center;flex-wrap:wrap">Loading pair identity…</div></div><div class="field"><label>Order type</label><div class="switchrow"><button type="button" id="mktBtnLive" class="active buy">Market</button><button type="button" id="limBtnLive" class="sell">Limit</button><button type="button" id="dcaBtnLive">DCA</button></div><div class="expiryrow" id="expiryRowLive" hidden><span class="expirylabel">Expires</span><div class="amounts" id="expiryPresetsLive"><button type="button" data-exp="1h">1 h</button><button type="button" data-exp="24h" class="on">24 h</button><button type="button" data-exp="7d">7 d</button><button type="button" data-exp="never">No expiry</button></div></div></div><div id="limitFieldsLive" hidden><div class="field"><label>Limit price (per <span id="limitBaseSymLive">SOL</span>, in <span id="limitQuoteSymLive">USDC</span>)</label><div class="inputwrap"><input id="limitPriceLive" inputmode="decimal" aria-label="Limit price" placeholder="Waiting for live price…"><span id="limitSpotRefLive">spot</span></div><div class="amounts" id="limitPresetsLive" style="margin-top:6px"><button type="button" data-lp="-10">−10%</button><button type="button" data-lp="-5">−5%</button><button type="button" data-lp="-1">−1%</button><button type="button" data-lp="1">+1%</button><button type="button" data-lp="5">+5%</button><button type="button" data-lp="10">+10%</button></div><div class="note" id="limitNoteLive" style="text-align:left;margin-top:6px"></div></div><label id="expiryAckWrapLive" hidden style="display:none;margin-top:8px;font-size:11px;color:var(--muted);align-items:center;gap:8px"><input type="checkbox" id="expiryAckLive" style="width:auto"> I understand this order stays open until filled or cancelled.</label><div class="note" style="text-align:left">Live limit orders do not execute while live trading is locked (N4.4 gate).</div></div><div id="dcaNoteLive" hidden><div class="note" style="text-align:left">DCA schedules are paper-only — they run on the paper ticket (Strategy Lab page) and never arm a live schedule. Execution stays locked until the N4.4 gate is cleared.</div></div><div class="field"><label>Order size</label><div class="inputwrap"><input id="orderAmountLive" data-testid="order-size-input-live" type="number" min="0.0001" step="any" value="100" required><span id="amountUnitLive">USD</span></div></div><div class="note" id="dualSizeLive" style="text-align:left">—</div><div class="amounts"><button type="button" data-amt="25">$25</button><button type="button" data-amt="100">$100</button><button type="button" data-amt="250">$250</button><button type="button" data-amt="max" data-testid="max-btn-live">MAX</button></div><div class="field"><label>Slippage tolerance</label><div class="slipcontrol"><div class="amounts" id="slipPresetsLive"><button type="button" data-slip="10">0.1%</button><button type="button" data-slip="50">0.5%</button><button type="button" data-slip="100">1.0%</button></div><div class="inputwrap"><input id="slippageInputLive" inputmode="numeric" aria-label="Custom slippage in basis points" placeholder="Custom (bps)"><span>bps</span></div></div><div class="note" style="text-align:left;margin-top:6px">In basis points (50 bps = 0.50%); 1&ndash;1000 bps. Shared with the /raydium/ page.</div></div><div class="ticketsum"><span>Execution price<strong id="execPriceLive" class="provprice" data-prov="Source unknown">$—</strong></span><span>Estimated quantity<strong id="estQtyLive">— SOL</strong></span><span>Wallet balance<strong id="cashAvailLive">$10,000.00</strong></span></div><div class="note" id="ticketFreshLineLive" style="text-align:left">Last quote: <span id="ticketFreshAgeLive">—</span> <button type="button" id="ticketFreshBtnLive" class="ghost" style="margin-left:6px">Get fresh quote</button></div><button type="button" id="refreshLiveQuoteBtn" class="ghost">Refresh real quote</button><div class="note" id="liveQuoteCompareLive" style="text-align:left">Jupiter comparison — press Refresh real quote.</div><div id="reviewSheetLive" class="review" hidden></div><button class="primary locked-live" id="submitTradeLive" type="submit">Buy SOL · Live (locked)</button><div class="note" id="ticketNoteLive">Real Raydium quote · execution locked</div></form></div></section>
+<section class="panel tradepanel" data-panel="ticketLive"><div class="panelhead" data-drag-handle><h2 id="ticketLiveTitle">Order ticket</h2><span class="pill pill-simulated" id="ticketLiveModePill">SIMULATED</span></div><div class="panelbody"><form class="tradeform" id="tradeFormLive"><div class="moderow"><div class="modelabel">Execution mode</div><div class="switchrow"><button type="button" id="paperModeBtnLive" class="active mode">Paper</button><button type="button" id="liveModeBtnLive">Live</button></div></div><div class="note" style="text-align:left" id="ticketLiveModeNote">Paper instance — simulated fills at the pairs-feed spot price; no real orders or funds.</div><div class="switchrow"><button type="button" id="buyBtnLive" class="active buy">Buy / Long</button><button type="button" id="sellBtnLive" class="sell">Sell</button></div><div class="field"><label>Trading pair</label><button type="button" class="pairbox pairbox-btn" id="ticketPairBoxLive" aria-haspopup="true" aria-expanded="false" aria-label="Choose trading pair"><strong id="ticketPairNameLive">SOL / USDC</strong><span class="pairselchev">▾</span><small id="ticketPairMetaLive">Waiting for market data…</small></button><div class="pairsel" id="ticketPairSelLive" hidden></div><div class="ticketident" id="ticketPairIdentLive" style="font-size:11px;color:var(--muted);margin-top:6px;display:flex;gap:6px;align-items:center;flex-wrap:wrap">Loading pair identity…</div></div><div class="field"><label>Order type</label><div class="switchrow"><button type="button" id="mktBtnLive" class="active buy">Market</button><button type="button" id="limBtnLive" class="sell">Limit</button><button type="button" id="dcaBtnLive">DCA</button></div><div class="expiryrow" id="expiryRowLive" hidden><span class="expirylabel">Expires</span><div class="amounts" id="expiryPresetsLive"><button type="button" data-exp="1h">1 h</button><button type="button" data-exp="24h" class="on">24 h</button><button type="button" data-exp="7d">7 d</button><button type="button" data-exp="never">No expiry</button></div></div></div><div id="limitFieldsLive" hidden><div class="field"><label>Limit price (per <span id="limitBaseSymLive">SOL</span>, in <span id="limitQuoteSymLive">USDC</span>)</label><div class="inputwrap"><input id="limitPriceLive" inputmode="decimal" aria-label="Limit price" placeholder="Waiting for live price…"><span id="limitSpotRefLive">spot</span></div><div class="amounts" id="limitPresetsLive" style="margin-top:6px"><button type="button" data-lp="-10">−10%</button><button type="button" data-lp="-5">−5%</button><button type="button" data-lp="-1">−1%</button><button type="button" data-lp="1">+1%</button><button type="button" data-lp="5">+5%</button><button type="button" data-lp="10">+10%</button></div><div class="note" id="limitNoteLive" style="text-align:left;margin-top:6px"></div></div><label id="expiryAckWrapLive" hidden style="display:none;margin-top:8px;font-size:11px;color:var(--muted);align-items:center;gap:8px"><input type="checkbox" id="expiryAckLive" style="width:auto"> I understand this order stays open until filled or cancelled.</label><div class="note" style="text-align:left" id="limitLiveGateNote">Live limit orders do not execute while live trading is locked (N4.4 gate).</div></div><div id="dcaNoteLive" hidden><div class="note" style="text-align:left" id="dcaNoteLiveText">DCA schedules are paper-only — they run on the paper ticket (Strategy Lab page) and never arm a live schedule. Execution stays locked until the N4.4 gate is cleared.</div></div><div class="field"><label>Order size</label><div class="inputwrap"><input id="orderAmountLive" data-testid="order-size-input-live" type="number" min="0.0001" step="any" value="100" required><span id="amountUnitLive">USD</span></div></div><div class="note" id="dualSizeLive" style="text-align:left">—</div><div class="amounts"><button type="button" data-amt="25">$25</button><button type="button" data-amt="100">$100</button><button type="button" data-amt="250">$250</button><button type="button" data-amt="max" data-testid="max-btn-live">MAX</button></div><div class="field"><label>Slippage tolerance</label><div class="slipcontrol"><div class="amounts" id="slipPresetsLive"><button type="button" data-slip="10">0.1%</button><button type="button" data-slip="50">0.5%</button><button type="button" data-slip="100">1.0%</button></div><div class="inputwrap"><input id="slippageInputLive" inputmode="numeric" aria-label="Custom slippage in basis points" placeholder="Custom (bps)"><span>bps</span></div></div><div class="note" style="text-align:left;margin-top:6px">In basis points (50 bps = 0.50%); 1&ndash;1000 bps. Shared with the /raydium/ page.</div></div><div class="ticketsum"><span>Execution price<strong id="execPriceLive" class="provprice" data-prov="Source unknown">$—</strong></span><span>Estimated quantity<strong id="estQtyLive">— SOL</strong></span><span><span id="cashAvailLiveLabel">Wallet balance</span><strong id="cashAvailLive">$10,000.00</strong></span></div><div class="note" id="ticketFreshLineLive" style="text-align:left">Last quote: <span id="ticketFreshAgeLive">—</span> <button type="button" id="ticketFreshBtnLive" class="ghost" style="margin-left:6px">Get fresh quote</button></div><button type="button" id="refreshLiveQuoteBtn" class="ghost">Refresh real quote</button><div class="note" id="liveQuoteCompareLive" style="text-align:left">Jupiter comparison — press Refresh real quote.</div><div id="reviewSheetLive" class="review" hidden></div><button class="primary locked-live" id="submitTradeLive" type="submit">Buy SOL · Live (locked)</button><div class="note" id="ticketNoteLive">Real Raydium quote · execution locked</div></form></div></section>
 <section class="panel" data-panel="portfolio"><div class="panelhead" data-drag-handle><h2>Paper portfolio</h2><span class="eyebrow">LOCAL SESSION</span></div><div class="panelbody"><div class="walletrow"><span>Cash balance</span><strong id="cashBal" data-testid="paper-cash">$10,000.00</strong></div><div id="holdingsList" data-testid="holdings-list"><div class="empty">No paper positions yet.</div></div><div class="walletrow"><span>Position value</span><strong id="posValue">$0.00</strong></div><div class="walletrow"><span>Unrealized P/L</span><strong id="unrealized">$0.00</strong></div><button id="resetPaper" data-testid="reset-btn" style="margin-top:13px;width:100%;padding:8px;background:var(--panel);border:1px solid var(--line);color:var(--btntext);border-radius:7px;font-size:11px">Reset paper account</button></div></section>
 <section class="panel" data-panel="orders"><div class="panelhead" data-drag-handle><h2>Recent orders</h2><span class="eyebrow" id="orderCount">0 ORDERS</span></div><div id="orders" data-testid="orders-list"><div class="empty">Your simulated paper orders will appear here.</div></div></section>
 <section class="panel" data-panel="limits"><div class="panelhead" data-drag-handle><h2>Open limit orders</h2><span class="eyebrow" id="limitOpenCount">0 OPEN</span></div><div id="limitOpen"><div class="empty">No open limit orders. Create one from the Limit tab on the ticket.</div></div><div class="sub" style="padding:0 16px 12px">Simulated on the spot feed — fills are not instant and not guaranteed.</div></section>
@@ -5277,19 +5277,30 @@ wireChartHover();wireChartTools();chartSyncTools();renderOrders();renderWatchlis
 $('retryFeed').onclick=fetchMarket;$('pairsLiveOnly').onchange=e=>applyLiveOnly(e.target.checked);$('chartFeedStatus').onclick=()=>{if(candleStatus==='stale'||candleStatus==='error'){tickFails=0;tickSkipUntil=0;loadCandles('retry')}};document.addEventListener('visibilitychange',()=>{if(document.hidden)return;if(price>0)fetchMarket();if(wallet.connected)refreshWalletBalances();});$('tokenSearch').oninput=onDiscoveryInput;$('tokenSearchLab').oninput=onDiscoveryInput;setPrice(0,0);discoveryQuery='';$('tokenSearch').value='';$('tokenSearchLab').value='';loadTrendingDiscovery();statStripPaint();holdersPaint();if(chartPair)candleCacheRestoreFor(chartPair,chartRange,chartTf);if(!chartPair&&!candles.length)paintChartSnapshot();marketPoll();cmpPaintSel();paintCmpButtons();cmpRenderCandles();if(cmpPair)cmpLoadCandles('restore');
 
 /* N4.4: ticket slippage UI + paper review sheet (DOM wiring). */
-let reviewState=null; // {inputs,model} while the sheet is open
+let reviewState=null; // {inputs,model,target} while the sheet is open
+/* N3.162 (2026-11-05, A304): the paper review sheet can target the Terminal
+   ticket panel as well as the Strategy Lab ticket panel. reviewTarget names
+   the panel the open sheet lives in ('paper' = #reviewSheet / #submitTrade,
+   'live' = #reviewSheetLive / #submitTradeLive); it defaults to 'paper' and
+   is set by the open*Review caller. The confirm/commit math is unchanged —
+   the same paper fills, the same history records, the same toasts — only the
+   sheet's home panel moves. */
+let reviewTarget='paper';
+function reviewSheetEl(){return $(reviewTarget==='live'?'reviewSheetLive':'reviewSheet');}
+function reviewSubmitEl(){return $(reviewTarget==='live'?'submitTradeLive':'submitTrade');}
 function paintSlipPresets(){const cur=slipLoad();document.querySelectorAll('#slipPresets button').forEach(b=>b.classList.toggle('on',Number(b.dataset.slip)===cur));}
 function onSlipPreset(bps){const p=slipValidate(String(bps));if(!p.ok){toast(p.error);return;}slipSave(p.bps);$('slippageInput').value=String(p.bps);paintSlipPresets();hideReview();toast('Slippage set to '+(p.bps/100).toFixed(2)+'% — shared with the /raydium/ page.');hideLiveReview();scheduleLiveQuote();}
 function onSlipCustom(){const el=$('slippageInput'),p=slipValidate(el.value);if(!p.ok){el.value=String(slipLoad());paintSlipPresets();toast(p.error);return;}slipSave(p.bps);paintSlipPresets();hideReview();toast('Slippage set to '+(p.bps/100).toFixed(2)+'% — shared with the /raydium/ page.');hideLiveReview();scheduleLiveQuote();}
 /* N5.33 (A18 leg 2): live cross-tab slippage sync. A storage event fires in every OTHER tab when the shared key changes, so an already-open tab repaints instead of rendering stale until reload. Deliberately no slipSave() call here (the browser already applied the new value in this tab; writing it back would ping-pong storage events between tabs) and no toast (the originating tab already toasted the change). Open review sheets are invalidated, matching a local preset/custom change. The /raydium/ React page seeds slippage at mount and is NOT covered by this listener — see the §5 ship record. */
 function onSlipStorage(e){if(!e||e.key!==SLIP_KEY)return;const cur=slipLoad();const el=$('slippageInput');if(el&&document.activeElement!==el)el.value=String(cur);paintSlipPresets();paintTicketLive();hideReview();hideLiveReview();}
-function renderReview(m,onConfirm){ // N4.5: onConfirm lets the limit branch use its own confirm handler
+function renderReview(m,onConfirm,target){ // N4.5: onConfirm lets the limit branch use its own confirm handler; N3.162: target ('live') renders the sheet into the Terminal ticket panel instead of the Lab one
+  reviewTarget=target||'paper';
   // N5.11: condensed quote block — headline rows render compact, the last two lines
   // (route/freshness on paper; keeper fee/freshness on limit) fold behind a Details
   // expander, rows scroll inside .rrows so the actions stay pinned below, and the
   // ticket panel caps its body while a review is open. All model lines stay in the
   // DOM; stale warnings/blockers stay outside the expander. No data or flow change.
-  const box=$('reviewSheet');
+  const box=reviewSheetEl();
   const rowHtml=l=>'<div class="walletrow"><span>'+esc(l.label)+'</span><strong class="'+(l.cls||'')+'">'+esc(l.value)+'</strong></div>';
   const foldAt=m.lines.length>=4?m.lines.length-2:m.lines.length;
   const headRows=m.lines.slice(0,foldAt).map(rowHtml).join('');
@@ -5302,22 +5313,22 @@ function renderReview(m,onConfirm){ // N4.5: onConfirm lets the limit branch use
     '<div class="ractions"><button type="button" class="ghost" id="reviewCancel">Back to edit</button><button type="button" class="primary" id="reviewConfirm"'+(m.blockers.length?' disabled':'')+'>'+esc(m.confirmLabel)+'</button></div>'+
     (m.blockers.length?'<div class="note">Confirm is disabled — resolve the issue above.</div>':'<div class="note">Review the lines above — nothing moves until you confirm.</div>');
   box.hidden=false;
-  const tp=document.querySelector('[data-panel="ticket"]');if(tp&&tp.classList)tp.classList.add('review-open');
+  const tp=document.querySelector('[data-panel="'+(reviewTarget==='live'?'ticketLive':'ticket')+'"]');if(tp&&tp.classList)tp.classList.add('review-open');
   $('reviewCancel').onclick=hideReview;
   $('reviewConfirm').onclick=onConfirm||confirmReview;
 }
-function hideReview(){reviewState=null;limitReviewState=null;dcaReviewState=null;const box=$('reviewSheet');if(box){box.hidden=true;box.innerHTML='';}const tp=document.querySelector('[data-panel="ticket"]');if(tp&&tp.classList)tp.classList.remove('review-open');const sb=$('submitTrade');if(sb)sb.disabled=false;refreshTicket();}
+function hideReview(){reviewState=null;limitReviewState=null;dcaReviewState=null;const box=$('reviewSheet');if(box){box.hidden=true;box.innerHTML='';}const boxL=$('reviewSheetLive');if(boxL){boxL.hidden=true;boxL.innerHTML='';}const tp=document.querySelector('[data-panel="ticket"]');if(tp&&tp.classList)tp.classList.remove('review-open');const tpL=document.querySelector('[data-panel="ticketLive"]');if(tpL&&tpL.classList)tpL.classList.remove('review-open');const sb=$('submitTrade');if(sb)sb.disabled=false;const sbL=$('submitTradeLive');if(sbL&&reviewTarget==='live')sbL.disabled=false;reviewTarget='paper';refreshTicket();} /* N3.162: closes whichever paper sheet is open (Lab or Terminal) — only one can be open at a time, so clearing both is a no-op for the other; the live review sheet keeps its own hideLiveReview. */
 function reviewInputs(){const tp=ticketPair;return{side,baseMint:tp.baseMint,baseSymbol:tp.baseSymbol,quoteSymbol:tp.quoteSymbol,quoteUsd:quoteUsd(tp.quoteSymbol),amountQuote:ticketSizeUsd()/quoteUsd(tp.quoteSymbol),slippageBps:slipLoad()};} // N5.1: amountQuote is unit-aware
-function openReview(){
+function openReview(target){
   hideLiveReview();
   const tp=ticketPair;if(!tp)return toast('Waiting for market data.');
   const inp=reviewInputs(),px=ticketPrice();
   const probe=inp.side==='buy'?paperBuyFill({cash,holdings},{baseMint:inp.baseMint,baseSymbol:inp.baseSymbol,quoteSymbol:inp.quoteSymbol,price:px,quoteUsd:inp.quoteUsd,amount:inp.amountQuote}):paperSellFill({cash,holdings},{baseMint:inp.baseMint,baseSymbol:inp.baseSymbol,quoteSymbol:inp.quoteSymbol,price:px,quoteUsd:inp.quoteUsd,amount:inp.amountQuote});
   if(probe.error)return toast(probe.error);
   const m=paperReviewModel(Object.assign({},inp,{price:px,priceAgeMs:Date.now()-lastMarketAt,feedStale:feedFailures>0}));
-  reviewState={inputs:inp,model:m};
-  renderReview(m);
-  const sb=$('submitTrade');sb.disabled=true;sb.textContent='Reviewing order…';
+  reviewState={inputs:inp,model:m,target:target||'paper'};
+  renderReview(m,undefined,reviewState.target);
+  const sb=reviewSubmitEl();if(sb){sb.disabled=true;sb.textContent='Reviewing order…';}
 }
 function confirmReview(){
   if(!reviewState)return;
@@ -5326,7 +5337,7 @@ function confirmReview(){
   if(cur>0&&reviewState.model.price>0&&Math.abs(cur-reviewState.model.price)/reviewState.model.price>0.001){
     // Price moved since the review was rendered: rebuild the sheet and require a fresh confirm (paper analogue of the /raydium/ stale-quote guard).
     const m=paperReviewModel(Object.assign({},inp,{price:cur,priceAgeMs:Date.now()-lastMarketAt,feedStale:feedFailures>0}));
-    reviewState={inputs:inp,model:m};renderReview(m);
+    reviewState={inputs:inp,model:m,target:reviewState.target||'paper'};renderReview(m,undefined,reviewState.target); /* N3.162: a price-move rebuild re-renders into the same panel the sheet opened in */
     return toast('Price moved — review the updated lines, then confirm.');
   }
   const fill={baseMint:inp.baseMint,baseSymbol:inp.baseSymbol,quoteSymbol:inp.quoteSymbol,price:cur,quoteUsd:inp.quoteUsd,amount:inp.amountQuote};
@@ -5428,7 +5439,7 @@ function updateLimitNote(){
   else if(v.note)n.innerHTML='<span style="color:var(--amber)">'+esc(v.note)+'</span>';
   else n.textContent='';
 }
-function openLimitReview(){
+function openLimitReview(target){
   hideLiveReview();
   const tp=ticketPair;if(!tp)return toast('Waiting for market data.');
   if(limitExpirySel==='never'&&!($('expiryAck')&&$('expiryAck').checked))return toast('A no-expiry limit order stays open until filled or cancelled — tick the acknowledgment first.');
@@ -5438,8 +5449,9 @@ function openLimitReview(){
   const expMs=LIMIT_EXPIRIES[limitExpirySel];
   const m=limitReviewModel({side,baseSymbol:tp.baseSymbol,quoteSymbol:tp.quoteSymbol,quoteUsd:quoteUsd(tp.quoteSymbol),amountQuote:ticketSizeUsd()/quoteUsd(tp.quoteSymbol),limitPrice:v.limitPrice,expiresAt:expMs===null?null:Date.now()+expMs,spot:ticketPrice(),priceAgeMs:Date.now()-lastMarketAt,feedStale:feedFailures>0});
   limitReviewState={inputs:{side,baseMint:tp.baseMint,baseSymbol:tp.baseSymbol,quoteSymbol:tp.quoteSymbol,quoteUsd:quoteUsd(tp.quoteSymbol),amountQuote:ticketSizeUsd()/quoteUsd(tp.quoteSymbol),limitPrice:v.limitPrice,expiresAt:expMs===null?null:Date.now()+expMs}};
-  renderReview(m,confirmLimitReview);
-  const sb=$('submitTrade');sb.disabled=true;sb.textContent='Reviewing order…';
+  limitReviewState.target=target||'paper';
+  renderReview(m,confirmLimitReview,limitReviewState.target);
+  const sb=reviewSubmitEl();if(sb){sb.disabled=true;sb.textContent='Reviewing order…';}
 }
 function confirmLimitReview(){
   if(!limitReviewState)return;
@@ -5516,7 +5528,7 @@ function paintDcaPreview(){
   if(!txt){n.hidden=true;n.textContent='';return;}
   n.textContent=txt;n.hidden=false;
 }
-function openDcaReview(){
+function openDcaReview(target){
   hideLiveReview();
   const tp=ticketPair;if(!tp)return toast('Waiting for market data.');
   const inp=dcaTicketInputs();
@@ -5535,8 +5547,9 @@ function openDcaReview(){
     {label:'Price freshness',value:inp.feedStale?'STALE — last good price':'Live spot'}
   ],blockers:[],impactPct:0,band:'low',notice:null,confirmLabel:'Activate paper DCA schedule',chip:'PAPER — simulated, no real funds',warn:v.note};
   dcaReviewState={inputs:{side,baseMint:tp.baseMint,baseSymbol:tp.baseSymbol,quoteSymbol:tp.quoteSymbol,quoteUsd:quoteUsd(tp.quoteSymbol),totalSell:Number(inp.totalSell),count:count,intervalId:inp.intervalId,intervalMs:v.intervalMs,minPrice:v.minPrice,maxPrice:v.maxPrice,endsAt:endsAt}};
-  renderReview(m,confirmDcaReview);
-  const sb=$('submitTrade');sb.disabled=true;sb.textContent='Reviewing order…';
+  dcaReviewState.target=target||'paper';
+  renderReview(m,confirmDcaReview,dcaReviewState.target);
+  const sb=reviewSubmitEl();if(sb){sb.disabled=true;sb.textContent='Reviewing order…';}
 }
 function confirmDcaReview(){
   if(!dcaReviewState)return;
@@ -7411,8 +7424,11 @@ function setTicketMode(m){
   if(ticketMode!=='paper')clearTicketDraft();
   ticketMode='paper';
   $('paperModeBtn').classList.add('active','mode');$('liveModeBtn').classList.remove('active','mode');
+  var pmbL=$('paperModeBtnLive'),lmbL=$('liveModeBtnLive'); /* N3.162 (2026-11-05, A304): the Terminal ticket carries the same Paper/Live toggle — its buttons track the shared ticketMode with the Lab ticket's. */
+  if(pmbL)pmbL.classList.add('active','mode');if(lmbL)lmbL.classList.remove('active','mode');
   if(typeof renderExecPath==='function')renderExecPath(); // N4.7
   if(typeof paintXselBar==='function')paintXselBar(); // N3.113: mode change renames the bar: keep the Execution path panel mode-aware
+  try{if(typeof paintTicketLive==='function')paintTicketLive();}catch(_){} /* N3.162: the Terminal ticket repaints into its Paper branch on the same flip */
 }
 function bindWalletUi(){
   try{evmInitDiscovery();}catch(e){}
@@ -7718,6 +7734,58 @@ function paintTicketLive(){
   var curSlip=slipLoad();
   document.querySelectorAll('#slipPresetsLive button').forEach(function(b){b.classList.toggle('on',Number(b.dataset.slip)===curSlip);});
   el=g('slippageInputLive');if(el&&document.activeElement!==el)el.value=String(curSlip);
+  /* N3.162 (2026-11-05, A304): mode chrome — title, pill, toggle and notes
+     paint from the shared ticketMode on every repaint, so no surface can
+     name a mode the ticket is not in. The Paper branch below makes the
+     Terminal ticket the paper ticket while the global mode is Paper. */
+  var _paperMode=ticketMode==='paper';
+  var _tlTitle=g('ticketLiveTitle');if(_tlTitle)_tlTitle.textContent=_paperMode?'Order ticket':'Order ticket \u2014 Live';
+  var _tlPill=g('ticketLiveModePill');if(_tlPill){_tlPill.textContent=_paperMode?'SIMULATED':'LIVE \u00b7 LOCKED';_tlPill.className=_paperMode?'pill pill-simulated':'pill';}
+  var _pmbL=g('paperModeBtnLive');if(_pmbL){_pmbL.classList.toggle('active',_paperMode);_pmbL.classList.toggle('mode',_paperMode);}
+  var _lmbL=g('liveModeBtnLive');if(_lmbL){_lmbL.classList.toggle('active',!_paperMode);_lmbL.classList.toggle('mode',!_paperMode);}
+  var _tlNote=g('ticketLiveModeNote');if(_tlNote)_tlNote.textContent=_paperMode?'Paper instance \u2014 simulated fills at the pairs-feed spot price; no real orders or funds.':'Live instance \u2014 prices from real Raydium quotes, never the pairs-feed spot. Execution stays locked until the N4.4 pre-trade safety gate is cleared by a human; nothing here sends a transaction.';
+  var _dcaTxt=g('dcaNoteLiveText');if(_dcaTxt)_dcaTxt.textContent=_paperMode?'DCA schedules are paper-only \u2014 created here from the shared ticket state; the schedule list lives on the paper ticket (Strategy Lab page).':'DCA schedules are paper-only \u2014 they run on the paper ticket (Strategy Lab page) and never arm a live schedule. Execution stays locked until the N4.4 gate is cleared.';
+  var _limGate=g('limitLiveGateNote');if(_limGate)_limGate.textContent=_paperMode?'Simulated fills at spot \u2014 not instant, not guaranteed. Paper only; nothing touches the chain.':'Live limit orders do not execute while live trading is locked (N4.4 gate).';
+  var _rqBtn=g('refreshLiveQuoteBtn');if(_rqBtn)_rqBtn.hidden=_paperMode;
+  var _cmp=g('liveQuoteCompareLive');if(_cmp)_cmp.hidden=_paperMode;
+  if(_paperMode){
+    var _tp=ticketPair,_pr=ticketPrice();
+    var _sb=g('submitTradeLive');
+    if(_sb)_sb.classList.remove('locked-live'); /* Paper mode is never the locked live primary: the green primary returns */
+    if(_sb&&(!g('reviewSheetLive')||g('reviewSheetLive').hidden)){
+      if(orderType==='limit'){_sb.textContent='Create limit order \u00b7 Paper';_sb.disabled=!limitFeedLive();}
+      else if(orderType==='dca'){_sb.textContent='Activate DCA schedule \u00b7 Paper';_sb.disabled=!limitFeedLive();}
+      else{var _st=paperNoQuoteSubmit(side,_tp?_tp.baseSymbol:'',!(_pr>0));_sb.textContent=_st.text;_sb.disabled=_st.disabled;}
+    }
+    var _cal=g('cashAvailLiveLabel');if(_cal)_cal.textContent='Available USD';
+    var _ca=g('cashAvailLive');if(_ca)_ca.textContent=usd(cash);
+    var _ep=g('execPriceLive'),_eq=g('estQtyLive'),_note=g('ticketNoteLive');
+    var _amt=ticketSizeUsd()/quoteUsd(_tp&&_tp.quoteSymbol);
+    var _dl=g('dualSizeLive');
+    if(orderType==='dca'){
+      if(_ep)_ep.textContent='\u2014';
+      var _eq0=g('estQty');if(_eq&&_eq0)_eq.textContent=_eq0.textContent; /* mirrors the paper ticket's per-order figure, painted by refreshTicket just before this call */
+      if(_dl)_dl.textContent='\u2014';
+      if(_note)_note.textContent='DCA schedules are paper-only \u2014 created here from the shared ticket state.';
+      return;
+    }
+    if(orderType==='limit'){
+      var _lpv=Number(($('limitPrice')||{value:''}).value)||0;
+      if(_ep)_ep.textContent=_lpv>0?formatPrice(_lpv):'\u2014';
+      if(_eq)_eq.textContent=_lpv>0&&_amt>0?('\u2248 '+fmtQty(_amt/_lpv)+' '+(_tp?_tp.baseSymbol:'')+' when the price reaches '+formatQuotePrice(_lpv,_tp?_tp.quoteSymbol:'USDC')):'\u2014 '+(_tp?_tp.baseSymbol:'');
+      if(_dl)_dl.textContent=dualSizeText(ticketSizeUsd(),(_lpv>0&&_amt>0)?_amt/_lpv:null,_tp?_tp.baseSymbol:'','at your limit');
+      if(_note)_note.textContent='Limit terms \u2014 your limit price, not a market quote. Paper fill when spot reaches it.';
+      return;
+    }
+    if(_ep){_ep.textContent=_pr>0?formatQuotePrice(_pr/((quoteUsd(_tp.quoteSymbol)||1)>0?quoteUsd(_tp.quoteSymbol):1),_tp.quoteSymbol):'\u2014';if(_pr>0)_ep.setAttribute('data-prov',provText(ticketProv()));} /* same quote unit as the Lab ticket's execution price */
+    if(_eq)_eq.textContent=_pr>0&&_amt>0?fmtQty(_amt*((quoteUsd(_tp.quoteSymbol)||1)>0?quoteUsd(_tp.quoteSymbol):1)/_pr)+' '+_tp.baseSymbol:'\u2014 '+(_tp?_tp.baseSymbol:'');
+    if(_dl)_dl.textContent=dualSizeText(ticketSizeUsd(),(_pr>0&&_amt>0)?_amt*((quoteUsd(_tp.quoteSymbol)||1)>0?quoteUsd(_tp.quoteSymbol):1)/_pr:null,_tp?_tp.baseSymbol:'');
+    var _at=null;try{var _k=paperQuoteKey(_tp);if(_k&&paperLastQuoteByPair)_at=paperLastQuoteByPair[_k]||null;}catch(_){}
+    var _ageEl=g('ticketFreshAgeLive');if(_ageEl)_ageEl.textContent=ticketFreshAgeLabel(_pr>0,_at,Date.now());
+    var _fb=g('ticketFreshBtnLive');if(_fb)_fb.disabled=!!paperQuoteRefreshing;
+    if(_note)_note.textContent=!(_pr>0)?'No quote for this pair yet \u2014 the paper ticket is waiting for a feed price.':'Paper \u2014 simulated fill at the feed price; no real orders or funds.';
+    return;
+  }
   var sb=g('submitTradeLive');var tp=ticketPair;
   if(sb){sb.textContent=(side==='buy'?'Buy ':'Sell ')+(tp?tp.baseSymbol:'')+' · Live (locked)';sb.disabled=!!liveReviewOpen;sb.classList.toggle('locked-live',!LIVE_TRADING_ENABLED);} /* N4.22 (A147): locked live primary stays muted across repaints; when a human flips the gate, the class drops and the green primary returns. Click behaviour unchanged per scope — the button still opens the locked review sheet, whose Confirm stays disabled, so no execution path changes. */
   if(orderType==='dca'&&sb)sb.textContent='DCA · Live (locked)';
@@ -7982,6 +8050,8 @@ function hideLiveReview(){
 (function wireTicketLive(){
   var live=panelEl('ticketLive');if(!live)return;
   var b;
+  b=$('paperModeBtnLive');if(b)b.onclick=function(){setTicketMode('paper');};
+  b=$('liveModeBtnLive');if(b)b.onclick=function(){setTicketMode('live');};
   b=$('buyBtnLive');if(b)b.onclick=function(){setSide('buy');};
   b=$('sellBtnLive');if(b)b.onclick=function(){setSide('sell');};
   b=$('mktBtnLive');if(b)b.onclick=function(){setOrderType('market');};
@@ -8035,9 +8105,9 @@ function hideLiveReview(){
     };
   });
   var formLive=$('tradeFormLive');
-  if(formLive)formLive.onsubmit=function(e){e.preventDefault();openLiveReview();};
+  if(formLive)formLive.onsubmit=function(e){e.preventDefault();if(ticketMode==='paper'){if(orderType==='limit')openLimitReview('live');else if(orderType==='dca')openDcaReview('live');else openReview('live');return;}openLiveReview();}; /* N3.162: in Paper mode the Terminal ticket commits through the same paper review sheet + paper fills as the Lab ticket (target 'live'); Live mode keeps the locked live review. */
   var refreshBtn=$('refreshLiveQuoteBtn');
-  if(refreshBtn)refreshBtn.onclick=function(){scheduleLiveQuote(true);};var ticketFreshBtnLive=$('ticketFreshBtnLive');if(ticketFreshBtnLive)ticketFreshBtnLive.onclick=function(){scheduleLiveQuote(true);}; // N3.116 (A258): Get fresh quote reuses the live re-quote path
+  if(refreshBtn)refreshBtn.onclick=function(){scheduleLiveQuote(true);};var ticketFreshBtnLive=$('ticketFreshBtnLive');if(ticketFreshBtnLive)ticketFreshBtnLive.onclick=function(){if(ticketMode==='paper'){refreshPaperQuote();return;}scheduleLiveQuote(true);}; /* N3.162: in Paper mode the fresh-quote button re-quotes the paper (spot-feed) quote instead of the live Raydium quote */ // N3.116 (A258): Get fresh quote reuses the live re-quote path
   var ticketPairBoxLiveEl=$('ticketPairBoxLive');if(ticketPairBoxLiveEl)ticketPairBoxLiveEl.onclick=function(){ticketPairSelToggle('live');}; // N4.17: the Live instance gains the selector UI only, no new live capability
   liveTicketWired=true;
   paintTicketLive();
