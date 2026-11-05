@@ -38,11 +38,16 @@ export interface QuoteResult {
 }
 
 /** One Raydium routePlan leg, in payload terms only. poolId is the leg's pool
- *  key (ammKey) when the payload carries one, else null — never invented. */
+ *  key (ammKey) when the payload carries one, else null — never invented.
+ *  feeLabel is the leg's own fee as labelled at parse time (N3.140): a feeBps
+ *  value reads '<v> bps' (the field name carries the unit); any other fee
+ *  field is quoted verbatim with its provenance, never silently re-unit-ed;
+ *  null when the payload reports no fee for the leg. */
 export interface RouteLeg {
   inputMint: string;
   outputMint: string;
   poolId: string | null;
+  feeLabel: string | null;
 }
 
 /** Parse a raw Raydium routePlan into RouteLegs. Returns [] unless EVERY leg
@@ -59,9 +64,31 @@ export function parseRouteLegs(plan: unknown): RouteLeg[] {
     const outputMint = asNonEmptyString(source.outputMint);
     if (!inputMint || !outputMint) return [];
     const poolId = asNonEmptyString(swap.ammKey) ?? asNonEmptyString(swap.poolId) ?? asNonEmptyString(rec.ammKey) ?? asNonEmptyString(rec.poolId);
-    legs.push({ inputMint, outputMint, poolId });
+    legs.push({ inputMint, outputMint, poolId, feeLabel: parseLegFeeLabel(swap, rec) });
   }
   return legs;
+}
+
+/** One routePlan entry's fee as a display value, or null when it carries none.
+ *  A bare number or non-empty string only — objects and booleans are not fees. */
+function legFeeValue(value: unknown): string | null {
+  if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+  if (typeof value === 'string' && value.trim() !== '') return value.trim();
+  return null;
+}
+
+/** N3.140 fee label for one leg. swapInfo-first, like poolId, so a leg's fee
+ *  rides with its own pool. feeBps wins because its unit is in its name;
+ *  feeRate and fee fall back verbatim with provenance because their unit is
+ *  unverified upstream — re-unit-ing them would invent a figure. */
+function parseLegFeeLabel(swap: Record<string, unknown>, rec: Record<string, unknown>): string | null {
+  const bps = legFeeValue(swap.feeBps) ?? legFeeValue(rec.feeBps);
+  if (bps !== null) return bps + ' bps';
+  const rate = legFeeValue(swap.feeRate) ?? legFeeValue(rec.feeRate);
+  if (rate !== null) return rate + ' (rate as reported)';
+  const fee = legFeeValue(swap.fee) ?? legFeeValue(rec.fee);
+  if (fee !== null) return fee + ' (as reported)';
+  return null;
 }
 
 /** Shorten a mint/pool id for display: first 4 + ellipsis + last 4. Short ids
@@ -93,6 +120,57 @@ export function quoteRouteText(legs: RouteLeg[], symbolFor: (mint: string) => st
   }
   if (pools.length === legs.length) return path + ' via Raydium pools ' + pools.join(', ');
   return path + ' via Raydium';
+}
+
+// N3.140 (2026-11-04, A282): hop diagram for a /raydium/ quote. This replaces
+// the cryptic aggregate the 23:03 tour saw ('Route legs: 2 pools · per-leg:
+// 1 · 1' — a count plus unit-less numbers with no hop attached) with one
+// labelled line per hop. The header line carries the path, the pool count
+// and the price impact together (S102 presentation leg: 'Route: SOL → USDT
+// → USDC · 2 Raydium pools · 0% price impact'); each hop line below it, in
+// smaller muted text, names its own pool and fee. A leg with no reported
+// pool reads 'pool not reported' and a leg with no reported fee reads 'fee
+// not reported' — a missing value is never dropped silently (dropping it is
+// what let 'per-leg: 1' stand for a 2-leg route) and never guessed. A direct
+// route collapses to a single hop by construction (one leg, one hop line).
+// Returns null when the payload names no route, so the caller falls back to
+// the existing 'not reported by this quote' line. Pure: symbols come only
+// from the caller's resolver, pools and fees only from the parsed legs.
+export interface RouteDiagramHop {
+  pair: string;
+  pool: string;
+  fee: string;
+}
+
+export interface RouteDiagram {
+  header: string;
+  hops: RouteDiagramHop[];
+}
+
+export function quoteRouteDiagram(legs: RouteLeg[], symbolFor: (mint: string) => string, priceImpactPct: number | null): RouteDiagram | null {
+  if (!Array.isArray(legs) || legs.length === 0) return null;
+  const chain: string[] = [symbolFor(legs[0].inputMint)];
+  for (const leg of legs) {
+    chain.push(symbolFor(leg.outputMint));
+  }
+  const path = chain.join(' → ');
+  const poolWord = legs.length === 1 ? '1 Raydium pool' : legs.length + ' Raydium pools';
+  const impact = priceImpactPct === null ? 'price impact not reported' : priceImpactPct + '% price impact';
+  const hops: RouteDiagramHop[] = legs.map((leg) => ({
+    pair: symbolFor(leg.inputMint) + ' → ' + symbolFor(leg.outputMint),
+    pool: leg.poolId ? 'pool ' + shortId(leg.poolId) : 'pool not reported',
+    fee: leg.feeLabel ? 'fee ' + leg.feeLabel : 'fee not reported',
+  }));
+  return { header: path + ' · ' + poolWord + ' · ' + impact, hops };
+}
+
+/** N3.140: the diagram's fees as one per-hop line for the Pool fees row, so
+ *  the quote panel and the review sheet can never disagree with the diagram
+ *  above them — both read the same parsed legs. Null when there is no route,
+ *  so the caller falls back to the honest 'included in quote' line. */
+export function quoteRouteFeesText(legs: RouteLeg[], symbolFor: (mint: string) => string): string | null {
+  if (!Array.isArray(legs) || legs.length === 0) return null;
+  return legs.map((leg) => symbolFor(leg.inputMint) + ' → ' + symbolFor(leg.outputMint) + ': ' + (leg.feeLabel ?? 'fee not reported')).join(' · ');
 }
 
 interface ApiEnvelope {

@@ -29,7 +29,7 @@
 import {useEffect,useRef} from 'react';
 import {useWallet} from '@solana/wallet-adapter-react';
 import type {VersionedTransaction} from '@solana/web3.js';
-import {COPY as SWAP_COPY,SAFETY_COPY,DEFAULT_SLIPPAGE_BPS,explorerUrl,impactBand,impactNotice,isQuoteFresh,isRejectionError,lamportsToSol,MAX_SLIPPAGE_BPS,MIN_SLIPPAGE_BPS,parseSlippageInput,poolFeeNote,PREWALLET_FEES_COPY,readSharedSlippage,SLIPPAGE_PRESETS_BPS,solPriceUsdFromQuote,writeSharedSlippage} from './solana/swapFlow';
+import {COPY as SWAP_COPY,SAFETY_COPY,DEFAULT_SLIPPAGE_BPS,explorerUrl,impactBand,impactNotice,isQuoteFresh,isRejectionError,lamportsToSol,MAX_SLIPPAGE_BPS,MIN_SLIPPAGE_BPS,parseSlippageInput,PREWALLET_FEES_COPY,readSharedSlippage,SLIPPAGE_PRESETS_BPS,solPriceUsdFromQuote,writeSharedSlippage} from './solana/swapFlow';
 import type {PrepareState,ImpactBand} from './solana/swapFlow';
 // N4.6 (2026-10-22): live swap-fill events land in the shared trade-history store
 // (same schema as the home page's History panel) — written ONLY after on-chain
@@ -41,7 +41,7 @@ import {buildSwapFillEvent,recordTradeEvent} from './solana/tradeHistory';
 //   The slippage UI gained presets (0.1/0.5/1.0%) + custom input. The byte-faithful claim above
 //   covers the reconstruction era; post-seed evolution is documented here per amendment.
 import {useMemo,useState} from 'react';import {WalletMultiButton} from '@solana/wallet-adapter-react-ui';import {formatBaseUnits,PAIRS,parseAmountToBaseUnits,TOKENS} from './solana/tokens';import {useRaydiumSwap} from './solana/useRaydiumSwap';import type {QuoteResult} from './solana/raydiumApi';
-import {quoteRouteText,shortId} from './solana/raydiumApi';
+import {quoteRouteDiagram,quoteRouteFeesText,shortId} from './solana/raydiumApi';
 // N3.121 (2026-11-03, A263): mint -> display symbol for the route trace. Known
 // panel tokens resolve to their symbol; an unknown intermediate mint renders as
 // its shortened id, never as a guessed symbol.
@@ -62,6 +62,18 @@ function previousQuoteText(prev: QuoteResult | null): string | null {
   const pool = Array.isArray(prev.route) && prev.route.length > 0 ? prev.route[0].poolId : null;
   if (pool) return 'Previous: ' + amount + ' ' + prev.outputSymbol + ' · pool ' + shortId(pool);
   return 'Previous: ' + amount + ' ' + prev.outputSymbol + ' · pool not reported';
+}
+// N3.140 (2026-11-04, A282): hop diagram for a /raydium/ quote, used by both
+// the quote panel and the review sheet so the two can never disagree. The
+// header line carries path + pool count + price impact; each hop line below
+// it (smaller, muted) names that hop's own pool and fee. No route in the
+// payload renders the existing 'not reported by this quote' line, never a
+// guessed path. It executes nothing and invents no figure: pools, fees and
+// impact come only from the parsed quote.
+function RouteDiagram({quote}: {quote: QuoteResult}) {
+  const diagram = quoteRouteDiagram(quote.route, tokenSymbolForMint, quote.priceImpactPct);
+  if (!diagram) return <>not reported by this quote</>;
+  return (<><span>{diagram.header}</span>{diagram.hops.map((hop, i) => (<span key={i} className="route-hop">{hop.pair} · {hop.pool} · {hop.fee}</span>))}</>);
 }
 // N3.131 (2026-11-03, A273): quote-change diff banner for an auto-refreshed
 // /raydium/ quote. Pure: compares the displaced quote with the new one and
@@ -341,7 +353,7 @@ useEffect(()=>{if(quote&&quoteAge>=25&&!busy&&phase==='idle'&&!reviewQuote&&Date
 // N4.4: derived review-sheet model (pack §3.6) — plain function calls, recomputed every render.
 const rvBand:ImpactBand=reviewQuote?impactBand(reviewQuote.priceImpactPct):'unknown';
 const rvNotice=reviewQuote?impactNotice(rvBand,reviewQuote.priceImpactPct):null;
-const rvPoolFee=reviewQuote?poolFeeNote(reviewQuote.raw):null;
+const rvRouteFees=reviewQuote?quoteRouteFeesText(reviewQuote.route,tokenSymbolForMint):null;
 const rvSolPrice=reviewQuote?solPriceUsdFromQuote(reviewQuote):null;
 const rvFeeSol=feeLamports!==null?lamportsToSol(feeLamports):null;
 const rvFeeUsd=rvFeeSol!==null&&rvSolPrice!==null?Number(rvFeeSol)*rvSolPrice:null;
@@ -382,13 +394,14 @@ return(<div className="shell">
 <input id="slippage" value={slippageBps} onChange={e=>onSlippageChange(e.target.value)} inputMode="numeric" disabled={busy} aria-label="Custom slippage in basis points" style={{width:'90px'}}/>
 </div>
 <p className="slippage-hint">{slippageHint}</p>
-{quote?(<div className="quote-details"><div className="quote-row"><span>Estimated output</span><strong title={`Raydium quote · ${quoteAge}s old · via /api/raydium/quote`}>{formatBaseUnits(quote.outputAmount,quote.outputDecimals)} {quote.outputSymbol}</strong></div>{prevQuote?(<p className="quote-prev">{previousQuoteText(prevQuote)}</p>):null}<div className="quote-row"><span>Minimum after slippage</span><strong title={`Raydium quote · ${quoteAge}s old · via /api/raydium/quote`}>{formatBaseUnits(quote.minimumOut,quote.outputDecimals)} {quote.outputSymbol}</strong></div><div className="quote-row"><span>Route</span><strong>{quoteRouteText(quote.route,tokenSymbolForMint)}</strong></div><div className="quote-row"><span>Price impact</span><strong>{quote.priceImpactPct===null?'—':quote.priceImpactPct+'%'}</strong></div><div className="quote-row"><span>Quote age</span><strong><QuoteFreshRing ageSec={quoteAge}/> · auto-refreshes every 25s</strong></div><div className="quote-row"><span>Source</span><strong title="Raydium quote via /api/raydium/quote">Raydium quote</strong></div></div>):null}
+{quote?(<div className="quote-details"><div className="quote-row"><span>Estimated output</span><strong title={`Raydium quote · ${quoteAge}s old · via /api/raydium/quote`}>{formatBaseUnits(quote.outputAmount,quote.outputDecimals)} {quote.outputSymbol}</strong></div>{prevQuote?(<p className="quote-prev">{previousQuoteText(prevQuote)}</p>):null}<div className="quote-row"><span>Minimum after slippage</span><strong title={`Raydium quote · ${quoteAge}s old · via /api/raydium/quote`}>{formatBaseUnits(quote.minimumOut,quote.outputDecimals)} {quote.outputSymbol}</strong></div><div className="quote-row"><span>Route</span><strong><RouteDiagram quote={quote}/></strong></div><div className="quote-row"><span>Price impact</span><strong>{quote.priceImpactPct===null?'—':quote.priceImpactPct+'%'}</strong></div><div className="quote-row"><span>Quote age</span><strong><QuoteFreshRing ageSec={quoteAge}/> · auto-refreshes every 25s</strong></div><div className="quote-row"><span>Source</span><strong title="Raydium quote via /api/raydium/quote">Raydium quote</strong></div></div>):null}
 {/* N4.8 (2026-10-23) — pre-wallet fee transparency. The network fee cannot be computed before a
     transaction exists, so the panel states honestly WHEN the estimate appears (at review, before
-    signing) instead of inventing a number. The pool-fee note reuses the N4.4 tolerant reader
-    (poolFeeNote) — the same function the wallet-gated review sheet uses on its own quote — so the
-    two can never contradict each other. */}
-{quote?(<div><p className="eyebrow">{PREWALLET_FEES_COPY.sectionHeading}</p><div className="quote-details"><div className="quote-row"><span>Network fee</span><strong>{PREWALLET_FEES_COPY.networkFee}</strong></div><div className="quote-row"><span>Pool fees</span><strong>{poolFeeNote(quote.raw)??SAFETY_COPY.poolFeesHonest}</strong></div></div></div>):null}
+    signing) instead of inventing a number. N3.140 (2026-11-04, A282): the pool-fee line now reads
+    the same parsed legs as the Route diagram above it (quoteRouteFeesText, one fee per hop) — the
+    N4.4 aggregate reader (poolFeeNote) is retired from this panel and the review sheet, so the two
+    can never contradict each other or the diagram. */}
+{quote?(<div><p className="eyebrow">{PREWALLET_FEES_COPY.sectionHeading}</p><div className="quote-details"><div className="quote-row"><span>Network fee</span><strong>{PREWALLET_FEES_COPY.networkFee}</strong></div><div className="quote-row"><span>Pool fees</span><strong>{quoteRouteFeesText(quote.route,tokenSymbolForMint)??SAFETY_COPY.poolFeesHonest}</strong></div></div></div>):null}
 {reviewQuote&&phase!=='confirmed'?(
 <div className="review-sheet" role="dialog" aria-label={SWAP_COPY.reviewTitle}>
 <div style={{display:'flex',alignItems:'center',gap:'10px',flexWrap:'wrap'}}><h3 style={{margin:0}}>{SWAP_COPY.reviewTitle}</h3><span style={{fontSize:'11px',fontWeight:700,color:'#ff8f8f',border:'1px solid #7a2e2e',borderRadius:'999px',padding:'3px 10px',background:'#2a1414'}}>{SAFETY_COPY.liveChip}</span></div>
@@ -400,9 +413,9 @@ return(<div className="shell">
 <div className="quote-row"><span>Price impact</span><strong style={{color:rvImpactColor}}>{reviewQuote.priceImpactPct===null?'—':reviewQuote.priceImpactPct.toFixed(2)+'%'}</strong></div>
 {rvNotice?(<div className="quote-row"><span>Impact warning</span><strong style={{color:rvBand==='blocked'?'#ff7b7b':'#f5b544'}}>{rvNotice}</strong></div>):null}
 <div className="quote-row"><span>Network fee</span><strong>{rvFeeSol!==null?rvFeeSol+' SOL'+(rvFeeUsd!==null?' (≈ $'+rvFeeUsd.toFixed(4)+')':' (USD estimate unavailable)'):prepareState==='preparing'?'Estimating…':'unavailable — confirm disabled'}</strong></div>
-<div className="quote-row"><span>Pool fees</span><strong>{rvPoolFee??SAFETY_COPY.poolFeesHonest}</strong></div>
+<div className="quote-row"><span>Pool fees</span><strong>{rvRouteFees??SAFETY_COPY.poolFeesHonest}</strong></div>
 <div className="quote-row"><span>Total cost</span><strong>{rvFeeSol!==null?formatBaseUnits(reviewQuote.inputAmount,input.decimals)+' '+input.symbol+' + '+rvFeeSol+' SOL network fee':'—'}</strong></div>
-<div className="quote-row"><span>Route</span><strong>{quoteRouteText(reviewQuote.route,tokenSymbolForMint)}</strong></div>
+<div className="quote-row"><span>Route</span><strong><RouteDiagram quote={reviewQuote}/></strong></div>
 <div className="quote-row"><span>Slippage tolerance</span><strong>{slippageBps} bps ({(Number(slippageBps)/100).toFixed(2)}%)</strong></div>
 <div className="quote-row"><span>Quote age</span><strong><QuoteFreshRing ageSec={quoteAge}/> · auto-refreshes every 25s</strong></div>
 <div className="quote-row"><span>Pre-flight simulation</span><strong style={{color:simStatus==='ok'?'#4ade80':simStatus?'#ff7b7b':'inherit'}}>{prepareState==='preparing'?'Running…':simStatus==='ok'?'Passed — expected to succeed on-chain':simStatus==='failed'?'Failed — see below':simStatus==='unavailable'?'Unavailable — confirm disabled':'—'}</strong></div>
