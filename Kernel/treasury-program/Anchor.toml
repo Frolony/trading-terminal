@@ -2,12 +2,12 @@
 anchor_version = "1.2.1"
 
 [programs.localnet]
-treasury_program = "FPGSeLBWEiFKdTuqDbJeKhjXeah5H4c3rqsW4Tzn3RAS"
+treasury_program = "CAQ4FvxtCy2d3852eyA1Hk4Qhwy9MpE14igTQkx5NSeJ"
 
 [provider]
 cluster = "localnet"
-# Required by Anchor's config parser; build does not use it. No deployment
-# happens in W4.3, and no keypair at this path is created by this project.
+# Required by Anchor's config parser; build does not use it. W4.4 deployed
+# to devnet; no keypair at this path is created by this project.
 wallet = "/home/hatch/.config/solana/id.json"
 
 [scripts]

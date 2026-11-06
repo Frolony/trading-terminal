@@ -1,4 +1,4 @@
-//! treasury_program — the own treasury program, W4.3 scaffold (skeleton).
+//! treasury_program — the own treasury program (W4.3 build; W4.4 devnet deployment).
 //!
 //! Design: `files/OWN_IDL_DESIGN.md` (W4.1, validated and revised 2026-10-24;
 //! W4.3 GO given by Carlos 2026-10-24 ~03:39 CST). Placement C: the kernel
@@ -6,7 +6,7 @@
 //! `commit_fail_mask` is computed on-chain; there is NO digest publisher —
 //! the W3.3 mock's trust root does not survive into this program.
 //!
-//! # Scaffold status (this increment: kernel vendoring + predicate proof)
+//! # Build history (first increment: kernel vendoring + predicate proof)
 //!
 //! One genesis instruction (`initialize_config`, design §4.1) and the
 //! `Config` account (design §3) exist, and the pristine kernel crate is now
@@ -414,12 +414,15 @@
 //! with `enroll`). No exact-settle requirement (the effect is a fixed
 //! snapshot + counter advance). The executor is permissionless and pays
 //! the WindowState rent (operator-paid from the 73 bps fee flow).
-//! Nothing here is deployed: NO devnet deployment in W4.3, NO mainnet step
-//! exists in W4. No instruction here moves value.
-//!
-//! The program id in `declare_id!` is a scaffold placeholder generated for
-//! local build / IDL generation only; its keypair was never committed and
-//! no deployment was made from it. W4.4 deployment uses a fresh keypair.
+//! Deployed to devnet 2026-11-06 (W4.4): program
+//! `CAQ4FvxtCy2d3852eyA1Hk4Qhwy9MpE14igTQkx5NSeJ`, frozen binary
+//! sha256 `27359c4a…` (927,576 B); the funded-treasury dividend test
+//! (38 holders, 12-window rotation) ran against this id and verified
+//! the distribution math to the lamport. NO mainnet step exists in W4.
+//! Slice 29 moves value: `exit` and `execute_whale_tranche` pay real
+//! lamports from the program-owned SOL vault (error 6108
+//! SolPayoutExceedsCoverage caps payouts at vault coverage); every
+//! value-moving path is gated by a Settled kernel transition.
 //!
 //! # Canonical numbers (Carlos's stated assumptions — labeled, never promises)
 //!
@@ -464,7 +467,7 @@ use anchor_lang::prelude::*;
 use anchor_lang::solana_program::instruction::{AccountMeta, Instruction};
 use anchor_lang::solana_program::rent::Rent;
 
-declare_id!("FPGSeLBWEiFKdTuqDbJeKhjXeah5H4c3rqsW4Tzn3RAS");
+declare_id!("CAQ4FvxtCy2d3852eyA1Hk4Qhwy9MpE14igTQkx5NSeJ");
 
 /// Bridge to the pristine kernel crate (design §1.2, §4.1).
 /// See `kernel_bridge.rs` for the launch profile, the evidence-check
@@ -3865,14 +3868,22 @@ pub mod treasury_program {
     /// skip flag names a future slot's dividend; it does not
     /// gate an exit of this window's position.
     ///
-    /// Honest scope, as in `pay_tranche` / `borrow` /
-    /// `settle_default`: this slice records the exit as
-    /// bookkeeping — accrued dividend consumed first,
-    /// position reduced by the excess, exit stock debited —
-    /// and does NOT move tokens (the program holds no token
-    /// accounts yet). The token disbursement step lands
-    /// separately, and this instruction must not be read as
-    /// a payout.
+    /// Disbursement (the payout leg, landed after the
+    /// bookkeeping slices): the bookkeeping above —
+    /// accrued dividend consumed first, position reduced
+    /// by the excess, exit stock debited — now settles in
+    /// lamports in the same transaction: `paid_raw` moves
+    /// from the SOL vault to the holder, TreasuryState is
+    /// debited by exactly that amount, and the penalty
+    /// portion stays in the vault and in the totals.
+    /// Coverage is judged on the SOL side only
+    /// ([`can_sol_payout`]): an exit against a treasury
+    /// whose value sits in the token vault rather than
+    /// the SOL vault refuses `SolPayoutExceedsCoverage`
+    /// and changes no state. Honest remainder: the TOKEN
+    /// payout leg is still unbuilt — this instruction
+    /// pays SOL only, and a holder whose position was
+    /// funded in tokens has no token payout path yet.
     pub fn exit(
         ctx: Context<Exit>,
         transition_id: u64,
@@ -3891,6 +3902,58 @@ pub mod treasury_program {
             ctx.accounts.window_state.snapshot_total_raw,
             ctx.accounts.window_state.exit_stock_raw,
         )?;
+        // SOL payout (disbursement slice): this exit now
+        // PAYS, in lamports, exactly the `paid_raw` the gate
+        // computed — the gross amount minus the 13%-on-excess
+        // penalty. The penalty portion is never transferred:
+        // it stays in the SOL vault and stays in the
+        // TreasuryState totals, which is what makes the door
+        // a price rather than a second movement. Order
+        // mirrors the deposits, reversed: coverage first,
+        // the transfer second, the ledger debits last — a
+        // refusal at any step rolls the whole transaction
+        // back, so no state exists in which lamports moved
+        // but the records did not (or the reverse). Coverage
+        // is judged on the SOL side only ([`can_sol_payout`]):
+        // an exit against a treasury whose value sits in the
+        // token vault rather than the SOL vault refuses
+        // `SolPayoutExceedsCoverage` — the disbursement asset
+        // is the holder's choice (Carlos, 2026-10-26), and
+        // this slice builds the SOL leg of that choice; the
+        // token payout leg is a separate instruction family,
+        // not smuggled into this one.
+        can_sol_payout(
+            paid_raw,
+            ctx.accounts.treasury_state.cash_raw,
+            ctx.accounts.sol_vault.lamports(),
+        )?;
+        let treasury_key = ctx.accounts.treasury_state.key();
+        let bump_seed = [ctx.bumps.sol_vault];
+        let signer_seeds: &[&[u8]] = &[
+            b"sol-vault",
+            treasury_key.as_ref(),
+            &bump_seed,
+        ];
+        let transfer_ix = anchor_lang::solana_program::system_instruction::transfer(
+            &ctx.accounts.sol_vault.key(),
+            &ctx.accounts.holder.key(),
+            paid_raw,
+        );
+        anchor_lang::solana_program::program::invoke_signed(
+            &transfer_ix,
+            &[
+                ctx.accounts.sol_vault.to_account_info(),
+                ctx.accounts.holder.to_account_info(),
+            ],
+            &[signer_seeds],
+        )?;
+        // The asset-ledger debit: only `paid_raw` leaves
+        // the totals (see [`apply_sol_payout`]).
+        let state = &mut ctx.accounts.treasury_state;
+        let (total_raw, cash_raw) =
+            apply_sol_payout(state.total_raw, state.cash_raw, paid_raw)?;
+        state.total_raw = total_raw;
+        state.cash_raw = cash_raw;
         let accrued_before = ctx.accounts.holder_record.accrued_dividend_raw;
         let from_accrued = accrued_before.min(amount_raw);
         let excess = amount_raw - from_accrued;
@@ -4318,13 +4381,26 @@ pub mod treasury_program {
     /// names the EXECUTION window (the window whose stock
     /// was debited), not the creation window.
     ///
-    /// Honest scope, as in the sibling slices: this slice
-    /// records the tranche as bookkeeping — position
+    /// Disbursement (the payout leg, landed after the
+    /// bookkeeping slices): this instruction now PAYS —
+    /// the tranche amount, in lamports, out of the SOL
+    /// vault to the holder's wallet, in the same
+    /// transaction as the bookkeeping debits (position
     /// reduced, exit stock debited, executed count
-    /// incremented — and does NOT move tokens (the
-    /// program holds no token accounts yet). The token
-    /// disbursement step lands separately, and this
-    /// instruction must not be read as a payout.
+    /// incremented), and TreasuryState is debited by the
+    /// paid amount like any payout. There is no penalty
+    /// term to withhold (see the penalty reading above),
+    /// so the paid amount IS the tranche amount. Coverage
+    /// is judged on the SOL side only ([`can_sol_payout`]):
+    /// a tranche against a treasury whose value sits in
+    /// the token vault rather than the SOL vault refuses
+    /// `SolPayoutExceedsCoverage` and changes no state —
+    /// the schedule does not advance, so the tranche can
+    /// execute later, when the SOL side covers it. Honest
+    /// remainder: the TOKEN payout leg is still unbuilt —
+    /// this instruction pays SOL only, and a whale whose
+    /// position was funded in tokens has no token payout
+    /// path yet.
     pub fn execute_whale_tranche(
         ctx: Context<ExecuteWhaleTranche>,
         transition_id: u64,
@@ -4359,6 +4435,43 @@ pub mod treasury_program {
             now,
             schedule.last_block_time,
         )?;
+        // SOL payout (disbursement slice): coverage first,
+        // the transfer second, the ledger debits last — the
+        // `exit` order. A coverage refusal here leaves the
+        // schedule untouched (no count increment, no cadence
+        // stamp): the tranche is not consumed by an
+        // inability to pay it in SOL.
+        can_sol_payout(
+            amount_raw,
+            ctx.accounts.treasury_state.cash_raw,
+            ctx.accounts.sol_vault.lamports(),
+        )?;
+        let treasury_key = ctx.accounts.treasury_state.key();
+        let bump_seed = [ctx.bumps.sol_vault];
+        let signer_seeds: &[&[u8]] = &[
+            b"sol-vault",
+            treasury_key.as_ref(),
+            &bump_seed,
+        ];
+        let transfer_ix = anchor_lang::solana_program::system_instruction::transfer(
+            &ctx.accounts.sol_vault.key(),
+            &ctx.accounts.holder_wallet.key(),
+            amount_raw,
+        );
+        anchor_lang::solana_program::program::invoke_signed(
+            &transfer_ix,
+            &[
+                ctx.accounts.sol_vault.to_account_info(),
+                ctx.accounts.holder_wallet.to_account_info(),
+            ],
+            &[signer_seeds],
+        )?;
+        // The asset-ledger debit (see [`apply_sol_payout`]).
+        let state = &mut ctx.accounts.treasury_state;
+        let (total_raw, cash_raw) =
+            apply_sol_payout(state.total_raw, state.cash_raw, amount_raw)?;
+        state.total_raw = total_raw;
+        state.cash_raw = cash_raw;
         let tranche_index = ctx.accounts.exit_schedule.tranches_executed;
         let record = &mut ctx.accounts.holder_record;
         record.position_raw = record
@@ -5892,6 +6005,71 @@ pub fn apply_deposit(
     ))
 }
 
+/// The SOL payout coverage gate, as a pure check
+/// (disbursement slice — the payout leg of `exit` and
+/// `execute_whale_tranche`): a payout of `paid_raw`
+/// lamports out of the SOL vault refuses unless BOTH
+/// covers hold — the vault's actual lamport balance, and
+/// TreasuryState's cash sleeve. The vault cover is the
+/// binding one: lamports are the asset, and a payout the
+/// vault does not hold would be the governed-bookkeeping
+/// failure the funding-path ruling rejected, run in
+/// reverse. The sleeve cover is the ledger's own
+/// consistency: [`apply_sol_payout`] debits the sleeve by
+/// the same amount, and the debit must not underflow a
+/// sleeve the deposits credited. One error for both
+/// covers (`SolPayoutExceedsCoverage`): from the caller's
+/// side the failure shape is the same — this payout
+/// cannot be covered in SOL right now — and the two
+/// figures are both public account state, so the caller
+/// can recompute which cover failed. Deliberately NOT
+/// judged against `total_raw`: the total is a mixed-scale
+/// ledger (slice 21: token-raw and lamports summed with
+/// no conversion), and no SOL payout may treat it as a
+/// single-currency balance; the cash sleeve is the
+/// sleeve every SOL deposit credited and every governed
+/// deployment draws on, so it is the ledger cover.
+pub fn can_sol_payout(paid_raw: u64, cash_raw: u64, vault_lamports: u64) -> Result<()> {
+    require!(
+        paid_raw <= vault_lamports,
+        TreasuryError::SolPayoutExceedsCoverage
+    );
+    require!(
+        paid_raw <= cash_raw,
+        TreasuryError::SolPayoutExceedsCoverage
+    );
+    Ok(())
+}
+
+/// The payout debit, as a pure function: the exact mirror
+/// of [`apply_deposit`]. The paid amount leaves the
+/// treasury total AND the cash sleeve, and nothing else —
+/// bonds and arb are untouched, as at deposit. Only the
+/// PAID amount is debited: an `exit`'s penalty portion
+/// never leaves the vault, so it stays in both figures
+/// (the penalty is a transfer from the holder to the
+/// treasury that already happened by the holder never
+/// receiving it, not a second movement). Both subtractions
+/// are checked: an overflow refuses with `Overflow` and,
+/// on-chain, rolls the payout transfer back with it —
+/// the transfer-first order in the handlers means a
+/// failed debit leaves no state in which the vault paid
+/// lamports the ledger still counts.
+pub fn apply_sol_payout(
+    total_raw: u64,
+    cash_raw: u64,
+    paid_raw: u64,
+) -> Result<(u64, u64)> {
+    Ok((
+        total_raw
+            .checked_sub(paid_raw)
+            .ok_or(TreasuryError::Overflow)?,
+        cash_raw
+            .checked_sub(paid_raw)
+            .ok_or(TreasuryError::Overflow)?,
+    ))
+}
+
 /// The `launch_stage2` gate, as a pure check (design §4.2):
 /// Settled state first, then the canonical `treasury.launch.v1`
 /// type, then the stage still being Stage 1, then threshold B set.
@@ -7065,8 +7243,11 @@ pub struct DefaultSettled {
 /// accrued dividend, the net paid amount, and the position
 /// remaining after the exit — plus the authorization context,
 /// the Committed window flow transition's id, commit index,
-/// and declared hash. The exit here is bookkeeping, not a
-/// token movement: the program holds no token accounts yet.
+/// and declared hash. Since the disbursement slice the
+/// `paid_raw` here is also the payout evidence: exactly
+/// that many lamports moved from the SOL vault to the
+/// holder in the same transaction that emitted this
+/// event, and `penalty_raw` stayed in the vault.
 #[event]
 pub struct Exited {
     pub window_id: u64,
@@ -7167,10 +7348,11 @@ pub struct WhaleScheduleCreated {
 /// or the remainder on the last tranche), and the executed
 /// count after this tranche — plus the authorization
 /// context, the Committed `treasury.exit.v1` transition's
-/// id, commit index, and declared hash. The tranche here
-/// is bookkeeping, not a token movement: no stock other
-/// than the window's exit-stock ledger is debited, and no
-/// position moves except the holder record's.
+/// id, commit index, and declared hash. Since the
+/// disbursement slice the `amount_raw` here is also the
+/// payout evidence: exactly that many lamports moved
+/// from the SOL vault to the holder's wallet in the same
+/// transaction that emitted this event.
 #[event]
 pub struct WhaleTrancheExecuted {
     /// The EXECUTION window (cross-window execution, D-10
@@ -9313,7 +9495,11 @@ pub struct Exit<'info> {
     /// operator-settled: the record below is seeds-bound to
     /// this signer, so a holder exits only their own lock, and
     /// design §5's standing authorization is not stretched to
-    /// cover an instruction it does not name.
+    /// cover an instruction it does not name. Mutable since
+    /// the disbursement slice: the holder is the SOL payout's
+    /// recipient, and a lamport credit requires a writable
+    /// account.
+    #[account(mut)]
     pub holder: Signer<'info>,
     /// The window flow transition, seeds-bound to its id. Must be
     /// Committed and of the canonical window type — the
@@ -9334,6 +9520,25 @@ pub struct Exit<'info> {
     /// the dividend, never below an outstanding loan.
     #[account(mut, seeds = [b"holder", window_id.to_le_bytes().as_ref(), holder.key().as_ref()], bump = holder_record.bump)]
     pub holder_record: Account<'info, HolderRecord>,
+    /// Treasury state PDA — mutated (disbursement slice):
+    /// the payout debits `total_raw` and `cash_raw` by
+    /// exactly the paid amount, the mirror of the deposit
+    /// credit. Its `cash_raw` is also one of the two
+    /// coverage covers the payout is judged against.
+    #[account(mut, seeds = [b"treasury"], bump = treasury_state.bump)]
+    pub treasury_state: Account<'info, TreasuryState>,
+    /// CHECK: the SOL vault PDA, seeds
+    /// `["sol-vault", treasury]` — the payout's source.
+    /// Unchecked type by necessity, as in `deposit_sol`:
+    /// a SOL vault is a bare system account with no data
+    /// layout to type-check. The seeds constraint binds
+    /// the address, and the handler judges coverage on
+    /// its actual lamport balance before signing the
+    /// transfer with these seeds.
+    #[account(mut, seeds = [b"sol-vault", treasury_state.key().as_ref()], bump)]
+    pub sol_vault: UncheckedAccount<'info>,
+    /// System program, required by the payout transfer CPI.
+    pub system_program: Program<'info, System>,
 }
 
 /// Accounts for [`treasury_program::reinvest`].
@@ -9538,6 +9743,37 @@ pub struct ExecuteWhaleTranche<'info> {
     /// rewritten.
     #[account(mut, seeds = [b"schedule", window_id.to_le_bytes().as_ref(), holder.as_ref()], bump = exit_schedule.bump)]
     pub exit_schedule: Account<'info, ExitSchedule>,
+    /// Treasury state PDA — mutated (disbursement slice):
+    /// the payout debits `total_raw` and `cash_raw` by
+    /// exactly the tranche amount, the mirror of the
+    /// deposit credit. Its `cash_raw` is also one of the
+    /// two coverage covers the payout is judged against.
+    #[account(mut, seeds = [b"treasury"], bump = treasury_state.bump)]
+    pub treasury_state: Account<'info, TreasuryState>,
+    /// CHECK: the SOL vault PDA, seeds
+    /// `["sol-vault", treasury]` — the payout's source.
+    /// Unchecked type by necessity, as in `deposit_sol`:
+    /// a SOL vault is a bare system account with no data
+    /// layout to type-check. The seeds constraint binds
+    /// the address, and the handler judges coverage on
+    /// its actual lamport balance before signing the
+    /// transfer with these seeds.
+    #[account(mut, seeds = [b"sol-vault", treasury_state.key().as_ref()], bump)]
+    pub sol_vault: UncheckedAccount<'info>,
+    /// CHECK: the holder's wallet — the payout's
+    /// recipient (disbursement slice). The holder does
+    /// not sign here (the operator executes), so the
+    /// binding is the `address` constraint against the
+    /// `holder` argument: the same key that seeds the
+    /// holder record and the schedule above, so a tranche
+    /// can only ever pay the wallet whose position it
+    /// debits. Unchecked type: a wallet is a bare account
+    /// with no data layout to type-check; receiving
+    /// lamports requires only writability.
+    #[account(mut, address = holder)]
+    pub holder_wallet: UncheckedAccount<'info>,
+    /// System program, required by the payout transfer CPI.
+    pub system_program: Program<'info, System>,
 }
 
 /// Accounts for [`treasury_program::allocate`].
@@ -10294,6 +10530,20 @@ pub enum TreasuryError {
     /// transition, the previous round, and the caller (slice 28).
     #[msg("Previous-round SignalRecord mismatch: not the caller's record for the previous round.")]
     PrevSignalMismatch,
+    /// A SOL payout (`exit` or `execute_whale_tranche`,
+    /// disbursement slice) exceeds what the SOL side can
+    /// pay: the amount the gate computed must fit inside
+    /// BOTH the SOL vault's actual lamport balance and the
+    /// treasury's cash sleeve (`cash_raw`). The vault check
+    /// is the funding-path ruling in reverse — a payout may
+    /// no more invent lamports the vault does not hold than
+    /// a deposit may credit assets never transferred — and
+    /// the sleeve check keeps the payout from driving the
+    /// asset ledger negative. The refusal changes no state:
+    /// no lamports move, no record or stock is debited, and
+    /// the treasury totals stand.
+    #[msg("SOL payout exceeds coverage: the payout must fit inside the SOL vault balance and the cash sleeve.")]
+    SolPayoutExceedsCoverage,
 }
 
 #[cfg(test)]
@@ -12860,6 +13110,61 @@ mod tests {
             600_000, 100_000,
         )
         .expect("an exit down to exactly the outstanding loan passes");
+    }
+
+    #[test]
+    fn sol_payout_coverage_matrix() {
+        // Disbursement slice. Argument order: paid, cash
+        // sleeve, SOL vault lamports. Both covers are
+        // inclusive: a payout exactly equal to both passes.
+        can_sol_payout(4_480, 4_480, 4_480).expect("a payout at both covers passes");
+        // Either cover alone suffices to refuse: the vault
+        // is the asset (a payout it does not hold invents
+        // lamports), the sleeve is the ledger (the debit
+        // must not underflow it).
+        assert!(can_sol_payout(4_480, 1_000_000, 4_479).is_err());
+        assert!(can_sol_payout(4_480, 4_479, 1_000_000).is_err());
+        // An empty vault refuses any positive payout — the
+        // token-funded-treasury case: value in the token
+        // vault is not SOL coverage, whatever the totals say.
+        assert!(can_sol_payout(1, 76_000_000, 0).is_err());
+        // A zero payout is covered trivially (the gates
+        // never produce one: `can_exit` requires a positive
+        // amount and its penalty is a fraction of it, and a
+        // whale tranche amount is positive by its own gate).
+        can_sol_payout(0, 0, 0).expect("a zero payout is covered");
+    }
+
+    #[test]
+    fn sol_payout_debit_matrix() {
+        // The debit mirrors the deposit credit: total and
+        // cash fall by exactly the paid amount, nothing else.
+        assert_eq!(
+            apply_sol_payout(76_000_000, 76_000_000, 4_480)
+                .expect("a covered payout debits"),
+            (75_995_520, 75_995_520)
+        );
+        // Penalty-stays accounting, end to end with the
+        // exit gate: a 5,000 exit against a 1,000 accrued
+        // dividend prices (520, 4,480); the vault and the
+        // totals keep the 520 — they fall by the 4,480 paid
+        // only, never by the 5,000 gross.
+        let (penalty_raw, paid_raw) = can_exit(
+            STATE_COMMITTED, TREASURY_WINDOW_TYPE, 13, 13, 5_000, 1_000, 10_000, 0,
+            600_000, 100_000,
+        )
+        .expect("the matrix exit passes its gate");
+        assert_eq!((penalty_raw, paid_raw), (520, 4_480));
+        let vault_before = 10_000u64;
+        can_sol_payout(paid_raw, 10_000, vault_before).expect("the payout is covered");
+        let (total_after, cash_after) =
+            apply_sol_payout(10_000, 10_000, paid_raw).expect("the debit lands");
+        assert_eq!(vault_before - paid_raw, 5_520);
+        assert_eq!((total_after, cash_after), (5_520, 5_520));
+        // Underflow refuses on either figure, checked: the
+        // total here is the binding one (cash would cover).
+        assert!(apply_sol_payout(100, 200, 150).is_err());
+        assert!(apply_sol_payout(200, 100, 150).is_err());
     }
 
     #[test]
