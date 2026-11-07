@@ -2727,19 +2727,20 @@ pub mod treasury_program {
     /// deposit of a mint (the `init_if_needed` payer); later
     /// deposits into the same vault pay no rent.
     ///
-    /// Honest scope, carried not hidden (slice 19): deposit and
-    /// enroll are now bound at the window level — `enroll`
-    /// refuses when the window's cumulative enrolled total
-    /// plus the new position would exceed the window's funded
-    /// snapshot total, and unfunded windows enroll uncapped
-    /// under the opted-out-of-contract rule — but NOT at the
-    /// per-holder level: no per-depositor ledger exists, so
-    /// this instruction cannot check one holder's position
-    /// against that holder's own deposits. A holder's position
-    /// is bounded by the window's funded total in aggregate,
-    /// not by their individual deposits; per-holder deposit
-    /// backing remains a future item, not something this
-    /// instruction pretends to enforce.
+    /// Honest scope, carried not hidden (slice 19, ledger
+    /// slice 30): deposit and enroll are bound at the window
+    /// level — `enroll` refuses when the window's cumulative
+    /// enrolled total plus the new position would exceed the
+    /// window's funded snapshot total, and unfunded windows
+    /// enroll uncapped under the opted-out-of-contract rule —
+    /// and, since slice 30, every deposit is ALSO recorded
+    /// per holder per mint on the `HolderDeposit` ledger, so
+    /// the backing a position will be checked against exists.
+    /// The check itself is slice 31: this instruction records
+    /// the deposit, it does not yet gate enrollments on it —
+    /// a holder's position is still bounded by the window's
+    /// funded total in aggregate until the gate lands, and
+    /// this instruction does not pretend otherwise.
     pub fn deposit(ctx: Context<Deposit>, amount_raw: u64) -> Result<()> {
         let depositor_key = ctx.accounts.depositor.key();
         let mint_key = *ctx.accounts.mint.key;
@@ -2890,6 +2891,19 @@ pub mod treasury_program {
             apply_deposit(state.total_raw, state.cash_raw, amount_raw)?;
         state.total_raw = total_raw;
         state.cash_raw = cash_raw;
+        // Slice 30, per-holder backing: record the deposit on
+        // the depositor's per-mint ledger — transfer first,
+        // treasury credit second, ledger record third, so a
+        // failed transfer or credit records nothing, and an
+        // overflow on the record rolls the whole transaction
+        // back. Holder/mint/bump are set idempotently (the
+        // same values on every deposit); `committed_raw` is
+        // untouched here — the enroll gate (slice 31) owns it.
+        let ledger = &mut ctx.accounts.holder_deposit;
+        ledger.holder = depositor_key;
+        ledger.mint = mint_key;
+        ledger.deposited_raw = record_deposit(ledger.deposited_raw, amount_raw)?;
+        ledger.bump = ctx.bumps.holder_deposit;
         emit!(TreasuryDeposit {
             depositor: depositor_key,
             mint: mint_key,
@@ -2946,8 +2960,11 @@ pub mod treasury_program {
     /// single-currency value without a conversion step, and
     /// this slice builds no price conversion and prices
     /// nothing: SOL-in is lamports, credited as lamports.
-    /// (3) Per-holder deposit backing is still unbuilt, as
-    /// for token deposits: the credit is aggregate only.
+    /// (3) Per-holder deposit backing is recorded, not yet
+    /// enforced, as for token deposits (slice 30): the SOL
+    /// leg of the `HolderDeposit` ledger accumulates the
+    /// holder's lamport deposits; the enroll gate that checks
+    /// a position against it is slice 31.
     pub fn deposit_sol(ctx: Context<DepositSol>, amount_raw: u64) -> Result<()> {
         let depositor_key = ctx.accounts.depositor.key();
         let vault_info = ctx.accounts.sol_vault.to_account_info();
@@ -2982,6 +2999,16 @@ pub mod treasury_program {
             apply_deposit(state.total_raw, state.cash_raw, amount_raw)?;
         state.total_raw = total_raw;
         state.cash_raw = cash_raw;
+        // Slice 30, per-holder backing (SOL leg): record the
+        // lamports on the depositor's native-SOL ledger — same
+        // transfer → credit → record order as the token leg.
+        // The mint field carries the documented native-SOL
+        // marker; the seeds distinguish the legs.
+        let ledger = &mut ctx.accounts.holder_deposit_sol;
+        ledger.holder = depositor_key;
+        ledger.mint = Pubkey::default();
+        ledger.deposited_raw = record_deposit(ledger.deposited_raw, amount_raw)?;
+        ledger.bump = ctx.bumps.holder_deposit_sol;
         emit!(TreasurySolDeposit {
             depositor: depositor_key,
             vault: *vault_info.key,
@@ -6005,6 +6032,44 @@ pub fn apply_deposit(
     ))
 }
 
+/// The per-holder deposit recording, as a pure function (slice
+/// 30): a deposit of `amount_raw` joins the holder's cumulative
+/// deposited total in that mint. Checked: an overflow refuses
+/// with `Overflow` and, on-chain, rolls the transfer and the
+/// treasury credit back with it — the ledger can never record
+/// more than the vault received.
+pub fn record_deposit(deposited_raw: u64, amount_raw: u64) -> Result<u64> {
+    Ok(deposited_raw
+        .checked_add(amount_raw)
+        .ok_or(TreasuryError::Overflow)?)
+}
+
+/// The headroom a holder's backing leaves for a new enrollment
+/// (slice 30; wired at `enroll` in slice 31): deposited minus
+/// committed, saturating — committed can never exceed deposited
+/// once the gate is wired, so saturation is defense-in-depth,
+/// not a path the gate relies on.
+pub fn backing_headroom(deposited_raw: u64, committed_raw: u64) -> u64 {
+    deposited_raw.saturating_sub(committed_raw)
+}
+
+/// The enroll gate predicate, as a pure check (slice 30;
+/// wired at `enroll` in slice 31): a position enrolls against
+/// this mint's backing only when the position fits in the
+/// headroom — committed plus position must not exceed
+/// deposited. The window-aggregate cap is a separate check
+/// (`can_enroll`); a position must pass both.
+pub fn can_enroll_against_backing(
+    deposited_raw: u64,
+    committed_raw: u64,
+    position_raw: u64,
+) -> Result<()> {
+    if position_raw > backing_headroom(deposited_raw, committed_raw) {
+        return Err(TreasuryError::EnrollExceedsDepositBacking.into());
+    }
+    Ok(())
+}
+
 /// The SOL payout coverage gate, as a pure check
 /// (disbursement slice — the payout leg of `exit` and
 /// `execute_whale_tranche`): a payout of `paid_raw`
@@ -8532,6 +8597,54 @@ impl ForfeitureRecord {
     pub const SPACE: usize = 8 + 32 + 8 + 8 + 1;
 }
 
+/// Holder deposit ledger (design §3, §4.2; slice 30, mint-binding
+/// decision `hidden_files/MINT_BINDING_DECISION.md`) — one per
+/// (holder, mint), the per-holder deposit backing the slice-19
+/// window-aggregate cap could not express: `deposit` /
+/// `deposit_sol` record every funding transfer here, in the mint
+/// it arrived in, so a holder's position can be checked against
+/// that holder's own deposits instead of the window's funded
+/// total in aggregate. The ledger is per mint because the
+/// treasury total is mixed-scale (token-raw and lamports summed
+/// with no conversion, slice 21): summing a holder's USDC-raw
+/// and lamport deposits into one backing number would repeat
+/// that error at the holder level. The token leg is keyed by
+/// the mint (`["holder-deposit", treasury, holder, mint]`); the
+/// SOL leg has no mint, so it uses the separate seed prefix
+/// `["holder-deposit-sol", treasury, holder]` — no sentinel-mint
+/// value is ever invented, so no collision between the legs is
+/// possible. The `mint` field on the SOL leg records
+/// `Pubkey::default()` as the documented native-SOL marker; the
+/// seed prefix, not the field, is what distinguishes the legs.
+/// `deposited_raw` is cumulative and only grows (every deposit
+/// adds, nothing subtracts — no withdrawal of deposits exists);
+/// `committed_raw` is the part currently locked in enrolled
+/// positions, written by the enroll gate (slice 31) and zero
+/// until it lands — this slice records deposits only and
+/// enforces nothing, stated plainly so the ledger is not
+/// mistaken for the gate.
+#[account]
+pub struct HolderDeposit {
+    /// The depositing holder's key (PDA seed component).
+    pub holder: Pubkey,
+    /// The deposit mint (PDA seed component, token leg); the
+    /// native-SOL marker `Pubkey::default()` on the SOL leg.
+    pub mint: Pubkey,
+    /// Cumulative raw amount this holder deposited in this mint.
+    pub deposited_raw: u64,
+    /// Raw amount currently committed to enrolled positions in
+    /// this mint (slice 31 enroll gate; zero in slice 30).
+    pub committed_raw: u64,
+    /// PDA bump for the `["holder-deposit", ...]` /
+    /// `["holder-deposit-sol", ...]` seeds.
+    pub bump: u8,
+}
+
+impl HolderDeposit {
+    /// 8 (discriminator) + 32 + 32 + 8 + 8 + 1.
+    pub const SPACE: usize = 8 + 32 + 32 + 8 + 8 + 1;
+}
+
 /// Whale exit schedule (design §3, §4.2) — one per holder per
 /// window, the timed/tranched exit contract for a purse at or
 /// above the whale FLAG (D-10 REVISED: FLAG = 1/5 of movable
@@ -9151,6 +9264,23 @@ pub struct Deposit<'info> {
     pub rent: Sysvar<'info, Rent>,
     /// System program, required by the vault-creation CPI.
     pub system_program: Program<'info, System>,
+    /// The depositor's per-mint deposit ledger (slice 30),
+    /// PDA seeds `["holder-deposit", treasury, holder, mint]`.
+    /// Created on first use (`init_if_needed`, payer =
+    /// depositor, who pays the ledger's rent): a first-time
+    /// depositor starts at zero deposited, and every deposit
+    /// adds to it — the record `enroll` will check in slice
+    /// 31. The ledger is written only after the transfer and
+    /// the treasury credit succeed, so a failed deposit
+    /// records nothing.
+    #[account(
+        init_if_needed,
+        payer = depositor,
+        space = HolderDeposit::SPACE,
+        seeds = [b"holder-deposit", treasury_state.key().as_ref(), depositor.key().as_ref(), mint.key.as_ref()],
+        bump
+    )]
+    pub holder_deposit: Account<'info, HolderDeposit>,
 }
 
 /// Accounts for [`treasury_program::deposit_sol`] (slice 21).
@@ -9183,6 +9313,23 @@ pub struct DepositSol<'info> {
     pub sol_vault: UncheckedAccount<'info>,
     /// System program, required by the transfer CPI.
     pub system_program: Program<'info, System>,
+    /// The depositor's native-SOL deposit ledger (slice 30),
+    /// PDA seeds `["holder-deposit-sol", treasury, holder]`.
+    /// Created on first use (`init_if_needed`, payer =
+    /// depositor): the SOL leg of the per-holder backing,
+    /// separate seed prefix from the token leg so no mint
+    /// value is ever invented for SOL. The handler records
+    /// `Pubkey::default()` in the ledger's mint field as the
+    /// documented native-SOL marker; the seeds, not the
+    /// field, distinguish the legs.
+    #[account(
+        init_if_needed,
+        payer = depositor,
+        space = HolderDeposit::SPACE,
+        seeds = [b"holder-deposit-sol", treasury_state.key().as_ref(), depositor.key().as_ref()],
+        bump
+    )]
+    pub holder_deposit_sol: Account<'info, HolderDeposit>,
 }
 
 /// Accounts for [`treasury_program::register_mint`] and
@@ -10544,6 +10691,17 @@ pub enum TreasuryError {
     /// the treasury totals stand.
     #[msg("SOL payout exceeds coverage: the payout must fit inside the SOL vault balance and the cash sleeve.")]
     SolPayoutExceedsCoverage,
+    /// An enrollment exceeds the holder's own deposit backing in
+    /// that mint (slice 31 enroll gate, predicate unit-tested in
+    /// slice 30): the position plus what this holder already
+    /// committed in the mint must fit inside what they deposited
+    /// in it. The window-aggregate cap
+    /// (`EnrollExceedsFundedSnapshot`) still applies alongside —
+    /// a position must fit BOTH the window's funded total and
+    /// the holder's own deposits, so no holder enrolls against
+    /// another holder's funding.
+    #[msg("Enrollment exceeds deposit backing: the position must fit inside this holder's own deposits in that mint.")]
+    EnrollExceedsDepositBacking,
 }
 
 #[cfg(test)]
@@ -12384,6 +12542,96 @@ mod tests {
         // divergence can survive.
         assert!(apply_deposit(u64::MAX, 0, 1).is_err());
         assert!(apply_deposit(0, u64::MAX, 1).is_err());
+    }
+
+    #[test]
+    fn holder_deposit_space_arithmetic() {
+        // 8 discriminator + holder 32 + mint 32 + deposited 8
+        // + committed 8 + bump 1. The `assert_eq!` in the
+        // golden harness's account-size checks reads this
+        // constant, so the arithmetic is pinned here, not
+        // trusted to a literal.
+        assert_eq!(HolderDeposit::SPACE, 8 + 32 + 32 + 8 + 8 + 1);
+    }
+
+    #[test]
+    fn deposit_ledger_records_cumulatively() {
+        // Every deposit adds to the same holder's cumulative
+        // total in that mint: two deposits of 60,000,000 and
+        // 10,000,000 record 70,000,000, and the record is the
+        // transferred amount — never a fee-skimmed figure.
+        let after_first = record_deposit(0, 60_000_000).expect("first deposit records");
+        assert_eq!(after_first, 60_000_000);
+        let after_second =
+            record_deposit(after_first, 10_000_000).expect("second deposit accumulates");
+        assert_eq!(after_second, 70_000_000);
+        // An addition overflowing refuses — on-chain the whole
+        // deposit (transfer + credit + record) rolls back.
+        assert!(record_deposit(u64::MAX, 1).is_err());
+    }
+
+    #[test]
+    fn deposit_backing_gate_matrix() {
+        // The slice-31 gate predicate, unit-tested in slice 30:
+        // a position fits exactly when it fits in the headroom
+        // (deposited minus committed).
+        can_enroll_against_backing(100_000, 0, 100_000)
+            .expect("a position exactly equal to the backing passes");
+        can_enroll_against_backing(100_000, 40_000, 60_000)
+            .expect("a position fitting the post-commit headroom passes");
+        can_enroll_against_backing(100_000, 0, 0)
+            .expect("the predicate itself does not judge positivity — enroll does");
+        assert!(can_enroll_against_backing(100_000, 0, 100_001).is_err());
+        assert!(can_enroll_against_backing(100_000, 40_000, 60_001).is_err());
+        // Fully committed backing admits no further position.
+        assert!(can_enroll_against_backing(100_000, 100_000, 1).is_err());
+        // Nothing deposited admits nothing — the unbacked
+        // enrollment the slice-19 aggregate cap could not see.
+        assert!(can_enroll_against_backing(0, 0, 1).is_err());
+        // Headroom saturates rather than underflowing when the
+        // books are inconsistent (defense-in-depth; the gate
+        // never lets committed exceed deposited).
+        assert_eq!(backing_headroom(50_000, 80_000), 0);
+        assert_eq!(backing_headroom(100_000, 40_000), 60_000);
+    }
+
+    #[test]
+    fn holder_deposit_pda_legs_are_distinct() {
+        // The two ledger legs can never collide: the token leg
+        // seeds `["holder-deposit", treasury, holder, mint]`
+        // and the SOL leg seeds `["holder-deposit-sol",
+        // treasury, holder]` — different prefixes, so the same
+        // holder's SOL ledger and token ledger are different
+        // addresses, and two mints give two ledgers.
+        let treasury = Pubkey::new_from_array([1u8; 32]);
+        let holder = Pubkey::new_from_array([2u8; 32]);
+        let mint_a = Pubkey::new_from_array([3u8; 32]);
+        let mint_b = Pubkey::new_from_array([4u8; 32]);
+        let (token_a, _) = Pubkey::find_program_address(
+            &[
+                b"holder-deposit",
+                treasury.as_ref(),
+                holder.as_ref(),
+                mint_a.as_ref(),
+            ],
+            &crate::ID,
+        );
+        let (token_b, _) = Pubkey::find_program_address(
+            &[
+                b"holder-deposit",
+                treasury.as_ref(),
+                holder.as_ref(),
+                mint_b.as_ref(),
+            ],
+            &crate::ID,
+        );
+        let (sol, _) = Pubkey::find_program_address(
+            &[b"holder-deposit-sol", treasury.as_ref(), holder.as_ref()],
+            &crate::ID,
+        );
+        assert_ne!(token_a, token_b, "two mints share one ledger");
+        assert_ne!(token_a, sol, "token leg collides with SOL leg");
+        assert_ne!(token_b, sol, "token leg collides with SOL leg");
     }
 
     #[test]
