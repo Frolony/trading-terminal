@@ -126,6 +126,81 @@ fn pda(seeds: &[&[u8]], program_id: &Pubkey) -> (Pubkey, u8) {
     Pubkey::find_program_address(seeds, program_id)
 }
 
+/// Anchor account discriminator: first 8 bytes of
+/// sha256("account:{name}"). The harness builds seeded account
+/// data by hand, so it computes this itself rather than trusting
+/// a literal.
+fn acc_disc(name: &str) -> [u8; 8] {
+    Sha256::digest(format!("account:{name}").as_bytes())[..8]
+        .try_into()
+        .unwrap()
+}
+
+/// Slice-31 fixture helper: a seeded HolderDeposit ledger for
+/// the token leg — discriminator + holder + mint + deposited +
+/// committed 0 + bump, 89 bytes, owned by the program. Seeding
+/// is the gate's INPUT (see the slice-31 note in the
+/// `slice_note` string): the gate reads these bytes exactly as
+/// it would read a ledger a real `deposit` created, so the
+/// measured enroll CU is identical either way; a real deposit
+/// per holder would credit TreasuryState and move every later
+/// window's snapshot, re-baselining the whole chain for no
+/// measurement gain.
+fn seed_holder_deposit(
+    holder: Pubkey,
+    mint: Pubkey,
+    deposited_raw: u64,
+    treasury_state: Pubkey,
+    program_id: &Pubkey,
+) -> (Pubkey, Account) {
+    let (addr, bump) = pda(
+        &[
+            b"holder-deposit",
+            treasury_state.as_ref(),
+            holder.as_ref(),
+            mint.as_ref(),
+        ],
+        program_id,
+    );
+    let mut data = vec![0u8; 89];
+    data[0..8].copy_from_slice(&acc_disc("HolderDeposit"));
+    data[8..40].copy_from_slice(holder.as_ref());
+    data[40..72].copy_from_slice(mint.as_ref());
+    data[72..80].copy_from_slice(&deposited_raw.to_le_bytes());
+    data[80..88].copy_from_slice(&0u64.to_le_bytes());
+    data[88] = bump;
+    let mut acc = funded();
+    acc.data = data;
+    acc.owner = *program_id;
+    (addr, acc)
+}
+
+/// Slice-31 fixture helper: the SOL leg of the same ledger —
+/// seeds `["holder-deposit-sol", treasury, holder]`, mint field
+/// the documented native-SOL marker `Pubkey::default()`.
+fn seed_holder_deposit_sol(
+    holder: Pubkey,
+    deposited_raw: u64,
+    treasury_state: Pubkey,
+    program_id: &Pubkey,
+) -> (Pubkey, Account) {
+    let (addr, bump) = pda(
+        &[b"holder-deposit-sol", treasury_state.as_ref(), holder.as_ref()],
+        program_id,
+    );
+    let mut data = vec![0u8; 89];
+    data[0..8].copy_from_slice(&acc_disc("HolderDeposit"));
+    data[8..40].copy_from_slice(holder.as_ref());
+    data[40..72].copy_from_slice(&[0u8; 32]);
+    data[72..80].copy_from_slice(&deposited_raw.to_le_bytes());
+    data[80..88].copy_from_slice(&0u64.to_le_bytes());
+    data[88] = bump;
+    let mut acc = funded();
+    acc.data = data;
+    acc.owner = *program_id;
+    (addr, acc)
+}
+
 /// AgentRecord agent_index, parsed from serialized account data:
 /// discriminator 8 + agent 32 + active/roles 4 + influence 8 +
 /// reputation 8, then the groups vec (length + 2 bytes each) and the
@@ -589,6 +664,10 @@ fn main() {
     let oracle = Pubkey::new_from_array([6u8; 32]);
     let operator = Pubkey::new_from_array([7u8; 32]);
     let holder = Pubkey::new_from_array([8u8; 32]);
+    // The deposit mint ([10;32]) is defined up here, not at its
+    // first use in slice 7: slice 4's enroll (slice 31) needs it
+    // for the holder's token-leg ledger PDA.
+    let mint = Pubkey::new_from_array([10u8; 32]);
     let (config, _) = pda(&[b"config"], &program_id);
     let (chain, _) = pda(&[b"chain"], &program_id);
     // Slice-4 correction: the fee vault is its PDA, not a placeholder.
@@ -2005,9 +2084,12 @@ fn main() {
     assert_eq!(u64::from_le_bytes(ws.data[72..80].try_into().unwrap()), 3u64, "window source transition not 3");
 
     // (d) enroll the holder into window 0 (cohort 0 = 0 mod 12).
+    let (holder_deposit_h8, _) = pda(&[b"holder-deposit", treasury_state.as_ref(), holder.as_ref(), mint.as_ref()], &program_id);
+    if !accounts.iter().any(|(k, _)| *k == holder_deposit_h8) { accounts.push((holder_deposit_h8, empty.clone())); }
     let mut data = disc("enroll");
     data.extend_from_slice(&0u64.to_le_bytes());
     data.extend_from_slice(&10_000_000u64.to_le_bytes());
+    data.extend_from_slice(mint.as_ref());
     let (forfeiture_holder, _) = pda(&[b"forfeiture", holder.as_ref()], &program_id);
     if !accounts.iter().any(|(k, _)| *k == forfeiture_holder) { accounts.push((forfeiture_holder, empty.clone())); }
     let ix = Instruction::new_with_bytes(
@@ -2018,6 +2100,7 @@ fn main() {
             AccountMeta::new(window_state, false),
             AccountMeta::new(holder_record, false),
             AccountMeta::new(forfeiture_holder, false),
+            AccountMeta::new(holder_deposit_h8, false),
             AccountMeta::new(holder, true),
             AccountMeta::new_readonly(system_id, false),
         ],
@@ -2029,6 +2112,19 @@ fn main() {
     assert_eq!(u64::from_le_bytes(hr.data[48..56].try_into().unwrap()), 0u64, "holder cohort not 0");
     assert_eq!(u64::from_le_bytes(hr.data[56..64].try_into().unwrap()), 10_000_000u64, "holder position not 10,000,000");
     assert_eq!(hr.data[89], 1u8, "standing authorization not true at enroll");
+    // Slice 31: the record carries the deposit mint ([108..140],
+    // appended after loan_funded_raw — every earlier offset stands).
+    assert_eq!(&hr.data[108..140], mint.as_ref(), "holder record mint not the deposit mint after enroll");
+    // Slice 31: the unfunded-window opt-out — this enroll created
+    // the holder's token-leg ledger by init_if_needed with zero
+    // backing, and the gate stood down (snapshot 0): the record
+    // exists with the mint bound and committed still 0.
+    let hd0 = accounts.iter().find(|(k, _)| *k == holder_deposit_h8).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(hd0.data.len(), 89usize, "HolderDeposit account is not 89 bytes after enroll (slice 4)");
+    assert_eq!(&hd0.data[8..40], holder.as_ref(), "ledger holder is not the holder after enroll (slice 4)");
+    assert_eq!(&hd0.data[40..72], mint.as_ref(), "ledger mint is not the deposit mint after enroll (slice 4)");
+    assert_eq!(u64::from_le_bytes(hd0.data[72..80].try_into().unwrap()), 0u64, "ledger deposited_raw not 0 after unfunded enroll (slice 4)");
+    assert_eq!(u64::from_le_bytes(hd0.data[80..88].try_into().unwrap()), 0u64, "ledger committed_raw moved during unfunded enroll (slice 4)");
 
     // (e) Operator setup: register + OPERATOR_SETTLE capability.
     let mut data = disc("register_agent");
@@ -2645,7 +2741,6 @@ fn main() {
     // not hidden inside this one.
     let rent_id = Pubkey::from_str(RENT_ID_STR).unwrap();
     let depositor = Pubkey::new_from_array([9u8; 32]);
-    let mint = Pubkey::new_from_array([10u8; 32]);
     let (vault, _) = pda(&[b"vault", mint.as_ref()], &program_id);
     let (window_state_1, _) = pda(&[b"window", &1u64.to_le_bytes()], &program_id);
     let (holder_record_1, _) = pda(&[b"holder", &1u64.to_le_bytes(), holder.as_ref()], &program_id);
@@ -2892,9 +2987,15 @@ fn main() {
     // (p) enroll the holder into window 1 (cohort 1, position
     // 30,000,000). Next-window-only entry: window 1 is the
     // currently open window (counter 2, current = 1).
+    // Slice 31: the slice-4 enroll created this ledger at zero;
+    // the funded window-1 enroll below gates on the holder's
+    // seeded backing (35,000,000 = 30,000,000 here + 5,000,000
+    // in window 15) — see the slice-31 note in `slice_note`.
+    upsert(&mut accounts, seed_holder_deposit(holder, mint, 35000000, treasury_state, &program_id));
     let mut data = disc("enroll");
     data.extend_from_slice(&1u64.to_le_bytes());
     data.extend_from_slice(&30_000_000u64.to_le_bytes());
+    data.extend_from_slice(mint.as_ref());
     let (forfeiture_holder, _) = pda(&[b"forfeiture", holder.as_ref()], &program_id);
     if !accounts.iter().any(|(k, _)| *k == forfeiture_holder) { accounts.push((forfeiture_holder, empty.clone())); }
     let ix = Instruction::new_with_bytes(
@@ -2905,6 +3006,7 @@ fn main() {
             AccountMeta::new(window_state_1, false),
             AccountMeta::new(holder_record_1, false),
             AccountMeta::new(forfeiture_holder, false),
+            AccountMeta::new(holder_deposit_h8, false),
             AccountMeta::new(holder, true),
             AccountMeta::new_readonly(system_id, false),
         ],
@@ -2916,6 +3018,12 @@ fn main() {
     assert_eq!(u64::from_le_bytes(hr1.data[48..56].try_into().unwrap()), 1u64, "holder window-1 cohort not 1");
     assert_eq!(u64::from_le_bytes(hr1.data[56..64].try_into().unwrap()), 30_000_000u64, "holder window-1 position not 30,000,000");
     assert_eq!(hr1.data[89], 1u8, "standing authorization not true at enroll:1");
+    assert_eq!(&hr1.data[108..140], mint.as_ref(), "holder window-1 record mint not the deposit mint after enroll:1");
+    // Slice 31: the funded-window gate debited the holder's own
+    // ledger — deposited 35,000,000 (seeded), committed 30,000,000.
+    let hd1 = accounts.iter().find(|(k, _)| *k == holder_deposit_h8).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(hd1.data[72..80].try_into().unwrap()), 35_000_000u64, "ledger deposited_raw moved during enroll:1");
+    assert_eq!(u64::from_le_bytes(hd1.data[80..88].try_into().unwrap()), 30_000_000u64, "ledger committed_raw not 30,000,000 after enroll:1");
 
     // (q) Funded window-flow lifecycle, transition 7 (window SHA
     // policy), parent = chain head (6, [57;32]), stopped at
@@ -3605,9 +3713,12 @@ fn main() {
     upsert(&mut accounts, (holder_record_d, empty.clone()));
     upsert(&mut accounts, (holder_record_s, empty.clone()));
     // (a) enroll twin D into window 13 (cohort 1, position 10,000,000).
+    let (holder_deposit_d, _) = pda(&[b"holder-deposit", treasury_state.as_ref(), holder_d.as_ref(), mint.as_ref()], &program_id);
+    if !accounts.iter().any(|(k, _)| *k == holder_deposit_d) { accounts.push(seed_holder_deposit(holder_d, mint, 15000000, treasury_state, &program_id)); }
     let mut data11a = disc("enroll");
     data11a.extend_from_slice(&13u64.to_le_bytes());
     data11a.extend_from_slice(&10_000_000u64.to_le_bytes());
+    data11a.extend_from_slice(mint.as_ref());
     let (forfeiture_holder_d, _) = pda(&[b"forfeiture", holder_d.as_ref()], &program_id);
     if !accounts.iter().any(|(k, _)| *k == forfeiture_holder_d) { accounts.push((forfeiture_holder_d, empty.clone())); }
     let ix11a = Instruction::new_with_bytes(
@@ -3618,6 +3729,7 @@ fn main() {
             AccountMeta::new(window_state_13, false),
             AccountMeta::new(holder_record_d, false),
             AccountMeta::new(forfeiture_holder_d, false),
+            AccountMeta::new(holder_deposit_d, false),
             AccountMeta::new(holder_d, true),
             AccountMeta::new_readonly(system_id, false),
         ],
@@ -3630,9 +3742,12 @@ fn main() {
     assert_eq!(u64::from_le_bytes(hr11d.data[56..64].try_into().unwrap()), 10_000_000u64, "twin D position not 10,000,000 after enroll:13D");
     assert_eq!(hr11d.data[89], 1u8, "twin D standing authorization not true at enroll:13D");
     // (b) enroll twin S into window 13 (cohort 1, position 10,000,000).
+    let (holder_deposit_s, _) = pda(&[b"holder-deposit", treasury_state.as_ref(), holder_s.as_ref(), mint.as_ref()], &program_id);
+    if !accounts.iter().any(|(k, _)| *k == holder_deposit_s) { accounts.push(seed_holder_deposit(holder_s, mint, 10000000, treasury_state, &program_id)); }
     let mut data11b = disc("enroll");
     data11b.extend_from_slice(&13u64.to_le_bytes());
     data11b.extend_from_slice(&10_000_000u64.to_le_bytes());
+    data11b.extend_from_slice(mint.as_ref());
     let (forfeiture_holder_s, _) = pda(&[b"forfeiture", holder_s.as_ref()], &program_id);
     if !accounts.iter().any(|(k, _)| *k == forfeiture_holder_s) { accounts.push((forfeiture_holder_s, empty.clone())); }
     let ix11b = Instruction::new_with_bytes(
@@ -3643,6 +3758,7 @@ fn main() {
             AccountMeta::new(window_state_13, false),
             AccountMeta::new(holder_record_s, false),
             AccountMeta::new(forfeiture_holder_s, false),
+            AccountMeta::new(holder_deposit_s, false),
             AccountMeta::new(holder_s, true),
             AccountMeta::new_readonly(system_id, false),
         ],
@@ -3976,9 +4092,12 @@ fn main() {
     let (holder_record_23_12, _) = pda(&[b"holder", &12u64.to_le_bytes(), holder_23.as_ref()], &program_id);
     upsert(&mut accounts, (holder_23, funded()));
     upsert(&mut accounts, (holder_record_23_12, empty.clone()));
+    let (holder_deposit_23, _) = pda(&[b"holder-deposit", treasury_state.as_ref(), holder_23.as_ref(), mint.as_ref()], &program_id);
+    if !accounts.iter().any(|(k, _)| *k == holder_deposit_23) { accounts.push((holder_deposit_23, empty.clone())); }
     let mut data12a = disc("enroll");
     data12a.extend_from_slice(&12u64.to_le_bytes());
     data12a.extend_from_slice(&5_000_000u64.to_le_bytes());
+    data12a.extend_from_slice(mint.as_ref());
     let (forfeiture_holder_23, _) = pda(&[b"forfeiture", holder_23.as_ref()], &program_id);
     if !accounts.iter().any(|(k, _)| *k == forfeiture_holder_23) { accounts.push((forfeiture_holder_23, empty.clone())); }
     let ix12a = Instruction::new_with_bytes(
@@ -3989,6 +4108,7 @@ fn main() {
             AccountMeta::new(window_state_12, false),
             AccountMeta::new(holder_record_23_12, false),
             AccountMeta::new(forfeiture_holder_23, false),
+            AccountMeta::new(holder_deposit_23, false),
             AccountMeta::new(holder_23, true),
             AccountMeta::new_readonly(system_id, false),
         ],
@@ -4010,9 +4130,12 @@ fn main() {
     let (holder_record_24_13, _) = pda(&[b"holder", &13u64.to_le_bytes(), holder_24.as_ref()], &program_id);
     upsert(&mut accounts, (holder_24, funded()));
     upsert(&mut accounts, (holder_record_24_13, empty.clone()));
+    let (holder_deposit_24, _) = pda(&[b"holder-deposit", treasury_state.as_ref(), holder_24.as_ref(), mint.as_ref()], &program_id);
+    if !accounts.iter().any(|(k, _)| *k == holder_deposit_24) { accounts.push((holder_deposit_24, empty.clone())); }
     let mut data12b = disc("enroll");
     data12b.extend_from_slice(&13u64.to_le_bytes());
     data12b.extend_from_slice(&0u64.to_le_bytes());
+    data12b.extend_from_slice(mint.as_ref());
     let (forfeiture_holder_24, _) = pda(&[b"forfeiture", holder_24.as_ref()], &program_id);
     if !accounts.iter().any(|(k, _)| *k == forfeiture_holder_24) { accounts.push((forfeiture_holder_24, empty.clone())); }
     let ix12b = Instruction::new_with_bytes(
@@ -4023,6 +4146,7 @@ fn main() {
             AccountMeta::new(window_state_13, false),
             AccountMeta::new(holder_record_24_13, false),
             AccountMeta::new(forfeiture_holder_24, false),
+            AccountMeta::new(holder_deposit_24, false),
             AccountMeta::new(holder_24, true),
             AccountMeta::new_readonly(system_id, false),
         ],
@@ -4043,6 +4167,7 @@ fn main() {
     let mut data12c = disc("enroll");
     data12c.extend_from_slice(&13u64.to_le_bytes());
     data12c.extend_from_slice(&1_000_000u64.to_le_bytes());
+    data12c.extend_from_slice(mint.as_ref());
     let (forfeiture_holder_d, _) = pda(&[b"forfeiture", holder_d.as_ref()], &program_id);
     if !accounts.iter().any(|(k, _)| *k == forfeiture_holder_d) { accounts.push((forfeiture_holder_d, empty.clone())); }
     let ix12c = Instruction::new_with_bytes(
@@ -4053,6 +4178,7 @@ fn main() {
             AccountMeta::new(window_state_13, false),
             AccountMeta::new(holder_record_d, false),
             AccountMeta::new(forfeiture_holder_d, false),
+            AccountMeta::new(holder_deposit_d, false),
             AccountMeta::new(holder_d, true),
             AccountMeta::new_readonly(system_id, false),
         ],
@@ -4073,9 +4199,12 @@ fn main() {
     let (holder_record_25_13, _) = pda(&[b"holder", &13u64.to_le_bytes(), holder_25.as_ref()], &program_id);
     upsert(&mut accounts, (holder_25, funded()));
     upsert(&mut accounts, (holder_record_25_13, empty.clone()));
+    let (holder_deposit_25, _) = pda(&[b"holder-deposit", treasury_state.as_ref(), holder_25.as_ref(), mint.as_ref()], &program_id);
+    if !accounts.iter().any(|(k, _)| *k == holder_deposit_25) { accounts.push(seed_holder_deposit(holder_25, mint, 5000000, treasury_state, &program_id)); }
     let mut data12d = disc("enroll");
     data12d.extend_from_slice(&13u64.to_le_bytes());
     data12d.extend_from_slice(&5_000_000u64.to_le_bytes());
+    data12d.extend_from_slice(mint.as_ref());
     let (forfeiture_holder_25, _) = pda(&[b"forfeiture", holder_25.as_ref()], &program_id);
     if !accounts.iter().any(|(k, _)| *k == forfeiture_holder_25) { accounts.push((forfeiture_holder_25, empty.clone())); }
     let ix12d = Instruction::new_with_bytes(
@@ -4086,6 +4215,7 @@ fn main() {
             AccountMeta::new(window_state_13, false),
             AccountMeta::new(holder_record_25_13, false),
             AccountMeta::new(forfeiture_holder_25, false),
+            AccountMeta::new(holder_deposit_25, false),
             AccountMeta::new(holder_25, true),
             AccountMeta::new_readonly(system_id, false),
         ],
@@ -4155,9 +4285,12 @@ fn main() {
     let (holder_record_26_13, _) = pda(&[b"holder", &13u64.to_le_bytes(), holder_26.as_ref()], &program_id);
     upsert(&mut accounts, (holder_26, funded()));
     upsert(&mut accounts, (holder_record_26_13, empty.clone()));
+    let (holder_deposit_26, _) = pda(&[b"holder-deposit", treasury_state.as_ref(), holder_26.as_ref(), mint.as_ref()], &program_id);
+    if !accounts.iter().any(|(k, _)| *k == holder_deposit_26) { accounts.push((holder_deposit_26, empty.clone())); }
     let mut data12f = disc("enroll");
     data12f.extend_from_slice(&13u64.to_le_bytes());
     data12f.extend_from_slice(&5_000_000u64.to_le_bytes());
+    data12f.extend_from_slice(mint.as_ref());
     let (forfeiture_holder_26, _) = pda(&[b"forfeiture", holder_26.as_ref()], &program_id);
     if !accounts.iter().any(|(k, _)| *k == forfeiture_holder_26) { accounts.push((forfeiture_holder_26, empty.clone())); }
     let ix12f = Instruction::new_with_bytes(
@@ -4168,6 +4301,7 @@ fn main() {
             AccountMeta::new(window_state_13, false),
             AccountMeta::new(holder_record_26_13, false),
             AccountMeta::new(forfeiture_holder_26, false),
+            AccountMeta::new(holder_deposit_26, false),
             AccountMeta::new(holder_26, true),
             AccountMeta::new_readonly(system_id, false),
         ],
@@ -4187,9 +4321,12 @@ fn main() {
     let (holder_record_27_14, _) = pda(&[b"holder", &14u64.to_le_bytes(), holder_27.as_ref()], &program_id);
     upsert(&mut accounts, (holder_27, funded()));
     upsert(&mut accounts, (holder_record_27_14, empty.clone()));
+    let (holder_deposit_27, _) = pda(&[b"holder-deposit", treasury_state.as_ref(), holder_27.as_ref(), mint.as_ref()], &program_id);
+    if !accounts.iter().any(|(k, _)| *k == holder_deposit_27) { accounts.push(seed_holder_deposit(holder_27, mint, 5000000, treasury_state, &program_id)); }
     let mut data12g = disc("enroll");
     data12g.extend_from_slice(&14u64.to_le_bytes());
     data12g.extend_from_slice(&5_000_000u64.to_le_bytes());
+    data12g.extend_from_slice(mint.as_ref());
     let (forfeiture_holder_27, _) = pda(&[b"forfeiture", holder_27.as_ref()], &program_id);
     if !accounts.iter().any(|(k, _)| *k == forfeiture_holder_27) { accounts.push((forfeiture_holder_27, empty.clone())); }
     let ix12g = Instruction::new_with_bytes(
@@ -4200,6 +4337,7 @@ fn main() {
             AccountMeta::new(window_state_14, false),
             AccountMeta::new(holder_record_27_14, false),
             AccountMeta::new(forfeiture_holder_27, false),
+            AccountMeta::new(holder_deposit_27, false),
             AccountMeta::new(holder_27, true),
             AccountMeta::new_readonly(system_id, false),
         ],
@@ -4221,9 +4359,12 @@ fn main() {
     upsert(&mut accounts, (holder_28, funded()));
     upsert(&mut accounts, (window_state_15, empty.clone()));
     upsert(&mut accounts, (holder_record_28_15, empty.clone()));
+    let (holder_deposit_28, _) = pda(&[b"holder-deposit", treasury_state.as_ref(), holder_28.as_ref(), mint.as_ref()], &program_id);
+    if !accounts.iter().any(|(k, _)| *k == holder_deposit_28) { accounts.push((holder_deposit_28, empty.clone())); }
     let mut data12h = disc("enroll");
     data12h.extend_from_slice(&15u64.to_le_bytes());
     data12h.extend_from_slice(&5_000_000u64.to_le_bytes());
+    data12h.extend_from_slice(mint.as_ref());
     let (forfeiture_holder_28, _) = pda(&[b"forfeiture", holder_28.as_ref()], &program_id);
     if !accounts.iter().any(|(k, _)| *k == forfeiture_holder_28) { accounts.push((forfeiture_holder_28, empty.clone())); }
     let ix12h = Instruction::new_with_bytes(
@@ -4234,6 +4375,7 @@ fn main() {
             AccountMeta::new(window_state_15, false),
             AccountMeta::new(holder_record_28_15, false),
             AccountMeta::new(forfeiture_holder_28, false),
+            AccountMeta::new(holder_deposit_28, false),
             AccountMeta::new(holder_28, true),
             AccountMeta::new_readonly(system_id, false),
         ],
@@ -4489,9 +4631,12 @@ fn main() {
     let (holder_record_29_14, _) = pda(&[b"holder", &14u64.to_le_bytes(), holder_29.as_ref()], &program_id);
     upsert(&mut accounts, (holder_29, funded()));
     upsert(&mut accounts, (holder_record_29_14, empty.clone()));
+    let (holder_deposit_29, _) = pda(&[b"holder-deposit", treasury_state.as_ref(), holder_29.as_ref(), mint.as_ref()], &program_id);
+    if !accounts.iter().any(|(k, _)| *k == holder_deposit_29) { accounts.push(seed_holder_deposit(holder_29, mint, 5000000, treasury_state, &program_id)); }
     let mut data14a = disc("enroll");
     data14a.extend_from_slice(&14u64.to_le_bytes());
     data14a.extend_from_slice(&5_000_000u64.to_le_bytes());
+    data14a.extend_from_slice(mint.as_ref());
     let (forfeiture_holder_29, _) = pda(&[b"forfeiture", holder_29.as_ref()], &program_id);
     if !accounts.iter().any(|(k, _)| *k == forfeiture_holder_29) { accounts.push((forfeiture_holder_29, empty.clone())); }
     let ix14a = Instruction::new_with_bytes(
@@ -4502,6 +4647,7 @@ fn main() {
             AccountMeta::new(window_state_14, false),
             AccountMeta::new(holder_record_29_14, false),
             AccountMeta::new(forfeiture_holder_29, false),
+            AccountMeta::new(holder_deposit_29, false),
             AccountMeta::new(holder_29, true),
             AccountMeta::new_readonly(system_id, false),
         ],
@@ -5093,9 +5239,12 @@ fn main() {
     let (holder_record_30_14, _) = pda(&[b"holder", &14u64.to_le_bytes(), holder_30.as_ref()], &program_id);
     upsert(&mut accounts, (holder_30, funded()));
     upsert(&mut accounts, (holder_record_30_14, empty.clone()));
+    let (holder_deposit_30, _) = pda(&[b"holder-deposit", treasury_state.as_ref(), holder_30.as_ref(), mint.as_ref()], &program_id);
+    if !accounts.iter().any(|(k, _)| *k == holder_deposit_30) { accounts.push(seed_holder_deposit(holder_30, mint, 50000000, treasury_state, &program_id)); }
     let mut data19a = disc("enroll");
     data19a.extend_from_slice(&14u64.to_le_bytes());
     data19a.extend_from_slice(&50_000_000u64.to_le_bytes());
+    data19a.extend_from_slice(mint.as_ref());
     let (forfeiture_holder_30, _) = pda(&[b"forfeiture", holder_30.as_ref()], &program_id);
     if !accounts.iter().any(|(k, _)| *k == forfeiture_holder_30) { accounts.push((forfeiture_holder_30, empty.clone())); }
     let ix19a = Instruction::new_with_bytes(
@@ -5106,6 +5255,7 @@ fn main() {
             AccountMeta::new(window_state_14, false),
             AccountMeta::new(holder_record_30_14, false),
             AccountMeta::new(forfeiture_holder_30, false),
+            AccountMeta::new(holder_deposit_30, false),
             AccountMeta::new(holder_30, true),
             AccountMeta::new_readonly(system_id, false),
         ],
@@ -5128,9 +5278,12 @@ fn main() {
     let (holder_record_31_14, _) = pda(&[b"holder", &14u64.to_le_bytes(), holder_31.as_ref()], &program_id);
     upsert(&mut accounts, (holder_31, funded()));
     upsert(&mut accounts, (holder_record_31_14, empty.clone()));
+    let (holder_deposit_31, _) = pda(&[b"holder-deposit", treasury_state.as_ref(), holder_31.as_ref(), mint.as_ref()], &program_id);
+    if !accounts.iter().any(|(k, _)| *k == holder_deposit_31) { accounts.push((holder_deposit_31, empty.clone())); }
     let mut data19b = disc("enroll");
     data19b.extend_from_slice(&14u64.to_le_bytes());
     data19b.extend_from_slice(&1u64.to_le_bytes());
+    data19b.extend_from_slice(mint.as_ref());
     let (forfeiture_holder_31, _) = pda(&[b"forfeiture", holder_31.as_ref()], &program_id);
     if !accounts.iter().any(|(k, _)| *k == forfeiture_holder_31) { accounts.push((forfeiture_holder_31, empty.clone())); }
     let ix19b = Instruction::new_with_bytes(
@@ -5141,6 +5294,7 @@ fn main() {
             AccountMeta::new(window_state_14, false),
             AccountMeta::new(holder_record_31_14, false),
             AccountMeta::new(forfeiture_holder_31, false),
+            AccountMeta::new(holder_deposit_31, false),
             AccountMeta::new(holder_31, true),
             AccountMeta::new_readonly(system_id, false),
         ],
@@ -5465,6 +5619,7 @@ fn main() {
     let mut data22b = disc("enroll");
     data22b.extend_from_slice(&15u64.to_le_bytes());
     data22b.extend_from_slice(&5_000_000u64.to_le_bytes());
+    data22b.extend_from_slice(mint.as_ref());
     let ix22b = Instruction::new_with_bytes(
         program_id,
         &data22b,
@@ -5473,6 +5628,7 @@ fn main() {
             AccountMeta::new(window_state_15, false),
             AccountMeta::new(holder_record_d_15, false),
             AccountMeta::new(forfeiture_holder_d_22, false),
+            AccountMeta::new(holder_deposit_d, false),
             AccountMeta::new(holder_d, true),
             AccountMeta::new_readonly(system_id, false),
         ],
@@ -5526,6 +5682,7 @@ fn main() {
     let mut data22d = disc("enroll");
     data22d.extend_from_slice(&15u64.to_le_bytes());
     data22d.extend_from_slice(&5_000_000u64.to_le_bytes());
+    data22d.extend_from_slice(mint.as_ref());
     let ix22d = Instruction::new_with_bytes(
         program_id,
         &data22d,
@@ -5534,6 +5691,7 @@ fn main() {
             AccountMeta::new(window_state_15, false),
             AccountMeta::new(holder_record_8_15, false),
             AccountMeta::new(forfeiture_holder_22, false),
+            AccountMeta::new(holder_deposit_h8, false),
             AccountMeta::new(holder, true),
             AccountMeta::new_readonly(system_id, false),
         ],
@@ -5555,9 +5713,12 @@ fn main() {
     upsert(&mut accounts, (holder_record_32_15, empty.clone()));
     let (forfeiture_holder_32, _) = pda(&[b"forfeiture", holder_32.as_ref()], &program_id);
     if !accounts.iter().any(|(k, _)| *k == forfeiture_holder_32) { accounts.push((forfeiture_holder_32, empty.clone())); }
+    let (holder_deposit_32, _) = pda(&[b"holder-deposit", treasury_state.as_ref(), holder_32.as_ref(), mint.as_ref()], &program_id);
+    if !accounts.iter().any(|(k, _)| *k == holder_deposit_32) { accounts.push(seed_holder_deposit(holder_32, mint, 5000000, treasury_state, &program_id)); }
     let mut data22e = disc("enroll");
     data22e.extend_from_slice(&15u64.to_le_bytes());
     data22e.extend_from_slice(&5_000_000u64.to_le_bytes());
+    data22e.extend_from_slice(mint.as_ref());
     let ix22e = Instruction::new_with_bytes(
         program_id,
         &data22e,
@@ -5566,6 +5727,7 @@ fn main() {
             AccountMeta::new(window_state_15, false),
             AccountMeta::new(holder_record_32_15, false),
             AccountMeta::new(forfeiture_holder_32, false),
+            AccountMeta::new(holder_deposit_32, false),
             AccountMeta::new(holder_32, true),
             AccountMeta::new_readonly(system_id, false),
         ],
@@ -5620,9 +5782,12 @@ fn main() {
     upsert(&mut accounts, (holder_record_33_15, empty.clone()));
     let (forfeiture_holder_33, _) = pda(&[b"forfeiture", holder_33.as_ref()], &program_id);
     if !accounts.iter().any(|(k, _)| *k == forfeiture_holder_33) { accounts.push((forfeiture_holder_33, empty.clone())); }
+    let (holder_deposit_33, _) = pda(&[b"holder-deposit", treasury_state.as_ref(), holder_33.as_ref(), mint.as_ref()], &program_id);
+    if !accounts.iter().any(|(k, _)| *k == holder_deposit_33) { accounts.push(seed_holder_deposit(holder_33, mint, 10000000, treasury_state, &program_id)); }
     let mut data23a = disc("enroll");
     data23a.extend_from_slice(&15u64.to_le_bytes());
     data23a.extend_from_slice(&10_000_000u64.to_le_bytes());
+    data23a.extend_from_slice(mint.as_ref());
     let ix23a = Instruction::new_with_bytes(
         program_id,
         &data23a,
@@ -5631,6 +5796,7 @@ fn main() {
             AccountMeta::new(window_state_15, false),
             AccountMeta::new(holder_record_33_15, false),
             AccountMeta::new(forfeiture_holder_33, false),
+            AccountMeta::new(holder_deposit_33, false),
             AccountMeta::new(holder_33, true),
             AccountMeta::new_readonly(system_id, false),
         ],
@@ -5754,9 +5920,12 @@ fn main() {
     upsert(&mut accounts, (holder_record_34_15, empty.clone()));
     let (forfeiture_holder_34, _) = pda(&[b"forfeiture", holder_34.as_ref()], &program_id);
     if !accounts.iter().any(|(k, _)| *k == forfeiture_holder_34) { accounts.push((forfeiture_holder_34, empty.clone())); }
+    let (holder_deposit_34, _) = pda(&[b"holder-deposit", treasury_state.as_ref(), holder_34.as_ref(), mint.as_ref()], &program_id);
+    if !accounts.iter().any(|(k, _)| *k == holder_deposit_34) { accounts.push(seed_holder_deposit(holder_34, mint, 10000000, treasury_state, &program_id)); }
     let mut data23e = disc("enroll");
     data23e.extend_from_slice(&15u64.to_le_bytes());
     data23e.extend_from_slice(&10_000_000u64.to_le_bytes());
+    data23e.extend_from_slice(mint.as_ref());
     let ix23e = Instruction::new_with_bytes(
         program_id,
         &data23e,
@@ -5765,6 +5934,7 @@ fn main() {
             AccountMeta::new(window_state_15, false),
             AccountMeta::new(holder_record_34_15, false),
             AccountMeta::new(forfeiture_holder_34, false),
+            AccountMeta::new(holder_deposit_34, false),
             AccountMeta::new(holder_34, true),
             AccountMeta::new_readonly(system_id, false),
         ],
@@ -6779,6 +6949,246 @@ fn main() {
     let ws15_29f = accounts.iter().find(|(k, _)| *k == window_state_15).map(|(_, a)| a.clone()).unwrap();
     assert_eq!(u64::from_le_bytes(ws15_29f.data[64..72].try_into().unwrap()), 7_466_666u64, "window 15 exit stock not 7,466,666 at slice-29 end (12,666,666 - 4,000,000 tranches - 1,200,000 gross exits)");
 
+    // ---- Slice 31: the enroll gate, wired (mint-binding decision) ----
+    // Chain state at the probes: window 15 open (window_count 16),
+    // snapshot 76,000,000, enrolled 35,000,000 — aggregate headroom
+    // 41,000,000; TreasuryState total/cash 70,956,000; SOL vault
+    // 956,000. Probe order is load-bearing: the backing refusal
+    // (P1) and the SOL refusal (P6) must run while aggregate
+    // headroom still covers their positions, so the 6109 they
+    // return comes from the backing gate and not the aggregate cap.
+    // (P1) Backing refusal, token leg: holder 35 seeded at
+    // 1,000,000 backing enrolls 1,000,001 — one over their own
+    // headroom, far inside the window's aggregate headroom.
+    let holder_35 = Pubkey::new_from_array([35u8; 32]);
+    let (holder_record_35_15, _) = pda(&[b"holder", &15u64.to_le_bytes(), holder_35.as_ref()], &program_id);
+    let (holder_deposit_35, _) = pda(&[b"holder-deposit", treasury_state.as_ref(), holder_35.as_ref(), mint.as_ref()], &program_id);
+    upsert(&mut accounts, (holder_35, funded()));
+    upsert(&mut accounts, (holder_record_35_15, empty.clone()));
+    upsert(&mut accounts, seed_holder_deposit(holder_35, mint, 1_000_000, treasury_state, &program_id));
+    let (forfeiture_holder_35, _) = pda(&[b"forfeiture", holder_35.as_ref()], &program_id);
+    if !accounts.iter().any(|(k, _)| *k == forfeiture_holder_35) { accounts.push((forfeiture_holder_35, empty.clone())); }
+    let mut data31a = disc("enroll");
+    data31a.extend_from_slice(&15u64.to_le_bytes());
+    data31a.extend_from_slice(&1_000_001u64.to_le_bytes());
+    data31a.extend_from_slice(mint.as_ref());
+    let ix31a = Instruction::new_with_bytes(
+        program_id,
+        &data31a,
+        vec![
+            AccountMeta::new_readonly(treasury_state, false),
+            AccountMeta::new(window_state_15, false),
+            AccountMeta::new(holder_record_35_15, false),
+            AccountMeta::new(forfeiture_holder_35, false),
+            AccountMeta::new(holder_deposit_35, false),
+            AccountMeta::new(holder_35, true),
+            AccountMeta::new_readonly(system_id, false),
+        ],
+    );
+    let cu31a = run_expect_err(&mollusk, "enroll:31P1", &ix31a, &accounts, 6109);
+    measured.push(serde_json::json!({"instruction": "enroll:31P1", "cu": cu31a, "result": "Refused", "error": "EnrollExceedsDepositBacking", "error_code": 6109, "note": "slice-31 probe P1 (backing refusal, token leg): holder 35 with 1,000,000 deposited enrolls 1,000,001 in window 15 — one over their own headroom, inside the window's 41,000,000 aggregate headroom, so the refusal is the per-holder gate (6109), not the aggregate cap"}));
+    let ws31a = accounts.iter().find(|(k, _)| *k == window_state_15).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(ws31a.data[138..146].try_into().unwrap()), 35_000_000u64, "window 15 enrolled_total_raw moved during enroll:31P1 refusal");
+    let hd31a = accounts.iter().find(|(k, _)| *k == holder_deposit_35).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(hd31a.data[80..88].try_into().unwrap()), 0u64, "ledger committed_raw moved during enroll:31P1 refusal");
+    let hr31a = accounts.iter().find(|(k, _)| *k == holder_record_35_15).map(|(_, a)| a.clone()).unwrap();
+    assert!(hr31a.data.is_empty(), "a HolderRecord was created by the refused enroll:31P1");
+    // (P2) Exact-boundary success, token leg: holder 36 seeded at
+    // exactly their 5,000,000 position enrolls in window 15.
+    let holder_36 = Pubkey::new_from_array([36u8; 32]);
+    let (holder_record_36_15, _) = pda(&[b"holder", &15u64.to_le_bytes(), holder_36.as_ref()], &program_id);
+    let (holder_deposit_36, _) = pda(&[b"holder-deposit", treasury_state.as_ref(), holder_36.as_ref(), mint.as_ref()], &program_id);
+    upsert(&mut accounts, (holder_36, funded()));
+    upsert(&mut accounts, (holder_record_36_15, empty.clone()));
+    upsert(&mut accounts, seed_holder_deposit(holder_36, mint, 5_000_000, treasury_state, &program_id));
+    let (forfeiture_holder_36, _) = pda(&[b"forfeiture", holder_36.as_ref()], &program_id);
+    if !accounts.iter().any(|(k, _)| *k == forfeiture_holder_36) { accounts.push((forfeiture_holder_36, empty.clone())); }
+    let mut data31b = disc("enroll");
+    data31b.extend_from_slice(&15u64.to_le_bytes());
+    data31b.extend_from_slice(&5_000_000u64.to_le_bytes());
+    data31b.extend_from_slice(mint.as_ref());
+    let ix31b = Instruction::new_with_bytes(
+        program_id,
+        &data31b,
+        vec![
+            AccountMeta::new_readonly(treasury_state, false),
+            AccountMeta::new(window_state_15, false),
+            AccountMeta::new(holder_record_36_15, false),
+            AccountMeta::new(forfeiture_holder_36, false),
+            AccountMeta::new(holder_deposit_36, false),
+            AccountMeta::new(holder_36, true),
+            AccountMeta::new_readonly(system_id, false),
+        ],
+    );
+    let (next, cu31b) = run(&mollusk, "enroll:31P2", &ix31b, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({"instruction": "enroll:31P2", "cu": cu31b, "result": "Success", "note": "slice-31 probe P2 (exact-boundary success, token leg): holder 36 with exactly 5,000,000 deposited enrolls 5,000,000 in window 15 — the inclusive boundary of the per-holder gate; window enrolled 35,000,000 -> 40,000,000"}));
+    let hr31b = accounts.iter().find(|(k, _)| *k == holder_record_36_15).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(hr31b.data.len(), 140usize, "HolderRecord is not 140 bytes after enroll:31P2 (SPACE 108 -> 140 for the mint field)");
+    assert_eq!(&hr31b.data[108..140], mint.as_ref(), "holder 36 record mint not the deposit mint after enroll:31P2");
+    let hd31b = accounts.iter().find(|(k, _)| *k == holder_deposit_36).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(hd31b.data[72..80].try_into().unwrap()), 5_000_000u64, "ledger deposited_raw moved during enroll:31P2");
+    assert_eq!(u64::from_le_bytes(hd31b.data[80..88].try_into().unwrap()), 5_000_000u64, "ledger committed_raw not 5,000,000 after enroll:31P2 (exact-boundary debit)");
+    let ws31b = accounts.iter().find(|(k, _)| *k == window_state_15).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(ws31b.data[138..146].try_into().unwrap()), 40_000_000u64, "window 15 enrolled_total_raw not 40,000,000 after enroll:31P2");
+    // (P4) SOL leg, real-deposit path: holder 37 deposits SOL
+    // 2,000,000 (a genuine deposit_sol, not a seeded ledger) and
+    // enrolls it by enroll_sol in window 15.
+    let holder_37 = Pubkey::new_from_array([37u8; 32]);
+    let (holder_deposit_sol_37, _) = pda(&[b"holder-deposit-sol", treasury_state.as_ref(), holder_37.as_ref()], &program_id);
+    let (holder_record_37_15, _) = pda(&[b"holder", &15u64.to_le_bytes(), holder_37.as_ref()], &program_id);
+    upsert(&mut accounts, (holder_37, funded()));
+    upsert(&mut accounts, (holder_deposit_sol_37, empty.clone()));
+    upsert(&mut accounts, (holder_record_37_15, empty.clone()));
+    let (forfeiture_holder_37, _) = pda(&[b"forfeiture", holder_37.as_ref()], &program_id);
+    if !accounts.iter().any(|(k, _)| *k == forfeiture_holder_37) { accounts.push((forfeiture_holder_37, empty.clone())); }
+    let mut data31d = disc("deposit_sol");
+    data31d.extend_from_slice(&2_000_000u64.to_le_bytes());
+    let ix31d = Instruction::new_with_bytes(
+        program_id,
+        &data31d,
+        vec![
+            AccountMeta::new(treasury_state, false),
+            AccountMeta::new(holder_37, true),
+            AccountMeta::new(sol_vault, false),
+            AccountMeta::new_readonly(system_id, false),
+            AccountMeta::new(holder_deposit_sol_37, false),
+        ],
+    );
+    let (next, cu31d) = run(&mollusk, "deposit_sol:31P4", &ix31d, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({"instruction": "deposit_sol:31P4", "cu": cu31d, "result": "Success", "note": "slice-31 probe P4 setup (real SOL deposit): holder 37 deposits 2,000,000 lamports — TreasuryState total/cash 70,956,000 -> 72,956,000, SOL vault 956,000 -> 2,956,000, SOL ledger created at 2,000,000"}));
+    let ts31d = accounts.iter().find(|(k, _)| *k == treasury_state).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(ts31d.data[8..16].try_into().unwrap()), 72_956_000u64, "TreasuryState total not 72,956,000 after deposit_sol:31P4");
+    let sv31d = accounts.iter().find(|(k, _)| *k == sol_vault).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(sv31d.lamports, 2_956_000u64, "SOL vault not 2,956,000 after deposit_sol:31P4");
+    let hds31d = accounts.iter().find(|(k, _)| *k == holder_deposit_sol_37).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(hds31d.data[72..80].try_into().unwrap()), 2_000_000u64, "SOL ledger deposited_raw not 2,000,000 after deposit_sol:31P4");
+    let mut data31e = disc("enroll_sol");
+    data31e.extend_from_slice(&15u64.to_le_bytes());
+    data31e.extend_from_slice(&2_000_000u64.to_le_bytes());
+    let ix31e = Instruction::new_with_bytes(
+        program_id,
+        &data31e,
+        vec![
+            AccountMeta::new_readonly(treasury_state, false),
+            AccountMeta::new(window_state_15, false),
+            AccountMeta::new(holder_record_37_15, false),
+            AccountMeta::new(forfeiture_holder_37, false),
+            AccountMeta::new(holder_deposit_sol_37, false),
+            AccountMeta::new(holder_37, true),
+            AccountMeta::new_readonly(system_id, false),
+        ],
+    );
+    let (next, cu31e) = run(&mollusk, "enroll_sol:31P4", &ix31e, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({"instruction": "enroll_sol:31P4", "cu": cu31e, "result": "Success", "note": "slice-31 probe P4 (SOL-leg success on a real deposit): holder 37 enrolls their 2,000,000 deposited lamports by enroll_sol in window 15 — first enroll_sol measurement; window enrolled 40,000,000 -> 42,000,000"}));
+    let hr31e = accounts.iter().find(|(k, _)| *k == holder_record_37_15).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(&hr31e.data[108..140], &[0u8; 32], "holder 37 record mint is not the native-SOL marker after enroll_sol:31P4");
+    let hds31e = accounts.iter().find(|(k, _)| *k == holder_deposit_sol_37).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(hds31e.data[80..88].try_into().unwrap()), 2_000_000u64, "SOL ledger committed_raw not 2,000,000 after enroll_sol:31P4");
+    let ws31e = accounts.iter().find(|(k, _)| *k == window_state_15).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(ws31e.data[138..146].try_into().unwrap()), 42_000_000u64, "window 15 enrolled_total_raw not 42,000,000 after enroll_sol:31P4");
+    // (P6) Backing refusal, SOL leg: holder 38 seeded at 500
+    // lamports of SOL backing enrolls 501 by enroll_sol.
+    let holder_38 = Pubkey::new_from_array([38u8; 32]);
+    let (holder_record_38_15, _) = pda(&[b"holder", &15u64.to_le_bytes(), holder_38.as_ref()], &program_id);
+    let (holder_deposit_sol_38, _) = pda(&[b"holder-deposit-sol", treasury_state.as_ref(), holder_38.as_ref()], &program_id);
+    upsert(&mut accounts, (holder_38, funded()));
+    upsert(&mut accounts, (holder_record_38_15, empty.clone()));
+    upsert(&mut accounts, seed_holder_deposit_sol(holder_38, 500, treasury_state, &program_id));
+    let (forfeiture_holder_38, _) = pda(&[b"forfeiture", holder_38.as_ref()], &program_id);
+    if !accounts.iter().any(|(k, _)| *k == forfeiture_holder_38) { accounts.push((forfeiture_holder_38, empty.clone())); }
+    let mut data31f = disc("enroll_sol");
+    data31f.extend_from_slice(&15u64.to_le_bytes());
+    data31f.extend_from_slice(&501u64.to_le_bytes());
+    let ix31f = Instruction::new_with_bytes(
+        program_id,
+        &data31f,
+        vec![
+            AccountMeta::new_readonly(treasury_state, false),
+            AccountMeta::new(window_state_15, false),
+            AccountMeta::new(holder_record_38_15, false),
+            AccountMeta::new(forfeiture_holder_38, false),
+            AccountMeta::new(holder_deposit_sol_38, false),
+            AccountMeta::new(holder_38, true),
+            AccountMeta::new_readonly(system_id, false),
+        ],
+    );
+    let cu31f = run_expect_err(&mollusk, "enroll_sol:31P6", &ix31f, &accounts, 6109);
+    measured.push(serde_json::json!({"instruction": "enroll_sol:31P6", "cu": cu31f, "result": "Refused", "error": "EnrollExceedsDepositBacking", "error_code": 6109, "note": "slice-31 probe P6 (backing refusal, SOL leg): holder 38 with 500 lamports of SOL backing enrolls 501 by enroll_sol — one over their own headroom, inside the window's aggregate headroom, so the refusal is the per-holder gate (6109)"}));
+    let ws31f = accounts.iter().find(|(k, _)| *k == window_state_15).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(ws31f.data[138..146].try_into().unwrap()), 42_000_000u64, "window 15 enrolled_total_raw moved during enroll_sol:31P6 refusal");
+    let hds31f = accounts.iter().find(|(k, _)| *k == holder_deposit_sol_38).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(hds31f.data[80..88].try_into().unwrap()), 0u64, "SOL ledger committed_raw moved during enroll_sol:31P6 refusal");
+    let hr31f = accounts.iter().find(|(k, _)| *k == holder_record_38_15).map(|(_, a)| a.clone()).unwrap();
+    assert!(hr31f.data.is_empty(), "a HolderRecord was created by the refused enroll_sol:31P6");
+    // (P3) Real-ledger success, token leg: the depositor — whose
+    // ledger is REAL (60,000,000 + 10,000,000 of actual deposits,
+    // committed 0, never enrolled) — enrolls 34,000,000 in window
+    // 15, landing the aggregate exactly on the 76,000,000 snapshot.
+    let (holder_record_dep_15, _) = pda(&[b"holder", &15u64.to_le_bytes(), depositor.as_ref()], &program_id);
+    upsert(&mut accounts, (holder_record_dep_15, empty.clone()));
+    let (forfeiture_depositor, _) = pda(&[b"forfeiture", depositor.as_ref()], &program_id);
+    if !accounts.iter().any(|(k, _)| *k == forfeiture_depositor) { accounts.push((forfeiture_depositor, empty.clone())); }
+    let mut data31c = disc("enroll");
+    data31c.extend_from_slice(&15u64.to_le_bytes());
+    data31c.extend_from_slice(&34_000_000u64.to_le_bytes());
+    data31c.extend_from_slice(mint.as_ref());
+    let ix31c = Instruction::new_with_bytes(
+        program_id,
+        &data31c,
+        vec![
+            AccountMeta::new_readonly(treasury_state, false),
+            AccountMeta::new(window_state_15, false),
+            AccountMeta::new(holder_record_dep_15, false),
+            AccountMeta::new(forfeiture_depositor, false),
+            AccountMeta::new(holder_deposit, false),
+            AccountMeta::new(depositor, true),
+            AccountMeta::new_readonly(system_id, false),
+        ],
+    );
+    let (next, cu31c) = run(&mollusk, "enroll:31P3", &ix31c, &accounts);
+    accounts = next;
+    measured.push(serde_json::json!({"instruction": "enroll:31P3", "cu": cu31c, "result": "Success", "note": "slice-31 probe P3 (real-ledger success, token leg): the depositor enrolls 34,000,000 against their REAL ledger (70,000,000 deposited by actual deposits, committed 0) — window enrolled 42,000,000 -> 76,000,000, exactly the snapshot, and the ledger debits 34,000,000"}));
+    let hr31c = accounts.iter().find(|(k, _)| *k == holder_record_dep_15).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(&hr31c.data[108..140], mint.as_ref(), "depositor record mint not the deposit mint after enroll:31P3");
+    let hd31c = accounts.iter().find(|(k, _)| *k == holder_deposit).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(hd31c.data[72..80].try_into().unwrap()), 70_000_000u64, "real ledger deposited_raw moved during enroll:31P3");
+    assert_eq!(u64::from_le_bytes(hd31c.data[80..88].try_into().unwrap()), 34_000_000u64, "real ledger committed_raw not 34,000,000 after enroll:31P3");
+    let ws31c = accounts.iter().find(|(k, _)| *k == window_state_15).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(ws31c.data[138..146].try_into().unwrap()), 76_000_000u64, "window 15 enrolled_total_raw not 76,000,000 after enroll:31P3 (aggregate boundary)");
+    // (P5) Cross-leg collision: the depositor already holds a
+    // token-leg record in window 15, so an enroll_sol for the
+    // same holder in the same window must collide at account
+    // creation — one record per holder per window across legs.
+    // The depositor's SOL ledger already exists (slice 21's real
+    // deposits, 6,000,000) — it is passed as-is, not re-seeded.
+    let mut data31g = disc("enroll_sol");
+    data31g.extend_from_slice(&15u64.to_le_bytes());
+    data31g.extend_from_slice(&1_000_000u64.to_le_bytes());
+    let ix31g = Instruction::new_with_bytes(
+        program_id,
+        &data31g,
+        vec![
+            AccountMeta::new_readonly(treasury_state, false),
+            AccountMeta::new(window_state_15, false),
+            AccountMeta::new(holder_record_dep_15, false),
+            AccountMeta::new(forfeiture_depositor, false),
+            AccountMeta::new(holder_deposit_sol, false),
+            AccountMeta::new(depositor, true),
+            AccountMeta::new_readonly(system_id, false),
+        ],
+    );
+    let (cu31g, err31g) = run_expect_any_err(&mollusk, "enroll_sol:31P5", &ix31g, &accounts);
+    measured.push(serde_json::json!({"instruction": "enroll_sol:31P5", "cu": cu31g, "result": "Refused", "error": err31g, "note": "slice-31 probe P5 (cross-leg collision): the depositor already holds a token-leg HolderRecord in window 15, so enroll_sol for the same holder in the same window refuses at the account layer — the one-record-per-holder-per-window rule stands across legs, so a holder funded in both mints enrolls one mint's position per window"}));
+    let hr31g = accounts.iter().find(|(k, _)| *k == holder_record_dep_15).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(hr31g.data[56..64].try_into().unwrap()), 34_000_000u64, "depositor record position moved during enroll_sol:31P5 refusal");
+    assert_eq!(&hr31g.data[108..140], mint.as_ref(), "depositor record mint moved during enroll_sol:31P5 refusal");
+    let hds31g = accounts.iter().find(|(k, _)| *k == holder_deposit_sol).map(|(_, a)| a.clone()).unwrap();
+    assert_eq!(u64::from_le_bytes(hds31g.data[72..80].try_into().unwrap()), 6_000_000u64, "depositor SOL ledger deposited_raw moved during enroll_sol:31P5 refusal");
+    assert_eq!(u64::from_le_bytes(hds31g.data[80..88].try_into().unwrap()), 0u64, "depositor SOL ledger committed_raw moved during enroll_sol:31P5 refusal");
+
     let golden = serde_json::json!({
         "harness": "cu-golden-mollusk",
         "mollusk_svm": MOLLUSK_SVM_VERSION,
@@ -6786,8 +7196,8 @@ fn main() {
         "program_so_sha256": so_sha256,
         "token_program_id": TOKEN_PROGRAM_ID_STR,
         "token_program_so_sha256": token_elf_sha256,
-        "slice": 30,
-        "slice_note": "slices 1-8 as before (slice-5/6 refusal probes stand as the unfunded-chain record; slice-7 FUNDED chain: real SPL Token deposit credits TreasuryState 60,000,000, window 1 opens on the funded snapshot, borrow / exit / settle_default / schedule_whale_exit FIRST successes; slice-8 12-window walk: windows 2..13 each open on their own Settled treasury.window.v1 transition (transitions 9..20, parented in sequence), each on the funded snapshot (total 60,000,000, exit stock 10,000,000, FLAG 2,000,000), and the FIRST success measurement execute_whale_tranche (tranche 1 of 5, 2,000,000 raw, on Committed treasury.exit.v1 transition 8, creation window 1, execution window 13 >= lock_until 13), gated §2.2 ~7K (2x band 3,500-14,000)) + slice-9 W3.2 re-expression part 1: tranche-2 weekly cadence on the slice-8 chain — TrancheTooSoon refusals at the tranche-1 clock and at last_block_time + WEEK_SECS - 1, then tranche 2 of 5 (2,000,000 raw) SUCCESS at exactly last_block_time + WEEK_SECS (31,608,400), gated §2.2 ~7K; launch_stage2 unmeasured by design (ThresholdUnset, D-2) + slice-10 W3.2 re-expression part 2: blind-ape bulk exit (T11) on the funded chain — the whole-position order (23,500,000 raw) refuses ExitExceedsLiquidity under the D-10 hard bound (L = 10,000,000), the largest executable bulk exit (8,500,000 raw, the remaining window-1 stock) succeeds with the flat 13% penalty on the full excess (1,105,000 penalty, 7,395,000 paid), and a further window-1 exit refuses ExitStockExhausted with aggregate window-1 exits exactly at L + slice-11 W3.2 re-expression part 3: default-as-exit (T10) on twin holders in window 13 (position 10,000,000 each) — borrow above the cap refuses LoanExceedsPosition, the max loan 5,000,000 succeeds at the inclusive boundary of the 50%-of-position and book caps, pre-maturity settle_default refuses LoanNotMatured, at-maturity settle_default succeeds (position 10,000,000 -> 5,000,000, skip flag set), and the PROBE: pay_tranche AFTER the default SUCCEEDS despite skip_next_dividend set, because can_pay_tranche takes no skip argument — the forfeiture half of T10 is unenforced on the program today, the one-cycle ledgers come out EQUAL (11,000,000 each), and T10 is NOT claimed re-expressed until the carried skip-enforcement item lands; window 13 exit stock ends 4,000,000, clock ends 36,792,400 + slice-12 W3.2 re-expression part 4: cohort-timing at window boundaries (D-11) — enroll into past window 12 refuses NotCurrentWindow, zero-position enroll into current window 13 refuses InvalidPosition, a double enroll in window 13 refuses at the account layer (one record per holder per window), a current-window-13 enroll succeeds (cohort 1); then the boundary is crossed for real (Settled transition 21 opens window 14, window_count 15): the just-closed window 13 now refuses NotCurrentWindow, a window-14 enroll succeeds (cohort 2), a future window-15 enroll refuses at the account layer (no window account exists yet), and the new cohort's pay_tranche 1,000,000 succeeds on its own slot (14 % 12 = 2), gated §2.2 ~7K; window 13 stock ends 4,000,000, window 14 stock 10,000,000, clock ends 37,003,600 + slice-13 W3.2 re-expression part 5: fee-flow edge cases under the single 73 bps stream (D-5) — a second real deposit 10,000,000 credits TreasuryState by exactly 10,000,000 (a funding-time skim would credit 9,927,000) with vault/source conserving exactly and FeeVault collected_raw still 0, and a mid-window deposit does not inflate window 14's snapshot or stock; holder 27's all-accrued exit 1,000,000 takes neither penalty nor fee (position stays 5,000,000, stock 10,000,000 -> 9,000,000) and a further 1,000,000 all-excess exit carries exactly the flat 13% penalty (position 5,000,000 -> 4,000,000, stock 9,000,000 -> 8,000,000, can_exit has no FEE_PPM term so no second skim exists); the negative half of the fee flow is proven, but the positive half — collection and reconciliation — is NOT: FeeVault collected_raw is still 0 because collect_fees is unbuilt, and the 73 bps income identity has no on-chain realization until that remaining §4.2 row lands + slice-14 the remaining §4.2 row `reinvest` (design §4.2, engine-sim T8) on a fresh holder 29 in window 14 — enroll 5,000,000 (cohort 2), pay_tranche 1,000,000 on Committed window-flow transition 7, then reinvest 400,000 (accrued 1,000,000 -> 600,000, position 5,000,000 -> 5,400,000, window 14 exit stock UNCHANGED at 8,000,000, TreasuryState UNCHANGED), a 600,001 reinvest refusing ReinvestExceedsAccrued (6087), the remaining 600,000 reinvesting at the inclusive boundary (accrued -> 0, position -> 6,000,000), and a zero reinvest refusing InvalidReinvestAmount (6086); the reinvest reading is accrued-dividend-only, partial allowed, no stock debit, no penalty, no value created — reinvesting a borrowed amount is NOT this instruction and needs its own ruling; program IDL 37 -> 38 instructions, 85 -> 88 errors, accounts 16, host tests 82 -> 83, and slices 1-13 re-measured against the new .so (sha e0f40adf...) with any shifts reported in the run log, not silently re-baselined + slice-15 the last §4.2 row `collect_fees` (design §4.2, D-5) on the slice-14 chain — operator collects 73,000 (73 bps on a 10,000,000 flow, operator-reported) in window 14 on Committed window flow transition 7 (window fees_collected_raw 0 -> 73,000, FeeVault collected_raw 0 -> 73,000, exit stock still 8,000,000, TreasuryState still 70,000,000), a further 27,000 accumulates in the same window (window and vault both 100,000 — the vault total is the sum over windows), a zero collection refuses InvalidCollectAmount (6090), and an agent without OPERATOR_SETTLE refuses Unauthorized (6000); the fee flow now has its positive half as on-chain accounting, but the design row's numeric reconciliation against the declared total is NOT implemented (the TransitionRecord carries only a declared_hash, not a fee total) and rides as a carried item; program IDL 38 -> 39 instructions, 88 -> 91 errors, accounts 16, host tests 83 -> 84, WindowState SPACE 121 -> 129 (fees_collected_raw appended after bump), and slices 1-14 re-measured against the new .so with any shifts reported in the run log, not silently re-baselined + slice-16 skip-next-dividend enforcement (D-3, the carried item from slice 11): can_pay_tranche takes the skip flag and refuses DividendSkipped (6091) — the slice-11 probe tranche now REFUSES (accrued 0, flag stays set, slot unpaid), twin D's replacement 1,000,000 exit comes from position at the flat 13% penalty (paid 870,000, position 5,000,000 -> 4,000,000), and the one-cycle ledgers are strictly worse for the defaulter (9,870,000 vs 11,000,000), so T10 is claimed re-expressed on the record that carries the flag; the cross-record carry to a later window's fresh record stays carried; program IDL 39 instructions, 91 -> 92 errors, accounts 16, host tests 84 (pay_tranche_gate_matrix gains the skip case, no new test fn), and slices 1-15 re-measured against the new .so with any shifts reported in the run log, not silently re-baselined + slice-17 the open_window source-transition consumption fix (the carried Part B4 item): TransitionRecord gains window_open_applied (SPACE 865 -> 866, appended after the signalled bitmap, no field moves), open_window sets it in the same instruction as the counter advance and window creation, and a second open on the same Settled transition refuses SourceTransitionConsumed (6092) — the slice-17 probe reuses transition 21 (which opened window 14) for window 15 and refuses, window_count stays 15, no window 15 is created; every open_window caller now passes the transition writable, since the handler writes the flag; program IDL 39 instructions, 92 -> 93 errors, accounts 16, host tests 84 (window_open_gate_matrix gains the consumed case, no new test fn), and slices 1-16 re-measured against the new .so with any shifts reported in the run log, not silently re-baselined + slice-18 the declared-fee-schedule reconciliation (the carried item from slice 15): WindowState gains declared_fees_raw + fee_schedule_declared (SPACE 129 -> 138, appended after fees_collected_raw, no field moves), a new instruction declare_fee_schedule sets the window's schedule once under its Committed window flow transition (a second declaration refuses FeeScheduleAlreadyDeclared, 6093), and collect_fees now refuses in an undeclared window (FeeScheduleUndeclared, 6094) and past the declared total (CollectExceedsDeclaredSchedule, 6095) — on this chain window 14's schedule is declared at 100,000 before the slice-15 collections, which land exactly on it (73,000 + 27,000), a further 1 refuses as over-declared, window 13 collects nothing while undeclared, a declared zero for window 13 is a real declaration (a further 1 then refuses as over-declared, not undeclared); the declaration itself is operator-reported, so this slice bounds collections by a prior immutable declaration and makes shortfall visible, it does not independently verify the declaration against compose-layer volume; program IDL 39 -> 40 instructions, 93 -> 96 errors, accounts 16, host tests 84 -> 85 (declare_fee_schedule_gate_matrix added, collect_fees_gate_matrix gains the reconciliation cases), and slices 1-17 re-measured against the new .so with any shifts reported in the run log, not silently re-baselined + slice-19 the deposit↔enroll binding (the carried item from the funding path): WindowState gains enrolled_total_raw (SPACE 138 -> 146, appended after fee_schedule_declared, no field moves), open_window initializes it to 0, and enroll now refuses EnrollExceedsFundedSnapshot (6096) when the window's cumulative enrolled total plus the new position would exceed the window's period-start snapshot total — enrolled positions are bounded by deposits actually held at open, and a mid-window deposit cannot inflate the current window's enrollment budget (design §7). In an unfunded window (snapshot total zero) the cap does not apply: pre-funding enrollments are opted out of contract under the funding-path ruling, permitted and tracked, never refused for exceeding a zero bound — so the slice-4 unfunded window-0 enrollment (10,000,000 on a zero snapshot) still succeeds, and the slice-12/14 window-14 enrollments (5,000,000 + 5,000,000) still succeed under the 60,000,000 snapshot. On the chain, a 50,000,000 enrollment in window 14 lands the cumulative total exactly on the 60,000,000 snapshot (Success, the inclusive boundary), and 1 more refuses 6096 with the enrolled total unchanged at 60,000,000. Honest scope: this is the window-level binding — no per-depositor ledger exists, so one holder's position is not checked against that holder's own deposits; per-holder deposit backing remains future work. Program IDL 40 instructions, 96 -> 97 errors, accounts 16, host tests 85 (enroll_gate_matrix gains the binding cases, no new test fn), and slices 1-18 re-measured against the new .so with any shifts reported in the run log, not silently re-baselined + slice-21 native-SOL deposits (the carried funding-path item): a new instruction deposit_sol transfers lamports by system CPI into the sol-vault PDA ([sol-vault, treasury]) and credits TreasuryState by exactly the transferred amount — first deposit 5,000,000 lamports (total and cash 70,000,000 -> 75,000,000, vault lamports 5,000,000, system-owned, empty data), second deposit 1,000,000 into the existing vault (76,000,000, vault 6,000,000), zero deposit refuses InvalidDepositAmount (6081) with totals unchanged; SOL deposits are NOT registry-gated (no mint to register) and credit lamports raw into the same total/cash ledger token deposits use, so a mixed USDC-raw/lamport total is mixed-scale and no disbursement may treat it as single-currency without a conversion step this slice does not build; program IDL 42 -> 43 instructions, 101 errors, accounts 16, host tests 86 -> 87 (deposit_sol_gate_matrix added), and slices 1-20 re-measured against the new .so with any shifts reported in the run log, not silently re-baselined + slice-22 the cross-record D-3 carry (the carried item from slice 16): a holder-scoped ForfeitureRecord PDA [forfeiture, holder] (SPACE 57, program IDL accounts 16 -> 17, instructions 43, errors 101, host tests 87 -> 89) — settle_default queues one pending slot per default, enroll consumes exactly one and sets the new record's skip flag iff one was pending, so a default forfeits the next enrolled window's slot and no later one; on this chain window 15 opens on Settled transition 22 (snapshot 76,000,000, stock 12,666,666), twin D (defaulted window 13) and holder [8] (defaulted window 1) both enroll in window 15 with skip set and pending consumed to zero, D's window-15 pay_tranche refuses DividendSkipped (6091), and a fresh holder enrolls clear — the D-3 forfeiture is re-expressed end to end; every prior enroll and settle_default call site now passes its holder's forfeiture PDA (init_if_needed, anchor-lang feature enabled with the PDA-bound re-initialization argument in the program Cargo.toml), and slices 1-21 re-measured against the new .so with any shifts reported in the run log, not silently re-baselined + slice-23 borrowed-amount reinvestment (the 2026-10-26 ruling, decided on Carlos's instruction): a new instruction `borrow_reinvest` (program IDL 43 -> 44 instructions, 101 -> 102 errors, accounts 17, host tests 89 -> 90; HolderRecord SPACE 100 -> 108 for the appended loan_funded_raw field) — atomic with the borrow (loan recorded + position grown by exactly the borrowed amount, no cash disbursed, TreasuryState totals unchanged), capacity on the owned position (position minus unrepaid loan-funded increments), one active loan per holder per window, exit-while-indebted unchanged, and a default settlement at maturity returning the position to exactly its pre-loan size with the funded figure extinguished; on this chain in window 15 (snapshot 76,000,000, book cap 6,333,333): holder 33 enrolls 10,000,000, borrow_reinvests 5,000,000 at the inclusive boundary of both caps (position 15,000,000, funded 5,000,000, book 5,000,000, TreasuryState 76,000,000 unchanged), a second concurrent loan refuses LoanAlreadyActive (6050), an 11,000,000 exit refuses ExitBelowLoan (6062), holder 34's 5,000,001 borrow_reinvest refuses LoanExceedsPosition (6052, owned cap judged before book cap), and settle_default at maturity 42,284,000 returns holder 33 to 10,000,000 with funded 0, skip set, and one forfeiture slot queued (source window 15); the owned-cap itself is gate-proven in the host matrix (position 14,000 with funded 4,000 caps at 5,000, not 7,000) because on-chain it is shadowed by the one-active-loan rule until a (partial-)repayment path exists; program IDL 44 instructions, 102 errors, accounts 17, host tests 90, and slices 1-22 re-measured against the new .so with any shifts reported in the run log, not silently re-baselined + slice-24 the repeat-default measurement (the carried item from slices 22-23): holder 33 re-borrows 5,000,000 plain on the same window-15 record after the slice-23 default cleared its loan (position stays 10,000,000, loan-funded stays 0, book 0 -> 5,000,000, forfeiture pending stays 1 — borrow never touches the forfeiture record), then defaults a second time at maturity 47,468,000 against the already-existing ForfeitureRecord (no init_if_needed creation): position 10,000,000 -> 5,000,000, loan 0, funded 0, skip flag stays set, forfeiture pending 1 -> 2 with source still window 15; the settle_default:24 CU is the repeat-default figure, directly comparable to the first-default 20,323 CU of settle_default:23; no program code change (measurement only), program IDL 44 instructions, 102 errors, accounts 17, host tests 90, and slices 1-23 re-measured against the same .so with any shifts reported in the run log, not silently re-baselined + slice-25 the D-2 threshold-B writer path as a genesis parameter: `initialize_treasury` gains `backing_threshold_ppm` (validated by `check_backing_threshold_ppm`: 0 allowed as unset, any value to 1,000,000 ppm allowed, above full backing refuses ThresholdExceedsFullBacking, 6102); the chain pins the initial-testing value 950,000 ppm (95%, relatively close to USDC-style full backing — a genesis choice, not a final ratio), asserted at TreasuryState bytes 48..56; no account moves, no field moves, no new account type; program IDL 44 instructions, 102 -> 103 errors, accounts 17, host tests 90 -> 91 (backing_threshold_genesis_parameter added, launch gate matrix unchanged); `initialize_treasury` measures 26,367 CU (+14 on the slice-24 26,353: the extra argument decode plus the threshold check, the threshold write itself replacing the old zero write); slices 1-24 re-measured against the new .so with any shifts reported in the run log, not silently re-baselined + slice-26 the allocation rule registry (the carried item from the allocate gap): a standalone RuleRegistry PDA [\"rule-registry\"] (SPACE 138, count + 16 versions + bump), genesis-authority-signed register_rule_version / unregister_rule_version (Admin pattern, as register_mint; removal gates future allocates only, never clawing back executed allocations); allocate now reads the registry and refuses an unregistered version (RuleVersionNotRegistered, 6103) with an empty registry accepting nothing — the second allocate gap is closed, the amount-vs-committed-claim binding stays carried. On this chain: register version 3 creates the registry, a duplicate refuses 6104, version 0 refuses 6075, a second version publishes into the existing registry, unregistering absent version 9 refuses 6103, removing version 3 swap-compacts to [1], and re-publishing version 3 restores [1, 3]; program IDL 44 -> 46 instructions, 103 -> 106 errors, accounts 17 -> 18, host tests 91 -> 93 (rule_registry_matrix, rule_registry_space_matches_fields), and slices 1-25 re-measured against the new .so with any shifts reported in the run log, not silently re-baselined + slice-27 the relevant_groups manifest wiring (the carried eligibility gap from the plan/submit slices): TransitionRecord gains relevant_groups (SPACE 866 -> 886, appended after window_open_applied, no field moves), register_transition takes and freezes the list (at most MAX_GROUPS, else InvalidGroups), and submit_plan / submit_signal now enforce the kernel's full eligible rule (active AND group-overlap, NotEligible 6010) — on this chain the disjoint agent (groups []) refuses on both gates against [1] while the overlapping proposer (group [1]) plans and signals cleanly; program IDL 46 instructions, 106 errors, accounts 18, host tests 93 (gate matrices gain the disjoint cases, no new test fn), and slices 1-26 re-measured against the new .so with any shifts reported in the run log, not silently re-baselined + slice-28 the signal-time monotone-revision wiring (the carried signal-side gap): TransitionRecord gains prev_signalled_bitmap (SPACE 886 -> 950, appended after relevant_groups, no field moves), advance_round snapshots the closing round's signalled set into it before clearing the current bitmap, and submit_signal takes the caller's previous-round SignalRecord (prev_signal_record, program id as the absent sentinel) and enforces the kernel's monotone rule at signal time in kernel order (eligible, AlreadySignalled, monotone) before any creation or aggregate fold. The wiring is dodge-proof by construction: a caller who signalled last round must pass that record (omission refuses PrevSignalRequired, 6106), a wrong record refuses PrevSignalMismatch (6107, stored bump must re-derive the previous-round address), and a caller who never signalled last round skips the check as the kernel does. On this chain (transition 28, relevant_groups [1]): round 0 proposer 400_000 + agent28b 800_000 at equal weights (mean exactly 600_000, snapshot bitmap carries exactly the two signallers' bits); round-1 dodge refuses 6106, wrong-record refuses 6107, a 300_000 re-signal refuses MonotoneRevision (6015) with transition bytes bit-identical, a 500_000 re-signal succeeds (round-1 total 1_000_000, weighted 500_000), and first-timer agent28c signals round 1 at 100_000 with the program id as previous record (total 2_000_000, weighted 600_000); program IDL 46 instructions, 106 -> 108 errors, accounts 18, host tests 93 -> 94 (prev_round_signalled_matrix), and slices 1-27 re-measured against the new .so with any shifts reported in the run log, not silently re-baselined + slice-29 the SOL disbursement leg (the disbursement slice): exit and execute_whale_tranche now PAY the gate-priced amount from the SOL vault PDA to the holder by system transfer (invoke_signed); TreasuryState total/cash fall by exactly the paid amount, the penalty portion stays in the vault and in the totals, and the appended error SolPayoutExceedsCoverage (6108) refuses when the vault balance or cash_raw cannot cover; program IDL 46 instructions (unchanged), 108 -> 109 errors, accounts 18 (unchanged), host tests 94 -> 96. RE-BASELINE, stated plainly: the historical chain is token-funded (SOL vault empty until slice 21), so every historical exit/tranche success above now refuses 6108 on this chain and was re-measured as a refusal with downstream state threaded (positions and stocks unmoved; TreasuryState totals untouched by refused payouts, so slices 21-28 total assertions stand as written) — flipped entries: slice-7 exit, slice-8 execute_whale_tranche, slice-9 both cadence probes and tranche 2 (coverage refusals; with no tranche ever executed the cadence check has no last_block_time to bind — the cadence pair is re-measured in slice 29 itself), slice-10 exit:bulk_max and exit:stock_exhausted (6108, not 6063), slice-11 exit:11D and exit:11S_par, slice-13 exit:13accrued_par and exit:13excess_penalty, the final stock/schedule assertions of slices 11-14, and exit:bulk_over_L re-aimed at the whole-position 28,000,000 (still 6060). The slice-9/10/11/13/16 narratives above describe the bookkeeping-era measurements and are superseded for the flipped entries by this paragraph and by each entry's own note in this file. Slice 29 then proves the payout on the SOL-funded end of the chain (vault 6,000,000, totals 76,000,000, window 15 open, schedule unexecuted, holder 33 position 5,000,000): whale tranche 1 PAYS 2,000,000 (vault -> 4,000,000, totals -> 74,000,000), an immediate retry refuses TrancheTooSoon (6069), tranche 2 at exactly +WEEK_SECS PAYS 2,000,000 more (vault -> 2,000,000, totals -> 72,000,000, whale position 24,000,000), holder 33 exits 1,000,000 excess (penalty 130,000 retained, paid 870,000 to the wallet; vault -> 1,130,000, totals -> 71,130,000), a 1,500,000 exit refuses 6108 against the funded vault (priced paid 1,305,000 > vault 1,130,000; cash_raw would have covered — the vault balance is the binding cover), and a final 200,000 exit pays 174,000 (penalty 26,000 retained), ending the vault at 956,000 (just above the 890,880 rent floor) and the totals at 70,956,000: vault and totals each fell by exactly the 5,044,000 PAID sum, with 156,000 of penalties retained in both. Honest scope: SOL leg only — the token (USDC) payout leg is still unbuilt and coverage is judged on the SOL side only + slice-30 the per-holder deposit ledger (the carried item from slice 19; mint-binding decision hidden_files/MINT_BINDING_DECISION.md, decided under the 2026-10-27 delegation rule): a new account HolderDeposit (SPACE 89, program IDL accounts 18 -> 19, errors 109 -> 110 for the slice-31 gate error EnrollExceedsDepositBacking 6109, host tests 96 -> 100) — one per (holder, mint), PDA [\"holder-deposit\", treasury, holder, mint] for token mints and [\"holder-deposit-sol\", treasury, holder] for native SOL (separate seed prefix, no sentinel mint; the SOL leg records Pubkey::default() as the documented native-SOL marker). deposit / deposit_sol create-or-update the ledger after the transfer and the treasury credit (transfer -> credit -> record; any failure rolls all three back), recording the cumulative deposited_raw; committed_raw stays 0 until the slice-31 enroll gate writes it. On this chain the slice-7 deposit creates the token ledger at 60,000,000 (holder/mint fields verified, committed 0), the slice-13 deposit accumulates it to 70,000,000, the slice-21 deposit_sol creates the SOL ledger at 5,000,000 (mint field all zeros, a different address from the token ledger) and 21again accumulates it to 6,000,000. CU, stated plainly: the ledger's init_if_needed PDA bump search is the cost driver — deposit 21,628 -> 29,452 (+7,824, first deposit incl. creation), second deposit 17,600 -> 22,995 (+5,395, ledger already exists), unregistered-mint refusal 16,544 -> 21,628 (+5,084, the search runs before the registry gate refuses), deposit_sol 12,975 -> 19,232 (+6,257, first) and 12,975 -> 16,873 (+3,898, second), zero refusal 12,182 -> 15,778 (+3,596); no §2.2 EST exists for deposit, so these are the new baselines, not a 2x finding. The remaining ±1-2 CU shifts on 13 untouched refusal entries are the known F6 bump ladder. No result or error flipped across all 361 entries; the gate predicate can_enroll_against_backing is unit-tested (host matrix) and wired at enroll in slice 31 — the ledger records truthfully but enforces nothing until then.",
+        "slice": 31,
+        "slice_note": "slices 1-8 as before (slice-5/6 refusal probes stand as the unfunded-chain record; slice-7 FUNDED chain: real SPL Token deposit credits TreasuryState 60,000,000, window 1 opens on the funded snapshot, borrow / exit / settle_default / schedule_whale_exit FIRST successes; slice-8 12-window walk: windows 2..13 each open on their own Settled treasury.window.v1 transition (transitions 9..20, parented in sequence), each on the funded snapshot (total 60,000,000, exit stock 10,000,000, FLAG 2,000,000), and the FIRST success measurement execute_whale_tranche (tranche 1 of 5, 2,000,000 raw, on Committed treasury.exit.v1 transition 8, creation window 1, execution window 13 >= lock_until 13), gated §2.2 ~7K (2x band 3,500-14,000)) + slice-9 W3.2 re-expression part 1: tranche-2 weekly cadence on the slice-8 chain — TrancheTooSoon refusals at the tranche-1 clock and at last_block_time + WEEK_SECS - 1, then tranche 2 of 5 (2,000,000 raw) SUCCESS at exactly last_block_time + WEEK_SECS (31,608,400), gated §2.2 ~7K; launch_stage2 unmeasured by design (ThresholdUnset, D-2) + slice-10 W3.2 re-expression part 2: blind-ape bulk exit (T11) on the funded chain — the whole-position order (23,500,000 raw) refuses ExitExceedsLiquidity under the D-10 hard bound (L = 10,000,000), the largest executable bulk exit (8,500,000 raw, the remaining window-1 stock) succeeds with the flat 13% penalty on the full excess (1,105,000 penalty, 7,395,000 paid), and a further window-1 exit refuses ExitStockExhausted with aggregate window-1 exits exactly at L + slice-11 W3.2 re-expression part 3: default-as-exit (T10) on twin holders in window 13 (position 10,000,000 each) — borrow above the cap refuses LoanExceedsPosition, the max loan 5,000,000 succeeds at the inclusive boundary of the 50%-of-position and book caps, pre-maturity settle_default refuses LoanNotMatured, at-maturity settle_default succeeds (position 10,000,000 -> 5,000,000, skip flag set), and the PROBE: pay_tranche AFTER the default SUCCEEDS despite skip_next_dividend set, because can_pay_tranche takes no skip argument — the forfeiture half of T10 is unenforced on the program today, the one-cycle ledgers come out EQUAL (11,000,000 each), and T10 is NOT claimed re-expressed until the carried skip-enforcement item lands; window 13 exit stock ends 4,000,000, clock ends 36,792,400 + slice-12 W3.2 re-expression part 4: cohort-timing at window boundaries (D-11) — enroll into past window 12 refuses NotCurrentWindow, zero-position enroll into current window 13 refuses InvalidPosition, a double enroll in window 13 refuses at the account layer (one record per holder per window), a current-window-13 enroll succeeds (cohort 1); then the boundary is crossed for real (Settled transition 21 opens window 14, window_count 15): the just-closed window 13 now refuses NotCurrentWindow, a window-14 enroll succeeds (cohort 2), a future window-15 enroll refuses at the account layer (no window account exists yet), and the new cohort's pay_tranche 1,000,000 succeeds on its own slot (14 % 12 = 2), gated §2.2 ~7K; window 13 stock ends 4,000,000, window 14 stock 10,000,000, clock ends 37,003,600 + slice-13 W3.2 re-expression part 5: fee-flow edge cases under the single 73 bps stream (D-5) — a second real deposit 10,000,000 credits TreasuryState by exactly 10,000,000 (a funding-time skim would credit 9,927,000) with vault/source conserving exactly and FeeVault collected_raw still 0, and a mid-window deposit does not inflate window 14's snapshot or stock; holder 27's all-accrued exit 1,000,000 takes neither penalty nor fee (position stays 5,000,000, stock 10,000,000 -> 9,000,000) and a further 1,000,000 all-excess exit carries exactly the flat 13% penalty (position 5,000,000 -> 4,000,000, stock 9,000,000 -> 8,000,000, can_exit has no FEE_PPM term so no second skim exists); the negative half of the fee flow is proven, but the positive half — collection and reconciliation — is NOT: FeeVault collected_raw is still 0 because collect_fees is unbuilt, and the 73 bps income identity has no on-chain realization until that remaining §4.2 row lands + slice-14 the remaining §4.2 row `reinvest` (design §4.2, engine-sim T8) on a fresh holder 29 in window 14 — enroll 5,000,000 (cohort 2), pay_tranche 1,000,000 on Committed window-flow transition 7, then reinvest 400,000 (accrued 1,000,000 -> 600,000, position 5,000,000 -> 5,400,000, window 14 exit stock UNCHANGED at 8,000,000, TreasuryState UNCHANGED), a 600,001 reinvest refusing ReinvestExceedsAccrued (6087), the remaining 600,000 reinvesting at the inclusive boundary (accrued -> 0, position -> 6,000,000), and a zero reinvest refusing InvalidReinvestAmount (6086); the reinvest reading is accrued-dividend-only, partial allowed, no stock debit, no penalty, no value created — reinvesting a borrowed amount is NOT this instruction and needs its own ruling; program IDL 37 -> 38 instructions, 85 -> 88 errors, accounts 16, host tests 82 -> 83, and slices 1-13 re-measured against the new .so (sha e0f40adf...) with any shifts reported in the run log, not silently re-baselined + slice-15 the last §4.2 row `collect_fees` (design §4.2, D-5) on the slice-14 chain — operator collects 73,000 (73 bps on a 10,000,000 flow, operator-reported) in window 14 on Committed window flow transition 7 (window fees_collected_raw 0 -> 73,000, FeeVault collected_raw 0 -> 73,000, exit stock still 8,000,000, TreasuryState still 70,000,000), a further 27,000 accumulates in the same window (window and vault both 100,000 — the vault total is the sum over windows), a zero collection refuses InvalidCollectAmount (6090), and an agent without OPERATOR_SETTLE refuses Unauthorized (6000); the fee flow now has its positive half as on-chain accounting, but the design row's numeric reconciliation against the declared total is NOT implemented (the TransitionRecord carries only a declared_hash, not a fee total) and rides as a carried item; program IDL 38 -> 39 instructions, 88 -> 91 errors, accounts 16, host tests 83 -> 84, WindowState SPACE 121 -> 129 (fees_collected_raw appended after bump), and slices 1-14 re-measured against the new .so with any shifts reported in the run log, not silently re-baselined + slice-16 skip-next-dividend enforcement (D-3, the carried item from slice 11): can_pay_tranche takes the skip flag and refuses DividendSkipped (6091) — the slice-11 probe tranche now REFUSES (accrued 0, flag stays set, slot unpaid), twin D's replacement 1,000,000 exit comes from position at the flat 13% penalty (paid 870,000, position 5,000,000 -> 4,000,000), and the one-cycle ledgers are strictly worse for the defaulter (9,870,000 vs 11,000,000), so T10 is claimed re-expressed on the record that carries the flag; the cross-record carry to a later window's fresh record stays carried; program IDL 39 instructions, 91 -> 92 errors, accounts 16, host tests 84 (pay_tranche_gate_matrix gains the skip case, no new test fn), and slices 1-15 re-measured against the new .so with any shifts reported in the run log, not silently re-baselined + slice-17 the open_window source-transition consumption fix (the carried Part B4 item): TransitionRecord gains window_open_applied (SPACE 865 -> 866, appended after the signalled bitmap, no field moves), open_window sets it in the same instruction as the counter advance and window creation, and a second open on the same Settled transition refuses SourceTransitionConsumed (6092) — the slice-17 probe reuses transition 21 (which opened window 14) for window 15 and refuses, window_count stays 15, no window 15 is created; every open_window caller now passes the transition writable, since the handler writes the flag; program IDL 39 instructions, 92 -> 93 errors, accounts 16, host tests 84 (window_open_gate_matrix gains the consumed case, no new test fn), and slices 1-16 re-measured against the new .so with any shifts reported in the run log, not silently re-baselined + slice-18 the declared-fee-schedule reconciliation (the carried item from slice 15): WindowState gains declared_fees_raw + fee_schedule_declared (SPACE 129 -> 138, appended after fees_collected_raw, no field moves), a new instruction declare_fee_schedule sets the window's schedule once under its Committed window flow transition (a second declaration refuses FeeScheduleAlreadyDeclared, 6093), and collect_fees now refuses in an undeclared window (FeeScheduleUndeclared, 6094) and past the declared total (CollectExceedsDeclaredSchedule, 6095) — on this chain window 14's schedule is declared at 100,000 before the slice-15 collections, which land exactly on it (73,000 + 27,000), a further 1 refuses as over-declared, window 13 collects nothing while undeclared, a declared zero for window 13 is a real declaration (a further 1 then refuses as over-declared, not undeclared); the declaration itself is operator-reported, so this slice bounds collections by a prior immutable declaration and makes shortfall visible, it does not independently verify the declaration against compose-layer volume; program IDL 39 -> 40 instructions, 93 -> 96 errors, accounts 16, host tests 84 -> 85 (declare_fee_schedule_gate_matrix added, collect_fees_gate_matrix gains the reconciliation cases), and slices 1-17 re-measured against the new .so with any shifts reported in the run log, not silently re-baselined + slice-19 the deposit↔enroll binding (the carried item from the funding path): WindowState gains enrolled_total_raw (SPACE 138 -> 146, appended after fee_schedule_declared, no field moves), open_window initializes it to 0, and enroll now refuses EnrollExceedsFundedSnapshot (6096) when the window's cumulative enrolled total plus the new position would exceed the window's period-start snapshot total — enrolled positions are bounded by deposits actually held at open, and a mid-window deposit cannot inflate the current window's enrollment budget (design §7). In an unfunded window (snapshot total zero) the cap does not apply: pre-funding enrollments are opted out of contract under the funding-path ruling, permitted and tracked, never refused for exceeding a zero bound — so the slice-4 unfunded window-0 enrollment (10,000,000 on a zero snapshot) still succeeds, and the slice-12/14 window-14 enrollments (5,000,000 + 5,000,000) still succeed under the 60,000,000 snapshot. On the chain, a 50,000,000 enrollment in window 14 lands the cumulative total exactly on the 60,000,000 snapshot (Success, the inclusive boundary), and 1 more refuses 6096 with the enrolled total unchanged at 60,000,000. Honest scope: this is the window-level binding — no per-depositor ledger exists, so one holder's position is not checked against that holder's own deposits; per-holder deposit backing remains future work. Program IDL 40 instructions, 96 -> 97 errors, accounts 16, host tests 85 (enroll_gate_matrix gains the binding cases, no new test fn), and slices 1-18 re-measured against the new .so with any shifts reported in the run log, not silently re-baselined + slice-21 native-SOL deposits (the carried funding-path item): a new instruction deposit_sol transfers lamports by system CPI into the sol-vault PDA ([sol-vault, treasury]) and credits TreasuryState by exactly the transferred amount — first deposit 5,000,000 lamports (total and cash 70,000,000 -> 75,000,000, vault lamports 5,000,000, system-owned, empty data), second deposit 1,000,000 into the existing vault (76,000,000, vault 6,000,000), zero deposit refuses InvalidDepositAmount (6081) with totals unchanged; SOL deposits are NOT registry-gated (no mint to register) and credit lamports raw into the same total/cash ledger token deposits use, so a mixed USDC-raw/lamport total is mixed-scale and no disbursement may treat it as single-currency without a conversion step this slice does not build; program IDL 42 -> 43 instructions, 101 errors, accounts 16, host tests 86 -> 87 (deposit_sol_gate_matrix added), and slices 1-20 re-measured against the new .so with any shifts reported in the run log, not silently re-baselined + slice-22 the cross-record D-3 carry (the carried item from slice 16): a holder-scoped ForfeitureRecord PDA [forfeiture, holder] (SPACE 57, program IDL accounts 16 -> 17, instructions 43, errors 101, host tests 87 -> 89) — settle_default queues one pending slot per default, enroll consumes exactly one and sets the new record's skip flag iff one was pending, so a default forfeits the next enrolled window's slot and no later one; on this chain window 15 opens on Settled transition 22 (snapshot 76,000,000, stock 12,666,666), twin D (defaulted window 13) and holder [8] (defaulted window 1) both enroll in window 15 with skip set and pending consumed to zero, D's window-15 pay_tranche refuses DividendSkipped (6091), and a fresh holder enrolls clear — the D-3 forfeiture is re-expressed end to end; every prior enroll and settle_default call site now passes its holder's forfeiture PDA (init_if_needed, anchor-lang feature enabled with the PDA-bound re-initialization argument in the program Cargo.toml), and slices 1-21 re-measured against the new .so with any shifts reported in the run log, not silently re-baselined + slice-23 borrowed-amount reinvestment (the 2026-10-26 ruling, decided on Carlos's instruction): a new instruction `borrow_reinvest` (program IDL 43 -> 44 instructions, 101 -> 102 errors, accounts 17, host tests 89 -> 90; HolderRecord SPACE 100 -> 108 for the appended loan_funded_raw field) — atomic with the borrow (loan recorded + position grown by exactly the borrowed amount, no cash disbursed, TreasuryState totals unchanged), capacity on the owned position (position minus unrepaid loan-funded increments), one active loan per holder per window, exit-while-indebted unchanged, and a default settlement at maturity returning the position to exactly its pre-loan size with the funded figure extinguished; on this chain in window 15 (snapshot 76,000,000, book cap 6,333,333): holder 33 enrolls 10,000,000, borrow_reinvests 5,000,000 at the inclusive boundary of both caps (position 15,000,000, funded 5,000,000, book 5,000,000, TreasuryState 76,000,000 unchanged), a second concurrent loan refuses LoanAlreadyActive (6050), an 11,000,000 exit refuses ExitBelowLoan (6062), holder 34's 5,000,001 borrow_reinvest refuses LoanExceedsPosition (6052, owned cap judged before book cap), and settle_default at maturity 42,284,000 returns holder 33 to 10,000,000 with funded 0, skip set, and one forfeiture slot queued (source window 15); the owned-cap itself is gate-proven in the host matrix (position 14,000 with funded 4,000 caps at 5,000, not 7,000) because on-chain it is shadowed by the one-active-loan rule until a (partial-)repayment path exists; program IDL 44 instructions, 102 errors, accounts 17, host tests 90, and slices 1-22 re-measured against the new .so with any shifts reported in the run log, not silently re-baselined + slice-24 the repeat-default measurement (the carried item from slices 22-23): holder 33 re-borrows 5,000,000 plain on the same window-15 record after the slice-23 default cleared its loan (position stays 10,000,000, loan-funded stays 0, book 0 -> 5,000,000, forfeiture pending stays 1 — borrow never touches the forfeiture record), then defaults a second time at maturity 47,468,000 against the already-existing ForfeitureRecord (no init_if_needed creation): position 10,000,000 -> 5,000,000, loan 0, funded 0, skip flag stays set, forfeiture pending 1 -> 2 with source still window 15; the settle_default:24 CU is the repeat-default figure, directly comparable to the first-default 20,323 CU of settle_default:23; no program code change (measurement only), program IDL 44 instructions, 102 errors, accounts 17, host tests 90, and slices 1-23 re-measured against the same .so with any shifts reported in the run log, not silently re-baselined + slice-25 the D-2 threshold-B writer path as a genesis parameter: `initialize_treasury` gains `backing_threshold_ppm` (validated by `check_backing_threshold_ppm`: 0 allowed as unset, any value to 1,000,000 ppm allowed, above full backing refuses ThresholdExceedsFullBacking, 6102); the chain pins the initial-testing value 950,000 ppm (95%, relatively close to USDC-style full backing — a genesis choice, not a final ratio), asserted at TreasuryState bytes 48..56; no account moves, no field moves, no new account type; program IDL 44 instructions, 102 -> 103 errors, accounts 17, host tests 90 -> 91 (backing_threshold_genesis_parameter added, launch gate matrix unchanged); `initialize_treasury` measures 26,367 CU (+14 on the slice-24 26,353: the extra argument decode plus the threshold check, the threshold write itself replacing the old zero write); slices 1-24 re-measured against the new .so with any shifts reported in the run log, not silently re-baselined + slice-26 the allocation rule registry (the carried item from the allocate gap): a standalone RuleRegistry PDA [\"rule-registry\"] (SPACE 138, count + 16 versions + bump), genesis-authority-signed register_rule_version / unregister_rule_version (Admin pattern, as register_mint; removal gates future allocates only, never clawing back executed allocations); allocate now reads the registry and refuses an unregistered version (RuleVersionNotRegistered, 6103) with an empty registry accepting nothing — the second allocate gap is closed, the amount-vs-committed-claim binding stays carried. On this chain: register version 3 creates the registry, a duplicate refuses 6104, version 0 refuses 6075, a second version publishes into the existing registry, unregistering absent version 9 refuses 6103, removing version 3 swap-compacts to [1], and re-publishing version 3 restores [1, 3]; program IDL 44 -> 46 instructions, 103 -> 106 errors, accounts 17 -> 18, host tests 91 -> 93 (rule_registry_matrix, rule_registry_space_matches_fields), and slices 1-25 re-measured against the new .so with any shifts reported in the run log, not silently re-baselined + slice-27 the relevant_groups manifest wiring (the carried eligibility gap from the plan/submit slices): TransitionRecord gains relevant_groups (SPACE 866 -> 886, appended after window_open_applied, no field moves), register_transition takes and freezes the list (at most MAX_GROUPS, else InvalidGroups), and submit_plan / submit_signal now enforce the kernel's full eligible rule (active AND group-overlap, NotEligible 6010) — on this chain the disjoint agent (groups []) refuses on both gates against [1] while the overlapping proposer (group [1]) plans and signals cleanly; program IDL 46 instructions, 106 errors, accounts 18, host tests 93 (gate matrices gain the disjoint cases, no new test fn), and slices 1-26 re-measured against the new .so with any shifts reported in the run log, not silently re-baselined + slice-28 the signal-time monotone-revision wiring (the carried signal-side gap): TransitionRecord gains prev_signalled_bitmap (SPACE 886 -> 950, appended after relevant_groups, no field moves), advance_round snapshots the closing round's signalled set into it before clearing the current bitmap, and submit_signal takes the caller's previous-round SignalRecord (prev_signal_record, program id as the absent sentinel) and enforces the kernel's monotone rule at signal time in kernel order (eligible, AlreadySignalled, monotone) before any creation or aggregate fold. The wiring is dodge-proof by construction: a caller who signalled last round must pass that record (omission refuses PrevSignalRequired, 6106), a wrong record refuses PrevSignalMismatch (6107, stored bump must re-derive the previous-round address), and a caller who never signalled last round skips the check as the kernel does. On this chain (transition 28, relevant_groups [1]): round 0 proposer 400_000 + agent28b 800_000 at equal weights (mean exactly 600_000, snapshot bitmap carries exactly the two signallers' bits); round-1 dodge refuses 6106, wrong-record refuses 6107, a 300_000 re-signal refuses MonotoneRevision (6015) with transition bytes bit-identical, a 500_000 re-signal succeeds (round-1 total 1_000_000, weighted 500_000), and first-timer agent28c signals round 1 at 100_000 with the program id as previous record (total 2_000_000, weighted 600_000); program IDL 46 instructions, 106 -> 108 errors, accounts 18, host tests 93 -> 94 (prev_round_signalled_matrix), and slices 1-27 re-measured against the new .so with any shifts reported in the run log, not silently re-baselined + slice-29 the SOL disbursement leg (the disbursement slice): exit and execute_whale_tranche now PAY the gate-priced amount from the SOL vault PDA to the holder by system transfer (invoke_signed); TreasuryState total/cash fall by exactly the paid amount, the penalty portion stays in the vault and in the totals, and the appended error SolPayoutExceedsCoverage (6108) refuses when the vault balance or cash_raw cannot cover; program IDL 46 instructions (unchanged), 108 -> 109 errors, accounts 18 (unchanged), host tests 94 -> 96. RE-BASELINE, stated plainly: the historical chain is token-funded (SOL vault empty until slice 21), so every historical exit/tranche success above now refuses 6108 on this chain and was re-measured as a refusal with downstream state threaded (positions and stocks unmoved; TreasuryState totals untouched by refused payouts, so slices 21-28 total assertions stand as written) — flipped entries: slice-7 exit, slice-8 execute_whale_tranche, slice-9 both cadence probes and tranche 2 (coverage refusals; with no tranche ever executed the cadence check has no last_block_time to bind — the cadence pair is re-measured in slice 29 itself), slice-10 exit:bulk_max and exit:stock_exhausted (6108, not 6063), slice-11 exit:11D and exit:11S_par, slice-13 exit:13accrued_par and exit:13excess_penalty, the final stock/schedule assertions of slices 11-14, and exit:bulk_over_L re-aimed at the whole-position 28,000,000 (still 6060). The slice-9/10/11/13/16 narratives above describe the bookkeeping-era measurements and are superseded for the flipped entries by this paragraph and by each entry's own note in this file. Slice 29 then proves the payout on the SOL-funded end of the chain (vault 6,000,000, totals 76,000,000, window 15 open, schedule unexecuted, holder 33 position 5,000,000): whale tranche 1 PAYS 2,000,000 (vault -> 4,000,000, totals -> 74,000,000), an immediate retry refuses TrancheTooSoon (6069), tranche 2 at exactly +WEEK_SECS PAYS 2,000,000 more (vault -> 2,000,000, totals -> 72,000,000, whale position 24,000,000), holder 33 exits 1,000,000 excess (penalty 130,000 retained, paid 870,000 to the wallet; vault -> 1,130,000, totals -> 71,130,000), a 1,500,000 exit refuses 6108 against the funded vault (priced paid 1,305,000 > vault 1,130,000; cash_raw would have covered — the vault balance is the binding cover), and a final 200,000 exit pays 174,000 (penalty 26,000 retained), ending the vault at 956,000 (just above the 890,880 rent floor) and the totals at 70,956,000: vault and totals each fell by exactly the 5,044,000 PAID sum, with 156,000 of penalties retained in both. Honest scope: SOL leg only — the token (USDC) payout leg is still unbuilt and coverage is judged on the SOL side only + slice-30 the per-holder deposit ledger (the carried item from slice 19; mint-binding decision hidden_files/MINT_BINDING_DECISION.md, decided under the 2026-10-27 delegation rule): a new account HolderDeposit (SPACE 89, program IDL accounts 18 -> 19, errors 109 -> 110 for the slice-31 gate error EnrollExceedsDepositBacking 6109, host tests 96 -> 100) — one per (holder, mint), PDA [\"holder-deposit\", treasury, holder, mint] for token mints and [\"holder-deposit-sol\", treasury, holder] for native SOL (separate seed prefix, no sentinel mint; the SOL leg records Pubkey::default() as the documented native-SOL marker). deposit / deposit_sol create-or-update the ledger after the transfer and the treasury credit (transfer -> credit -> record; any failure rolls all three back), recording the cumulative deposited_raw; committed_raw stays 0 until the slice-31 enroll gate writes it. On this chain the slice-7 deposit creates the token ledger at 60,000,000 (holder/mint fields verified, committed 0), the slice-13 deposit accumulates it to 70,000,000, the slice-21 deposit_sol creates the SOL ledger at 5,000,000 (mint field all zeros, a different address from the token ledger) and 21again accumulates it to 6,000,000. CU, stated plainly: the ledger's init_if_needed PDA bump search is the cost driver — deposit 21,628 -> 29,452 (+7,824, first deposit incl. creation), second deposit 17,600 -> 22,995 (+5,395, ledger already exists), unregistered-mint refusal 16,544 -> 21,628 (+5,084, the search runs before the registry gate refuses), deposit_sol 12,975 -> 19,232 (+6,257, first) and 12,975 -> 16,873 (+3,898, second), zero refusal 12,182 -> 15,778 (+3,596); no §2.2 EST exists for deposit, so these are the new baselines, not a 2x finding. The remaining ±1-2 CU shifts on 13 untouched refusal entries are the known F6 bump ladder. No result or error flipped across all 361 entries; the gate predicate can_enroll_against_backing is unit-tested (host matrix) and wired at enroll in slice 31 — the ledger records truthfully but enforces nothing until then. + slice-31 the enroll gate, wired (mint-binding decision hidden_files/MINT_BINDING_DECISION.md, decided under the 2026-10-27 delegation rule): `enroll` takes the position's mint and, in a funded window, enforces committed_raw + position_raw <= deposited_raw against the holder's own ledger for that mint, debiting committed_raw in the same instruction; a new instruction `enroll_sol` does the same against the native-SOL ledger, the record carrying Pubkey::default() as the native-SOL marker. The gate mirrors the slice-19 aggregate cap's funded-window-only scope exactly (check_enroll_backing, host-matrix-tested): in an unfunded window the gate stands down and no backing is consumed, so the slice-4 pre-funding enrollment still succeeds with a zero ledger. HolderRecord gains the mint field (SPACE 108 -> 140, appended after loan_funded_raw, no field moves) and HolderEnrolled gains it too (appended at the end). Multi-mint-per-window enrollment is decided here, not deferred: the record carries the mint as a field and the PDA seeds do NOT gain it — one record per holder per window stands across both legs, so a holder funded in both mints enrolls one mint's position per window and the other mint's in a later window (probe P5 proves the cross-leg collision at account creation); the alternative (mint in the seeds) would have let one holder hold two positions in one pool and forced the mint into every HolderRecord-seeded account set. Fixture honesty, stated plainly: the chain's pre-existing enrollments seed their holders' token-leg ledgers at exactly their total gated enrollment (holder [8] 35,000,000; twin D 15,000,000; twin S 10,000,000; holders 25/27/29/32 5,000,000 each; holder 30 50,000,000; holders 33/34 10,000,000 each) — the gate reads those bytes exactly as it would read a ledger a real deposit created, so the measured enroll CU is identical either way, while a real deposit per holder would credit TreasuryState and move every later window's snapshot, re-baselining the whole chain for no measurement gain; the gate itself is proven by the probes, which use a real deposit where it matters (P3/P4). Probes at the chain end (window 15, snapshot 76,000,000, enrolled 35,000,000): P1 holder 35 seeded 1,000,000 enrolls 1,000,001 token-leg and refuses EnrollExceedsDepositBacking 6109 with no record and no state moved; P2 holder 36 seeded exactly 5,000,000 enrolls 5,000,000 at the inclusive boundary (ledger committed 5,000,000, record 140 bytes, mint bound); P4 holder 37 really deposits SOL 2,000,000 (totals 70,956,000 -> 72,956,000, vault 956,000 -> 2,956,000) and enrolls it by enroll_sol (SOL ledger committed 2,000,000, record mint all zeros); P6 holder 38 seeded 500 lamports SOL enrolls 501 by enroll_sol and refuses 6109; P3 the depositor enrolls 34,000,000 against their REAL token ledger (70,000,000 deposited by actual deposits, committed 0 -> 34,000,000), landing the aggregate exactly on the 76,000,000 snapshot; P5 the depositor's enroll_sol in the same window refuses at the account layer (record position and mint unchanged, SOL ledger deposited 6,000,000 / committed 0 untouched). CU: enroll successes 38,847–51,675 (slice-4 first enrollment 51,675 — it creates the ledger, forfeiture and record in one instruction; seeded-ledger enrollments 38,847–44,848, the spread is the F6 bump ladder on the ledger PDA, ~1,500 CU per attempt); enroll_sol success 40,297; deposit_sol:31P4 20,730; backing refusals (6109) 26,713 token-leg / 32,662 SOL-leg; cross-leg collision refusal 6,361. Carried-entry re-baseline, 185 of 357 shifted, no result or error flipped anywhere: enroll refusals that reach the gate +6,074 (the ledger bump search runs before the gate refuses), early refusals (13double +322, 15future +352) fail before that search; pay_tranche / settle_default +108 (the 32-byte larger HolderRecord deserialization), exit / borrow / reinvest / execute_whale_tranche +61–+104 (same record), settle / submit_constraint_report / open_planning / deposit +4 (shared prologue), 56 untouched instructions −2 (the familiar ±2 jitter). Program IDL 46 -> 47 instructions (enroll_sol added), 110 errors (no new error — 6109 already existed), 19 accounts, host tests 100 -> 101 (enroll_backing_funded_window_scope_matrix). Release of committed_raw on exit / default settlement is the next slice, not this one: until it lands, an exited position's backing stays committed and cannot fund a later enrollment.",
         "clock": {"phase_a_unix_timestamp": NOW0, "planning_window_s": PLANNING_WINDOW, "phase_b_unix_timestamp": NOW1},
         "instructions": measured,
     });

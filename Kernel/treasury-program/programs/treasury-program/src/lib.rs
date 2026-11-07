@@ -2735,12 +2735,14 @@ pub mod treasury_program {
     /// enroll uncapped under the opted-out-of-contract rule —
     /// and, since slice 30, every deposit is ALSO recorded
     /// per holder per mint on the `HolderDeposit` ledger, so
-    /// the backing a position will be checked against exists.
-    /// The check itself is slice 31: this instruction records
-    /// the deposit, it does not yet gate enrollments on it —
-    /// a holder's position is still bounded by the window's
-    /// funded total in aggregate until the gate lands, and
-    /// this instruction does not pretend otherwise.
+    /// the backing a position is checked against exists — and
+    /// since slice 31, `enroll` / `enroll_sol` gate on it: in
+    /// a funded window a position must fit the holder's own
+    /// headroom in that mint (`committed_raw + position_raw
+    /// <= deposited_raw`), so a holder's position is bounded
+    /// per holder per mint, not only by the window's funded
+    /// total in aggregate. This instruction records the
+    /// deposit; the gate itself lives at enroll.
     pub fn deposit(ctx: Context<Deposit>, amount_raw: u64) -> Result<()> {
         let depositor_key = ctx.accounts.depositor.key();
         let mint_key = *ctx.accounts.mint.key;
@@ -2960,11 +2962,11 @@ pub mod treasury_program {
     /// single-currency value without a conversion step, and
     /// this slice builds no price conversion and prices
     /// nothing: SOL-in is lamports, credited as lamports.
-    /// (3) Per-holder deposit backing is recorded, not yet
-    /// enforced, as for token deposits (slice 30): the SOL
-    /// leg of the `HolderDeposit` ledger accumulates the
-    /// holder's lamport deposits; the enroll gate that checks
-    /// a position against it is slice 31.
+    /// (3) Per-holder deposit backing is recorded, and since
+    /// slice 31 it is enforced: the SOL leg of the
+    /// `HolderDeposit` ledger accumulates the holder's lamport
+    /// deposits, and `enroll_sol` gates a position against it
+    /// in a funded window, exactly as the token leg does.
     pub fn deposit_sol(ctx: Context<DepositSol>, amount_raw: u64) -> Result<()> {
         let depositor_key = ctx.accounts.depositor.key();
         let vault_info = ctx.accounts.sol_vault.to_account_info();
@@ -3364,63 +3366,82 @@ pub mod treasury_program {
     /// same window fails at the PDA `init` constraint and changes
     /// no state: one record per holder per window, so one holder's
     /// funds are never counted twice in one pool.
+    /// The per-holder deposit backing (slice 31, mint-binding
+    /// decision): `enroll` takes the position's mint and, in a
+    /// funded window, enforces `committed_raw + position_raw <=
+    /// deposited_raw` against the holder's own ledger for that
+    /// mint, debiting `committed_raw` in the same instruction —
+    /// a position is a claim on the holder's own deposits, never
+    /// on another holder's. In an unfunded window the gate
+    /// stands down (see `check_enroll_backing`): the enrollment
+    /// is opted out of contract, permitted and tracked, and
+    /// consumes no backing. The record carries the mint as a
+    /// field, so disbursement follows the position's mint; the
+    /// PDA seeds do NOT gain the mint — one record per holder
+    /// per window stands across both legs, so a holder funded
+    /// in both mints enrolls one mint's position per window
+    /// and the other mint's in a later window (a same-window
+    /// second-leg enroll collides at account creation). The
+    /// ledger is `init_if_needed` (payer = holder, as the
+    /// forfeiture record): a holder with no deposits in this
+    /// mint gets a truthful zero ledger, and the funded-window
+    /// gate then refuses — a missing ledger is never silently
+    /// treated as backing. Release of `committed_raw` on exit /
+    /// default settlement is the next slice, not this one: until
+    /// it lands, an exited position's backing stays committed
+    /// and cannot fund a later enrollment — stated here so the
+    /// gate is not mistaken for a complete ledger lifecycle.
     pub fn enroll(
         ctx: Context<Enroll>,
         window_id: u64,
         position_raw: u64,
+        mint: Pubkey,
     ) -> Result<()> {
-        can_enroll(
-            window_id,
-            ctx.accounts.treasury_state.window_count,
-            position_raw,
-            ctx.accounts.window_state.snapshot_total_raw,
-            ctx.accounts.window_state.enrolled_total_raw,
-        )?;
-        let window = &mut ctx.accounts.window_state;
-        let record = &mut ctx.accounts.holder_record;
-        record.holder = ctx.accounts.holder.key();
-        record.window_id = window_id;
-        record.cohort = enroll_cohort(window_id);
-        record.position_raw = position_raw;
-        record.accrued_dividend_raw = 0;
-        record.loan_principal_raw = 0;
-        record.loan_maturity = 0;
-        // Slice 22, cross-record D-3 carry: the forfeiture record
-        // is created on first use (init_if_needed) with zero
-        // pending slots, so a first-time holder starts clear; a
-        // defaulter's pending slot is consumed here, exactly one.
-        let forfeiture = &mut ctx.accounts.forfeiture_record;
-        forfeiture.holder = ctx.accounts.holder.key();
-        forfeiture.bump = ctx.bumps.forfeiture_record;
-        let (skip_next_dividend, remaining) =
-            forfeiture_carry(forfeiture.pending_slots);
-        forfeiture.pending_slots = remaining;
-        record.skip_next_dividend = skip_next_dividend;
-        record.standing_authorization = true;
-        record.authorization_window = window_id;
-        record.tranche_paid = false;
-        record.bump = ctx.bumps.holder_record;
-        // Slice 23: no loan-funded increment exists at enroll.
-        record.loan_funded_raw = 0;
-        window.enrolled_total_raw = window
-            .enrolled_total_raw
-            .checked_add(position_raw)
-            .ok_or(TreasuryError::Overflow)?;
-        window.roster_hash = roster_hash_update(
-            window.roster_hash,
+        enroll_inner(
+            &ctx.accounts.treasury_state,
+            &mut ctx.accounts.window_state,
+            &mut ctx.accounts.holder_record,
+            &mut ctx.accounts.forfeiture_record,
+            &mut ctx.accounts.holder_deposit,
             ctx.accounts.holder.key(),
-            position_raw,
-        );
-        emit!(HolderEnrolled {
+            ctx.bumps.holder_record,
+            ctx.bumps.forfeiture_record,
+            ctx.bumps.holder_deposit,
             window_id,
-            holder: ctx.accounts.holder.key(),
             position_raw,
-            cohort: record.cohort,
-            roster_hash: window.roster_hash,
-            transition_id: window.source_transition_id,
-            commit_index: window.source_commit_index,
-        });
-        Ok(())
+            mint,
+        )
+    }
+
+    /// Native-SOL enrollment (design §4.2, slice 31): the SOL leg
+    /// of `enroll`, mirroring the `deposit` / `deposit_sol`
+    /// split — SOL has no mint, so the position binds to the
+    /// holder's native-SOL ledger (`["holder-deposit-sol",
+    /// treasury, holder]`) and the record carries the documented
+    /// native-SOL marker `Pubkey::default()` as its mint. Same
+    /// gate, same funded-window scope, same one-record rule:
+    /// the HolderRecord PDA seeds carry no mint, so a token-leg
+    /// record and a SOL-leg record for the same holder in the
+    /// same window collide at account creation.
+    pub fn enroll_sol(
+        ctx: Context<EnrollSol>,
+        window_id: u64,
+        position_raw: u64,
+    ) -> Result<()> {
+        enroll_inner(
+            &ctx.accounts.treasury_state,
+            &mut ctx.accounts.window_state,
+            &mut ctx.accounts.holder_record,
+            &mut ctx.accounts.forfeiture_record,
+            &mut ctx.accounts.holder_deposit_sol,
+            ctx.accounts.holder.key(),
+            ctx.bumps.holder_record,
+            ctx.bumps.forfeiture_record,
+            ctx.bumps.holder_deposit_sol,
+            window_id,
+            position_raw,
+            Pubkey::default(),
+        )
     }
 
     /// Dividend tranche payout (design §4.2, §5, §6): the window's
@@ -6070,6 +6091,33 @@ pub fn can_enroll_against_backing(
     Ok(())
 }
 
+/// The funded-window scope of the enroll backing gate
+/// (slice 31): the per-holder gate mirrors the slice-19
+/// aggregate cap's scope exactly — it applies only when the
+/// window opened on a funded snapshot. In an unfunded window
+/// (snapshot total zero) the enrollment is opted out of
+/// contract under the funding-path ruling, permitted and
+/// tracked, never refused for exceeding a zero bound; the
+/// gate stands down and no backing is consumed, so a
+/// pre-funding enrollment neither needs nor spends a deposit.
+/// The ledger's identity fields are still written by the
+/// handler (a zero ledger records "no deposits in this mint",
+/// truthfully). Decided under the 2026-10-27 delegation rule:
+/// the alternative — gating unfunded windows too — would
+/// refuse exactly the pre-funding enrollments the ruling
+/// permits, and the aggregate cap already sets this precedent.
+pub fn check_enroll_backing(
+    snapshot_total_raw: u64,
+    deposited_raw: u64,
+    committed_raw: u64,
+    position_raw: u64,
+) -> Result<()> {
+    if snapshot_total_raw == 0 {
+        return Ok(());
+    }
+    can_enroll_against_backing(deposited_raw, committed_raw, position_raw)
+}
+
 /// The SOL payout coverage gate, as a pure check
 /// (disbursement slice — the payout leg of `exit` and
 /// `execute_whale_tranche`): a payout of `paid_raw`
@@ -6262,6 +6310,107 @@ pub fn forfeiture_carry(pending_slots: u64) -> (bool, u64) {
     } else {
         (false, 0)
     }
+}
+
+/// The shared enrollment body for the token leg (`enroll`) and
+/// the SOL leg (`enroll_sol`) (slice 31): the two legs differ
+/// only in which deposit ledger they read and which mint value
+/// the record carries, so the gate order, the record writes,
+/// the forfeiture carry, the window updates, and the event are
+/// one function — a gate change can never land on one leg and
+/// miss the other. Gate order: the window-aggregate cap
+/// (`can_enroll`) first, then the per-holder backing gate;
+/// both are pure checks before any state moves, so a refused
+/// enrollment changes nothing (a ledger created by
+/// `init_if_needed` on a refused call rolls back with the
+/// failed transaction).
+fn enroll_inner(
+    treasury_state: &Account<TreasuryState>,
+    window_state: &mut Account<WindowState>,
+    holder_record: &mut Account<HolderRecord>,
+    forfeiture_record: &mut Account<ForfeitureRecord>,
+    ledger: &mut Account<HolderDeposit>,
+    holder_key: Pubkey,
+    holder_record_bump: u8,
+    forfeiture_bump: u8,
+    ledger_bump: u8,
+    window_id: u64,
+    position_raw: u64,
+    mint: Pubkey,
+) -> Result<()> {
+    can_enroll(
+        window_id,
+        treasury_state.window_count,
+        position_raw,
+        window_state.snapshot_total_raw,
+        window_state.enrolled_total_raw,
+    )?;
+    // Slice 31, per-holder backing: in a funded window the
+    // position must fit the holder's own headroom in this mint,
+    // and the gate debits committed_raw in the same instruction.
+    // In an unfunded window the gate stands down and no backing
+    // is consumed (see check_enroll_backing). The ledger's
+    // identity fields are written idempotently either way, so a
+    // ledger created here by init_if_needed is well-formed.
+    check_enroll_backing(
+        window_state.snapshot_total_raw,
+        ledger.deposited_raw,
+        ledger.committed_raw,
+        position_raw,
+    )?;
+    ledger.holder = holder_key;
+    ledger.mint = mint;
+    ledger.bump = ledger_bump;
+    if window_state.snapshot_total_raw > 0 {
+        ledger.committed_raw = ledger
+            .committed_raw
+            .checked_add(position_raw)
+            .ok_or(TreasuryError::Overflow)?;
+    }
+    let record = holder_record;
+    record.holder = holder_key;
+    record.window_id = window_id;
+    record.cohort = enroll_cohort(window_id);
+    record.position_raw = position_raw;
+    record.accrued_dividend_raw = 0;
+    record.loan_principal_raw = 0;
+    record.loan_maturity = 0;
+    // Slice 22, cross-record D-3 carry: the forfeiture record
+    // is created on first use (init_if_needed) with zero
+    // pending slots, so a first-time holder starts clear; a
+    // defaulter's pending slot is consumed here, exactly one.
+    let forfeiture = forfeiture_record;
+    forfeiture.holder = holder_key;
+    forfeiture.bump = forfeiture_bump;
+    let (skip_next_dividend, remaining) =
+        forfeiture_carry(forfeiture.pending_slots);
+    forfeiture.pending_slots = remaining;
+    record.skip_next_dividend = skip_next_dividend;
+    record.standing_authorization = true;
+    record.authorization_window = window_id;
+    record.tranche_paid = false;
+    record.bump = holder_record_bump;
+    // Slice 23: no loan-funded increment exists at enroll.
+    record.loan_funded_raw = 0;
+    // Slice 31: the position binds to the deposit mint.
+    record.mint = mint;
+    let window = window_state;
+    window.enrolled_total_raw = window
+        .enrolled_total_raw
+        .checked_add(position_raw)
+        .ok_or(TreasuryError::Overflow)?;
+    window.roster_hash = roster_hash_update(window.roster_hash, holder_key, position_raw);
+    emit!(HolderEnrolled {
+        window_id,
+        holder: holder_key,
+        position_raw,
+        cohort: record.cohort,
+        roster_hash: window.roster_hash,
+        transition_id: window.source_transition_id,
+        commit_index: window.source_commit_index,
+        mint,
+    });
+    Ok(())
 }
 
 /// The `pay_tranche` gate, as a pure check (design §4.2, §5): the
@@ -7219,6 +7368,12 @@ pub struct HolderEnrolled {
     pub roster_hash: [u8; 32],
     pub transition_id: u64,
     pub commit_index: u64,
+    /// The deposit mint this position is backed by (slice 31):
+    /// the token mint, or `Pubkey::default()` as the documented
+    /// native-SOL marker for an `enroll_sol` enrollment.
+    /// Appended at the end so every pre-existing field keeps
+    /// its offset for decoders reading the prefix.
+    pub mint: Pubkey,
 }
 
 /// Event for [`treasury_program::pay_tranche`] (design §4.2, §6):
@@ -8557,11 +8712,22 @@ pub struct HolderRecord {
     /// term. Appended after `bump` so every pre-existing field
     /// keeps its byte offset.
     pub loan_funded_raw: u64,
+    /// The deposit mint this position is backed by (slice 31,
+    /// mint-binding decision): the token mint for a token-leg
+    /// enrollment, `Pubkey::default()` as the documented
+    /// native-SOL marker for a `enroll_sol` enrollment. The
+    /// position draws its backing — and, when the token payout
+    /// leg lands, its disbursement — from this mint only, never
+    /// in aggregate across mints. Appended after
+    /// `loan_funded_raw` so every pre-existing field keeps its
+    /// byte offset; the one-record-per-holder-per-window rule
+    /// stands (the PDA seeds carry no mint — see `enroll`).
+    pub mint: Pubkey,
 }
 
 impl HolderRecord {
-    /// 8 (discriminator) + 32 + 6 × 8 + 1 + 1 + 8 + 1 + 1 + 8.
-    pub const SPACE: usize = 8 + 32 + 8 + 8 + 8 + 8 + 8 + 8 + 1 + 1 + 8 + 1 + 1 + 8;
+    /// 8 (discriminator) + 32 + 6 × 8 + 1 + 1 + 8 + 1 + 1 + 8 + 32.
+    pub const SPACE: usize = 8 + 32 + 8 + 8 + 8 + 8 + 8 + 8 + 1 + 1 + 8 + 1 + 1 + 8 + 32;
 }
 
 /// Holder forfeiture record (slice 22, cross-record D-3 carry) —
@@ -8619,10 +8785,11 @@ impl ForfeitureRecord {
 /// `deposited_raw` is cumulative and only grows (every deposit
 /// adds, nothing subtracts — no withdrawal of deposits exists);
 /// `committed_raw` is the part currently locked in enrolled
-/// positions, written by the enroll gate (slice 31) and zero
-/// until it lands — this slice records deposits only and
-/// enforces nothing, stated plainly so the ledger is not
-/// mistaken for the gate.
+/// positions, written by the enroll gate (slice 31) in funded
+/// windows and untouched in unfunded ones. Release of
+/// `committed_raw` on exit / default settlement is the next
+/// slice, not this one — until it lands, an exited position's
+/// backing stays committed.
 #[account]
 pub struct HolderDeposit {
     /// The depositing holder's key (PDA seed component).
@@ -9423,7 +9590,7 @@ pub struct OpenWindow<'info> {
 
 /// Accounts for [`treasury_program::enroll`].
 #[derive(Accounts)]
-#[instruction(window_id: u64, position_raw: u64)]
+#[instruction(window_id: u64, position_raw: u64, mint: Pubkey)]
 pub struct Enroll<'info> {
     /// Treasury state PDA — read for the window counter, the
     /// next-window-only sequence source: the enrolled window must
@@ -9468,9 +9635,85 @@ pub struct Enroll<'info> {
         bump
     )]
     pub forfeiture_record: Account<'info, ForfeitureRecord>,
+    /// The holder's per-mint deposit ledger (slice 31), PDA
+    /// seeds `["holder-deposit", treasury, holder, mint]`.
+    /// Created on first use (`init_if_needed`, payer = holder):
+    /// a holder with no deposits in this mint gets a truthful
+    /// zero ledger, and the funded-window gate then refuses —
+    /// a missing ledger is never silently treated as backing.
+    /// In a funded window the gate debits `committed_raw` here;
+    /// in an unfunded window the gate stands down and the
+    /// ledger is only identity-initialized.
+    #[account(
+        init_if_needed,
+        payer = holder,
+        space = HolderDeposit::SPACE,
+        seeds = [b"holder-deposit", treasury_state.key().as_ref(), holder.key().as_ref(), mint.as_ref()],
+        bump
+    )]
+    pub holder_deposit: Account<'info, HolderDeposit>,
     /// The enrolling holder (signer; pays rent for the holder
     /// record — disclosed up front, design §2.3). The authority
     /// is the holder's own signature, not a transition.
+    #[account(mut)]
+    pub holder: Signer<'info>,
+    /// Rent sysvar, required by the `init` constraint.
+    pub system_program: Program<'info, System>,
+}
+
+/// Accounts for [`treasury_program::enroll_sol`] (slice 31).
+/// The SOL leg of `enroll`: identical to [`Enroll`] except the
+/// deposit ledger is the native-SOL leg (`["holder-deposit-sol",
+/// treasury, holder]`, no mint) and there is no `mint`
+/// argument — the record carries `Pubkey::default()` as the
+/// documented native-SOL marker.
+#[derive(Accounts)]
+#[instruction(window_id: u64, position_raw: u64)]
+pub struct EnrollSol<'info> {
+    /// Treasury state PDA — read for the window counter, as in
+    /// [`Enroll`].
+    #[account(seeds = [b"treasury"], bump = treasury_state.bump)]
+    pub treasury_state: Account<'info, TreasuryState>,
+    /// Window state PDA — mutated: the roster hash and the
+    /// enrolled total advance here, as in [`Enroll`].
+    #[account(mut, seeds = [b"window", window_id.to_le_bytes().as_ref()], bump = window_state.bump)]
+    pub window_state: Account<'info, WindowState>,
+    /// Holder record PDA, seeds `["holder", window_id, holder]`.
+    /// The seeds carry no mint, so a token-leg record and a
+    /// SOL-leg record for the same holder in the same window
+    /// collide at account creation — one record per holder per
+    /// window across both legs.
+    #[account(
+        init,
+        payer = holder,
+        space = HolderRecord::SPACE,
+        seeds = [b"holder", window_id.to_le_bytes().as_ref(), holder.key().as_ref()],
+        bump
+    )]
+    pub holder_record: Account<'info, HolderRecord>,
+    /// Holder forfeiture record PDA, as in [`Enroll`].
+    #[account(
+        init_if_needed,
+        payer = holder,
+        space = ForfeitureRecord::SPACE,
+        seeds = [b"forfeiture", holder.key().as_ref()],
+        bump
+    )]
+    pub forfeiture_record: Account<'info, ForfeitureRecord>,
+    /// The holder's native-SOL deposit ledger (slice 31), PDA
+    /// seeds `["holder-deposit-sol", treasury, holder]`.
+    /// Created on first use (`init_if_needed`, payer = holder);
+    /// the funded-window gate debits `committed_raw` here.
+    #[account(
+        init_if_needed,
+        payer = holder,
+        space = HolderDeposit::SPACE,
+        seeds = [b"holder-deposit-sol", treasury_state.key().as_ref(), holder.key().as_ref()],
+        bump
+    )]
+    pub holder_deposit_sol: Account<'info, HolderDeposit>,
+    /// The enrolling holder (signer; pays rent for the holder
+    /// record — disclosed up front, design §2.3).
     #[account(mut)]
     pub holder: Signer<'info>,
     /// Rent sysvar, required by the `init` constraint.
@@ -12596,6 +12839,30 @@ mod tests {
     }
 
     #[test]
+    fn enroll_backing_funded_window_scope_matrix() {
+        // Slice 31: the per-holder gate mirrors the slice-19
+        // aggregate cap's scope — it applies only in a funded
+        // window (snapshot total > 0). In a funded window the
+        // predicate's verdicts stand: exact headroom passes,
+        // one over refuses, zero backing refuses.
+        check_enroll_backing(60_000_000, 100_000, 0, 100_000)
+            .expect("funded window, exact headroom passes");
+        assert!(check_enroll_backing(60_000_000, 100_000, 0, 100_001).is_err());
+        assert!(check_enroll_backing(60_000_000, 0, 0, 1).is_err());
+        // In an unfunded window (snapshot zero) the gate stands
+        // down entirely: any position passes, including one no
+        // deposit backs — the pre-funding enrollment is opted
+        // out of contract, permitted and tracked, never refused
+        // for exceeding a zero bound (the slice-19 precedent).
+        check_enroll_backing(0, 0, 0, 10_000_000)
+            .expect("unfunded window, unbacked enrollment passes");
+        check_enroll_backing(0, 0, 0, u64::MAX)
+            .expect("unfunded window, the gate judges nothing");
+        check_enroll_backing(0, 100_000, 40_000, 60_000)
+            .expect("unfunded window, existing backing is not consumed");
+    }
+
+    #[test]
     fn holder_deposit_pda_legs_are_distinct() {
         // The two ledger legs can never collide: the token leg
         // seeds `["holder-deposit", treasury, holder, mint]`
@@ -12851,7 +13118,7 @@ mod tests {
 
     #[test]
     fn holder_record_space_matches_fields() {
-        assert_eq!(HolderRecord::SPACE, 108);
+        assert_eq!(HolderRecord::SPACE, 140);
     }
 
     #[test]
