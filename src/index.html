@@ -5812,8 +5812,9 @@ async function btRun(){
   if(btIsGtPair(c.pair))btSetGtFeedDown(false); /* N7.14: a GT-pair run succeeding proves the feed is up — markings clear */
   btSaveReenable(); /* N7.10: a completed run re-enables Save */
   btPaintDeployBtn(); /* N7.11: a completed run repaints Deploy state */
+  btLastSummary=btSummaryText(j);btPaintSummaryBtn(); /* N3.122-REWORK (2026-11-07, A264): the summary is set from the validated payload BEFORE rendering — btRenderResults awaits the /api/ohlcv BH-curve fetch, and the 16:39 tour measured that window at ~5s (status 'Running backtest…' while the finished trio was already in the page), so a button read in the window saw a disabled Copy summary beside a complete result. The summary derives only from this run's payload, never from the curve fetch, so setting it here is honest; the post-render set below re-asserts it. */
   await btRenderResults(j);
-  btLastSummary=btSummaryText(j);btPaintSummaryBtn(); /* N3.122: summary from this run only */
+  btLastSummary=btSummaryText(j);btPaintSummaryBtn(); /* N3.122: summary from this run only — re-asserted after render */
   $('btStatus').textContent='Done · '+(j.cached?'cached result':'fresh result');
  }catch(e){console.error('backtest failed',e);const raw=e.message||String(e);const gt=btGtFailureCopy(raw,c.pair);if(gt){if(btIsGtPair(c.pair))btSetGtFeedDown(true);$('btResults').innerHTML='<div class="empty">'+esc(gt.headline)+'</div><div class="sub">Raw error: '+esc(gt.detail)+'</div>';}else{$('btResults').innerHTML='<div class="empty">Backtest failed: '+esc(raw)+'</div>';}$('btStatus').textContent='Failed';btLastSummary=null;btPaintSummaryBtn(); /* N3.122: a failed run has no summary */}
  finally{clearTimeout(timeout);btRunning=false;}
@@ -5877,11 +5878,14 @@ async function btRenderResults(j){
  h+='<div class="sub" style="margin-top:8px">'+esc(j.disclaimer)+'</div>';
  $('btResults').innerHTML=h;
  btWireRunIdCopy(j.run_id,j.run_at); /* N7.5 */
+ /* N3.122-REWORK (2026-11-07, A264): the BH-curve fetch is bounded (10s) — a hung upstream must not stall the render path (and the run's Done status) indefinitely; a failure still draws the strategy-only curve, as before. */
+ const oc=new AbortController(),ot=setTimeout(()=>oc.abort(),10000);
  try{
-  const or=await fetch('/api/ohlcv?pair='+encodeURIComponent($('btPair').value));
+  const or=await fetch('/api/ohlcv?pair='+encodeURIComponent($('btPair').value),{signal:oc.signal});
   const oj=await or.json();
   btDrawCurves(j,oj);
  }catch(e){console.error('BH curve fetch failed',e);btDrawCurves(j,null);}
+ clearTimeout(ot);
 }
 /*__N75_RUNID_START__*/
 /* N7.5 (A39): immutable run identifier — the server stamps every completed
@@ -5922,18 +5926,21 @@ let btLastSummary=null;
 function btSummaryText(j){
  if(!j||!j.result||!j.scheme||!j.data||!j.fee)return null;
  const r=j.result,f=j.fee;
- if(!Number.isFinite(r.trades)||!Number.isFinite(r.total_return_pct))return null;
- if(!Number.isFinite(f.fee_bps_per_side)||!Number.isFinite(f.deploy_pct))return null;
- if(!Number.isFinite(j.data.from)||!Number.isFinite(j.data.to))return null;
+ /* N3.122-REWORK (2026-11-07, A264): coerce like the renderer (fmt uses Number(n||0)), so a string-typed figure cannot silently void the summary while rendering fine; null/undefined/empty/boolean/non-numeric still yield no summary — nothing is invented. */
+ const num=v=>{if(v==null||typeof v==='boolean')return null;if(typeof v==='string'&&v.trim()==='')return null;const n=Number(v);return Number.isFinite(n)?n:null;};
+ const trades=num(r.trades),ret=num(r.total_return_pct),feeBps=num(f.fee_bps_per_side),dep=num(f.deploy_pct),from=num(j.data.from),to=num(j.data.to);
+ if(trades==null||ret==null)return null;
+ if(feeBps==null||dep==null)return null;
+ if(from==null||to==null)return null;
  const name=String(j.scheme.name||'').trim(),pair=String(j.pair||'').trim();
  if(!name||!pair)return null;
  return [
   'Backtest summary — '+name,
   'Pair: '+pair,
-  'Window: '+btDate(j.data.from)+' → '+btDate(j.data.to),
-  'Trades: '+r.trades,
-  'Total return: '+btSgn(r.total_return_pct)+'%',
-  'Fee: '+f.fee_bps_per_side+' bps/side · Deploy: '+f.deploy_pct+'%'
+  'Window: '+btDate(from)+' → '+btDate(to),
+  'Trades: '+trades,
+  'Total return: '+btSgn(ret)+'%',
+  'Fee: '+feeBps+' bps/side · Deploy: '+dep+'%'
  ].join('\n');
 }
 function btPaintSummaryBtn(){
