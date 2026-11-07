@@ -3808,6 +3808,14 @@ pub mod treasury_program {
             now,
             ctx.accounts.holder_record.loan_maturity,
         )?;
+        // Slice 32: the ledger must be this record's own
+        // before any state moves.
+        verify_holder_deposit(
+            &ctx.accounts.holder_deposit.key(),
+            &holder,
+            &ctx.accounts.holder_record.mint,
+            ctx.program_id,
+        )?;
         let principal = ctx.accounts.holder_record.loan_principal_raw;
         let position_before = ctx.accounts.holder_record.position_raw;
         let record = &mut ctx.accounts.holder_record;
@@ -3827,6 +3835,15 @@ pub mod treasury_program {
         // capacity check.
         record.loan_funded_raw = 0;
         record.skip_next_dividend = true;
+        // Slice 32: the settled principal releases the same
+        // amount of deposit backing (capped at what this
+        // record committed — a reinvest-grown position never
+        // committed its funded increment).
+        apply_commitment_release(
+            record,
+            &mut ctx.accounts.holder_deposit,
+            principal,
+        )?;
         let book = &mut ctx.accounts.lending_book;
         book.outstanding_raw = book
             .outstanding_raw
@@ -3950,6 +3967,14 @@ pub mod treasury_program {
             ctx.accounts.window_state.snapshot_total_raw,
             ctx.accounts.window_state.exit_stock_raw,
         )?;
+        // Slice 32: the ledger must be this record's own
+        // before any lamports move.
+        verify_holder_deposit(
+            &ctx.accounts.holder_deposit.key(),
+            &ctx.accounts.holder.key(),
+            &ctx.accounts.holder_record.mint,
+            ctx.program_id,
+        )?;
         // SOL payout (disbursement slice): this exit now
         // PAYS, in lamports, exactly the `paid_raw` the gate
         // computed — the gross amount minus the 13%-on-excess
@@ -4015,6 +4040,16 @@ pub mod treasury_program {
             .checked_sub(excess)
             .ok_or(TreasuryError::Overflow)?;
         let position_after = record.position_raw;
+        // Slice 32: the exit's excess over the accrued
+        // dividend releases the same amount of deposit
+        // backing (capped at what this record committed —
+        // the accrued-dividend portion was never position,
+        // and reinvest growth was never committed).
+        apply_commitment_release(
+            record,
+            &mut ctx.accounts.holder_deposit,
+            excess,
+        )?;
         let window = &mut ctx.accounts.window_state;
         window.exit_stock_raw = window
             .exit_stock_raw
@@ -4483,6 +4518,14 @@ pub mod treasury_program {
             now,
             schedule.last_block_time,
         )?;
+        // Slice 32: the ledger must be this record's own
+        // before any lamports move.
+        verify_holder_deposit(
+            &ctx.accounts.holder_deposit.key(),
+            &holder,
+            &ctx.accounts.holder_record.mint,
+            ctx.program_id,
+        )?;
         // SOL payout (disbursement slice): coverage first,
         // the transfer second, the ledger debits last — the
         // `exit` order. A coverage refusal here leaves the
@@ -4526,6 +4569,14 @@ pub mod treasury_program {
             .position_raw
             .checked_sub(amount_raw)
             .ok_or(TreasuryError::Overflow)?;
+        // Slice 32: the tranche amount releases the same
+        // amount of deposit backing (capped at what this
+        // record committed).
+        apply_commitment_release(
+            record,
+            &mut ctx.accounts.holder_deposit,
+            amount_raw,
+        )?;
         let window = &mut ctx.accounts.window_state;
         window.exit_stock_raw = window
             .exit_stock_raw
@@ -6118,6 +6169,100 @@ pub fn check_enroll_backing(
     can_enroll_against_backing(deposited_raw, committed_raw, position_raw)
 }
 
+/// The commitment release, as a pure function (slice 32):
+/// a position reduction of `reduction` releases at most the
+/// record's own committed backing — never more. Returns
+/// `(released, remaining)`. The cap is the whole point: a
+/// record enrolled in an unfunded window committed 0, so its
+/// exits release 0 (a saturating ledger subtraction would
+/// have eaten another window's commitment instead); a
+/// position grown by `reinvest` / `borrow_reinvest` was
+/// never deposit-backed, so an exit of the grown position
+/// releases only the deposit-backed part and the funded
+/// increment stays unreleased, exactly as it was never
+/// committed. Decided under the 2026-10-27 delegation rule.
+pub fn release_commitment(committed_raw: u64, reduction: u64) -> (u64, u64) {
+    let released = committed_raw.min(reduction);
+    (released, committed_raw - released)
+}
+
+/// The expected HolderDeposit PDA for a record's mint
+/// (slice 32): the seeds differ by leg — token leg
+/// `["holder-deposit", treasury, holder, mint]`, SOL leg
+/// `["holder-deposit-sol", treasury, holder]` — so no
+/// single static Anchor `seeds` constraint covers both and
+/// the handlers verify the PDA here, against the record's
+/// own mint. The treasury PDA is the canonical single-seed
+/// `["treasury"]` derivation, the same seeds every account
+/// struct in this program uses for `treasury_state`.
+pub fn expected_holder_deposit_pda(
+    holder: &Pubkey,
+    mint: &Pubkey,
+    program_id: &Pubkey,
+) -> Pubkey {
+    let (treasury, _) = Pubkey::find_program_address(&[b"treasury"], program_id);
+    if *mint == Pubkey::default() {
+        let (pda, _) = Pubkey::find_program_address(
+            &[b"holder-deposit-sol", treasury.as_ref(), holder.as_ref()],
+            program_id,
+        );
+        pda
+    } else {
+        let (pda, _) = Pubkey::find_program_address(
+            &[
+                b"holder-deposit",
+                treasury.as_ref(),
+                holder.as_ref(),
+                mint.as_ref(),
+            ],
+            program_id,
+        );
+        pda
+    }
+}
+
+/// Verify the passed ledger is the record's own deposit
+/// ledger (slice 32): the PDA must re-derive from the
+/// record's holder and mint. A wrong ledger — another
+/// holder's, another mint's, or the wrong leg — refuses
+/// `LedgerMismatch` before any state moves.
+pub fn verify_holder_deposit(
+    holder_deposit_key: &Pubkey,
+    holder: &Pubkey,
+    mint: &Pubkey,
+    program_id: &Pubkey,
+) -> Result<()> {
+    require_keys_eq!(
+        expected_holder_deposit_pda(holder, mint, program_id),
+        *holder_deposit_key,
+        TreasuryError::LedgerMismatch
+    );
+    Ok(())
+}
+
+/// Apply a commitment release to a record and its ledger
+/// (slice 32): the record's committed figure falls by the
+/// released amount and the ledger's by exactly the same
+/// amount, so the invariant `ledger.committed_raw` ==
+/// Σ live `record.committed_raw` is preserved by
+/// construction. The ledger subtraction is checked, never
+/// saturating — a violation would mean that invariant
+/// broke, which is a bug to surface as `Overflow`, not
+/// absorb silently.
+pub fn apply_commitment_release(
+    record: &mut Account<HolderRecord>,
+    ledger: &mut Account<HolderDeposit>,
+    reduction: u64,
+) -> Result<()> {
+    let (released, remaining) = release_commitment(record.committed_raw, reduction);
+    record.committed_raw = remaining;
+    ledger.committed_raw = ledger
+        .committed_raw
+        .checked_sub(released)
+        .ok_or(TreasuryError::Overflow)?;
+    Ok(())
+}
+
 /// The SOL payout coverage gate, as a pure check
 /// (disbursement slice — the payout leg of `exit` and
 /// `execute_whale_tranche`): a payout of `paid_raw`
@@ -6394,6 +6539,17 @@ fn enroll_inner(
     record.loan_funded_raw = 0;
     // Slice 31: the position binds to the deposit mint.
     record.mint = mint;
+    // Slice 32: the record carries the deposit-backed part
+    // of its position — the full position when the enroll
+    // gate debited the ledger (funded window), zero when
+    // the gate stood down (unfunded window, no backing was
+    // consumed). Releases on exit / default / tranche draw
+    // this figure down, never the position itself.
+    record.committed_raw = if window_state.snapshot_total_raw > 0 {
+        position_raw
+    } else {
+        0
+    };
     let window = window_state;
     window.enrolled_total_raw = window
         .enrolled_total_raw
@@ -8723,11 +8879,25 @@ pub struct HolderRecord {
     /// byte offset; the one-record-per-holder-per-window rule
     /// stands (the PDA seeds carry no mint — see `enroll`).
     pub mint: Pubkey,
+    /// The deposit-backed part of this record's position
+    /// (slice 32): the amount this record debited from its
+    /// HolderDeposit ledger at enroll — the full position in
+    /// a funded window, zero in an unfunded one. Every
+    /// position reduction (exit excess, default principal,
+    /// whale tranche) releases at most this figure from the
+    /// ledger ([`release_commitment`]), so the ledger's
+    /// committed total is always exactly the sum over live
+    /// records. Position growth from `reinvest` /
+    /// `borrow_reinvest` never touches this field: that
+    /// growth was never deposit-backed. Appended after
+    /// `mint` so every pre-existing field keeps its byte
+    /// offset.
+    pub committed_raw: u64,
 }
 
 impl HolderRecord {
-    /// 8 (discriminator) + 32 + 6 × 8 + 1 + 1 + 8 + 1 + 1 + 8 + 32.
-    pub const SPACE: usize = 8 + 32 + 8 + 8 + 8 + 8 + 8 + 8 + 1 + 1 + 8 + 1 + 1 + 8 + 32;
+    /// 8 (discriminator) + 32 + 6 × 8 + 1 + 1 + 8 + 1 + 1 + 8 + 32 + 8.
+    pub const SPACE: usize = 8 + 32 + 8 + 8 + 8 + 8 + 8 + 8 + 1 + 1 + 8 + 1 + 1 + 8 + 32 + 8;
 }
 
 /// Holder forfeiture record (slice 22, cross-record D-3 carry) —
@@ -9853,6 +10023,18 @@ pub struct SettleDefault<'info> {
     /// principal, loan cleared, skip-next-dividend flag set.
     #[account(mut, seeds = [b"holder", window_id.to_le_bytes().as_ref(), holder.as_ref()], bump = holder_record.bump)]
     pub holder_record: Account<'info, HolderRecord>,
+    /// CHECK (slice 32): the holder's deposit ledger for this
+    /// record's mint — mutated: the settled principal is
+    /// released from `committed_raw` here. Typed, but with no
+    /// static seeds constraint: the seeds differ by leg
+    /// (token `["holder-deposit", treasury, holder, mint]`
+    /// vs SOL `["holder-deposit-sol", treasury, holder]`),
+    /// so the handler verifies the PDA against the record's
+    /// mint ([`verify_holder_deposit`]) before any state
+    /// moves. The typed account still enforces program
+    /// ownership and deserialization.
+    #[account(mut)]
+    pub holder_deposit: Account<'info, HolderDeposit>,
     /// The lending book PDA — mutated: outstanding reduced by the
     /// settled principal and the active-loan count decremented,
     /// here and nowhere else.
@@ -9910,6 +10092,19 @@ pub struct Exit<'info> {
     /// the dividend, never below an outstanding loan.
     #[account(mut, seeds = [b"holder", window_id.to_le_bytes().as_ref(), holder.key().as_ref()], bump = holder_record.bump)]
     pub holder_record: Account<'info, HolderRecord>,
+    /// CHECK (slice 32): the holder's deposit ledger for this
+    /// record's mint — mutated: the exit's excess over the
+    /// accrued dividend is released from `committed_raw`
+    /// here. Typed, but with no static seeds constraint:
+    /// the seeds differ by leg (token
+    /// `["holder-deposit", treasury, holder, mint]` vs SOL
+    /// `["holder-deposit-sol", treasury, holder]`), so the
+    /// handler verifies the PDA against the record's mint
+    /// ([`verify_holder_deposit`]) before any state moves.
+    /// The typed account still enforces program ownership
+    /// and deserialization.
+    #[account(mut)]
+    pub holder_deposit: Account<'info, HolderDeposit>,
     /// Treasury state PDA — mutated (disbursement slice):
     /// the payout debits `total_raw` and `cash_raw` by
     /// exactly the paid amount, the mirror of the deposit
@@ -10125,6 +10320,18 @@ pub struct ExecuteWhaleTranche<'info> {
     /// below an outstanding loan.
     #[account(mut, seeds = [b"holder", window_id.to_le_bytes().as_ref(), holder.as_ref()], bump = holder_record.bump)]
     pub holder_record: Account<'info, HolderRecord>,
+    /// CHECK (slice 32): the holder's deposit ledger for this
+    /// record's mint — mutated: the tranche amount is
+    /// released from `committed_raw` here. Typed, but with
+    /// no static seeds constraint: the seeds differ by leg
+    /// (token `["holder-deposit", treasury, holder, mint]`
+    /// vs SOL `["holder-deposit-sol", treasury, holder]`),
+    /// so the handler verifies the PDA against the record's
+    /// mint ([`verify_holder_deposit`]) before any state
+    /// moves. The typed account still enforces program
+    /// ownership and deserialization.
+    #[account(mut)]
+    pub holder_deposit: Account<'info, HolderDeposit>,
     /// The schedule PDA, seeds-bound to the CREATION
     /// window and the holder. Mutated: only
     /// `tranches_executed` and `last_block_time` move here
@@ -10945,6 +11152,12 @@ pub enum TreasuryError {
     /// another holder's funding.
     #[msg("Enrollment exceeds deposit backing: the position must fit inside this holder's own deposits in that mint.")]
     EnrollExceedsDepositBacking,
+    /// The passed deposit ledger is not the record's own:
+    /// its PDA must re-derive from the record's holder and
+    /// mint (slice 32 — the seeds differ by leg, so the
+    /// check is in-handler, not a static seeds constraint).
+    #[msg("Deposit ledger mismatch: the passed ledger is not this record's own deposit ledger for its mint.")]
+    LedgerMismatch,
 }
 
 #[cfg(test)]
@@ -12863,6 +13076,79 @@ mod tests {
     }
 
     #[test]
+    fn release_commitment_matrix() {
+        // Slice 32: a reduction releases at most the
+        // record's own committed backing, never more.
+        // Partial exit: the excess releases, the rest stays.
+        assert_eq!(release_commitment(5_000_000, 1_000_000), (1_000_000, 4_000_000));
+        // Full exit / full default: everything releases.
+        assert_eq!(release_commitment(5_000_000, 5_000_000), (5_000_000, 0));
+        // Unfunded-window record: committed 0, exits release 0 —
+        // the release never reaches into another window's backing.
+        assert_eq!(release_commitment(0, 5_000_000), (0, 0));
+        // Reinvest-grown position: the reduction exceeds what
+        // was committed (the funded increment was never backed),
+        // so the release caps at the committed figure.
+        assert_eq!(release_commitment(10_000_000, 15_000_000), (10_000_000, 0));
+        // Zero on zero: no-op.
+        assert_eq!(release_commitment(0, 0), (0, 0));
+    }
+
+    #[test]
+    fn expected_holder_deposit_pda_matches_legs() {
+        // Slice 32: the in-handler PDA helper re-derives
+        // exactly the leg PDAs the deposit instructions
+        // create — token leg for a real mint, SOL leg for
+        // the all-zeros native marker — and the two legs
+        // never coincide.
+        let (treasury, _) =
+            Pubkey::find_program_address(&[b"treasury"], &crate::ID);
+        let holder = Pubkey::new_from_array([2u8; 32]);
+        let mint = Pubkey::new_from_array([3u8; 32]);
+        let (token, _) = Pubkey::find_program_address(
+            &[
+                b"holder-deposit",
+                treasury.as_ref(),
+                holder.as_ref(),
+                mint.as_ref(),
+            ],
+            &crate::ID,
+        );
+        let (sol, _) = Pubkey::find_program_address(
+            &[b"holder-deposit-sol", treasury.as_ref(), holder.as_ref()],
+            &crate::ID,
+        );
+        assert_eq!(
+            expected_holder_deposit_pda(&holder, &mint, &crate::ID),
+            token,
+            "token-leg PDA must match the deposit leg"
+        );
+        assert_eq!(
+            expected_holder_deposit_pda(&holder, &Pubkey::default(), &crate::ID),
+            sol,
+            "SOL-leg PDA must match the deposit_sol leg"
+        );
+        assert_ne!(token, sol, "the two legs must never coincide");
+        // A wrong ledger refuses: another holder's PDA is not
+        // this holder's, and a wrong-mint PDA is not this
+        // mint's.
+        let other_holder = Pubkey::new_from_array([9u8; 32]);
+        assert!(verify_holder_deposit(
+            &expected_holder_deposit_pda(&other_holder, &mint, &crate::ID),
+            &holder,
+            &mint,
+            &crate::ID,
+        )
+        .is_err());
+        assert!(verify_holder_deposit(
+            &sol, &holder, &mint, &crate::ID,
+        )
+        .is_err());
+        verify_holder_deposit(&token, &holder, &mint, &crate::ID)
+            .expect("the record's own ledger verifies");
+    }
+
+    #[test]
     fn holder_deposit_pda_legs_are_distinct() {
         // The two ledger legs can never collide: the token leg
         // seeds `["holder-deposit", treasury, holder, mint]`
@@ -13118,7 +13404,7 @@ mod tests {
 
     #[test]
     fn holder_record_space_matches_fields() {
-        assert_eq!(HolderRecord::SPACE, 140);
+        assert_eq!(HolderRecord::SPACE, 148);
     }
 
     #[test]
