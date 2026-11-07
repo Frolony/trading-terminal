@@ -89,7 +89,10 @@ pub mod blob;
 pub mod boundary;
 
 pub use dictionary::{default_dictionary, Dictionary, HopKind, Venue, VenueHit, VENUE_DICTIONARY};
-pub use ingest::TransferEvent;
+pub use ingest::{
+    program_event_to_transfer, FieldValue, ProgramEvent, TransferEvent,
+    FEE_VAULT_LABEL, TREASURY_VAULT_LABEL,
+};
 pub use reconstruct::{NetEffect, Workflow, reconstruct};
 pub use classify::{Classification, Label, Verdict, CONFIDENCE_THRESHOLD};
 pub use summary::headline;
