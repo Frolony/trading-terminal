@@ -222,6 +222,37 @@ function asNumber(value: unknown): number | null {
   return null;
 }
 
+// N3.176 (2026-11-06, A318): the slippage minimum is the binding floor,
+// recomputed from THIS quote on every parse — so an auto-refresh can never
+// display a minimum equal to the receive amount. Raydium's
+// otherAmountThreshold is normally floor(out * (10000 - slippageBps) /
+// 10000) — verified live 2026-11-06 against /api/raydium/quote (4 calls:
+// 9013584->8968516, 9014151->8969080, 9015325->8970248, 9014291->8969219,
+// all exact, 1- and 2-leg routes alike) — but the 2026-11-05 09:54 tour
+// caught one refreshed quote whose threshold EQUALLED the receive amount
+// (9.000827 == 9.000827, no slippage protection at all), and the state has
+// not reproduced since. So the displayed minimum is the lesser of the
+// upstream threshold (when reported) and the locally recomputed cut from
+// this quote's own output amount and the slippage it was fetched with:
+// it always reflects the current quote minus slippage, updates on the same
+// cycle as the receive figure (both derive from the same fresh payload),
+// and can never over-promise — a tighter upstream threshold wins. The raw
+// quote passed to /build is untouched, so the on-chain minimum the
+// transaction enforces is still Raydium's own. Pure, so the harness can
+// test it without a network call. Returns null when the amount is not a
+// base-unit integer string or the slippage is unusable.
+export function computeMinimumOut(outputAmount: string, slippageBps: number): string | null {
+  try {
+    if (!/^\d+$/.test(outputAmount)) return null;
+    const slip = Number.isFinite(slippageBps) ? Math.trunc(slippageBps) : 0;
+    if (slip <= 0) return outputAmount;
+    if (slip >= 10000) return '0';
+    return ((BigInt(outputAmount) * BigInt(10000 - slip)) / 10000n).toString();
+  } catch {
+    return null;
+  }
+}
+
 export async function getQuote(req: {
   inputMint: string;
   outputMint: string;
@@ -241,8 +272,27 @@ export async function getQuote(req: {
   const rawQuote = asRecord(payload.quote && typeof payload.quote === 'object' ? payload.quote : data);
   const qdata = asRecord(rawQuote.data);
   const outputAmount = asNonEmptyString(qdata.outputAmount) ?? asNonEmptyString(payload.expected_out_raw);
-  const minimumOut = asNonEmptyString(qdata.otherAmountThreshold) ?? asNonEmptyString(payload.min_out_raw);
-  if (!outputAmount || !minimumOut) {
+  // N3.176: the minimum is recomputed from the refreshed quote on every
+  // parse (manual and auto-refresh alike — both flow through here), as the
+  // binding floor of the upstream threshold and the local cut. A quote with
+  // no output amount is still incomplete; a missing upstream threshold is
+  // not, because the cut is computable from the quote itself.
+  const reportedMinimum = asNonEmptyString(qdata.otherAmountThreshold) ?? asNonEmptyString(payload.min_out_raw);
+  if (!outputAmount) {
+    throw new Error('Backend returned an incomplete quote. Request a fresh quote.');
+  }
+  const computedMinimum = computeMinimumOut(outputAmount, req.slippageBps);
+  let minimumOut: string | null = computedMinimum;
+  if (reportedMinimum !== null && computedMinimum !== null) {
+    try {
+      minimumOut = BigInt(reportedMinimum) < BigInt(computedMinimum) ? reportedMinimum : computedMinimum;
+    } catch {
+      minimumOut = computedMinimum;
+    }
+  } else if (reportedMinimum !== null) {
+    minimumOut = reportedMinimum;
+  }
+  if (!minimumOut) {
     throw new Error('Backend returned an incomplete quote. Request a fresh quote.');
   }
   const routePlan = Array.isArray(qdata.routePlan) ? qdata.routePlan : [];
