@@ -4631,17 +4631,25 @@ pub mod treasury_program {
     /// and the retained dividend float) is a governance
     /// sizing rule at stock creation, not re-checked here.
     ///
-    /// Two gaps were stated, not buried; one is closed here.
-    /// First, amount authority (STILL OPEN): execution takes
-    /// no plan accounts, so this slice cannot verify the
-    /// executed amount equals the committed claim — the
-    /// operator-supplied amount is bounded only by the
-    /// checks in [`can_allocate`], the same honesty class as
-    /// `pay_tranche`'s operator-supplied amount. Binding
-    /// execution to the committed claim total is a future
-    /// slice's job, and until it lands this instruction must
-    /// not be read as proving the amount was the committed
-    /// one. Second, rule-version existence (CLOSED, slice 26):
+    /// Two gaps were stated, not buried; both are now
+    /// closed. First, amount authority (CLOSED, slice 33):
+    /// execution reads the transition's plans from the
+    /// remaining accounts — exactly `plan_count`, program-
+    /// owned, each naming this transition
+    /// ([`load_allocation_claims`]) — sums their claims on
+    /// the class stock ([`allocation_claim_total`]), and
+    /// requires the executed amount to equal that sum
+    /// exactly. The plan segment is read before the gate
+    /// runs, so a malformed segment refuses `PlanMismatch`
+    /// even when the gate would also refuse — the same
+    /// plan-first order `commit` uses. An under-execution
+    /// would strand the committed remainder with no second
+    /// execution path (one allocation per transition), and
+    /// an over-execution would spend more than governance
+    /// committed; exact equality is the binding, decided
+    /// under the 2026-10-27 delegation rule and recorded
+    /// in the slice-33 run log. Second, rule-version
+    /// existence (CLOSED, slice 26):
     /// the version must be a member of the standalone
     /// `RuleRegistry` PDA's published list, checked last in
     /// [`can_allocate`]; an unregistered version refuses
@@ -4669,6 +4677,13 @@ pub mod treasury_program {
         evidence_label: u8,
         recipient: Pubkey,
     ) -> Result<()> {
+        let claims = load_allocation_claims(
+            &ctx.remaining_accounts,
+            transition_id,
+            ctx.accounts.transition_record.plan_count as usize,
+        )?;
+        let committed_claim_raw =
+            allocation_claim_total(&claims, class_stock_id)?;
         can_allocate(
             ctx.accounts.transition_record.state,
             ctx.accounts.transition_record.transition_type,
@@ -4684,6 +4699,7 @@ pub mod treasury_program {
             recipient,
             &ctx.accounts.rule_registry.versions
                 [..ctx.accounts.rule_registry.count as usize],
+            committed_claim_raw,
         )?;
         let record = &mut ctx.accounts.allocation_record;
         record.transition_id = transition_id;
@@ -5233,6 +5249,78 @@ pub fn load_plan_claims_and_stocks(
     }
     let stocks = load_stock_balances(&accounts[plan_count..])?;
     Ok((claims, stocks))
+}
+
+/// Sum the committed claim on one class stock across a
+/// transition's plans (design §4.3, slice 33): the aggregate
+/// `commit` debited from the stock, so it is the only amount
+/// `allocate` may execute for that stock. Checked addition —
+/// an overflowing claim set refuses with `Overflow` instead
+/// of wrapping into a smaller total a smaller execution
+/// could then match. Non-matching resources are ignored:
+/// one transition's plans may claim several stocks, and
+/// each stock's allocation is bound to its own total.
+pub fn allocation_claim_total(
+    claims: &[(u16, u64)],
+    class_stock_id: u16,
+) -> Result<u64> {
+    let mut total: u64 = 0;
+    for (resource_id, amount) in claims {
+        if *resource_id == class_stock_id {
+            total = total
+                .checked_add(*amount)
+                .ok_or(TreasuryError::Overflow)?;
+        }
+    }
+    Ok(total)
+}
+
+/// Load an `allocate` plan segment (design §4.3, slice 33):
+/// exactly `plan_count` accounts, program-owned, distinct
+/// pubkeys, each a PlanRecord naming this transition — the
+/// same segment rule `reconcile`/`commit` apply, without
+/// their stock or author segments (this instruction takes
+/// plans only). The length is exact, not a minimum: there
+/// is no trailing segment here, so an extra account is a
+/// mismatch, never an ignored tail. Any deviation is
+/// `PlanMismatch`: a caller who omits a plan would
+/// otherwise get a claim total computed over a partial
+/// claim set — a smaller total wearing a complete total's
+/// clothes.
+pub fn load_allocation_claims(
+    accounts: &[AccountInfo],
+    transition_id: u64,
+    plan_count: usize,
+) -> Result<Vec<(u16, u64)>> {
+    require!(
+        accounts.len() == plan_count,
+        TreasuryError::PlanMismatch
+    );
+    let mut claims: Vec<(u16, u64)> = Vec::new();
+    let mut seen: Vec<Pubkey> = Vec::new();
+    for account in accounts.iter() {
+        require!(
+            account.owner == &crate::ID,
+            TreasuryError::PlanMismatch
+        );
+        require!(
+            !seen.contains(account.key),
+            TreasuryError::PlanMismatch
+        );
+        seen.push(*account.key);
+        let data = account.data.borrow();
+        let mut slice: &[u8] = &data;
+        let plan = PlanRecord::try_deserialize(&mut slice)
+            .map_err(|_| TreasuryError::PlanMismatch)?;
+        require!(
+            plan.transition_id == transition_id,
+            TreasuryError::PlanMismatch
+        );
+        for claim in plan.claims.iter() {
+            claims.push((claim.resource_id, claim.amount));
+        }
+    }
+    Ok(claims)
 }
 
 /// The kernel's commit debit, as a pure function (design §4.1,
@@ -7149,13 +7237,19 @@ pub fn can_execute_whale_tranche(
 /// recipient must be a nonzero key.
 /// Order mirrors the sibling gates: the transition binding
 /// first, the operator gate next, the shape rules last.
-/// Deliberately not checked here, and why: the four
-/// mandatory constraints and the class proposal capability
-/// are commit-time gates already judged by `commit`'s mask;
-/// the class-stock debit already happened at commit through
-/// Plan.claims; and the amount-vs-committed-claim equality
-/// needs plan accounts this instruction does not take (see
-/// the `allocate` handler docs — a future slice binds it).
+/// The amount-vs-committed-claim equality is checked last
+/// (slice 33): the executed amount must equal the
+/// committed claim total for the class stock, summed from
+/// the transition's plans by the handler — exact equality,
+/// not a ceiling. Under-execution would strand the
+/// committed remainder (one allocation per transition, so
+/// no second execution could pick it up) against a stock
+/// already debited at commit; over-execution would spend
+/// more than governance committed. Deliberately not
+/// checked here, and why: the four mandatory constraints
+/// and the class proposal capability are commit-time gates
+/// already judged by `commit`'s mask; the class-stock
+/// debit already happened at commit through Plan.claims.
 pub fn can_allocate(
     state: u8,
     transition_type: [u8; 32],
@@ -7167,6 +7261,7 @@ pub fn can_allocate(
     evidence_label: u8,
     recipient: Pubkey,
     registered_versions: &[u64],
+    committed_claim_raw: u64,
 ) -> Result<()> {
     require!(state == STATE_COMMITTED, TreasuryError::BadState);
     require!(
@@ -7196,6 +7291,10 @@ pub fn can_allocate(
     require!(
         rule_version_registered(registered_versions, rule_version),
         TreasuryError::RuleVersionNotRegistered
+    );
+    require!(
+        amount_raw == committed_claim_raw,
+        TreasuryError::AllocationClaimMismatch
     );
     Ok(())
 }
@@ -11158,6 +11257,16 @@ pub enum TreasuryError {
     /// check is in-handler, not a static seeds constraint).
     #[msg("Deposit ledger mismatch: the passed ledger is not this record's own deposit ledger for its mint.")]
     LedgerMismatch,
+    /// The executed allocation amount is not the committed
+    /// claim total for its class stock (slice 33): `allocate`
+    /// reads the transition's plans and sums their claims on
+    /// the class stock, and the executed amount must equal
+    /// that sum exactly — under-execution would strand the
+    /// committed remainder with no second execution path,
+    /// over-execution would spend more than governance
+    /// committed.
+    #[msg("Allocation claim mismatch: the executed amount must equal the committed claim total for the class stock.")]
+    AllocationClaimMismatch,
 }
 
 #[cfg(test)]
@@ -14546,43 +14655,45 @@ mod tests {
     fn allocate_gate_matrix() {
         // Happy paths: each evidence label passes, and each
         // allocation class stock id (3 and above) passes.
+        // The committed claim total equals the amount in
+        // every happy path (slice 33 binding).
         let recipient = Pubkey::new_from_array([7u8; 32]);
         can_allocate(
             STATE_COMMITTED, TREASURY_ALLOC_TYPE, true, true, 3, 10_000, 3,
-            EVIDENCE_ATTESTED, recipient, &[1, 2, 3],
+            EVIDENCE_ATTESTED, recipient, &[1, 2, 3], 10_000,
         )
         .expect("an attested class-3 allocation passes");
         can_allocate(
             STATE_COMMITTED, TREASURY_ALLOC_TYPE, true, true, 5, 10_000, 1,
-            EVIDENCE_SELF_DECLARED, recipient, &[1, 2, 3],
+            EVIDENCE_SELF_DECLARED, recipient, &[1, 2, 3], 10_000,
         )
         .expect("a self-declared allocation passes where class rules allow");
         can_allocate(
             STATE_COMMITTED, TREASURY_ALLOC_TYPE, true, true, 4, 10_000, 2,
-            EVIDENCE_AUDITED, recipient, &[1, 2, 3],
+            EVIDENCE_AUDITED, recipient, &[1, 2, 3], 10_000,
         )
         .expect("an audited allocation passes");
         // Gate failures: non-committed state, wrong type.
         assert!(can_allocate(
             STATE_PLANNING, TREASURY_ALLOC_TYPE, true, true, 3, 10_000, 3,
-            EVIDENCE_ATTESTED, recipient, &[1, 2, 3]
+            EVIDENCE_ATTESTED, recipient, &[1, 2, 3], 10_000
         )
         .is_err());
         assert!(can_allocate(
             STATE_COMMITTED, TREASURY_WINDOW_TYPE, true, true, 3, 10_000, 3,
-            EVIDENCE_ATTESTED, recipient, &[1, 2, 3]
+            EVIDENCE_ATTESTED, recipient, &[1, 2, 3], 10_000
         )
         .is_err());
         // Authorization failures: inactive operator, operator
         // without the settle capability.
         assert!(can_allocate(
             STATE_COMMITTED, TREASURY_ALLOC_TYPE, false, true, 3, 10_000, 3,
-            EVIDENCE_ATTESTED, recipient, &[1, 2, 3]
+            EVIDENCE_ATTESTED, recipient, &[1, 2, 3], 10_000
         )
         .is_err());
         assert!(can_allocate(
             STATE_COMMITTED, TREASURY_ALLOC_TYPE, true, false, 3, 10_000, 3,
-            EVIDENCE_ATTESTED, recipient, &[1, 2, 3]
+            EVIDENCE_ATTESTED, recipient, &[1, 2, 3], 10_000
         )
         .is_err());
         // Shape failures: every launch stock id (0, 1, 2) is a
@@ -14592,28 +14703,28 @@ mod tests {
         for class_stock_id in [0u16, 1, 2] {
             assert!(can_allocate(
                 STATE_COMMITTED, TREASURY_ALLOC_TYPE, true, true, class_stock_id,
-                10_000, 3, EVIDENCE_ATTESTED, recipient, &[1, 2, 3]
+                10_000, 3, EVIDENCE_ATTESTED, recipient, &[1, 2, 3], 10_000
             )
             .is_err());
         }
         assert!(can_allocate(
             STATE_COMMITTED, TREASURY_ALLOC_TYPE, true, true, 3, 0, 3,
-            EVIDENCE_ATTESTED, recipient, &[1, 2, 3]
+            EVIDENCE_ATTESTED, recipient, &[1, 2, 3], 10_000
         )
         .is_err());
         assert!(can_allocate(
             STATE_COMMITTED, TREASURY_ALLOC_TYPE, true, true, 3, 10_000, 0,
-            EVIDENCE_ATTESTED, recipient, &[1, 2, 3]
+            EVIDENCE_ATTESTED, recipient, &[1, 2, 3], 10_000
         )
         .is_err());
         assert!(can_allocate(
             STATE_COMMITTED, TREASURY_ALLOC_TYPE, true, true, 3, 10_000, 3, 3,
-            recipient, &[1, 2, 3]
+            recipient, &[1, 2, 3], 10_000
         )
         .is_err());
         assert!(can_allocate(
             STATE_COMMITTED, TREASURY_ALLOC_TYPE, true, true, 3, 10_000, 3,
-            EVIDENCE_ATTESTED, Pubkey::default(), &[1, 2, 3]
+            EVIDENCE_ATTESTED, Pubkey::default(), &[1, 2, 3], 10_000
         )
         .is_err());
         // Registry failure (slice 26): a pinned but
@@ -14621,15 +14732,77 @@ mod tests {
         // registry accepts nothing.
         assert!(can_allocate(
             STATE_COMMITTED, TREASURY_ALLOC_TYPE, true, true, 3, 10_000, 9,
-            EVIDENCE_ATTESTED, recipient, &[1, 2, 3]
+            EVIDENCE_ATTESTED, recipient, &[1, 2, 3], 10_000
         )
         .is_err());
         assert!(can_allocate(
             STATE_COMMITTED, TREASURY_ALLOC_TYPE, true, true, 3, 10_000, 3,
-            EVIDENCE_ATTESTED, recipient, &[]
+            EVIDENCE_ATTESTED, recipient, &[], 10_000
         )
         .is_err());
+        // Claim-binding failures (slice 33): the amount must
+        // equal the committed claim total exactly — over and
+        // under both refuse, and the error is the binding
+        // error, not a shape error (the check is last, so
+        // every earlier failure above still reports its own
+        // error when the amount also mismatches).
+        let over = can_allocate(
+            STATE_COMMITTED, TREASURY_ALLOC_TYPE, true, true, 3, 10_001, 3,
+            EVIDENCE_ATTESTED, recipient, &[1, 2, 3], 10_000,
+        );
+        assert!(over.is_err());
+        assert_eq!(
+            over.unwrap_err(),
+            anchor_lang::error::Error::from(
+                TreasuryError::AllocationClaimMismatch
+            )
+            .into()
+        );
+        let under = can_allocate(
+            STATE_COMMITTED, TREASURY_ALLOC_TYPE, true, true, 3, 9_999, 3,
+            EVIDENCE_ATTESTED, recipient, &[1, 2, 3], 10_000,
+        );
+        assert!(under.is_err());
+        assert_eq!(
+            under.unwrap_err(),
+            anchor_lang::error::Error::from(
+                TreasuryError::AllocationClaimMismatch
+            )
+            .into()
+        );
+    }
 
+    #[test]
+    fn allocation_claim_total_sums_one_stock() {
+        // Empty claim set: nothing committed on any stock.
+        assert_eq!(
+            allocation_claim_total(&[], 7).expect("empty sums to zero"),
+            0
+        );
+        // One plan, one claim: the total is the claim.
+        assert_eq!(
+            allocation_claim_total(&[(7, 100)], 7)
+                .expect("single claim sums"),
+            100
+        );
+        // Several plans may claim the same stock: the total
+        // is the sum across plans, and other stocks are
+        // ignored — each stock's allocation is bound to its
+        // own total.
+        assert_eq!(
+            allocation_claim_total(&[(7, 100), (7, 50), (3, 999)], 7)
+                .expect("multi-plan claims sum"),
+            150
+        );
+        assert_eq!(
+            allocation_claim_total(&[(7, 100), (7, 50), (3, 999)], 3)
+                .expect("other stock sums separately"),
+            999
+        );
+        // Overflow refuses fail-closed instead of wrapping
+        // into a smaller total a smaller execution could
+        // then match.
+        assert!(allocation_claim_total(&[(7, u64::MAX), (7, 1)], 7).is_err());
     }
 
     #[test]
