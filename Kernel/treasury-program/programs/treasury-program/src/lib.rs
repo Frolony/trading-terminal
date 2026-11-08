@@ -3923,6 +3923,27 @@ pub mod treasury_program {
     /// capacity machinery; the WindowState stock debited here
     /// is the execution-time ledger for that same bound.
     ///
+    /// The whale-exit contract (slice 34, design §4.2): a
+    /// flagged purse — position at or above FLAG = T/30 on
+    /// this window's snapshot — extracts principal ONLY
+    /// through its tranched schedule. A plain `exit` whose
+    /// amount exceeds the accrued dividend refuses
+    /// `WhaleExitRequiresSchedule` here, so the 12-month
+    /// lock agreed at entry is a contract, not a 13%
+    /// buyout option. A dividend-only exit still pays at
+    /// par: income is never locked, and the dividend's home
+    /// is `pay_tranche`. Known bounded edge, recorded not
+    /// hidden: a mid-schedule whale whose remaining
+    /// position has dropped below FLAG (reachable only on
+    /// the final tranche, when the position is not a
+    /// multiple of the block) can plain-exit that sub-FLAG
+    /// tail at 13%, up to a week early — at most FLAG, at
+    /// most one week, 13% priced, aggregate safety
+    /// untouched (L + exit stock still bind), the schedule
+    /// left incomplete but harmless at zero position.
+    /// Closing it needs the schedule account on this
+    /// instruction (a follow-up slice, not this one).
+    ///
     /// The carried `settle_default` guard, closed here: an
     /// exit must not drop the position below an outstanding
     /// loan, or a legitimate settlement would refuse on
@@ -4429,16 +4450,21 @@ pub mod treasury_program {
     /// `DefaultExceedsPosition` instead of settling.
     ///
     /// Two readings are stated, not buried. First,
-    /// penalty: the design row for this instruction names
-    /// only the L bound, and the schedule's total is a
-    /// position amount (bounded at creation by the locked
-    /// position, not by accrued dividend), so this slice
-    /// prices no penalty — the tranche reduces the
-    /// position by the gross tranche amount, and the
-    /// event carries no penalty field. Whether scheduled
-    /// tranches should pay the 13% door on any part of
-    /// the tranche is a design question for the §4.2 row,
-    /// not a pricing decision this slice invents. Second,
+    /// penalty — DECIDED slice 34 (the §4.2 row's open
+    /// question, closed here under the 2026-10-27
+    /// delegation rule): scheduled tranches price ZERO of
+    /// the 13% door. The tranche schedule IS the whale's
+    /// per-period allowance — the contract agreed at entry
+    /// defines what the whale may extract per period — and
+    /// D-4's penalty applies only to extraction ABOVE the
+    /// per-period allowance, so a tranche executed inside
+    /// its schedule is within-allowance by definition. The
+    /// tranche reduces the position by the gross tranche
+    /// amount and pays it in full, and the event carries
+    /// no penalty field. Proven on-chain already: the live
+    /// test's Whale A tranche 1 paid in full, and the
+    /// golden's slice-32 P1 pays 2,000,000 with the
+    /// position falling by exactly 2,000,000. Second,
     /// window scope: CROSS-WINDOW execution (this slice,
     /// D-10 revision part 2). The schedule PDA and the
     /// holder record stay bound to the creation window —
@@ -6903,6 +6929,26 @@ pub fn can_exit(
         position_raw as u128 - excess as u128 >= loan_principal_raw as u128,
         TreasuryError::ExitBelowLoan
     );
+    // Slice 34 (whale-exit contract): a flagged purse —
+    // position at or above the whale FLAG on this window's
+    // period-start snapshot — extracts principal only
+    // through its tranched schedule. A plain `exit` of any
+    // principal (excess over the accrued dividend) refuses
+    // here, so the D-10 12-month lock is a contract, not a
+    // 13% buyout option. The dividend-only carve-out is
+    // deliberate: income is never locked, and `pay_tranche`
+    // is the dividend's home — an exit at or below the
+    // accrued dividend still pays at par. A zero-FLAG
+    // snapshot (an unfunded window) never fires: the flag
+    // threshold is undefined there, and every position
+    // would otherwise read as flagged.
+    let flag = whale_flag_threshold(snapshot_total_raw as u128);
+    require!(
+        excess == 0
+            || flag == 0
+            || (position_raw as u128) < flag,
+        TreasuryError::WhaleExitRequiresSchedule
+    );
     require!(
         amount_raw <= exit_stock_raw,
         TreasuryError::ExitStockExhausted
@@ -7045,9 +7091,12 @@ pub fn can_collect_fees(
 /// binding, positive total, a nonzero FLAG (a zero-FLAG
 /// snapshot sizes no schedule), the flag threshold itself
 /// (total at or above FLAG — below FLAG the holder is an
-/// open trader and uses `exit`, not a schedule), and the
+/// open trader and uses `exit`, not a schedule), the
 /// position bound (the schedule cannot exceed what the
-/// holder holds). The ceiling division is checked: the
+/// holder holds), and the whole-position rule (slice 34:
+/// the schedule must cover the entire position — a partial
+/// schedule would strand its remainder, which could
+/// neither be re-scheduled nor plain-exited). The ceiling division is checked: the
 /// block is proven nonzero above, so the division cannot
 /// fault, and the count is at least 5 whenever the threshold
 /// passes (a total at FLAG takes 5 fifth-sized blocks; a
@@ -7077,6 +7126,19 @@ pub fn can_schedule_whale_exit(
     require!(
         total_raw <= position_raw,
         TreasuryError::ScheduleExceedsPosition
+    );
+    // Slice 34: the schedule must cover the WHOLE position.
+    // One schedule exists per (window, holder) PDA, so a
+    // partial schedule that completes would strand its
+    // remainder — it could never be re-scheduled (the PDA
+    // already exists) and, under the whale-exit gate in
+    // `can_exit`, never plain-exited while at or above FLAG.
+    // The design's contract is the whole position ("locking
+    // the position to its agreed terms", "weekly blocks of
+    // 20% of the locked position" — five blocks = 100%).
+    require!(
+        total_raw == position_raw,
+        TreasuryError::ScheduleMustCoverPosition
     );
     let tranche_raw = whale_tranche_size(total_raw, snapshot_total_raw);
     let tranches_total =
@@ -11267,6 +11329,34 @@ pub enum TreasuryError {
     /// committed.
     #[msg("Allocation claim mismatch: the executed amount must equal the committed claim total for the class stock.")]
     AllocationClaimMismatch,
+    /// A whale schedule must cover the holder's whole
+    /// position (slice 34): the schedule is one contract
+    /// per (window, holder) PDA, so a partial schedule
+    /// that completes would strand a remainder that can
+    /// neither be re-scheduled (the PDA already exists)
+    /// nor plain-exited (the whale-exit gate below refuses
+    /// it) — a permanent lock. The design's own words are
+    /// "locking the position to its agreed terms" and
+    /// "weekly blocks of 20% of the locked position"
+    /// (five blocks = the whole position).
+    #[msg("Whale schedule must cover the whole position: a partial schedule would strand the remainder.")]
+    ScheduleMustCoverPosition,
+    /// A flagged purse may not extract principal through
+    /// plain `exit` (slice 34): the design row is "a
+    /// flagged purse exits only on a timed/tranched
+    /// schedule", and D-10's 12-month lock is a contract
+    /// agreed at entry, not a 13% buyout option — without
+    /// this gate a whale could drain a position in a
+    /// handful of L-sized orders and the lock would be
+    /// void. The refusal fires only on the principal
+    /// portion (amount above the accrued dividend): a
+    /// dividend-only exit still pays at par, since income
+    /// is never locked. Judged on the window's
+    /// period-start snapshot, the same basis as the
+    /// schedule threshold and the D-10 hard bound; a
+    /// zero-FLAG snapshot (unfunded window) never fires.
+    #[msg("Whale exit requires a schedule: a flagged purse extracts principal only through its tranched schedule.")]
+    WhaleExitRequiresSchedule,
 }
 
 #[cfg(test)]
@@ -13981,11 +14071,77 @@ mod tests {
             10_000
         )
         .is_err());
-        can_exit(
-            STATE_COMMITTED, TREASURY_WINDOW_TYPE, 13, 13, 10_000, 0, 20_000, 0, 60_000,
-            10_000,
+        // The exactly-at-L pass needs dividend cover (slice
+        // 34): an all-excess order at L is a flagged purse's
+        // order by construction — L = 5 x FLAG, so any
+        // position that can supply L of excess is at or
+        // above FLAG and the whale gate below refuses it.
+        // With 9,000 of accrued dividend and a 1,500
+        // position (below FLAG 2,000), a 10,000 order is
+        // exactly at L and passes: excess 1,000, penalty
+        // 130, paid 9,870.
+        assert_eq!(
+            can_exit(
+                STATE_COMMITTED, TREASURY_WINDOW_TYPE, 13, 13, 10_000, 9_000, 1_500, 0,
+                60_000, 10_000,
+            )
+            .expect("an order exactly at L passes"),
+            (130, 9_870)
+        );
+        // Slice 34, whale-exit contract: a flagged purse
+        // (position at or above FLAG on the window's
+        // snapshot) may not extract principal through plain
+        // `exit`. Snapshot 60,000 gives FLAG 2,000.
+        // At FLAG exactly, any excess refuses.
+        assert!(can_exit(
+            STATE_COMMITTED, TREASURY_WINDOW_TYPE, 13, 13, 3_000, 1_000, 2_000, 0, 60_000,
+            10_000
         )
-        .expect("an order exactly at L passes");
+        .is_err());
+        // Well above FLAG, the same: the refusal is the
+        // purse class, not the amount — even a 1-raw excess
+        // refuses.
+        assert!(can_exit(
+            STATE_COMMITTED, TREASURY_WINDOW_TYPE, 13, 13, 1_001, 1_000, 20_000, 0, 60_000,
+            10_000
+        )
+        .is_err());
+        // One unit below FLAG, principal exit is the
+        // open-trader path again: a 1,999 position exits
+        // 1,000 of excess at the flat 13% door.
+        assert_eq!(
+            can_exit(
+                STATE_COMMITTED, TREASURY_WINDOW_TYPE, 13, 13, 2_000, 1_000, 1_999, 0,
+                60_000, 10_000,
+            )
+            .expect("a sub-FLAG purse exits principal at the door"),
+            (130, 1_870)
+        );
+        // The dividend-only carve-out: a flagged purse may
+        // still exit up to its accrued dividend at par —
+        // income is never locked. A 20,000 position exits
+        // its whole 1,000 accrued dividend, penalty zero.
+        assert_eq!(
+            can_exit(
+                STATE_COMMITTED, TREASURY_WINDOW_TYPE, 13, 13, 1_000, 1_000, 20_000, 0,
+                60_000, 10_000,
+            )
+            .expect("a flagged purse exits its dividend at par"),
+            (0, 1_000)
+        );
+        // A zero-FLAG snapshot never fires the whale gate:
+        // the threshold is undefined there, and every
+        // position would otherwise read as flagged.
+        // Snapshot 29 gives FLAG 0 (29/30) but L = 4, so
+        // the whale check is reachable: a 4-raw all-excess
+        // exit passes it (penalty 4 x 13% floors to 0).
+        assert_eq!(
+            can_exit(
+                STATE_COMMITTED, TREASURY_WINDOW_TYPE, 13, 13, 4, 0, 10, 0, 29, 100,
+            )
+            .expect("a zero-FLAG snapshot never flags"),
+            (0, 4)
+        );
         // Aggregate stock bound: stock 4,999 refuses a 5,000
         // order that passes every holder-local rule; stock
         // exactly 5,000 admits it.
@@ -14276,12 +14432,15 @@ mod tests {
         // Revised flag (D-10, 2026-10-24 ~18:49 CST): snapshot
         // 600,000 gives movable L = 100,000 and FLAG = 20,000
         // (1/5 of L, 3.3333% of T). A flagged purse schedules
-        // in weekly blocks of 20% of the position capped at
-        // FLAG: 250,000 over a 300,000 position -> 20,000
-        // blocks, count ceil(250,000 / 20,000) = 13 (last the
-        // 10,000 remainder, computed at execution time).
+        // its WHOLE position (slice 34: total must equal
+        // position — a partial schedule would strand its
+        // remainder) in weekly blocks of 20% of the position
+        // capped at FLAG: 250,000 over a 250,000 position ->
+        // 20,000 blocks, count ceil(250,000 / 20,000) = 13
+        // (last the 10,000 remainder, computed at execution
+        // time).
         let (tranche, count) = can_schedule_whale_exit(
-            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 250_000, 300_000, 600_000,
+            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 250_000, 250_000, 600_000,
         )
         .expect("a flagged purse schedules");
         assert_eq!(tranche, 20_000);
@@ -14289,7 +14448,7 @@ mod tests {
         // A 100,000 purse is capped, not fifth-sized: 20% would
         // be 20,000 already, so 5 blocks of 20,000.
         let (tranche, count) = can_schedule_whale_exit(
-            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 100_000, 300_000, 600_000,
+            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 100_000, 100_000, 600_000,
         )
         .expect("a purse at 5x FLAG takes the capped block");
         assert_eq!(tranche, 20_000);
@@ -14297,7 +14456,7 @@ mod tests {
         // At the flag exactly: 20,000 schedules in 5 blocks of
         // 4,000 (20% of the position, below the cap).
         let (tranche, count) = can_schedule_whale_exit(
-            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 20_000, 300_000, 600_000,
+            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 20_000, 20_000, 600_000,
         )
         .expect("a purse exactly at FLAG schedules");
         assert_eq!(tranche, 4_000);
@@ -14342,12 +14501,15 @@ mod tests {
             STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 250_000, 200_000, 600_000
         )
         .is_err());
-        // At the bound exactly, a 250,000 schedule against a
-        // 250,000 position passes.
-        can_schedule_whale_exit(
-            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 250_000, 250_000, 600_000,
+        // Slice 34, whole-position rule: a 250,000 schedule
+        // against a 300,000 position refuses — the schedule
+        // must cover the entire position, so a partial
+        // schedule cannot strand a remainder that could
+        // neither be re-scheduled nor plain-exited.
+        assert!(can_schedule_whale_exit(
+            STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 250_000, 300_000, 600_000
         )
-        .expect("a schedule exactly at the position passes");
+        .is_err());
         // Scale invariance of the flag: the same 250,000
         // purse is flagged at a 600,000 snapshot (FLAG =
         // 20,000) and an open trader at a 9,000,000 snapshot
@@ -14380,6 +14542,12 @@ mod tests {
         // blocks (count 13) against a 300,000 position and a
         // full 100,000 exit stock: the first blocks are the
         // standard 20,000 and the last is the 10,000 remainder.
+        // The fixture is synthetic (slice 34: creation now
+        // requires total == position, so a 250,000 schedule
+        // against a 300,000 position cannot be created) —
+        // the execution gate validates a stored schedule and
+        // never re-checks creation, so the fixture still
+        // exercises exactly the execution paths.
         let amount = can_execute_whale_tranche(
             STATE_COMMITTED, TREASURY_EXIT_TYPE, 13, 13, 13, 13, 13, true, true, true, 0, 13,
             20_000, 250_000, 300_000, 0, 600_000, 100_000,
