@@ -102,7 +102,7 @@ use std::str::FromStr;
 const PROGRAM_ID: &str = "CAQ4FvxtCy2d3852eyA1Hk4Qhwy9MpE14igTQkx5NSeJ";
 const SYSTEM_ID: &str = "11111111111111111111111111111111";
 const CLOCK_ID: &str = "SysvarC1ock11111111111111111111111111111111";
-const MOLLUSK_SVM_VERSION: &str = "0.16.2";
+const MOLLUSK_SVM_VERSION: &str = "0.17.1";
 
 const NOW0: i64 = 1_000_000;
 const PLANNING_WINDOW: u64 = 3_600;

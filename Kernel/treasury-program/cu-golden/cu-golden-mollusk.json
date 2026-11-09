@@ -2642,7 +2642,7 @@
       "result": "Refused"
     }
   ],
-  "mollusk_svm": "0.16.2",
+  "mollusk_svm": "0.17.1",
   "program_id": "CAQ4FvxtCy2d3852eyA1Hk4Qhwy9MpE14igTQkx5NSeJ",
   "program_so_sha256": "03294e22c374009c7aa55e21f55fe3479bc4b49865f54939849bdbc8961b4cc7",
   "slice": 35,
