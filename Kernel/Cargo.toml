@@ -1,3 +1,26 @@
 [workspace]
 resolver = "2"
 members = ["kernel", "kernel-conformance", "kernel-policy", "engine-sim", "tracer-s13"]
+# v04-intake holds the staged v0.4 port crates (own workspaces-in-waiting, not
+# members of this workspace). Without this exclusion cargo resolves any
+# v04-intake crate run from inside its own directory against this root and
+# errors ("add the package to the workspace.exclude array"). program-v04
+# already carries its own [workspace] table; the other seven do not.
+# v04-intake holds the staged v0.4 port crates (own workspaces-in-waiting, not
+# members of this workspace). Without this exclusion cargo resolves any
+# v04-intake crate run from inside its own directory against this root and
+# errors ("add the package to the workspace.exclude array"). The queue item's
+# glob form exclude = ["v04-intake/*"] was tried first and does NOT exclude
+# under cargo 1.99.1 (same error, all seven crates) — explicit paths are the
+# landed form, proven by cargo metadata resolving each crate as its own root.
+# program-v04 already carries its own [workspace] table and needs no entry;
+# solidity/ holds no crate.
+exclude = [
+    "v04-intake/coordination-kernel-rs",
+    "v04-intake/engine-adapter-v04",
+    "v04-intake/engine-v04",
+    "v04-intake/kernel-conformance-v04",
+    "v04-intake/kernel-contention-v04",
+    "v04-intake/kernel-launch-v04",
+    "v04-intake/program-bridge-v04",
+]
