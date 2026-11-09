@@ -4108,17 +4108,25 @@ pub mod treasury_program {
     /// lock agreed at entry is a contract, not a 13%
     /// buyout option. A dividend-only exit still pays at
     /// par: income is never locked, and the dividend's home
-    /// is `pay_tranche`. Known bounded edge, recorded not
-    /// hidden: a mid-schedule whale whose remaining
-    /// position has dropped below FLAG (reachable only on
-    /// the final tranche, when the position is not a
-    /// multiple of the block) can plain-exit that sub-FLAG
-    /// tail at 13%, up to a week early — at most FLAG, at
-    /// most one week, 13% priced, aggregate safety
-    /// untouched (L + exit stock still bind), the schedule
-    /// left incomplete but harmless at zero position.
-    /// Closing it needs the schedule account on this
-    /// instruction (a follow-up slice, not this one).
+    /// is `pay_tranche`. Slice 36 (tail close): the same
+    /// refusal extends to a holder with an INCOMPLETE
+    /// schedule for this window, even when the remaining
+    /// position has dropped below FLAG — the sub-FLAG tail
+    /// (reachable only on the final tranche, when the
+    /// position is not a multiple of the block) is the
+    /// schedule's final tranche, not an open-trader exit:
+    /// it pays at par a week later through the schedule
+    /// instead of at 13% a week early through plain
+    /// `exit`. The schedule account is a required
+    /// `UncheckedAccount` on this instruction, seeds-bound
+    /// to the holder and window — deliberately not an
+    /// Anchor `Option`, which the holder could omit to
+    /// evade the read. A complete schedule reads as no
+    /// schedule (a whale whose schedule finished can
+    /// plain-exit any dust it left behind), and the
+    /// zero-FLAG exception stands (an unfunded window's
+    /// threshold is undefined, and no schedule can be
+    /// created on it).
     ///
     /// The carried `settle_default` guard, closed here: an
     /// exit must not drop the position below an outstanding
@@ -4152,6 +4160,15 @@ pub mod treasury_program {
         window_id: u64,
         amount_raw: u64,
     ) -> Result<()> {
+        // Slice 36 (tail close): the schedule PDA for this
+        // holder and window is read before the gate — an
+        // incomplete schedule there closes the plain-exit
+        // path for principal, even the sub-FLAG tail.
+        let schedule_incomplete = exit_schedule_incomplete(
+            &ctx.accounts.exit_schedule,
+            window_id,
+            &ctx.accounts.holder.key(),
+        )?;
         let (penalty_raw, paid_raw) = can_exit(
             ctx.accounts.transition_record.state,
             ctx.accounts.transition_record.transition_type,
@@ -4163,6 +4180,7 @@ pub mod treasury_program {
             ctx.accounts.holder_record.loan_principal_raw,
             ctx.accounts.window_state.snapshot_total_raw,
             ctx.accounts.window_state.exit_stock_raw,
+            schedule_incomplete,
         )?;
         // Slice 32: the ledger must be this record's own
         // before any lamports move.
@@ -6530,6 +6548,66 @@ pub fn verify_holder_deposit(
     Ok(())
 }
 
+/// Whether the schedule account passed to `exit` carries an
+/// INCOMPLETE whale schedule for exactly this holder and
+/// window (slice 36, tail close). The read, in order:
+///
+/// - empty data reads false: no schedule was ever created
+///   at this holder's schedule PDA, so the holder is an
+///   open trader and plain `exit` is their path;
+/// - a foreign owner reads `ScheduleMismatch`: only the
+///   program can hold a schedule at this PDA, so data
+///   owned by anyone else is not a schedule — the check
+///   order mirrors the `prev_signal` read (owner first,
+///   then discriminator-checked deserialization);
+/// - malformed data reads `ScheduleMismatch`: the exit
+///   refuses rather than proceeding on an unreadable
+///   schedule (fail closed — a squatted PDA can brick
+///   an exit, the same pre-existing exposure every PDA
+///   in this program carries, and refusing is the safe
+///   side of it);
+/// - embedded holder / window disagreeing with the exit
+///   reads `ScheduleMismatch`: the PDA seeds already
+///   bind the address, and this binds the account's
+///   CONTENTS to the same identity, as
+///   [`check_legacy_record`] does for a migration
+///   candidate;
+/// - otherwise the schedule is this holder's, and the
+///   answer is `tranches_executed < tranches_total` —
+///   a complete schedule (all tranches paid) reads
+///   false, so a whale whose schedule finished can
+///   plain-exit any dust the schedule left behind.
+pub fn exit_schedule_incomplete(
+    schedule: &UncheckedAccount,
+    window_id: u64,
+    holder: &Pubkey,
+) -> Result<bool> {
+    let schedule_info = schedule.to_account_info();
+    let data = schedule_info
+        .try_borrow_data()
+        .map_err(|_| TreasuryError::ScheduleMismatch)?;
+    if data.is_empty() {
+        return Ok(false);
+    }
+    require!(
+        schedule_info.owner == &crate::ID,
+        TreasuryError::ScheduleMismatch
+    );
+    let mut slice: &[u8] = &data;
+    let schedule = ExitSchedule::try_deserialize(&mut slice)
+        .map_err(|_| TreasuryError::ScheduleMismatch)?;
+    require_keys_eq!(
+        schedule.holder,
+        *holder,
+        TreasuryError::ScheduleMismatch
+    );
+    require!(
+        schedule.window_id == window_id,
+        TreasuryError::ScheduleMismatch
+    );
+    Ok(schedule.tranches_executed < schedule.tranches_total)
+}
+
 /// Apply a commitment release to a record and its ledger
 /// (slice 32): the record's committed figure falls by the
 /// released amount and the ledger's by exactly the same
@@ -7160,6 +7238,7 @@ pub fn can_exit(
     loan_principal_raw: u64,
     snapshot_total_raw: u64,
     exit_stock_raw: u64,
+    schedule_incomplete: bool,
 ) -> Result<(u64, u64)> {
     require!(state == STATE_COMMITTED, TreasuryError::BadState);
     require!(
@@ -7194,11 +7273,23 @@ pub fn can_exit(
     // snapshot (an unfunded window) never fires: the flag
     // threshold is undefined there, and every position
     // would otherwise read as flagged.
+    //
+    // Slice 36 (tail close): the same refusal extends to
+    // a holder with an INCOMPLETE whale schedule for this
+    // window, even when the remaining position has dropped
+    // below FLAG — the sub-FLAG tail is the schedule's
+    // final tranche, not an open-trader exit, so it pays
+    // at par a week later through the schedule instead of
+    // at 13% a week early through plain `exit`. The
+    // dividend-only carve-out and the zero-FLAG exception
+    // are unchanged: an incomplete schedule never blocks
+    // an at-par dividend exit, and a zero-FLAG snapshot
+    // never fires the gate at all.
     let flag = whale_flag_threshold(snapshot_total_raw as u128);
     require!(
         excess == 0
             || flag == 0
-            || (position_raw as u128) < flag,
+            || ((position_raw as u128) < flag && !schedule_incomplete),
         TreasuryError::WhaleExitRequiresSchedule
     );
     require!(
@@ -10615,6 +10706,24 @@ pub struct Exit<'info> {
     pub sol_vault: UncheckedAccount<'info>,
     /// System program, required by the payout transfer CPI.
     pub system_program: Program<'info, System>,
+    /// CHECK (slice 36, tail close): the whale exit
+    /// schedule for this holder and window, seeds
+    /// `["schedule", window_id, holder]` — REQUIRED, but
+    /// possibly uninitialized: every `exit` caller passes
+    /// the derived schedule PDA whether or not a schedule
+    /// exists there. The seeds constraint binds the exact
+    /// PDA, so the holder cannot substitute another
+    /// account; the handler reads whether a schedule
+    /// exists and whether it is complete. Deliberately
+    /// NOT an Anchor `Option<Account>`: an omittable
+    /// account would let the holder simply not pass it
+    /// and plain-exit the tail anyway, so the slice
+    /// would close nothing. A holder with no schedule
+    /// passes the (nonexistent) PDA and the read returns
+    /// false; the account is read-only, since `exit`
+    /// never writes a schedule.
+    #[account(seeds = [b"schedule", window_id.to_le_bytes().as_ref(), holder.key().as_ref()], bump)]
+    pub exit_schedule: UncheckedAccount<'info>,
 }
 
 /// Accounts for [`treasury_program::reinvest`].
@@ -14330,7 +14439,8 @@ mod tests {
         assert_eq!(
             can_exit(
                 STATE_COMMITTED, TREASURY_WINDOW_TYPE, 13, 13, 1_000, 1_000, 10_000, 0,
-                600_000, 100_000
+                600_000, 100_000,
+                false,
             )
             .expect("an at-par exit passes"),
             (0, 1_000)
@@ -14339,7 +14449,8 @@ mod tests {
         assert_eq!(
             can_exit(
                 STATE_COMMITTED, TREASURY_WINDOW_TYPE, 13, 13, 500, 1_000, 10_000, 0,
-                600_000, 100_000
+                600_000, 100_000,
+                false,
             )
             .expect("a partial at-par exit passes"),
             (0, 500)
@@ -14350,7 +14461,8 @@ mod tests {
         assert_eq!(
             can_exit(
                 STATE_COMMITTED, TREASURY_WINDOW_TYPE, 13, 13, 5_000, 1_000, 10_000, 0,
-                600_000, 100_000
+                600_000, 100_000,
+                false,
             )
             .expect("an excess exit passes"),
             (520, 4_480)
@@ -14360,7 +14472,8 @@ mod tests {
         assert_eq!(
             can_exit(
                 STATE_COMMITTED, TREASURY_WINDOW_TYPE, 13, 13, 11_000, 1_000, 10_000, 0,
-                600_000, 100_000
+                600_000, 100_000,
+                false,
             )
             .expect("a full-position exit passes"),
             (1_300, 9_700)
@@ -14370,7 +14483,8 @@ mod tests {
         assert_eq!(
             can_exit(
                 STATE_COMMITTED, TREASURY_WINDOW_TYPE, 13, 13, 10_001, 0, 10_001, 0,
-                600_000, 100_000
+                600_000, 100_000,
+                false,
             )
             .expect("the penalty is exact"),
             (1_300, 8_701)
@@ -14385,7 +14499,8 @@ mod tests {
         ] {
             assert!(can_exit(
                 state, TREASURY_WINDOW_TYPE, 13, 13, 1_000, 1_000, 10_000, 0, 600_000,
-                100_000
+                100_000,
+                false,
             )
             .is_err());
         }
@@ -14393,19 +14508,22 @@ mod tests {
         // another window, both refuse as a mismatch.
         assert!(can_exit(
             STATE_COMMITTED, TREASURY_LAUNCH_TYPE, 13, 13, 1_000, 1_000, 10_000, 0,
-            600_000, 100_000
+            600_000, 100_000,
+            false,
         )
         .is_err());
         assert!(can_exit(
             STATE_COMMITTED, TREASURY_WINDOW_TYPE, 12, 13, 1_000, 1_000, 10_000, 0,
-            600_000, 100_000
+            600_000, 100_000,
+            false,
         )
         .is_err());
         // A zero amount refuses: it would consume a window
         // execution while exiting nothing.
         assert!(can_exit(
             STATE_COMMITTED, TREASURY_WINDOW_TYPE, 13, 13, 0, 1_000, 10_000, 0, 600_000,
-            100_000
+            100_000,
+            false,
         )
         .is_err());
         // D-10 per-order bound: snapshot 60,000 gives L =
@@ -14413,7 +14531,8 @@ mod tests {
         // headroom; exactly L passes.
         assert!(can_exit(
             STATE_COMMITTED, TREASURY_WINDOW_TYPE, 13, 13, 10_001, 0, 20_000, 0, 60_000,
-            10_000
+            10_000,
+            false,
         )
         .is_err());
         // The exactly-at-L pass needs dividend cover (slice
@@ -14429,6 +14548,7 @@ mod tests {
             can_exit(
                 STATE_COMMITTED, TREASURY_WINDOW_TYPE, 13, 13, 10_000, 9_000, 1_500, 0,
                 60_000, 10_000,
+                false,
             )
             .expect("an order exactly at L passes"),
             (130, 9_870)
@@ -14440,7 +14560,8 @@ mod tests {
         // At FLAG exactly, any excess refuses.
         assert!(can_exit(
             STATE_COMMITTED, TREASURY_WINDOW_TYPE, 13, 13, 3_000, 1_000, 2_000, 0, 60_000,
-            10_000
+            10_000,
+            false,
         )
         .is_err());
         // Well above FLAG, the same: the refusal is the
@@ -14448,7 +14569,8 @@ mod tests {
         // refuses.
         assert!(can_exit(
             STATE_COMMITTED, TREASURY_WINDOW_TYPE, 13, 13, 1_001, 1_000, 20_000, 0, 60_000,
-            10_000
+            10_000,
+            false,
         )
         .is_err());
         // One unit below FLAG, principal exit is the
@@ -14458,9 +14580,68 @@ mod tests {
             can_exit(
                 STATE_COMMITTED, TREASURY_WINDOW_TYPE, 13, 13, 2_000, 1_000, 1_999, 0,
                 60_000, 10_000,
+                false,
             )
             .expect("a sub-FLAG purse exits principal at the door"),
             (130, 1_870)
+        );
+        // Slice 36, tail close: the SAME sub-FLAG shape
+        // refuses when an incomplete schedule exists for
+        // this holder and window — the tail is the
+        // schedule's final tranche, not an open-trader
+        // exit. A 1,999 position with 1,000 accrued, a
+        // 2,000 exit (1,000 of excess), schedule
+        // incomplete: 6113, not the (130, 1,870) the
+        // no-schedule case prices.
+        assert!(can_exit(
+            STATE_COMMITTED, TREASURY_WINDOW_TYPE, 13, 13, 2_000, 1_000, 1_999, 0,
+            60_000, 10_000,
+            true,
+        )
+        .is_err());
+        // The tail close never blocks an at-par dividend
+        // exit: a flagged purse with an incomplete
+        // schedule still exits its whole accrued dividend
+        // at par — income is never locked, schedule or no.
+        assert_eq!(
+            can_exit(
+                STATE_COMMITTED, TREASURY_WINDOW_TYPE, 13, 13, 1_000, 1_000, 20_000, 0,
+                60_000, 10_000,
+                true,
+            )
+            .expect("a scheduled purse exits its dividend at par"),
+            (0, 1_000)
+        );
+        // A COMPLETE schedule reads as no schedule: the
+        // whale whose tranches all paid can plain-exit
+        // any dust the schedule left behind — the gate's
+        // `false` for a complete schedule is the
+        // handler's `tranches_executed == tranches_total`
+        // read, so the matrix pins the same sub-FLAG
+        // shape passing with it.
+        assert_eq!(
+            can_exit(
+                STATE_COMMITTED, TREASURY_WINDOW_TYPE, 13, 13, 2_000, 1_000, 1_999, 0,
+                60_000, 10_000,
+                false,
+            )
+            .expect("a complete schedule leaves plain exit open"),
+            (130, 1_870)
+        );
+        // The zero-FLAG exception stands with a schedule:
+        // a zero-FLAG snapshot never fires the gate, so a
+        // 4-raw all-excess exit passes even with the
+        // schedule flag set (the schedule could not have
+        // been created on a zero-FLAG snapshot; the
+        // combination is unreachable in practice and the
+        // gate's exception is preserved, not extended).
+        assert_eq!(
+            can_exit(
+                STATE_COMMITTED, TREASURY_WINDOW_TYPE, 13, 13, 4, 0, 10, 0, 29, 100,
+                true,
+            )
+            .expect("a zero-FLAG snapshot never flags, schedule or no"),
+            (0, 4)
         );
         // The dividend-only carve-out: a flagged purse may
         // still exit up to its accrued dividend at par —
@@ -14470,6 +14651,7 @@ mod tests {
             can_exit(
                 STATE_COMMITTED, TREASURY_WINDOW_TYPE, 13, 13, 1_000, 1_000, 20_000, 0,
                 60_000, 10_000,
+                false,
             )
             .expect("a flagged purse exits its dividend at par"),
             (0, 1_000)
@@ -14483,6 +14665,7 @@ mod tests {
         assert_eq!(
             can_exit(
                 STATE_COMMITTED, TREASURY_WINDOW_TYPE, 13, 13, 4, 0, 10, 0, 29, 100,
+                false,
             )
             .expect("a zero-FLAG snapshot never flags"),
             (0, 4)
@@ -14492,19 +14675,22 @@ mod tests {
         // exactly 5,000 admits it.
         assert!(can_exit(
             STATE_COMMITTED, TREASURY_WINDOW_TYPE, 13, 13, 5_000, 1_000, 10_000, 0,
-            600_000, 4_999
+            600_000, 4_999,
+            false,
         )
         .is_err());
         can_exit(
             STATE_COMMITTED, TREASURY_WINDOW_TYPE, 13, 13, 5_000, 1_000, 10_000, 0,
             600_000, 5_000,
+            false,
         )
         .expect("an exit exactly at the remaining stock passes");
         // Excess above the position refuses: 12,000 against a
         // 1,000 dividend needs 11,000 of a 10,000 position.
         assert!(can_exit(
             STATE_COMMITTED, TREASURY_WINDOW_TYPE, 13, 13, 12_000, 1_000, 10_000, 0,
-            600_000, 100_000
+            600_000, 100_000,
+            false,
         )
         .is_err());
         // Loan floor: a 5,000 loan leaves 5,000 of position
@@ -14513,12 +14699,14 @@ mod tests {
         // loan) passes — the floor is inclusive.
         assert!(can_exit(
             STATE_COMMITTED, TREASURY_WINDOW_TYPE, 13, 13, 7_000, 1_000, 10_000, 5_000,
-            600_000, 100_000
+            600_000, 100_000,
+            false,
         )
         .is_err());
         can_exit(
             STATE_COMMITTED, TREASURY_WINDOW_TYPE, 13, 13, 6_000, 1_000, 10_000, 5_000,
             600_000, 100_000,
+            false,
         )
         .expect("an exit down to exactly the outstanding loan passes");
     }
@@ -14563,6 +14751,7 @@ mod tests {
         let (penalty_raw, paid_raw) = can_exit(
             STATE_COMMITTED, TREASURY_WINDOW_TYPE, 13, 13, 5_000, 1_000, 10_000, 0,
             600_000, 100_000,
+            false,
         )
         .expect("the matrix exit passes its gate");
         assert_eq!((penalty_raw, paid_raw), (520, 4_480));
