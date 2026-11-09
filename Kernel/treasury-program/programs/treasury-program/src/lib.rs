@@ -3076,6 +3076,182 @@ pub mod treasury_program {
         Ok(())
     }
 
+    /// Holder-record re-enrollment / migration (slice 35):
+    /// grow one legacy 108-byte [`HolderRecord`] in place to
+    /// the current 148-byte layout so the current binary can
+    /// deserialize it again. HolderRecord grew twice after
+    /// the November 6 cohort enrolled: slice 31 appended
+    /// `mint` (32 bytes at offset 108) and slice 32 appended
+    /// `committed_raw` (8 bytes at offset 140); every earlier
+    /// field kept its offset, so the legacy bytes are the
+    /// current record's prefix verbatim. When the deployed
+    /// program was upgraded in place to the slice-34 build
+    /// (2026-11-08), the on-chain records stayed 108 bytes
+    /// and strict deserialization failed at `mint` — no
+    /// instruction taking a typed HolderRecord (exit,
+    /// settle_default, execute_whale_tranche, borrow, …)
+    /// can run for a legacy holder until its record is
+    /// migrated. This instruction is the repair.
+    ///
+    /// Authority-signed under the §4.1 Admin pattern — the
+    /// genesis authority in `Config`, the same authority
+    /// that registers mints — not transition-governed and
+    /// not holder-signed: migration moves no value, changes
+    /// no position, and touches no treasury total; it is a
+    /// layout repair under operator responsibility, with
+    /// the preserved position carried in the event as the
+    /// audit receipt. The record account is taken raw
+    /// ([`MigrateHolderRecord`]): a typed
+    /// `Account<HolderRecord>` would refuse the legacy
+    /// account at deserialization, the exact failure being
+    /// repaired. The handler verifies owner, discriminator,
+    /// exact legacy length, embedded holder/window/bump
+    /// against the arguments and the PDA's canonical bump
+    /// ([`check_legacy_record`]) before growing the account;
+    /// every structural disagreement refuses fail-closed,
+    /// and a record already at the current layout refuses
+    /// `AlreadyMigrated` — migration is visibly
+    /// non-idempotent, so a duplicated operator call is an
+    /// error to surface, never a silent no-op.
+    ///
+    /// The two appended fields are written with the values
+    /// that are faithful for a legacy record:
+    ///
+    /// - `mint` = `Pubkey::default()`, the documented
+    ///   native-SOL marker (the `enroll_sol` convention):
+    ///   every legacy enrollment was on the SOL leg — the
+    ///   November 6 cohort and the swarm holders were funded
+    ///   exclusively through `deposit_sol`/`enroll_sol`,
+    ///   and the pre-migration census of the deployed
+    ///   program found no token vault or mint account.
+    /// - `committed_raw` = 0. The field is defined (slice
+    ///   32) as the amount the record debited from its
+    ///   HolderDeposit ledger at enroll; legacy enrollments
+    ///   ran under the slice-29 binary, where no ledger
+    ///   existed and no debit occurred, so zero is the
+    ///   figure the record's own history supports. Writing
+    ///   the position here instead would fabricate a ledger
+    ///   debit that never happened, and would break the
+    ///   ledger on first release: `apply_commitment_release`
+    ///   debits the ledger by the released amount
+    ///   (fail-closed `checked_sub`), so a record committed
+    ///   figure with no matching ledger committed figure
+    ///   makes the first exit / tranche / default release
+    ///   refuse Overflow — bricking the very instructions
+    ///   migration exists to restore. The gate's own helper
+    ///   blesses the zero state (`release_commitment`: a
+    ///   record enrolled in an unfunded window committed 0,
+    ///   so its exits release 0). Recorded consequence: a
+    ///   migrated position's backing lives in TreasuryState
+    ///   totals and the SOL vault (which reconcile exactly
+    ///   against the sum of record positions), not in a
+    ///   per-holder ledger; a migrated holder enrolling in
+    ///   a NEW funded window must back that new position
+    ///   with fresh ledger deposits, because the enroll
+    ///   backing gate reads only the ledger, releasing
+    ///   nothing and crediting nothing from history.
+    ///
+    /// The same instruction creates the holder's native-SOL
+    /// HolderDeposit ledger when absent (`init_if_needed`,
+    /// authority-paid) — every legacy holder, since the
+    /// ledger postdates their enrollment — because `exit`,
+    /// `settle_default`, and `execute_whale_tranche` all
+    /// take the ledger as a typed required account: without
+    /// it a migrated record still could not execute. Only
+    /// the ledger's identity fields are written (the exact
+    /// idempotent identity write enroll/deposit perform);
+    /// its amount fields are never written by migration —
+    /// nothing is deposited here, and asserting historical
+    /// deposits the chain never recorded would be the
+    /// governed bookkeeping the 2026-10-26 funding-path
+    /// ruling rejects. The authority also tops the record
+    /// up to the grown layout's rent-exempt minimum before
+    /// the resize, so migration never leaves an account
+    /// below exemption. TreasuryState is bound read-only
+    /// (the ledger's seeds derive from it) and is never
+    /// written: after all migrations, the sum of record
+    /// positions reconciles against the pre-migration
+    /// census with totals untouched.
+    pub fn migrate_holder_record(
+        ctx: Context<MigrateHolderRecord>,
+        window_id: u64,
+        holder: Pubkey,
+    ) -> Result<()> {
+        require!(
+            ctx.accounts.config.authority == ctx.accounts.authority.key(),
+            TreasuryError::Unauthorized
+        );
+        require!(
+            ctx.accounts.window_state.window_id == window_id,
+            TreasuryError::NotLegacyRecord
+        );
+        let record_info = ctx.accounts.holder_record.to_account_info();
+        require!(
+            record_info.owner == ctx.program_id,
+            TreasuryError::NotLegacyRecord
+        );
+        let position_raw = {
+            let data = record_info.try_borrow_data()?;
+            check_legacy_record(
+                &data,
+                &holder,
+                window_id,
+                ctx.bumps.holder_record,
+            )?
+        };
+        // Rent top-up BEFORE the resize: the grown account
+        // must hold at least the new layout's rent-exempt
+        // minimum, and never less than it already held.
+        let required = anchor_lang::solana_program::rent::Rent::get()?
+            .minimum_balance(HolderRecord::SPACE);
+        let current = record_info.lamports();
+        if current < required {
+            let transfer_ix =
+                anchor_lang::solana_program::system_instruction::transfer(
+                    &ctx.accounts.authority.key(),
+                    record_info.key,
+                    required - current,
+                );
+            anchor_lang::solana_program::program::invoke(
+                &transfer_ix,
+                &[
+                    ctx.accounts.authority.to_account_info(),
+                    record_info.clone(),
+                ],
+            )?;
+        }
+        // Grow in place: `resize` zero-extends, and the two
+        // appended fields are then written explicitly, so
+        // the extension carries the faithful values by
+        // construction, not by resize semantics alone.
+        record_info.resize(HolderRecord::SPACE)?;
+        {
+            let mut data = record_info.try_borrow_mut_data()?;
+            require!(
+                data.len() == HolderRecord::SPACE,
+                TreasuryError::NotLegacyRecord
+            );
+            data[LEGACY_HOLDER_RECORD_LEN..LEGACY_HOLDER_RECORD_LEN + 32]
+                .copy_from_slice(Pubkey::default().as_ref());
+            data[LEGACY_HOLDER_RECORD_LEN + 32..HolderRecord::SPACE]
+                .copy_from_slice(&0u64.to_le_bytes());
+        }
+        // Ledger identity only (see the doc above): the
+        // amounts stay exactly as `init_if_needed` created
+        // them — zero — or as they already were.
+        let ledger = &mut ctx.accounts.holder_deposit_sol;
+        ledger.holder = holder;
+        ledger.mint = Pubkey::default();
+        ledger.bump = ctx.bumps.holder_deposit_sol;
+        emit!(HolderRecordMigrated {
+            window_id,
+            holder,
+            position_raw,
+            authority: ctx.accounts.authority.key(),
+        });
+        Ok(())
+    }
+
     /// Rule-version publication (design §4.3, slice 26): the
     /// mirror of `register_mint`, same authority, but on the
     /// standalone `RuleRegistry` PDA — a version enters the
@@ -6377,6 +6553,82 @@ pub fn apply_commitment_release(
     Ok(())
 }
 
+/// Legacy [`HolderRecord`] account length in bytes
+/// (slice 35): the layout's length through slice 29 —
+/// discriminator (8) plus every field up to and including
+/// `loan_funded_raw` (offset 108). Slices 31/32 appended
+/// `mint` (32 bytes) and `committed_raw` (8 bytes) after
+/// it, so the legacy length is exactly
+/// [`HolderRecord::SPACE`] minus the 40 appended bytes,
+/// and every legacy field sits at its current offset.
+pub const LEGACY_HOLDER_RECORD_LEN: usize = 108;
+
+/// The fail-closed structural gate for
+/// `migrate_holder_record` (slice 35): is `data` a legacy
+/// 108-byte [`HolderRecord`] belonging to exactly this
+/// holder and window, with the canonical PDA bump stored
+/// — and if so, what position does it carry? Pure over the
+/// raw bytes so the host tests pin every refusal path.
+/// Checks, in order:
+///
+/// - length already at the current layout refuses
+///   `AlreadyMigrated` (checked first, so a duplicate
+///   migration is reported as what it is);
+/// - any other wrong length refuses `NotLegacyRecord`;
+/// - a discriminator mismatch refuses `NotLegacyRecord`
+///   (an account of another type at this length is not a
+///   migration candidate);
+/// - the embedded holder (offset 8), window id (offset
+///   40), and stored bump (offset 99) must equal the
+///   arguments and the PDA's canonical bump: the account
+///   address is bound by the Accounts seeds constraint,
+///   and these reads bind the account's CONTENTS to the
+///   same identity — a record whose fields disagree with
+///   its own address is corrupt, not migratable.
+///
+/// On success returns the preserved `position_raw`
+/// (offset 56), which the handler carries into the
+/// `HolderRecordMigrated` event as the audit receipt.
+pub fn check_legacy_record(
+    data: &[u8],
+    holder: &Pubkey,
+    window_id: u64,
+    canonical_bump: u8,
+) -> Result<u64> {
+    require!(
+        data.len() != HolderRecord::SPACE,
+        TreasuryError::AlreadyMigrated
+    );
+    require!(
+        data.len() == LEGACY_HOLDER_RECORD_LEN,
+        TreasuryError::NotLegacyRecord
+    );
+    let discriminator = &data[..8];
+    require!(
+        discriminator == HolderRecord::DISCRIMINATOR,
+        TreasuryError::NotLegacyRecord
+    );
+    let mut holder_bytes = [0u8; 32];
+    holder_bytes.copy_from_slice(&data[8..40]);
+    require!(
+        holder_bytes == holder.to_bytes(),
+        TreasuryError::NotLegacyRecord
+    );
+    let mut window_bytes = [0u8; 8];
+    window_bytes.copy_from_slice(&data[40..48]);
+    require!(
+        u64::from_le_bytes(window_bytes) == window_id,
+        TreasuryError::NotLegacyRecord
+    );
+    require!(
+        data[99] == canonical_bump,
+        TreasuryError::NotLegacyRecord
+    );
+    let mut position_bytes = [0u8; 8];
+    position_bytes.copy_from_slice(&data[56..64]);
+    Ok(u64::from_le_bytes(position_bytes))
+}
+
 /// The SOL payout coverage gate, as a pure check
 /// (disbursement slice — the payout leg of `exit` and
 /// `execute_whale_tranche`): a payout of `paid_raw`
@@ -7616,6 +7868,21 @@ pub struct MintUnregistered {
     pub mint: Pubkey,
     pub authority: Pubkey,
     pub accepted_mint_count: u8,
+}
+
+/// Event for [`treasury_program::migrate_holder_record`]
+/// (slice 35): the migration receipt — the window and
+/// holder whose record was grown in place, the position
+/// preserved verbatim across the migration (the audit
+/// figure the post-migration reconciliation checks the
+/// census against), and the genesis authority that
+/// authorized and paid for the repair.
+#[event]
+pub struct HolderRecordMigrated {
+    pub window_id: u64,
+    pub holder: Pubkey,
+    pub position_raw: u64,
+    pub authority: Pubkey,
 }
 
 /// Event for [`treasury_program::register_rule_version`]
@@ -9852,6 +10119,69 @@ pub struct MintRegistryChange<'info> {
     pub authority: Signer<'info>,
 }
 
+/// Accounts for [`treasury_program::migrate_holder_record`]
+/// (slice 35). The record is taken as an
+/// [`UncheckedAccount`]: a typed `Account<HolderRecord>`
+/// would refuse the legacy 108-byte account at
+/// deserialization — the exact failure this slice repairs —
+/// so the handler verifies the account byte-by-byte
+/// (owner, discriminator, length, embedded identity,
+/// stored bump; [`check_legacy_record`]) before growing
+/// it in place.
+#[derive(Accounts)]
+#[instruction(window_id: u64, holder: Pubkey)]
+pub struct MigrateHolderRecord<'info> {
+    /// Program configuration PDA — read for the authority
+    /// check (`authority` must equal `config.authority`).
+    #[account(seeds = [b"config"], bump = config.bump)]
+    pub config: Account<'info, Config>,
+    /// Genesis authority (signer): the migration's
+    /// authorizer, payer of the record's rent top-up and
+    /// of the ledger account's creation.
+    #[account(mut)]
+    pub authority: Signer<'info>,
+    /// Treasury state PDA — read-only: the SOL-leg
+    /// ledger's seeds bind to it. Migration writes nothing
+    /// here; totals are untouched by construction.
+    #[account(seeds = [b"treasury"], bump = treasury_state.bump)]
+    pub treasury_state: Account<'info, TreasuryState>,
+    /// The window the record belongs to — read-only: binds
+    /// migration to an opened window, and the handler
+    /// cross-checks its `window_id` field against the
+    /// argument.
+    #[account(seeds = [b"window", window_id.to_le_bytes().as_ref()], bump = window_state.bump)]
+    pub window_state: Account<'info, WindowState>,
+    /// The legacy holder record, raw (see the struct doc).
+    /// The seeds constraint binds the account ADDRESS to
+    /// (window, holder); `check_legacy_record` binds its
+    /// CONTENTS to the same identity.
+    /// CHECK: verified byte-by-byte in the handler before
+    /// any write (`check_legacy_record`).
+    #[account(
+        mut,
+        seeds = [b"holder", window_id.to_le_bytes().as_ref(), holder.as_ref()],
+        bump
+    )]
+    pub holder_record: UncheckedAccount<'info>,
+    /// The holder's native-SOL deposit ledger (slice 30):
+    /// created zeroed when absent — every legacy holder,
+    /// since the ledger postdates their enrollment —
+    /// because `exit`, `settle_default`, and
+    /// `execute_whale_tranche` all take it as a typed
+    /// required account. When it already exists it is left
+    /// exactly as it stands; the handler writes only its
+    /// identity fields, never its amounts.
+    #[account(
+        init_if_needed,
+        payer = authority,
+        space = HolderDeposit::SPACE,
+        seeds = [b"holder-deposit-sol", treasury_state.key().as_ref(), holder.as_ref()],
+        bump
+    )]
+    pub holder_deposit_sol: Account<'info, HolderDeposit>,
+    pub system_program: Program<'info, System>,
+}
+
 /// Accounts for [`treasury_program::launch_stage2`].
 #[derive(Accounts)]
 #[instruction(transition_id: u64)]
@@ -11357,6 +11687,21 @@ pub enum TreasuryError {
     /// zero-FLAG snapshot (unfunded window) never fires.
     #[msg("Whale exit requires a schedule: a flagged purse extracts principal only through its tranched schedule.")]
     WhaleExitRequiresSchedule,
+    /// Migration (slice 35) refuses a record that is
+    /// already at the current 148-byte layout: migration
+    /// is visibly non-idempotent, so a duplicated operator
+    /// call is an error to surface, never a silent no-op.
+    #[msg("Holder record is already at the current layout; migration refused.")]
+    AlreadyMigrated,
+    /// Migration (slice 35) refuses an account that is not
+    /// a legacy 108-byte [`HolderRecord`] for exactly the
+    /// given holder and window: wrong length, wrong
+    /// discriminator, wrong owner, or embedded
+    /// holder/window/bump disagreeing with the address the
+    /// seeds derive. Fail-closed by construction — a
+    /// corrupt or foreign account is never grown.
+    #[msg("Account is not a legacy 108-byte holder record for this holder and window; migration refused.")]
+    NotLegacyRecord,
 }
 
 #[cfg(test)]
@@ -15028,5 +15373,93 @@ mod tests {
     fn rule_registry_space_matches_fields() {
         assert_eq!(RuleRegistry::SPACE, 138);
         assert_eq!(MAX_RULE_VERSIONS, 16);
+    }
+
+    /// Fabricate a legacy 108-byte HolderRecord image
+    /// (slice 35): the current discriminator plus the
+    /// pre-slice-31 fields at their current offsets —
+    /// holder @8, window @40, cohort @48, position @56,
+    /// bump @99 — the exact shape the November 6 cohort's
+    /// on-chain records carry.
+    fn legacy_record_image(
+        holder: &Pubkey,
+        window_id: u64,
+        position_raw: u64,
+        bump: u8,
+    ) -> Vec<u8> {
+        let mut data = vec![0u8; LEGACY_HOLDER_RECORD_LEN];
+        data[..8].copy_from_slice(HolderRecord::DISCRIMINATOR);
+        data[8..40].copy_from_slice(holder.as_ref());
+        data[40..48].copy_from_slice(&window_id.to_le_bytes());
+        data[48..56].copy_from_slice(&3u64.to_le_bytes());
+        data[56..64].copy_from_slice(&position_raw.to_le_bytes());
+        data[99] = bump;
+        data
+    }
+
+    #[test]
+    fn legacy_record_len_is_space_minus_appended_fields() {
+        assert_eq!(LEGACY_HOLDER_RECORD_LEN, 108);
+        // The extension migration writes is exactly the
+        // two appended fields: mint (32) + committed_raw (8).
+        assert_eq!(HolderRecord::SPACE - LEGACY_HOLDER_RECORD_LEN, 40);
+    }
+
+    #[test]
+    fn legacy_record_gate_matrix() {
+        let holder = Pubkey::new_from_array([42u8; 32]);
+        let bump = 254u8;
+        let image = legacy_record_image(&holder, 13, 51_000_000, bump);
+        // The faithful legacy record passes and yields its
+        // preserved position.
+        assert_eq!(
+            check_legacy_record(&image, &holder, 13, bump).expect("legacy record passes"),
+            51_000_000
+        );
+        // Already at the current layout: AlreadyMigrated,
+        // checked before any other structural property.
+        let mut current = image.clone();
+        current.resize(HolderRecord::SPACE, 0);
+        let rendered = format!(
+            "{:?}",
+            check_legacy_record(&current, &holder, 13, bump).unwrap_err()
+        );
+        assert!(rendered.contains("AlreadyMigrated"), "{rendered}");
+        // Wrong lengths (shorter or in-between) refuse
+        // NotLegacyRecord.
+        for len in [0usize, 100, 120, 147] {
+            let mut bad = image.clone();
+            bad.resize(len, 0);
+            let rendered = format!(
+                "{:?}",
+                check_legacy_record(&bad, &holder, 13, bump).unwrap_err()
+            );
+            assert!(rendered.contains("NotLegacyRecord"), "len {len}: {rendered}");
+        }
+        // A corrupted discriminator refuses: another
+        // account type at this length is not a candidate.
+        let mut bad_disc = image.clone();
+        bad_disc[0] ^= 0xff;
+        let rendered = format!(
+            "{:?}",
+            check_legacy_record(&bad_disc, &holder, 13, bump).unwrap_err()
+        );
+        assert!(rendered.contains("NotLegacyRecord"), "{rendered}");
+        // Embedded identity disagreements refuse: holder,
+        // window, and stored bump are each bound to the
+        // address's own derivation.
+        let other = Pubkey::new_from_array([43u8; 32]);
+        assert!(check_legacy_record(&image, &other, 13, bump).is_err());
+        let mut bad_holder = image.clone();
+        bad_holder[8..40].copy_from_slice(other.as_ref());
+        assert!(check_legacy_record(&bad_holder, &holder, 13, bump).is_err());
+        assert!(check_legacy_record(&image, &holder, 14, bump).is_err());
+        let mut bad_window = image.clone();
+        bad_window[40..48].copy_from_slice(&14u64.to_le_bytes());
+        assert!(check_legacy_record(&bad_window, &holder, 13, bump).is_err());
+        assert!(check_legacy_record(&image, &holder, 13, bump - 1).is_err());
+        let mut bad_bump = image.clone();
+        bad_bump[99] = bump - 1;
+        assert!(check_legacy_record(&bad_bump, &holder, 13, bump).is_err());
     }
 }
