@@ -2876,7 +2876,7 @@ const LAYOUT_KEY='gecko-terminal:layout-v1';
    branch a v7 store would fall into the else branch and wrongly unhide
    ids its owner deliberately hid. */
 /* N5.39 (2026-10-29, A125): LAYOUT_VERSION 9 — stored workspaces unhide chartCmp ONCE at migration, same A79/N5.20 rule: the comparison panel is brand-new, so no pre-migration hidden entry can be a deliberate hide of it, and a hide made AFTER this migration is saved at v9 and survives. Its acceptance (two charts side by side) requires it to arrive visible, not hidden behind the Layout popover. */
-/* N3.33 (2026-10-29, A129): LAYOUT_VERSION 10 — stored workspaces unhide recentTrades ONCE at migration, same A79/N5.20 rule: the panel is brand-new (Carlos's ruled item, disabled-state form), so no pre-migration hidden entry can be a deliberate hide of it, and a hide made AFTER this migration is saved at v10 and survives. It arrives visible so the disabled state reads clearly instead of hiding behind the Layout popover. */ /* N3.34 (2026-10-29, A130): LAYOUT_VERSION 11 — stored workspaces unhide lifecycleLanes ONCE at migration, same A79/N5.20 rule: the card is brand-new, so no pre-migration hidden entry can be a deliberate hide of it, and a hide made AFTER this migration is saved at v11 and survives. It arrives visible so the lane explanations read instead of hiding behind the Layout popover. */ const LAYOUT_VERSION=11;
+/* N3.33 (2026-10-29, A129): LAYOUT_VERSION 10 — stored workspaces unhide recentTrades ONCE at migration, same A79/N5.20 rule: the panel is brand-new (Carlos's ruled item, disabled-state form), so no pre-migration hidden entry can be a deliberate hide of it, and a hide made AFTER this migration is saved at v10 and survives. It arrives visible so the disabled state reads clearly instead of hiding behind the Layout popover. */ /* N3.34 (2026-10-29, A130): LAYOUT_VERSION 11 — stored workspaces unhide lifecycleLanes ONCE at migration, same A79/N5.20 rule: the card is brand-new, so no pre-migration hidden entry can be a deliberate hide of it, and a hide made AFTER this migration is saved at v11 and survives. It arrives visible so the lane explanations read instead of hiding behind the Layout popover. */ /* N3.428 (2026-11-09, A570): LAYOUT_VERSION 12 — no new panel; the migration repairs the boot balancer's moves (see the repair block in loadLayout) and unhides nothing: a v11 store migrates with its hidden list intact. */ const LAYOUT_VERSION=12;
 /* N5.9 ids unhidden by the v1/v2 migration (see above). */
 const N59_MIGRATED_IDS=['lab','discovery','portfolio','orders','limits','execpath'];
 /* N5.9 part-2 ids: unhidden by the v1/v2/v3 migrations (see above). */
@@ -2964,7 +2964,7 @@ function loadLayout(raw){
      drop v4 stores from the gate (version===LAYOUT_VERSION alone would
      cover only v5, and a v4 store falling through would lose its custom
      workspaces to the built-ins fallback). */
-  if(parsed&&(parsed.version===LAYOUT_VERSION||parsed.version===10||parsed.version===9||parsed.version===8||parsed.version===7||parsed.version===6||parsed.version===5||parsed.version===4||parsed.version===3||parsed.version===2||parsed.version===1)){
+  if(parsed&&(parsed.version===LAYOUT_VERSION||parsed.version===11||parsed.version===10||parsed.version===9||parsed.version===8||parsed.version===7||parsed.version===6||parsed.version===5||parsed.version===4||parsed.version===3||parsed.version===2||parsed.version===1)){
     const migrate=parsed.version!==LAYOUT_VERSION;
     const migrateV1=parsed.version===1;
     custom=(Array.isArray(parsed.workspaces)?parsed.workspaces:[]).map(ws=>{
@@ -2974,8 +2974,27 @@ function loadLayout(raw){
            mktcond + stablesupply; v4 stores get discoveryLab + mktcond +
            stablesupply; v3 stores get part-2 + discoveryLab + mktcond +
            stablesupply; v1/v2 stores get all ten + discoveryLab + mktcond + stablesupply. */
-        /* N5.39: v8 stores get ONLY chartCmp (the version===8 branch below); older stores get their legacy lists plus chartCmp via the concat. Without the v8 branch, a v8 store would fall into the v1/v2 else-branch and wrongly unhide ids its owner deliberately hid. */ const unhideBase=parsed.version===8?[]:parsed.version===7?[]:parsed.version===6?N528_MIGRATED_IDS:parsed.version===5?N525_MIGRATED_IDS.concat(N528_MIGRATED_IDS):parsed.version===4?N520_MIGRATED_IDS.concat(N525_MIGRATED_IDS,N528_MIGRATED_IDS):parsed.version===3?N59B_MIGRATED_IDS.concat(N520_MIGRATED_IDS,N525_MIGRATED_IDS,N528_MIGRATED_IDS):N59_MIGRATED_IDS.concat(N59B_MIGRATED_IDS,N520_MIGRATED_IDS,N525_MIGRATED_IDS,N528_MIGRATED_IDS);/* N3.34: v10 stores unhide ONLY lifecycleLanes; v9 stores unhide recentTrades + lifecycleLanes; older stores add chartCmp, recentTrades, lifecycleLanes to their legacy lists. */ const unhide=parsed.version===10?N334_MIGRATED_IDS:parsed.version===9?N333_MIGRATED_IDS.concat(N334_MIGRATED_IDS):unhideBase.concat(N539_MIGRATED_IDS,N333_MIGRATED_IDS,N334_MIGRATED_IDS);
+        /* N5.39: v8 stores get ONLY chartCmp (the version===8 branch below); older stores get their legacy lists plus chartCmp via the concat. Without the v8 branch, a v8 store would fall into the v1/v2 else-branch and wrongly unhide ids its owner deliberately hid. */ /* N3.428: v11 stores unhide NOTHING at the v12 migration — no new panel arrives in v12, so a deliberate v11 hide must survive. */ const unhideBase=parsed.version===11?[]:parsed.version===8?[]:parsed.version===7?[]:parsed.version===6?N528_MIGRATED_IDS:parsed.version===5?N525_MIGRATED_IDS.concat(N528_MIGRATED_IDS):parsed.version===4?N520_MIGRATED_IDS.concat(N525_MIGRATED_IDS,N528_MIGRATED_IDS):parsed.version===3?N59B_MIGRATED_IDS.concat(N520_MIGRATED_IDS,N525_MIGRATED_IDS,N528_MIGRATED_IDS):N59_MIGRATED_IDS.concat(N59B_MIGRATED_IDS,N520_MIGRATED_IDS,N525_MIGRATED_IDS,N528_MIGRATED_IDS);/* N3.34: v10 stores unhide ONLY lifecycleLanes; v9 stores unhide recentTrades + lifecycleLanes; older stores add chartCmp, recentTrades, lifecycleLanes to their legacy lists. */ const unhide=parsed.version===11?[]:parsed.version===10?N334_MIGRATED_IDS:parsed.version===9?N333_MIGRATED_IDS.concat(N334_MIGRATED_IDS):unhideBase.concat(N539_MIGRATED_IDS,N333_MIGRATED_IDS,N334_MIGRATED_IDS);
         clean.hidden=clean.hidden.filter(id=>!unhide.includes(id));
+        /* N3.428 (2026-11-09, A570): one-time repair of the boot balancer's
+           moves. Before this fix, applyLayoutBoot ran balanceWorkspaceColumns
+           on every load: the shipped Trader homes (maincol 11 visible vs
+           sidecol 6) rotated ticketLive + discoveryLab into sidecol, and the
+           Watcher homes rotated discoveryLab + discovery — then saveLayout()
+           persisted the move, so the mangled layout survived reloads and
+           Reset UI. The balancer's fingerprint is a fully root-grouped order
+           (stats, then maincol, then sidecol — its rebuild groups by root;
+           no user drag regroups the whole order), with discoveryLab sitting
+           in sidecol. Only then are the three panels the balancer ever moves
+           restored to their homes. A deliberate user arrangement is never
+           root-grouped, so it is never touched; if you had deliberately put
+           one of these panels in sidecol inside a grouped order, move it
+           back once — the balancer no longer moves panels at boot. */
+        var n3428Grouped=true,n3428LastRoot=-1;
+        clean.order.forEach(function(id){var r=ROOT_KEYS.indexOf(clean.place[id]);if(r<n3428LastRoot)n3428Grouped=false;else n3428LastRoot=r;});
+        if(n3428Grouped&&clean.place.discoveryLab==='sidecol'){
+          ['discoveryLab','ticketLive','discovery'].forEach(function(id){if(clean.place[id]==='sidecol')clean.place[id]=PANEL_HOME[id];});
+        }
       }
       return clean;
     }).filter(w=>!w.builtIn);
@@ -3376,7 +3395,14 @@ function applyLayoutBoot(){
   try{raw=localStorage.getItem(LAYOUT_KEY);}catch(_){raw=null;}
   layout=loadLayout(raw); // corrupt/missing/version-mismatch → built-ins, Trader active (never a blank page)
   const ws=activeWorkspace();
-  balanceWorkspaceColumns(ws,null); /* N5.10: a stored tower layout balances on load, before first paint */
+  /* N3.428 (2026-11-09, A570): NO boot-time balancing. The N5.10 call here
+     re-balanced the shipped Trader homes on EVERY load (maincol 11 visible
+     vs sidecol 6, diff 5 > 2), rotating ticketLive + discoveryLab into the
+     ~470px side column and persisting the move via saveLayout() — the Lab
+     discovery table rendered squeezed into the right column with the left
+     two-thirds empty, and Reset UI could not hold because the next boot
+     re-ran it. A stored layout renders exactly as saved; the drop-time
+     balance in commitPanelDrag is untouched. */
   renderPanelPlacement(ws);
   applyPanelVisibility(ws.hidden);
   saveLayout();
@@ -3562,7 +3588,16 @@ function isNoOpDrop(panelId,key,idx){
 }
 /* N5.10 smart layout rotation / anti-stack balancing (2026-10-24, Carlos:
    "prevents a straight line of blobs accumulating vertically"): after a drop
-   (commitPanelDrag) or a stored-layout load (applyLayoutBoot), if one desk
+   (commitPanelDrag) ONLY — the stored-layout-load call (applyLayoutBoot) was
+   removed 2026-11-09 by N3.428 (A570): it re-balanced the SHIPPED Trader
+   homes on every load (maincol 11 visible vs sidecol 6, diff 5 > 2),
+   rotating ticketLive + discoveryLab into the ~470px side column and
+   persisting the move, and no boot-time rule can tell a deliberate tower
+   (shipped homes, a user arrangement) from an accidental one — so it
+   mangled the layout it was meant to tidy, and Reset UI could not hold
+   because the next boot re-ran it. Drop-time balancing keeps the anti-stack
+   behaviour where the user actually acts; a stored layout renders exactly
+   as saved. After a drop, if one desk
    column holds visibly more panels than the other by more than
    N510_MAX_COUNT_DIFF, the lowest panels of the over-tall column rotate to
    the end of the shorter column until the counts are within the band.
