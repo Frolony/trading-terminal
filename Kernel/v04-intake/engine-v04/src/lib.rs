@@ -37,10 +37,13 @@
 //!   their position (`Config::reinvest_ppm`). The annual obligation is
 //!   discharged either way; compounding is internal bookkeeping, not a cash
 //!   flow — only the cash-paid part of a tranche claims treasury cash.
-//! * **Open decisions stay visible:** the distribute/retain split (D-1) is
-//!   modelled at its all-distributed upper bound, and the dividend-forfeiture
-//!   base (D-3) is a parameter ([`ForfeitureBase`]) whose two values the door
-//!   calibration test prices side by side.
+//! * **Decisions closed, pinned in code:** D-1 CLOSED — RETAIN is the
+//!   12-slot allocation mechanism (the full annual income is distributed
+//!   across the rotation year; $6.26/yr per $100 holder IS the operating
+//!   dividend; there is no retain/withhold split), and D-3 CLOSED — the
+//!   dividend-forfeiture base is the PRE-DEFAULT position, pinned in the
+//!   reference config ([`ForfeitureBase::PreDefault`]); the door-calibration
+//!   test prices the post-default value only as the rejected counterfactual.
 //! * **Governance is not decoration:** with a [`Governance`] adapter attached,
 //!   the cash-paid part of every dividend tranche and every lending batch must
 //!   first commit as a Kernel transition under the `kernel-policy` launch
